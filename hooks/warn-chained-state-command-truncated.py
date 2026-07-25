@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
-"""PreToolUse(Bash) warn. One call chains a state-changing command after `&&`
-AND pipes the result through `tail`/`head`.
+"""PreToolUse(Bash) warn. Two mirror shapes in which a pipe hides a failure.
+
+A. A state-changing command AFTER `&&`, with the pipeline piped to `tail`/`head`.
+B. A VERIFICATION GATE (typecheck / test / lint / build) piped to `tail`/`head`
+   BEFORE `&&`. A pipeline exits with its LAST command's status, so `tail`
+   returns 0 over a failing gate and `&&` runs the rest as though it passed.
+   The truncation compounds it by dropping the very line ("error TS…", "FAIL")
+   a later grep would look for. Observed in the wild: a branch that did not
+   compile was reported green across typecheck, lint and a full 4,600-test
+   suite, because the test runner strips types and never typechecks, so the
+   passing tests said nothing about compilation.
 
 That exact shape hides failure. `&&` short-circuits, so an early step's denial
 or error kills the rest of the chain — and `tail -3` then shows only the last
@@ -40,6 +49,13 @@ STATE_CMD = re.compile(
     r"|\bgh\s+release\s+create\b|\bgit\s+tag\s+-\w*\s*\S|\bgh\s+api\s+.*-X\s*(?:POST|PATCH|PUT|DELETE)",
     re.IGNORECASE,
 )
+# Verification gates whose ONLY trustworthy verdict is their exit status.
+VERIFY_CMD = re.compile(
+    r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:typecheck|type-check|lint|test|build)\b"
+    r"|\btsc\b|\beslint\b|\bvitest\b|\bjest\b|\bpytest\b|\bmypy\b|\bruff\b"
+    r"|\bcargo\s+(?:test|clippy|check)\b|\bgo\s+(?:test|vet)\b",
+    re.IGNORECASE,
+)
 # A truncating filter on the OUTPUT of the pipeline.
 TRUNCATE = re.compile(r"\|\s*(?:tail|head)\b", re.IGNORECASE)
 # `&&` chaining (not `&` backgrounding, not `||`).
@@ -64,6 +80,42 @@ def main() -> None:
         sys.exit(0)
 
     if not CHAIN.search(cmd) or not TRUNCATE.search(cmd):
+        sys.exit(0)
+
+    # Detector B: a verification gate piped to tail/head in a segment BEFORE a
+    # `&&`. The pipeline's status is tail's, so `&&` cannot short-circuit on the
+    # gate's failure — the chain is structurally incapable of stopping there.
+    segs_all = CHAIN.split(cmd)
+    masked = sorted({
+        m.group(0).strip()
+        for seg in segs_all[:-1]
+        if TRUNCATE.search(seg)
+        for m in VERIFY_CMD.finditer(seg)
+    })
+    if masked:
+        vmsg = (
+            "A verification gate here is piped to tail/head and then chained with `&&`: "
+            f"{', '.join(masked)}.\n"
+            "A pipeline exits with its LAST command's status, so `tail` returns 0 even when "
+            "the gate FAILS and `&&` runs the rest anyway — this chain cannot stop on a red "
+            "gate. The truncation also drops the line ('error TS…', 'FAIL') a later grep "
+            "would match, so the run reads clean twice over.\n"
+            "Capture each gate's status instead, then assert on it:\n"
+            "  npm run typecheck > /tmp/tc.log 2>&1; TC=$?\n"
+            "  npm test          > /tmp/ts.log 2>&1; TS=$?\n"
+            "  echo \"typecheck=$TC test=$TS\"   # grep the FILES for detail\n"
+            "Bypass: CHAINED_STATE_CMD_BYPASS=1."
+        )
+        log_fire("warn-chained-state-command-truncated", status="warned",
+                 detector="verify-gate-exit-masked", cmds=",".join(masked))
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "permissionDecisionReason": vmsg,
+            },
+            "systemMessage": vmsg,
+        }))
         sys.exit(0)
 
     # The state command must sit in a segment AFTER a `&&` — that is the one
