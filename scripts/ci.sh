@@ -225,6 +225,10 @@ INTEGRATION_TESTS=(
   # FIRES — protection that is not actually there. Negative controls prove the
   # gate reddens on a bad operator, a bad field, and a stale allowlist entry.
   test_hookify_template_capabilities
+  # Owned-hook dedup (follow-up to the matcher-aware merge): a hook shipped under two
+  # matchers whose stored interpreter path drifted duplicated per matcher; proves owning
+  # observe-tool-calls + the dedupe pass collapse the drift copy and never touch user hooks.
+  test_installer_dedupes_owned_hooks
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new
