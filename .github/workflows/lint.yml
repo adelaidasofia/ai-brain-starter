@@ -37,7 +37,7 @@ jobs:
     name: bash syntax (.sh)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: bash -n every .sh
         run: |
           set -e
@@ -65,7 +65,7 @@ jobs:
     # (info/style excluded) to match the real ship/hold boundary, not the strictest
     # possible signal. No untrusted user input is referenced in any run: command.
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: ensure shellcheck present
         run: command -v shellcheck >/dev/null || { sudo apt-get update && sudo apt-get install -y shellcheck; }
       - name: run the canonical shellcheck gate
@@ -81,7 +81,7 @@ jobs:
     # (ai-brain-starter#176). This guard fails a PR that reintroduces it.
     # No untrusted user input is referenced in any run: command.
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: run the meta-resolution guard
         run: bash scripts/check-meta-resolution.sh
 
@@ -95,7 +95,7 @@ jobs:
     # protection that is not actually there. This gate fails loud instead.
     # No untrusted user input is referenced in any run: command.
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: run the hookify capability gate
         run: python3 -S scripts/check-hookify-template-capabilities.py
       - name: negative controls for the gate
@@ -105,7 +105,7 @@ jobs:
     name: PowerShell parse (.ps1)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: pwsh ParseFile every .ps1
         shell: pwsh
         run: |
@@ -129,7 +129,7 @@ jobs:
     name: UTF-8 BOM on .ps1 (Windows PS 5.1 fix)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: every .ps1 must start with EF BB BF
         run: |
           set -e
@@ -151,7 +151,7 @@ jobs:
     # Even with BOM, keeping .ps1 ASCII-clean is defense-in-depth against the next
     # time someone saves a file without BOM.
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: scan .ps1
         run: |
           set -e
@@ -169,7 +169,7 @@ jobs:
     name: JSON validity (hooks.json, *.mcp.json)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: validate
         run: |
           set -e
@@ -202,7 +202,7 @@ jobs:
     # in https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
       - name: fetch base branch
@@ -260,7 +260,7 @@ jobs:
     # We only enforce category 1: backticked, repo-relative, no [VAULT_PATH] prefix,
     # no `<VAULT>` prefix, no leading slash, no `~/`.
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: scan repo-relative backticked references
         run: |
           set -e
@@ -292,7 +292,7 @@ jobs:
     # reintroduces a remote-pipe-to-shell pattern. No untrusted user input is
     # referenced in any run: command.
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: scan install surfaces
         run: |
           set -e
@@ -328,7 +328,7 @@ jobs:
     # (it fails open and stays green when ruff is absent).
     # No untrusted user input is referenced in any run: command.
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.9"
@@ -356,7 +356,7 @@ jobs:
     # job fails closed (a silent skip would make the gate vacuous exactly when the
     # linter is missing). No untrusted user input is referenced in any run: command.
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
@@ -380,7 +380,7 @@ jobs:
     # drift. Pure stdlib, no linter to install. No untrusted user input is referenced
     # in any run: command.
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: run the UTF-8 console guard over tracked vault scripts
         run: python3 scripts/check-utf8-stdout.py
 
