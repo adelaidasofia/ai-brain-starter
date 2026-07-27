@@ -295,7 +295,7 @@ Capture their answer. After saving the journal entry (Step 9), update the weekly
 **Capture must not be blocked by data pulls.** If the user opened with a full dump, write the file FIRST from their words, THEN run the Step 0 source pulls and fold them into the `## Today` section during enrichment. RescueTime / iMessage / WhatsApp / calendar latency must never delay the first save.
 
 **Write a complete, standalone entry** using the Step 7 format, with these capture-stage values:
-- **Frontmatter:** all required fields present. `floor` / `floor_level` = your best read from what they've said so far (provisional — Step 4 finalizes it). Set `entry_status: captured` now; Step 7 flips it to `enriched` if the interview or panel runs (so the insights/patterns skills can tell a quick capture from a full session and weight the provisional floor accordingly). Fill the habit fields you already know; omit the optional RescueTime and morning-pairing fields you don't have yet rather than faking them.
+- **Frontmatter:** all required fields present — starting with `type: journal` (literal English value even in localized vaults; metadata extraction classifies by `type:` and skips the entry without it). `floor` / `floor_level` = your best read from what they've said so far (provisional — Step 4 finalizes it). Set `entry_status: captured` now; Step 7 flips it to `enriched` if the interview or panel runs (so the insights/patterns skills can tell a quick capture from a full session and weight the provisional floor accordingly). Fill the habit fields you already know; omit the optional RescueTime and morning-pairing fields you don't have yet rather than faking them.
 - **`## Today`:** include it only if you already pulled that data; otherwise leave it out for now and add it at enrichment.
 - **`## Journal — [user]'s voice`:** their content so far, in their voice, lightly shaped. This is a real entry, not a stub.
 - **`### My responses to the panel (verbatim...)`:** every message they have typed this session so far, word-for-word. The verbatim-capture rule applies from message one.
@@ -622,6 +622,7 @@ If the vault's `CLAUDE.md` states a filename rule, it wins — `filename_format`
 
 ```markdown
 ---
+type: journal               # REQUIRED — metadata extraction routes every note by `type:`; an entry without it is skipped as NO_TYPE and never indexed
 creationDate: YYYY-MM-DDTHH:MM
 floor: Primary              # single floor name — where the entry LANDED (this is the EVENING floor)
 floor_level: Low | Middle | High

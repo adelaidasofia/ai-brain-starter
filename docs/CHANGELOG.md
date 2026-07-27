@@ -9,6 +9,18 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-07-27: journal entries now carry `type: journal`, so metadata extraction stops skipping them
+
+**Who this affects:** everyone who uses `/journal` together with `/second-brain-mapping` (or anything else that reads the vault's typed frontmatter).
+
+**The bug:** the journal skill's entry template never wrote a `type:` field into the frontmatter. The metadata extractor sorts every note by that field — no field, no sort: each entry landed in the "No type field" bucket and was silently left out of extraction, even though every other journal template in this repo already says `type: journal`. In one real vault, twelve days of entries were invisible to mapping until the field was added by hand.
+
+**The fix:** the entry template now opens with `type: journal`, and the capture-first save names it as a required field. Nothing else about the entry changed.
+
+**What you should do:** nothing for new entries. If you journaled before this fix, ask Claude to backfill `type: journal` into your existing entries' frontmatter so extraction sees them too.
+
+---
+
 ## 2026-07-14: the secret detector stopped crying wolf over container IDs and migration checksums
 
 **Who this affects:** everyone — a detector that flags things that aren't secrets teaches you to stop trusting its real alerts.
