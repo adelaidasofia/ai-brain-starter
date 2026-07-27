@@ -115,6 +115,31 @@ else
   bad "idempotent registration" "expected 2 guard entries, got $count"
 fi
 
+echo "=== 5. DATA-LOSS control: a CORRUPT settings.json is left byte-for-byte alone ==="
+# A file that exists but does not parse makes every hook look unregistered. Merging into
+# the {} a failed parse yields would write back ONLY the guard entries and destroy the
+# user's env / permissions / custom hooks. The wired SessionStart path must refuse.
+CORRUPT_HOME="$(mktemp -d)"; TMPDIRS+=("$CORRUPT_HOME")
+mkdir -p "$CORRUPT_HOME/.claude"
+printf '%s' '{"env":{"K":"V"},"hooks":{"Stop":[{"hooks":[{"command":"USER_CRITICAL"}]}]}' \
+  > "$CORRUPT_HOME/.claude/settings.json"
+before="$(shasum -a 256 "$CORRUPT_HOME/.claude/settings.json" | awk '{print $1}')"
+out="$(printf '%s' '{}' | env HOME="$CORRUPT_HOME" VAULT_ROOT="$FAKE_VAULT" \
+        HEAL_JOURNAL_GUARD_NO_COOLDOWN=1 python3 "$HEAL" 2>/dev/null)"
+rc=$?
+after="$(shasum -a 256 "$CORRUPT_HOME/.claude/settings.json" | awk '{print $1}')"
+if [ "$before" = "$after" ]; then
+  ok "corrupt settings.json left byte-for-byte untouched (user config preserved)"
+else
+  bad "corrupt settings preserved" "the self-heal REWROTE an unparseable settings.json"
+fi
+if [ "$rc" -eq 0 ]; then ok "still fail-open on corrupt input (exit 0)"; else bad "fail-open" "exit $rc"; fi
+if printf '%s' "$out" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); ctx=d.get("hookSpecificOutput",{}).get("additionalContext",""); sys.exit(0 if "not valid JSON" in ctx else 1)' 2>/dev/null; then
+  ok "surfaces an actionable 'not valid JSON' line instead of claiming a repair"
+else
+  bad "corrupt surface line" "expected a 'not valid JSON' notice, got: $out"
+fi
+
 echo
 echo "=== summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ]

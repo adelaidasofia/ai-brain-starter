@@ -73,10 +73,30 @@ def clone_root() -> Path:
 
 
 def _read_json(path: Path) -> dict:
+    """Parsed JSON, or {} when the file is absent OR unreadable. Callers that only READ
+    (diagnose) are happy with {}; a caller that WRITES the result back must first call
+    _settings_unreadable() - see the refusal in repair_registration."""
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def _settings_unreadable(path: Path) -> bool:
+    """True iff the file EXISTS but does not parse as a JSON object.
+
+    The distinction matters only on the WRITE path. _read_json flattens "absent" and
+    "corrupt" to {}, and merging into {} yields a settings.json containing ONLY our guard
+    entries - which, written back over a corrupt-but-recoverable file, DESTROYS the user's
+    env, permissions and every custom hook. Absent is safe to treat as {}; corrupt is not.
+    The real installer refuses outright on unparseable settings; the self-heal must too.
+    Fail CLOSED: an unreadable file means do nothing and say so, never rewrite it."""
+    if not path.is_file():
+        return False  # absent -> a fresh {} is correct, not destructive
+    try:
+        return not isinstance(json.loads(path.read_text(encoding="utf-8")), dict)
+    except Exception:
+        return True
 
 
 def guard_registrations_from_template(clone: Path) -> "list[tuple]":
@@ -184,6 +204,12 @@ def repair_registration(settings_path: Path, clone: Path) -> bool:
     normal install. Returns True if a change was written. Fail-open: any error -> False."""
     regs = guard_registrations_from_template(clone)
     if not regs:
+        return False
+    # REFUSE on a settings.json that exists but does not parse. Merging into the {} that
+    # _read_json returns for a corrupt file would write back ONLY our guard entries and
+    # silently destroy the user's env / permissions / custom hooks. A guard that wrecks
+    # the config it was meant to protect is worse than the gap it closes.
+    if _settings_unreadable(settings_path):
         return False
     try:
         ihul = _load_installer(clone)
@@ -318,6 +344,19 @@ def run_session_start() -> None:
 
     if not has_gap(report):
         _emit_silent()
+        return
+
+    # An unparseable settings.json makes EVERY hook look unregistered, so the gap above is
+    # not evidence of a missing guard - it is evidence of a broken config. Only a human can
+    # safely repair JSON we cannot read, so say exactly that and touch nothing.
+    if _settings_unreadable(settings_path):
+        _emit_context(
+            "[heal-journal-guard] Cannot read ~/.claude/settings.json (it exists but is "
+            "not valid JSON), so the /journal Step-0 context guard cannot be verified and "
+            "NOTHING was changed. Fix the JSON (a recent backup is at "
+            "~/.claude/settings.json.bak-*), then run: python3 "
+            "~/.claude/skills/ai-brain-starter/scripts/install-hooks-user-level.py"
+        )
         return
 
     # A real gap. Repair is subprocess-bearing, so gate it behind a cooldown: a box that
@@ -471,6 +510,19 @@ def self_test() -> int:
             after = diagnose(_read_json(empty_path), clone)
             check("repair-wrote-something", wrote)
             check("repair-closes-registration-gap", not after["missing_matchers"])
+
+        # DATA-LOSS control: a settings.json that EXISTS but is corrupt JSON must be left
+        # BYTE-FOR-BYTE untouched. Merging into the {} a failed parse yields would write
+        # back only our guard entries and destroy the user's env / permissions / hooks.
+        corrupt_path = root / "settings_corrupt.json"
+        corrupt_raw = '{"env":{"K":"V"},"hooks":{"Stop":[{"hooks":[{"command":"USER"}]}]}'
+        corrupt_path.write_text(corrupt_raw, encoding="utf-8")
+        check("corrupt-detected", _settings_unreadable(corrupt_path))
+        check("corrupt-repair-refuses", repair_registration(corrupt_path, clone) is False)
+        check("corrupt-file-untouched",
+              corrupt_path.read_text(encoding="utf-8") == corrupt_raw)
+        # ...while a genuinely ABSENT file is NOT treated as corrupt (repair must still run).
+        check("absent-not-corrupt", not _settings_unreadable(root / "no-such-settings.json"))
 
         # PREFLIGHT diagnose: no vault -> 'no-vault'; vault with the file -> 'ok'; without
         # -> 'missing'. (The subprocess repair is exercised end-to-end in the .sh test.)
