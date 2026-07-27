@@ -135,6 +135,12 @@ ABS_FINGERPRINTS = [
     "ai-brain-starter/hooks/check-fabricated-verification.py",
     "ai-brain-starter/hooks/check-fabricated-hook-attribution.py",
     "ai-brain-starter/hooks/warn-chained-state-command-truncated.py",
+    # Instinct-engine observer. Shipped under TWO PreToolUse matchers with a
+    # byte-identical command; OWNED so its dedup is by basename (matcher-scoped),
+    # not the literal command text. Without this, an interpreter-path drift (bare
+    # `python3` -> absolute shim-safe path) makes is_same_command's literal fallback
+    # miss and the matcher-aware merge APPENDS a second copy per matcher.
+    "ai-brain-starter/hooks/observe-tool-calls.py",
 ]
 
 # Path-divergence-robust matching: an ai-brain-starter hook may be wired at the
@@ -171,6 +177,9 @@ ABS_OWNED_BASENAMES = {
     # at ~/.claude/hooks/ dedups against the skill-path copy instead of doubling.
     "check-fabricated-verification.py", "check-fabricated-hook-attribution.py",
     "warn-chained-state-command-truncated.py",
+    # Instinct-engine observer, shipped under two matchers (dedup by basename so an
+    # interpreter-path change can't double it):
+    "observe-tool-calls.py",
 }
 
 # Hooks ai-brain-starter USED TO ship and has deliberately RETIRED. The
@@ -705,6 +714,51 @@ def relocate_moved_hooks(existing: dict, template: dict) -> tuple[dict, int]:
     return cleaned, removed
 
 
+def dedupe_owned_hooks(existing: dict) -> tuple[dict, int]:
+    """Collapse duplicate OWNED hooks that share the same (event, group, owned-script)
+    down to one, keeping the LAST occurrence (the freshest merge result).
+
+    merge_hooks() REPLACES a template hook in place only when is_same_command matches; for
+    an owned hook that match is by basename, but if a machine's stored command text drifts
+    in a way the owned-basename set still recognizes yet a SECOND stale copy already exists
+    in the group (e.g. an interpreter-path change from bare `python3` to an absolute
+    shim-safe path left two copies before this hook was owned), the replace touches only
+    the first and a duplicate persists. This pass is the idempotent cleanup that self-heals
+    such duplicates on the next install. Non-owned (user) hooks and DISTINCT owned hooks
+    are never touched. Groups emptied are dropped. Returns (cleaned, count_removed)."""
+    cleaned = json.loads(json.dumps(existing))
+    removed = 0
+    if "hooks" not in cleaned:
+        return cleaned, 0
+    for event, groups in list(cleaned["hooks"].items()):
+        new_groups = []
+        for g in groups:
+            hooks = g.get("hooks", [])
+            # Last index per owned-basename set within THIS group. Only owned hooks
+            # (non-empty key) are eligible; a user hook (empty key) is always kept.
+            last_idx: dict = {}
+            for i, h in enumerate(hooks):
+                key = frozenset(_owned_basenames(h.get("command", "")))
+                if key:
+                    last_idx[key] = i
+            kept = []
+            for i, h in enumerate(hooks):
+                key = frozenset(_owned_basenames(h.get("command", "")))
+                if key and last_idx.get(key) != i:
+                    removed += 1
+                    continue  # an earlier duplicate of an owned hook kept later in-group
+                kept.append(h)
+            if kept:
+                ng = dict(g)
+                ng["hooks"] = kept
+                new_groups.append(ng)
+        if new_groups:
+            cleaned["hooks"][event] = new_groups
+        else:
+            del cleaned["hooks"][event]
+    return cleaned, removed
+
+
 def backup_settings(settings_path: Path) -> Path | None:
     if not settings_path.is_file():
         return None
@@ -996,6 +1050,10 @@ def main() -> int:
     # copy but never removed the stale old-event one). Without this a moved hook
     # fires on BOTH events on every existing install (MYC-2359).
     merged, moved_count = relocate_moved_hooks(merged, template)
+    # Collapse duplicate owned-hook copies that an interpreter-path drift left behind
+    # (a byte-changed command the owned-basename dedup recognizes only AFTER the hook is
+    # owned, so merge replaced the first copy but a second stale one persisted).
+    merged, deduped_count = dedupe_owned_hooks(merged)
 
     if not args.quiet:
         print(f"Merging into: {settings_path}")
@@ -1005,6 +1063,7 @@ def main() -> int:
         print(f"Updated:      {len(summary['updated'])} hook(s)")
         print(f"Retired:      {retired_count} stale hook(s) removed")
         print(f"Relocated:    {moved_count} moved-event stale copy(ies) removed")
+        print(f"Deduped:      {deduped_count} duplicate owned hook(s) removed")
         print(f"Preserved:    {len(set(summary['kept']))} non-ABS hook(s) untouched")
         if win_skipped:
             print(f"Skipped:      {len(win_skipped)} POSIX-only (bash) hook(s) not "
@@ -1023,10 +1082,12 @@ def main() -> int:
                 print(f"  - retire {retired_count} stale hook(s)")
             if moved_count:
                 print(f"  - relocate {moved_count} moved-event stale copy(ies)")
+            if deduped_count:
+                print(f"  - dedupe {deduped_count} duplicate owned hook(s)")
         return 0
 
     if not summary["added"] and not summary["updated"] and not retired_count \
-            and not moved_count:
+            and not moved_count and not deduped_count:
         if not args.quiet:
             print("\nAlready in sync. Nothing to write.")
         return 0
