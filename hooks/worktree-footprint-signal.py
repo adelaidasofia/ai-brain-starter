@@ -73,6 +73,10 @@ DEFAULT_FREE_GB = 5.0
 # act rather than after the machine is unusable.
 DEFAULT_FILE_WARN = 80_000
 DEFAULT_BLOAT_TTL_H = 24.0
+# Wall-clock ceiling for one measurement pass. A SessionStart hook that can run
+# long gets killed, and a killed hook reports nothing — indistinguishable from a
+# healthy machine.
+DEFAULT_BLOAT_DEADLINE_S = 3.0
 # Vault-relative dirs that regrow. Each is REGENERABLE (a cache or a scratch
 # checkout), which is why the remedy can be "delete it" rather than "triage it".
 DEFAULT_BLOAT_DIRS = (
@@ -340,6 +344,53 @@ def _bloat_dirs() -> list:
     return dirs
 
 
+def _deadline_seconds() -> float:
+    """Wall-clock ceiling for the whole measurement pass."""
+    try:
+        return max(0.2, float(os.environ.get("WORKTREE_FOOTPRINT_DEADLINE_S",
+                                             DEFAULT_BLOAT_DEADLINE_S)))
+    except ValueError:
+        return DEFAULT_BLOAT_DEADLINE_S
+
+
+def _walk_lock():
+    """Non-blocking single-instance lock, or None when another session holds it
+    (or locking is unavailable, as on Windows — there the TTL alone throttles).
+    Returns the open handle; the caller must _release_lock it."""
+    try:
+        import fcntl
+    except ImportError:
+        return _NO_FCNTL
+    path = _bloat_cache_path().with_name(_bloat_cache_path().name + ".lock")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(path, "w")
+    except OSError:
+        return _NO_FCNTL
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None  # someone else is walking → report from the last reading
+    return fh
+
+
+class _NoFcntl:
+    """Sentinel: proceed without a lock (no fcntl on this platform)."""
+
+
+_NO_FCNTL = _NoFcntl()
+
+
+def _release_lock(handle) -> None:
+    if handle is _NO_FCNTL or handle is None:
+        return
+    try:
+        handle.close()  # closing drops the flock
+    except OSError:
+        pass
+
+
 def _bloat_cache_path() -> Path:
     override = os.environ.get("WORKTREE_FOOTPRINT_CACHE")
     if override:
@@ -347,13 +398,18 @@ def _bloat_cache_path() -> Path:
     return Path.home() / ".claude" / "footprint-bloat-cache.json"
 
 
-def _count_files(root: Path, budget: int) -> tuple:
-    """(files_counted, hit_budget) under `root`, never following symlinks.
+def _count_files(root: Path, budget: int, deadline: float) -> tuple:
+    """(files_counted, stopped_early) under `root`, never following symlinks.
 
-    Stops as soon as `budget` is reached: the only question this answers is
-    "past the threshold?", so a melted tree costs a bounded walk, not a full
-    one. Symlinks are not followed — an Obsidian vault commonly holds links
-    back out of itself, and following them turns a bounded walk into a cycle.
+    THREE independent stops, because a SessionStart walk that can run long is a
+    hook-timeout waiting to happen, and a timed-out hook reports nothing — which
+    reads exactly like a healthy machine (docs/HOOK_FLEET_RESOURCE_GOVERNANCE.md):
+      * `budget`   — the only question here is "past the threshold?", so a melted
+                     tree costs a bounded walk, never a full one;
+      * `deadline` — wall-clock, checked per directory, so a slow or network
+                     volume cannot stall the session even under the file budget;
+      * symlinks are not followed — a vault commonly links back out of itself,
+                     and following turns a bounded walk into a cyclic one.
     """
     seen = 0
     try:
@@ -361,18 +417,20 @@ def _count_files(root: Path, budget: int) -> tuple:
             seen += len(filenames)
             if seen >= budget:
                 return budget, True
-            # Directories count toward the inode pressure that melts the sync
-            # daemon, so they are not free — but files dominate; counting dirs
-            # too would double-count nothing useful. Keep walking.
+            if time.monotonic() >= deadline:
+                return seen, True
             del dirnames  # walked in place; no pruning (every subtree counts)
     except OSError:
         pass
     return seen, False
 
 
-def _measure_bloat(vault: Path, budget: int) -> dict:
-    """One full measurement pass. Bounded by `budget` across ALL dirs combined,
-    not per-dir, so the total cost of a session never exceeds one budget."""
+def _measure_bloat(vault: Path, budget: int, deadline: float = None) -> dict:
+    """One measurement pass, bounded by `budget` across ALL dirs combined (not
+    per-dir) and by a shared wall-clock deadline, so one session's total cost
+    never exceeds one budget and one deadline."""
+    if deadline is None:
+        deadline = time.monotonic() + _deadline_seconds()
     per_dir = {}
     total = 0
     truncated = False
@@ -384,10 +442,10 @@ def _measure_bloat(vault: Path, budget: int) -> dict:
         except OSError:
             continue
         remaining = max(0, budget - total)
-        if remaining == 0:
+        if remaining == 0 or time.monotonic() >= deadline:
             truncated = True
             break
-        n, hit = _count_files(d, remaining)
+        n, hit = _count_files(d, remaining, deadline)
         per_dir[rel] = n
         total += n
         if hit:
@@ -405,7 +463,20 @@ def _load_cache() -> dict:
     return doc if isinstance(doc, dict) else {}
 
 
+MAX_CACHE_ENTRIES = 32
+
+
 def _store_cache(doc: dict) -> None:
+    """Persist, keeping only the most recent MAX_CACHE_ENTRIES vaults. Every
+    distinct vault path ever seen would otherwise accumulate forever — a
+    footprint tool that slowly grows its own footprint."""
+    if len(doc) > MAX_CACHE_ENTRIES:
+        def _ts(kv):
+            try:
+                return float(kv[1].get("ts", 0))
+            except (AttributeError, TypeError, ValueError):
+                return 0.0
+        doc = dict(sorted(doc.items(), key=_ts, reverse=True)[:MAX_CACHE_ENTRIES])
     path = _bloat_cache_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -450,11 +521,44 @@ def bloat_reading(vault: Path) -> dict:
             fresh = False
 
     if not fresh:
-        # Budget the walk at 2x the threshold: enough headroom to report a
-        # meaningfully-over number, still bounded on a melted tree.
-        entry = _measure_bloat(vault, warn_at * 2)
-        cache[key] = entry
-        _store_cache(cache)
+        # SINGLE INSTANCE. Several sessions commonly start at once (a relaunch,
+        # a fleet of worktrees); without this they would all walk the same tree
+        # simultaneously — N times the cost, at the worst possible moment on the
+        # exact machine this signal exists to protect. A session that loses the
+        # race reports from the previous reading instead of waiting.
+        lock = _walk_lock()
+        if lock is None:
+            entry = dict(entry or {"total": 0, "per_dir": {}, "truncated": False})
+        else:
+            try:
+                # STAMP THE COOLDOWN FIRST, carrying the previous counts forward.
+                # If the walk is killed (hook timeout, session torn down), the
+                # cooldown still holds — otherwise every session would re-walk
+                # forever, which is the pathological case — and the last GOOD
+                # reading survives rather than being replaced by a partial zero.
+                # stamp-at-start: the cache entry below IS the cooldown marker,
+                # written before _measure_bloat runs. The boundedness auditor
+                # scans linearly for a stamp above the os.walk LINE, and the walk
+                # lives in _count_files (defined earlier in this file), so it
+                # cannot see the real ordering. The annotation is not a
+                # suppression — hooks/test_footprint_aggregate_bloat.py asserts
+                # the stamp actually lands before the walk, and fails if the two
+                # are ever reordered.
+                prev = dict(entry or {})
+                cache[key] = {"ts": now,
+                              "total": int(prev.get("total", 0) or 0),
+                              "per_dir": prev.get("per_dir") or {},
+                              "truncated": bool(prev.get("truncated", False)),
+                              "pending": True}
+                _store_cache(cache)
+                # Budget the walk at 2x the threshold: enough headroom to report
+                # a meaningfully-over number, still bounded on a melted tree.
+                entry = _measure_bloat(vault, warn_at * 2)
+                cache = _load_cache()          # re-read: another session may have
+                cache[key] = entry             # stored a different vault meanwhile
+                _store_cache(cache)
+            finally:
+                _release_lock(lock)
 
     entry = dict(entry or {})
     entry["warn_at"] = warn_at

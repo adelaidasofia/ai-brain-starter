@@ -22,6 +22,7 @@ Run: python3 hooks/test_footprint_aggregate_bloat.py
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -124,6 +125,58 @@ def main() -> int:
         # invisible-until-catastrophic failure this ticket closes.
         check(mod.bloat_signal(capd) != "",
               "cached over-threshold reading went silent between walks")
+
+        # --- the cooldown is stamped BEFORE the walk -------------------------
+        # A cooldown stamped AFTER a slow walk is the documented failure the
+        # boundedness governance exists for: every session that starts mid-walk
+        # sees no marker, walks too, and the machine gets N concurrent walks at
+        # exactly its worst moment. The hook carries a `stamp-at-start`
+        # annotation because the auditor's linear scan cannot see across
+        # functions — this asserts the annotation is TRUE.
+        order = tmp / "order"
+        (order / ".git").mkdir(parents=True)
+        _make_files(order / ".smart-env", 60)
+        _env(tmp, WORKTREE_FOOTPRINT_FILE_WARN=50)
+        os.unlink(tmp / "cache.json")
+        stamped_before = []
+        real_measure = mod._measure_bloat
+
+        def _spy(*a, **k):
+            # At walk time the cooldown must ALREADY be on disk.
+            try:
+                doc = json.loads((tmp / "cache.json").read_text())
+            except (OSError, ValueError):
+                doc = {}
+            stamped_before.append(bool(doc))
+            return real_measure(*a, **k)
+
+        mod._measure_bloat = _spy
+        mod.bloat_reading(order)
+        mod._measure_bloat = real_measure
+        check(stamped_before == [True],
+              "the cooldown was NOT on disk when the walk began — a session "
+              "starting mid-walk would walk too (stamped-after-walk failure)")
+
+        # ...and a killed walk must not destroy the last good reading.
+        killed = tmp / "killed"
+        (killed / ".git").mkdir(parents=True)
+        _make_files(killed / ".smart-env", 60)
+        os.unlink(tmp / "cache.json")
+        good = mod.bloat_reading(killed)["total"]
+        _env(tmp, WORKTREE_FOOTPRINT_FILE_WARN=50, WORKTREE_FOOTPRINT_BLOAT_TTL_H=0)
+        mod._measure_bloat = lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt())
+        try:
+            mod.bloat_reading(killed)
+        except KeyboardInterrupt:
+            pass
+        mod._measure_bloat = real_measure
+        carried = json.loads((tmp / "cache.json").read_text())
+        entry = next(iter(carried.values()))
+        check(entry.get("total") == good,
+              f"a killed walk replaced the last good reading with "
+              f"{entry.get('total')} (was {good}) — the machine would look "
+              f"healthy right after the walk that failed to measure it")
+        _env(tmp, WORKTREE_FOOTPRINT_FILE_WARN=50)
 
         # --- symlinks are not followed ---------------------------------------
         linked = tmp / "linked"
