@@ -18,7 +18,7 @@ name: security-audit
 # `npm-audit` job plus a three-way `pip-audit` matrix: four jobs, each doing
 # 16-28 seconds of work (their own checkout, their own interpreter setup, their
 # own `pip install pip-audit`) and each paying a full billed minute. Measured
-# over 40 real runs with scripts/actions-spend-report.py, that was 20 billed
+# over 40 real runs with `scripts/ci-cost-audit.py --repo`, that was 20 billed
 # minutes of which 13 were pure rounding - the second-worst offender in the repo
 # after lint.yml. One runner, one checkout, one toolchain install now covers all
 # four audits.

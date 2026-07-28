@@ -39,7 +39,7 @@ name: windows-install
 # This is the repo's most expensive check per run: windows-latest bills at a 2x
 # multiplier, so its ~1m45s of work costs 4 billed minutes, and it was 14% of
 # the repo's entire Actions bill over the 40 runs measured with
-# scripts/actions-spend-report.py. That is deliberate, not an oversight:
+# `scripts/ci-cost-audit.py --repo`. That is deliberate, not an oversight:
 #
 #   * It is not the rounding class the rest of that audit targets. Only 2 of its
 #     20 measured minutes were per-job floor waste - the other 18 are real
