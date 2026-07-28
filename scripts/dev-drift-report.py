@@ -65,6 +65,8 @@ try:
         discover_primary_repos,
         fetch_repos_capped,
         format_claim_section,
+        format_narrow_refspec_section,
+        narrow_refspec_repos,
     )
 except Exception as _exc:  # a lib older than this script -> fail LOUD, never silent
     print(f"dev-drift-report: _lib/dev_repo_scan.py is missing or older than this "
@@ -165,6 +167,12 @@ def _render() -> None:
 
     genuine, n_topic = collect_drift(repos)
 
+    # Repos that CANNOT verify their own backup state (single-branch clones).
+    # Reported as its own advisory instead of being counted as risk: "unknown"
+    # and "at risk" are different messages, and merging them is how a banner
+    # earns being ignored.
+    narrow_section = format_narrow_refspec_section(narrow_refspec_repos(repos))
+
     # MYC-3290: claim-bearing branches are promoted OUT of the suppressed count
     # and headlined individually. Computed before the early exits below, because
     # a fleet with zero lost-work risk can still be sitting on finished work no
@@ -188,7 +196,7 @@ def _render() -> None:
     n_topic = max(0, n_topic - n_unpushed_claims)
 
     if not genuine and not n_topic and not claim_section:
-        _emit()
+        _emit(narrow_section or None)
 
     delta = _delta_24h(len(genuine))
 
@@ -219,7 +227,8 @@ def _render() -> None:
             f"No high-risk un-backed-up drift (no repo missing a remote, no unpushed "
             f"work on a main branch).{topic_note}{stale_note}"
         )
-        _emit(f"{claim_section}\n\n{base}" if claim_section else base)
+        parts = [x for x in (claim_section, base, narrow_section) if x]
+        _emit("\n\n".join(parts))
 
     n_no_remote = sum(1 for *_h, cls in genuine if cls == BranchClass.NO_REMOTE)
     lines = [
@@ -262,7 +271,8 @@ def _render() -> None:
         "close-loop: MYC-683 + MYC-1894 (`dev-repo-reaper.py` + weekly cron).",
     ]
     body = "\n".join(lines)
-    _emit(f"{claim_section}\n\n{body}" if claim_section else body)
+    parts = [x for x in (claim_section, body, narrow_section) if x]
+    _emit("\n\n".join(parts))
 
 
 def build_section() -> str:

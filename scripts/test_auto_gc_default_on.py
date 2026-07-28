@@ -70,15 +70,41 @@ def main() -> int:
     # --- the reaper legs must APPLY, not dry-run ----------------------------
     # A GC pass that only ever plans is a GC pass that reclaims nothing, and it
     # looks healthy in the log either way.
-    for label in ("dev-repo-reaper", "dev-worktree-prune", "dev-hub-refresh"):
-        # The invocation names the run LABEL; the script path is a variable, so
-        # match the `run "<label>"` line rather than the filename.
+    # Non-destructive legs apply unconditionally: a fast-forward destroys
+    # nothing, so there is no reason to stage it.
+    line = next((ln for ln in maint.splitlines() if 'run "dev-hub-refresh"' in ln), "")
+    check("--apply" in line,
+          "dev-hub-refresh is invoked without --apply — it would plan forever "
+          "and refresh nothing, and a fast-forward has nothing to stage")
+
+    # The two DESTRUCTIVE legs are staged: report on run 1, apply from run 2.
+    # Deleting someone's git branches on day one, before they have seen what
+    # this pass does, is a trust event even when every deletion is provably
+    # safe and reversible.
+    for label in ("dev-repo-reaper", "dev-worktree-prune"):
         line = next((ln for ln in maint.splitlines()
                      if f'run "{label}"' in ln), "")
         check(line, f"no `run \"{label}\"` invocation in the daily pass")
-        check("--apply" in line,
-              f"{label} is invoked without --apply — it would plan forever and "
-              f"reclaim nothing")
+        check("$DESTRUCTIVE_MODE" in line,
+              f"{label} is hardwired instead of using $DESTRUCTIVE_MODE — it "
+              f"would delete on a client's very first run")
+        check("--apply" not in line,
+              f"{label} still carries a literal --apply")
+
+    # ...and the staging must ESCALATE, not stall forever: a marker banked after
+    # the first pass is what turns run 2 into an applying run. Without it the
+    # reclaim never happens and the machine still only gets fuller.
+    check("DESTRUCTIVE_MODE=\"--apply\"" in maint,
+          "no path sets DESTRUCTIVE_MODE to --apply — reclaim would never apply")
+    check("GC_SEEN_MARKER" in maint and "ABS_GC_APPLY_NOW" in maint,
+          "no first-report marker / no immediate-apply override")
+    marker_write = next((i for i, ln in enumerate(maint.splitlines())
+                         if "GC_SEEN_MARKER" in ln and "date -u" in ln), -1)
+    first_leg = next((i for i, ln in enumerate(maint.splitlines())
+                      if 'run "dev-repo-reaper"' in ln), -1)
+    check(marker_write > first_leg > 0,
+          "the first-report marker is banked BEFORE the legs run — a crashed "
+          "first pass would then escalate to delete on a run nobody saw")
 
     # --- OPT-OUT ONLY: no opt-in may gate the value -------------------------
     check("ABS_NO_AUTO_GC" in maint and "ABS_NO_AUTO_GC" in sched,
