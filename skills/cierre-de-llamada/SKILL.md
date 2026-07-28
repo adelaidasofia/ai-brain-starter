@@ -27,7 +27,17 @@ Always forbidden: sending email (`gmail_send`, `outlook_send`, any equivalent), 
 
 This is not a technical limit that a missing piece of data would resolve. It is the design: the user presses the button their client sees, always, because it is their relationship and their reputation.
 
-What you may do, when a connector exists: leave a **draft** where they review it. See step 4.5.
+### Who can see it decides what you may do
+
+Every connector action falls in exactly one tier. Decide the tier first, then act.
+
+| Tier | Who sees the result | What you may do |
+|---|---|---|
+| **Client-visible** | the customer | **Never.** Sending mail, messaging them, inviting them to an event, anything landing in their inbox. Not unlockable. |
+| **Teammate-visible** | a colleague | Draft it, show it, get an explicit yes, then send through the connector's own confirm gate. Never auto-send. |
+| **User-only** | nobody but the user | Offer it, wait for yes, do it. Their own calendar, their own drafts folder, their own notes and CRM records. |
+
+When you cannot tell which tier an action is in, treat it as the tier above. A calendar invite with the client on it is client-visible, not user-only, no matter that the user asked for a "reminder".
 
 ## Step 1. Get the call
 
@@ -113,7 +123,7 @@ Hard rails:
 - **No connector, no mention.** Say nothing about it. Do not ask the user to install anything mid-task.
 - **Recipient only if it is in the transcript.** No client address in the call → the draft goes without a recipient and you say so. Never guess an address.
 
-Same standard for any other connector (CRM, tasks): **offer, never assume; write drafts, never client-visible actions.**
+Any connector not covered by a step below: place it in the tier table above and follow that row.
 
 ## Step 4.6. If a calendar connector exists, offer to book the reminder
 
@@ -137,6 +147,27 @@ The event:
 So the reminder is not a nudge that says "call Ana". It opens with everything needed to actually make the call, including the message ready to send.
 
 Ask first. No calendar connector, no mention.
+
+## Step 4.7. If a CRM or notes connector exists, offer to file the summary
+
+Block 1 is written to paste into a CRM. If a connector can write records or pages (Notion, Airtable, HubSpot, a database MCP, whatever this user has), offer to file it instead of making them paste:
+
+> I can file the summary on the client's record in Notion. Want me to?
+
+- **User-only tier.** Their own workspace, so: offer, wait for yes, write.
+- **Append a note, never edit the deal.** Write the summary as a new note, comment, or child page. Do not change deal stage, amount, close date, owner or probability. Those are pipeline numbers a manager reports on, and a wrong one is worse than a missing one.
+- **No matching record → say so, do not create one.** Ask whether to create it. A duplicate client record is a mess someone cleans up for weeks.
+- **`[MISSING]` markers travel.** Do not quietly drop them on the way into the CRM. A blank field is honest; an invented one is not.
+
+## Step 4.8. If the sales lead should hear about it, draft the note
+
+Block 6 is written for a manager. If a messaging connector exists (Slack, Teams, mail), offer to deliver it:
+
+> Want me to send the summary to your sales lead on Slack? I'll show you the message first.
+
+- **Teammate-visible tier.** Draft it, **show the full text**, wait for an explicit yes, then send through the connector's own confirm gate. Never auto-send, and never treat "yes send the email to the client" as covering this, or the reverse.
+- **Recipient must be known.** No named lead in the transcript and none configured → ask who. Never guess a channel or a person.
+- **Their words, not a performance.** The note reports what happened, including what did not work. Do not soften block 7 on the way to a manager. That block exists precisely so the team learns.
 
 ## Step 5. Close with the next step
 
