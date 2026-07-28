@@ -49,6 +49,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -827,6 +828,68 @@ def link_agent_memory_into_vault(vault_path: str, quiet: bool) -> None:
             print(result.stderr, file=sys.stderr)
 
 
+def install_auto_gc(vault_path: str, quiet: bool) -> None:
+    """Schedule the daily maintenance + auto-GC pass (MYC-2363).
+
+    Every reclaim tool the substrate ships — worktree prune, graph-cache prune,
+    the dev-repo reaper, the sibling-worktree pruner, hub freshness — was OPT-IN,
+    so on a default install none of them ever ran and the machine only ever got
+    fuller. An install is supposed to leave the machine BETTER over time, so
+    scheduling is part of installing, not a documented extra step. Registered
+    here rather than in bootstrap because THIS is the path the fresh-install
+    smoke proves; a step only bootstrap runs is a step re-installs skip.
+
+    Idempotent, gated (load + battery + user-idle) at RUN time, and never fatal:
+    a machine with no scheduler still gets every hook. ABS_NO_AUTO_GC=1 opts out.
+    """
+    import subprocess
+
+    if os.name == "nt":
+        return  # no launchd/cron; the Windows scheduler path is not shipped yet
+
+    # NEVER schedule for a vault that lives under the system temp dir. Every
+    # integration test that exercises this installer builds its vault there, and
+    # scheduling is a HOST-level side effect: a test run would write a real
+    # launchd agent or crontab entry on the developer's machine (and on every CI
+    # runner) pointing at a fixture that is deleted seconds later. A real brain
+    # never lives in $TMPDIR, so this costs nothing and makes the test suite
+    # incapable of mutating the host's scheduler.
+    try:
+        vault_resolved = Path(vault_path).expanduser().resolve()
+        tmp_root = Path(tempfile.gettempdir()).resolve()
+        if vault_resolved == tmp_root or tmp_root in vault_resolved.parents:
+            if not quiet:
+                print(f"NOTE: vault is under {tmp_root} — skipping auto-GC scheduling "
+                      f"(fixture/test vault, not a real brain).")
+            return
+    except (OSError, ValueError):
+        pass  # unresolvable path -> fall through; the scheduler validates it too
+
+    installer = Path(__file__).resolve().parent / "install-vault-daily-maintenance.sh"
+    if not installer.is_file():
+        if not quiet:
+            print(f"NOTE: {installer.name} missing — daily auto-GC not scheduled.")
+        return
+    cmd = ["/bin/bash", str(installer), vault_path]
+    if quiet:
+        cmd.append("--quiet")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except Exception as e:  # noqa: BLE001 — scheduling must never brick the install
+        print(f"WARNING: could not schedule daily auto-GC: {e}", file=sys.stderr)
+        return
+    if result.stdout and not quiet:
+        print(result.stdout, end="")
+    if result.returncode != 0:
+        # Surfaced, not swallowed: silently unscheduled looks identical to
+        # scheduled-and-working until the disk fills months later.
+        print("WARNING: daily auto-GC was NOT scheduled — nothing will reclaim "
+              "worktrees, caches, or merged branches on this machine. Re-run:\n"
+              f"  bash {installer} '{vault_path}'", file=sys.stderr)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
+
+
 def _hookify_templates_dir(hooks_template_path: Path) -> Path:
     """The shipped hookify-rule templates live beside hooks.json at the repo root."""
     return hooks_template_path.resolve().parent / "templates" / "hookify-rules"
@@ -964,6 +1027,11 @@ def main() -> int:
     # ~/.claude/projects/<key>/memory/, invisible in Obsidian.
     if args.vault_path and not args.dry_run and not args.uninstall:
         link_agent_memory_into_vault(args.vault_path, args.quiet)
+        # === schedule the daily maintenance + auto-GC pass (MYC-2363) ===
+        # Same shape and same reason as the memory link above: idempotent,
+        # independent of the hook merge, and the difference between an install
+        # that leaves the machine better over time and one that only fills it.
+        install_auto_gc(args.vault_path, args.quiet)
 
     # === locate hooks template ===
     if args.hooks_source:

@@ -10,6 +10,14 @@ no per-worktree filesystem walk.
 Surfaces (only when something warrants attention — silent when healthy):
   * worktree count over the soft threshold (WORKTREE_WARN, default 8)
   * on-disk worktree dirs git no longer tracks (orphans)
+  * AGGREGATE file count across the known bloat-prone dirs (MYC-577). The
+    2026-06-06 ~234K-file melt was MULTI-SOURCE (~108K worktrees + ~32K
+    .smart-env + ~17K snapshots + ~14K Sessions), but worktree COUNT alone
+    sees only one source, so non-worktree regrowth — .smart-env re-indexing
+    above all — stayed invisible until the machine fell over. The melt
+    threshold (~200K+ files) is the real constraint, so the aggregate is what
+    must be observable. Frequency-capped to ~daily (cached count + mtime) so
+    SessionStart never pays a full-tree walk on a fragile machine.
   * low free disk on the vault's volume
   * THE DANGEROUS COMBO: an AI-brain vault inside a consumer cloud-sync folder
     (iCloud / OneDrive / Dropbox / Google Drive / Box) — worktree/.git churn
@@ -22,6 +30,10 @@ Surfaces (only when something warrants attention — silent when healthy):
     relocated. (MYC-2360 + offer-simplification follow-up)
 
 Bypass: WORKTREE_FOOTPRINT_BYPASS=1.
+Aggregate-bloat tunables: WORKTREE_FOOTPRINT_FILE_WARN (default 80000),
+WORKTREE_FOOTPRINT_BLOAT_DIRS (extra vault-relative dirs, comma-separated),
+WORKTREE_FOOTPRINT_BLOAT_TTL_H (recount interval, default 24),
+WORKTREE_FOOTPRINT_CACHE (cache file path; tests point this at a temp dir).
 
 WIRING (SessionStart):
   "SessionStart": [
@@ -37,11 +49,13 @@ import json
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 HOOK_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOK_DIR))
 
+from _lib.safe_read import safe_read_text  # noqa: E402
 from _lib.worktree_safety import (  # noqa: E402
     WORKTREES_SEG,
     detect_cloud_sync,
@@ -53,9 +67,38 @@ from _lib.worktree_safety import (  # noqa: E402
 
 DEFAULT_WARN = 8
 DEFAULT_FREE_GB = 5.0
+
+# ── aggregate bloat-dir footprint (MYC-577) ──────────────────────────────────
+# Default warn at 80K files across the bloat-prone dirs — a deliberate fraction
+# of the ~200K+ melt threshold, so the signal lands while there is still room to
+# act rather than after the machine is unusable.
+DEFAULT_FILE_WARN = 80_000
+DEFAULT_BLOAT_TTL_H = 24.0
+# Wall-clock ceiling for one measurement pass. A SessionStart hook that can run
+# long gets killed, and a killed hook reports nothing — indistinguishable from a
+# healthy machine.
+DEFAULT_BLOAT_DEADLINE_S = 3.0
+# Vault-relative dirs that regrow. Each is REGENERABLE (a cache or a scratch
+# checkout), which is why the remedy can be "delete it" rather than "triage it".
+DEFAULT_BLOAT_DIRS = (
+    ".claude/worktrees",
+    ".smart-env",
+    ".codegraph",
+    "graphify-out",
+)
 # Scripts dir of the installed skill — where the auto-capable relocate helpers
 # live. The offer prints ready-to-run commands against this canonical path.
 SKILL_SCRIPTS = "~/.claude/skills/ai-brain-starter/scripts"
+
+
+
+def _read_text_bounded(path: Path) -> str | None:
+    """Shared regular-file boundary: skips placeholders/special files, bounded
+    in size and wall-clock. Required because this module now walks recursively,
+    and the dirs it walks (.smart-env especially) commonly live inside a synced
+    vault where a plain read materializes placeholders and can stall."""
+    result = safe_read_text(path, timeout=2.0, max_bytes=1_000_000)
+    return result.text if result.ok else None
 
 
 def _emit(ctx: str | None) -> int:
@@ -171,9 +214,12 @@ def _machinery_relocated(vault: Path) -> bool:
         except OSError:
             continue
         for man in manifests:
+            raw = _read_text_bounded(man)
+            if raw is None:
+                continue
             try:
-                doc = json.loads(man.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
+                doc = json.loads(raw)
+            except ValueError:
                 continue
             mv = doc.get("vault") if isinstance(doc, dict) else None
             if not isinstance(mv, str):
@@ -293,6 +339,319 @@ def cloud_sync_offer(main_repo: Path | None) -> list[str]:
     return lines
 
 
+# ── aggregate bloat-dir footprint (MYC-577) ──────────────────────────────────
+# worktree COUNT is one source of a multi-source failure. This measures the
+# thing that actually melts the machine: total FILES across every regenerable
+# bloat dir, whatever regrew them.
+
+
+def _bloat_dirs() -> list:
+    """Vault-relative bloat dirs: the shipped defaults plus any the operator
+    adds via WORKTREE_FOOTPRINT_BLOAT_DIRS (comma-separated). De-duped, order
+    preserved so the defaults report first."""
+    dirs = list(DEFAULT_BLOAT_DIRS)
+    extra = os.environ.get("WORKTREE_FOOTPRINT_BLOAT_DIRS", "")
+    for raw in extra.split(","):
+        rel = raw.strip().strip("/")
+        if rel and rel not in dirs:
+            dirs.append(rel)
+    return dirs
+
+
+def _deadline_seconds() -> float:
+    """Wall-clock ceiling for the whole measurement pass."""
+    try:
+        return max(0.2, float(os.environ.get("WORKTREE_FOOTPRINT_DEADLINE_S",
+                                             DEFAULT_BLOAT_DEADLINE_S)))
+    except ValueError:
+        return DEFAULT_BLOAT_DEADLINE_S
+
+
+def _walk_lock():
+    """Non-blocking single-instance lock, or None when another session holds it
+    (or locking is unavailable, as on Windows — there the TTL alone throttles).
+    Returns the open handle; the caller must _release_lock it."""
+    try:
+        import fcntl
+    except ImportError:
+        return _NO_FCNTL
+    path = _bloat_cache_path().with_name(_bloat_cache_path().name + ".lock")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(path, "w")
+    except OSError:
+        return _NO_FCNTL
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None  # someone else is walking → report from the last reading
+    return fh
+
+
+class _NoFcntl:
+    """Sentinel: proceed without a lock (no fcntl on this platform)."""
+
+
+_NO_FCNTL = _NoFcntl()
+
+
+def _release_lock(handle) -> None:
+    if handle is _NO_FCNTL or handle is None:
+        return
+    try:
+        handle.close()  # closing drops the flock
+    except OSError:
+        pass
+
+
+def _bloat_cache_path() -> Path:
+    override = os.environ.get("WORKTREE_FOOTPRINT_CACHE")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".claude" / "footprint-bloat-cache.json"
+
+
+def _count_files(root: Path, budget: int, deadline: float) -> tuple:
+    """(files_counted, stopped_early) under `root`, never following symlinks.
+
+    THREE independent stops, because a SessionStart walk that can run long is a
+    hook-timeout waiting to happen, and a timed-out hook reports nothing — which
+    reads exactly like a healthy machine (docs/HOOK_FLEET_RESOURCE_GOVERNANCE.md):
+      * `budget`   — the only question here is "past the threshold?", so a melted
+                     tree costs a bounded walk, never a full one;
+      * `deadline` — wall-clock, checked per directory, so a slow or network
+                     volume cannot stall the session even under the file budget;
+      * symlinks are not followed — a vault commonly links back out of itself,
+                     and following turns a bounded walk into a cyclic one.
+    """
+    seen = 0
+    try:
+        for _dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            seen += len(filenames)
+            if seen >= budget:
+                return budget, True
+            if time.monotonic() >= deadline:
+                return seen, True
+            del dirnames  # walked in place; no pruning (every subtree counts)
+    except OSError:
+        pass
+    return seen, False
+
+
+def _measure_bloat(vault: Path, budget: int, deadline: float = None) -> dict:
+    """One measurement pass, bounded by `budget` across ALL dirs combined (not
+    per-dir) and by a shared wall-clock deadline, so one session's total cost
+    never exceeds one budget and one deadline."""
+    if deadline is None:
+        deadline = time.monotonic() + _deadline_seconds()
+    per_dir = {}
+    total = 0
+    truncated = False
+    for rel in _bloat_dirs():
+        d = vault / rel
+        try:
+            if not d.is_dir():
+                continue
+        except OSError:
+            continue
+        remaining = max(0, budget - total)
+        if remaining == 0 or time.monotonic() >= deadline:
+            truncated = True
+            break
+        n, hit = _count_files(d, remaining, deadline)
+        per_dir[rel] = n
+        total += n
+        if hit:
+            truncated = True
+            break
+    return {"ts": time.time(), "total": total, "per_dir": per_dir,
+            "truncated": truncated}
+
+
+def _load_cache() -> dict:
+    raw = _read_text_bounded(_bloat_cache_path())
+    if raw is None:
+        return {}
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+MAX_CACHE_ENTRIES = 32
+
+
+def _store_cache(doc: dict) -> None:
+    """Persist, keeping only the most recent MAX_CACHE_ENTRIES vaults. Every
+    distinct vault path ever seen would otherwise accumulate forever — a
+    footprint tool that slowly grows its own footprint."""
+    if len(doc) > MAX_CACHE_ENTRIES:
+        def _ts(kv):
+            try:
+                return float(kv[1].get("ts", 0))
+            except (AttributeError, TypeError, ValueError):
+                return 0.0
+        doc = dict(sorted(doc.items(), key=_ts, reverse=True)[:MAX_CACHE_ENTRIES])
+    path = _bloat_cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(doc), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        pass  # observability is best-effort; never break SessionStart over it
+
+
+def bloat_reading(vault: Path) -> dict:
+    """Cached-or-fresh aggregate reading for `vault`.
+
+    Frequency cap: recompute only when the cached entry is older than the TTL.
+    Between recomputes the CACHED count still drives the warning, so a machine
+    that crossed the threshold keeps being told every session — the cap bounds
+    the WALK, not the signal.
+    """
+    try:
+        warn_at = int(os.environ.get("WORKTREE_FOOTPRINT_FILE_WARN", DEFAULT_FILE_WARN))
+    except ValueError:
+        warn_at = DEFAULT_FILE_WARN
+    warn_at = max(1, warn_at)
+    try:
+        ttl_h = float(os.environ.get("WORKTREE_FOOTPRINT_BLOAT_TTL_H", DEFAULT_BLOAT_TTL_H))
+    except ValueError:
+        ttl_h = DEFAULT_BLOAT_TTL_H
+
+    try:
+        key = str(vault.resolve())
+    except OSError:
+        key = str(vault)
+
+    cache = _load_cache()
+    entry = cache.get(key) if isinstance(cache.get(key), dict) else None
+    now = time.time()
+    fresh = False
+    if entry is not None:
+        try:
+            fresh = (now - float(entry.get("ts", 0))) < ttl_h * 3600
+        except (TypeError, ValueError):
+            fresh = False
+
+    if not fresh:
+        # SINGLE INSTANCE. Several sessions commonly start at once (a relaunch,
+        # a fleet of worktrees); without this they would all walk the same tree
+        # simultaneously — N times the cost, at the worst possible moment on the
+        # exact machine this signal exists to protect. A session that loses the
+        # race reports from the previous reading instead of waiting.
+        lock = _walk_lock()
+        if lock is None:
+            entry = dict(entry or {"total": 0, "per_dir": {}, "truncated": False})
+        else:
+            try:
+                # STAMP THE COOLDOWN FIRST, carrying the previous counts forward.
+                # If the walk is killed (hook timeout, session torn down), the
+                # cooldown still holds — otherwise every session would re-walk
+                # forever, which is the pathological case — and the last GOOD
+                # reading survives rather than being replaced by a partial zero.
+                # stamp-at-start: the cache entry below IS the cooldown marker,
+                # written before _measure_bloat runs. The boundedness auditor
+                # scans linearly for a stamp above the os.walk LINE, and the walk
+                # lives in _count_files (defined earlier in this file), so it
+                # cannot see the real ordering. The annotation is not a
+                # suppression — hooks/test_footprint_aggregate_bloat.py asserts
+                # the stamp actually lands before the walk, and fails if the two
+                # are ever reordered.
+                prev = dict(entry or {})
+                cache[key] = {"ts": now,
+                              "total": int(prev.get("total", 0) or 0),
+                              "per_dir": prev.get("per_dir") or {},
+                              "truncated": bool(prev.get("truncated", False)),
+                              "pending": True}
+                _store_cache(cache)
+                # Budget the walk at 2x the threshold: enough headroom to report
+                # a meaningfully-over number, still bounded on a melted tree.
+                entry = _measure_bloat(vault, warn_at * 2)
+                cache = _load_cache()          # re-read: another session may have
+                cache[key] = entry             # stored a different vault meanwhile
+                _store_cache(cache)
+            finally:
+                _release_lock(lock)
+
+    entry = dict(entry or {})
+    entry["warn_at"] = warn_at
+    entry["stale_seconds"] = max(0.0, now - float(entry.get("ts", now) or now))
+    return entry
+
+
+def bloat_signal(vault: Path) -> str:
+    """The warning line, or "" when the aggregate is under threshold."""
+    r = bloat_reading(vault)
+    total = int(r.get("total", 0))
+    warn_at = int(r.get("warn_at", DEFAULT_FILE_WARN))
+    if total < warn_at:
+        return ""
+    per_dir = r.get("per_dir") or {}
+    top = sorted(
+        ((k, int(v)) for k, v in per_dir.items() if isinstance(v, int)),
+        key=lambda kv: kv[1], reverse=True,
+    )[:4]
+    breakdown = ", ".join(f"{k} {n:,}" for k, n in top if n) or "spread across bloat dirs"
+    count = f"{total:,}+" if r.get("truncated") else f"{total:,}"
+    age_h = float(r.get("stale_seconds", 0)) / 3600
+    when = "just measured" if age_h < 1 else f"measured {age_h:.0f}h ago"
+    return (
+        f"⚠️  [footprint] {count} files across the vault's regenerable bloat dirs "
+        f"(warn at {warn_at:,}; {when}). The machine-freeze class starts near ~200K "
+        f"files, and it is the AGGREGATE that gets there — worktrees alone never "
+        f"do. Biggest: {breakdown}.\n"
+        f"  Remedy — every one of these regenerates, so deleting is safe:\n"
+        f"    bash scripts/worktree-prune.sh            # scratch checkouts\n"
+        f"    rm -rf '{vault}/.smart-env'               # Obsidian Smart Connections index\n"
+        f"    python3 scripts/graphify_prune_stale_cache.py   # stale graph cache\n"
+        f"  Recount is frequency-capped to ~{DEFAULT_BLOAT_TTL_H:.0f}h, so this line "
+        f"repeats until the next pass sees it drop."
+    )
+
+
+DEFAULT_SIBLING_WARN = 20
+
+
+def sibling_worktree_signal() -> str:
+    """Orphaned <dev-root>/<repo>-<slug> session worktrees (MYC-587).
+
+    `claude-dev-worktree cleanup` removes these; a session that ends without it
+    leaves one behind, and nothing swept them at all — the vault's own pruner
+    excludes them by design. A 2026-06-07 probe found 60+.
+
+    Bounded by construction: ONE iterdir level and an is_file() per child, no
+    git calls and no recursion, so this stays cheap even on a large fleet.
+    """
+    try:
+        warn_at = max(1, int(os.environ.get("DEV_WORKTREE_WARN", DEFAULT_SIBLING_WARN)))
+    except ValueError:
+        warn_at = DEFAULT_SIBLING_WARN
+    root = os.environ.get("ABS_DEV_ROOT", "").strip()
+    dev_root = Path(root).expanduser() if root else Path.home() / "dev"
+    try:
+        if not dev_root.is_dir():
+            return ""
+        # A LINKED worktree's `.git` is a pointer FILE; a real checkout's is a
+        # directory. That discriminator is what keeps actual clones out.
+        n = sum(1 for c in dev_root.iterdir()
+                if c.is_dir() and (c / ".git").is_file())
+    except OSError:
+        return ""
+    if n <= warn_at:
+        return ""
+    return (
+        f"[footprint] {n} leftover session worktree(s) under {dev_root} "
+        f"(soft cap {warn_at}). Each is close to a full checkout. The daily "
+        f"maintenance pass reclaims the safe ones automatically; force it now "
+        f"with `python3 scripts/dev-worktree-prune.py` (dry-run) then `--apply` "
+        f"— dirty ones are snapshotted first and un-backed-up ones are kept."
+    )
+
+
 def main() -> int:
     if os.environ.get("WORKTREE_FOOTPRINT_BYPASS") == "1":
         return _emit(None)
@@ -306,6 +665,28 @@ def main() -> int:
     # onboarding is still caught and the fix is OFFERED, not just documented.
     # (MYC-2360) Replaces the old passive "move it out, see docs" warning.
     lines.extend(cloud_sync_offer(main_repo))
+
+    # Aggregate bloat-dir footprint (MYC-577). Deliberately NOT gated on
+    # main_repo: the dirs that regrew in the melt (.smart-env above all) live in
+    # the Obsidian vault, which need not be the worktree-owning repo — and the
+    # whole point is that this fires with ZERO excess worktrees. Capped at the
+    # first 3 brain vaults so a machine registering many vaults still pays a
+    # bounded SessionStart.
+    for vault in _candidate_vaults(main_repo)[:3]:
+        try:
+            if not _is_brain_vault(vault):
+                continue
+            sig = bloat_signal(vault)
+        except OSError:
+            continue
+        if sig:
+            lines.append(sig)
+
+    # Leftover session worktrees under the dev root (MYC-587). Independent of
+    # main_repo: these are code-repo siblings, not vault scratch worktrees.
+    sib = sibling_worktree_signal()
+    if sib:
+        lines.append(sib)
 
     # Footprint observability needs a repo to measure — gated on main_repo.
     if main_repo is not None:
