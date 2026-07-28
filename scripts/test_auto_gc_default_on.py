@@ -125,6 +125,23 @@ def main() -> int:
               "ABS_NO_AUTO_GC=1 still installed a launch agent — the opt-out "
               "does not actually opt out")
 
+    # --- the installer must NOT schedule for a temp/fixture vault -----------
+    # Scheduling is a HOST side effect. Every integration test that runs this
+    # installer builds its vault in $TMPDIR, so without this guard the test
+    # suite itself writes a real launchd agent / crontab entry on the machine
+    # running it, pointing at a directory that is about to be deleted.
+    import os
+    with tempfile.TemporaryDirectory() as td:
+        r = subprocess.run(
+            [sys.executable, str(HOOK_INSTALLER), "--vault-path", td, "--quiet",
+             "--settings", str(Path(td) / "settings.json")],
+            capture_output=True, text=True,
+            env=dict(os.environ, HOME=td), timeout=120)
+        agents = Path(td) / "Library" / "LaunchAgents"
+        check(not agents.exists() or not list(agents.glob("com.abs.*")),
+              "installing with a $TMPDIR vault scheduled a launchd agent — the "
+              "test suite would mutate the host's scheduler")
+
     if failures:
         print("FAILED — default-ON auto-GC (MYC-2363):")
         for f in failures:

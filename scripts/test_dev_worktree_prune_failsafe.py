@@ -50,6 +50,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
+        mod.SNAPSHOT_ROOT = tmp / "snapshots"   # never the operator's real store
         wt = tmp / "repo-slug"
         (wt / ".claude").mkdir(parents=True)
         (wt / ".git").write_text("gitdir: /nowhere\n", encoding="utf-8")
@@ -88,6 +89,32 @@ def main() -> int:
         check(known is False and paths == [],
               "dirty_paths did not distinguish 'git failed' from 'tree clean'")
         mod._git = real_git
+
+        # --- 1b. a DETACHED HEAD must SURFACE --------------------------------
+        # Every other verdict here survives a mistake because the branch keeps
+        # the commits. A detached HEAD does not: its commits are reachable from
+        # no ref, so once the worktree is gone only the reflog holds them. The
+        # un-backed-up check is keyed on a branch name, so a detached HEAD would
+        # otherwise SKIP it entirely — the worst possible place to skip it.
+        def git_detached(cwd, *args, **kw):
+            if args and args[0] == "rev-parse" and "--git-common-dir" in args:
+                return 0, str(tmp / "main" / ".git"), ""
+            if args and args[0] == "rev-parse":
+                return 0, "HEAD", ""       # detached
+            if args and args[0] == "status":
+                return 0, "", ""           # clean tree
+            if args and args[0] == "log":
+                return 0, "", ""           # would look "fully backed up"
+            return real_git(cwd, *args, **kw)
+
+        mod._git = git_detached
+        v = mod.classify(wt, 7.0, now)
+        mod._git = real_git
+        check(v["verdict"] == mod.SURFACE,
+              f"a DETACHED-HEAD worktree classified as {v['verdict']!r} — its "
+              f"commits are on no branch, so removal leaves only the reflog")
+        check("detached" in v["reason"].lower(),
+              f"the reason does not name the detached HEAD: {v['reason']!r}")
 
         # --- 2. an unreadable lock reads as LOCKED ---------------------------
         lock = wt / ".session-lock"

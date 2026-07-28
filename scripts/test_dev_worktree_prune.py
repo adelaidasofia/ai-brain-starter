@@ -53,7 +53,8 @@ def run_prune(dev_root: Path, *extra):
         [sys.executable, str(PRUNE), "--dev-root", str(dev_root), "--json",
          "--idle-days", "1", *extra],
         capture_output=True, text=True,
-        env=dict(os.environ, DEV_REPO_SCAN_DIR=str(SCRIPTS.parent / "hooks")))
+        env=dict(os.environ, DEV_REPO_SCAN_DIR=str(SCRIPTS.parent / "hooks"),
+                 DEV_WORKTREE_SNAPSHOT_ROOT=str(dev_root.parent / "snapshots")))
     assert r.returncode == 0, f"prune failed: {r.stderr[-800:]}"
     return json.loads(r.stdout)
 

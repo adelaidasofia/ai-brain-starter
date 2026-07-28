@@ -164,7 +164,14 @@ def main() -> int:
         # and writes state; the existing dev-hub SessionStart hook renders it,
         # which is why this adds no fan-out (footprint SLA, ADR-0004).
         state = tmp / "drift-state.json"
+        # DEV_HUB_REFRESH_STATE points at a path that does NOT exist on purpose:
+        # that is the fresh-install shape (no hub-refresh job has run yet), and
+        # it is exactly the state in which the drift verdict used to vanish. The
+        # developer box has real hub state, so without pinning this the
+        # assertion below passes locally and fails on a clean runner — which is
+        # how it was caught.
         env = dict(os.environ, ABS_DEV_ROOT=str(dev), DEV_DRIFT_STATE=str(state),
+                   DEV_HUB_REFRESH_STATE=str(tmp / "no-such-hub-state.json"),
                    DEV_REPO_SCAN_DIR=str(HOOKS))
         rep = subprocess.run(
             [sys.executable, str(HOOKS.parent / "scripts" / "dev-drift-report.py"),
@@ -184,8 +191,9 @@ def main() -> int:
         rendered = json.loads(hook.stdout or "{}")
         ctx = (rendered.get("hookSpecificOutput") or {}).get("additionalContext", "")
         check("no-remote" in ctx,
-              f"the SessionStart surface did not render the drift section "
-              f"(got {ctx[:200]!r}) — the verdict never reaches a human")
+              f"the SessionStart surface did not render the drift section with "
+              f"NO hub state present (got {ctx[:200]!r}) — on a fresh install the "
+              f"verdict would never reach a human")
 
         # An ABSENT state file must be SILENT, never reported as a clean fleet.
         state.unlink()

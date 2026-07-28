@@ -96,16 +96,29 @@ def main() -> None:
     except Exception:
         pass
 
+    # Compute the drift section FIRST and unconditionally. It is a SEPARATE
+    # signal with its own state file, and gating it on the hub state below meant
+    # a machine with no hub state — every fresh install, and any box where the
+    # refresh job has not run yet — never saw an un-backed-up-work warning even
+    # when the daily pass had measured one. Two independent verdicts must not
+    # share an early return; that is how a surface silently fails to reach a
+    # human, which is the whole failure this hook family exists to prevent.
+    sections = []
+    drift = drift_section()
+    if drift:
+        sections.append(drift)
+
+    hub = ""
     try:
         data = json.loads(STATE_PATH.read_text())
     except (OSError, ValueError):
-        _emit()  # no state yet (fresh install / launchd not run) → silent
-
+        data = None  # no hub state yet (fresh install / job not run) → hub silent
     summary = data.get("summary") if isinstance(data, dict) else None
-    if not isinstance(summary, dict):
-        _emit()
+    if isinstance(summary, dict):
+        hub = format_hub_surface_line(summary, threshold=THRESHOLD) or ""
+    if hub:
+        sections.append(hub)
 
-    sections = [x for x in (drift_section(), format_hub_surface_line(summary, threshold=THRESHOLD)) if x]
     _emit("\n\n".join(sections) if sections else None)
 
 

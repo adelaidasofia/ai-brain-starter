@@ -78,7 +78,13 @@ except ImportError as exc:
     sys.exit(2)
 
 DEFAULT_IDLE_DAYS = 7.0
-SNAPSHOT_ROOT = Path.home() / ".claude" / "logs" / "dev-worktree-snapshots"
+# Overridable so a test never writes into the operator's real snapshot store —
+# a test fixture sitting in the recovery directory is indistinguishable from a
+# real rescued worktree exactly when someone is looking for one.
+SNAPSHOT_ROOT = Path(
+    os.environ.get("DEV_WORKTREE_SNAPSHOT_ROOT")
+    or (Path.home() / ".claude" / "logs" / "dev-worktree-snapshots")
+)
 
 # Verdicts
 REAP = "reap"
@@ -203,6 +209,16 @@ def classify(worktree: Path, idle_floor: float, now_ts: float) -> dict:
 
     branch = branch_of(worktree)
     v["branch"] = branch
+
+    if branch is None:
+        # Detached HEAD. Skipping the un-backed-up check here would be the worst
+        # possible place to skip it: a detached HEAD's commits are reachable from
+        # NO ref, so once the worktree is gone only the reflog holds them. Every
+        # other verdict in this file survives a mistake because the branch keeps
+        # the commits; this one does not.
+        v["reason"] = ("detached HEAD — its commits are on no branch, so nothing "
+                       "but the reflog would survive the removal")
+        return v
 
     if branch is not None:
         n = unpushed_commits(worktree, branch)

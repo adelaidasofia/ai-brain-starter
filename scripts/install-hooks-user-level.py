@@ -49,6 +49,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -845,6 +846,25 @@ def install_auto_gc(vault_path: str, quiet: bool) -> None:
 
     if os.name == "nt":
         return  # no launchd/cron; the Windows scheduler path is not shipped yet
+
+    # NEVER schedule for a vault that lives under the system temp dir. Every
+    # integration test that exercises this installer builds its vault there, and
+    # scheduling is a HOST-level side effect: a test run would write a real
+    # launchd agent or crontab entry on the developer's machine (and on every CI
+    # runner) pointing at a fixture that is deleted seconds later. A real brain
+    # never lives in $TMPDIR, so this costs nothing and makes the test suite
+    # incapable of mutating the host's scheduler.
+    try:
+        vault_resolved = Path(vault_path).expanduser().resolve()
+        tmp_root = Path(tempfile.gettempdir()).resolve()
+        if vault_resolved == tmp_root or tmp_root in vault_resolved.parents:
+            if not quiet:
+                print(f"NOTE: vault is under {tmp_root} — skipping auto-GC scheduling "
+                      f"(fixture/test vault, not a real brain).")
+            return
+    except (OSError, ValueError):
+        pass  # unresolvable path -> fall through; the scheduler validates it too
+
     installer = Path(__file__).resolve().parent / "install-vault-daily-maintenance.sh"
     if not installer.is_file():
         if not quiet:
