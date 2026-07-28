@@ -12,7 +12,36 @@ name: security-audit
 # written by hand. Generated gates carry an "Auto-managed by" marker on
 # line 2; this file omits it, so the tooling leaves it alone.
 #
-# No untrusted input is interpolated into any run: step.
+# ONE JOB, NOT FOUR (MYC-3419)
+# ----------------------------
+# GitHub bills every JOB a one-minute minimum. This gate used to run an
+# `npm-audit` job plus a three-way `pip-audit` matrix: four jobs, each doing
+# 16-28 seconds of work (their own checkout, their own interpreter setup, their
+# own `pip install pip-audit`) and each paying a full billed minute. Measured
+# over 40 real runs with scripts/actions-spend-report.py, that was 20 billed
+# minutes of which 13 were pure rounding - the second-worst offender in the repo
+# after lint.yml. One runner, one checkout, one toolchain install now covers all
+# four audits.
+#
+# THE MATRIX'S `fail-fast: false` SEMANTICS ARE PRESERVED, deliberately: every
+# sub-project is still audited even when an earlier one has a finding, so one
+# vulnerability never hides the next. That is what the `fail` accumulator does.
+#
+# WHY ONE STEP AND NOT SEVERAL. The obvious way to keep "audit everything, then
+# fail" across separate steps is `continue-on-error: true` plus a final step
+# that converts the outcomes back into an exit code. That was rejected: it makes
+# the gate's teeth removable: delete or mis-edit that one trailing step and this
+# workflow reports vulnerabilities and still goes green. Here the audits share a
+# single step whose exit status IS the verdict, so there is no separate gate to
+# lose. Each sub-audit runs in a `set -e` subshell and contributes to `fail`.
+#
+# JOB NAME IS A CONTRACT: branch protection matches required checks by job NAME
+# (MYC-3418 will mark this one required). `dependency audit (npm + pip)` is the
+# final name - do not rename it, and add new ecosystems as sub-audits inside the
+# step below rather than as new jobs.
+#
+# No untrusted input is interpolated into any run: step - this workflow
+# references no event-context expressions at all.
 
 on:
   pull_request:
@@ -35,56 +64,78 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  npm-audit:
-    # scripts/whatsapp is the only npm sub-project. Threshold is `high`:
-    # high + critical fail the build; moderate and low stay with
-    # Dependabot PRs so the gate is signal, not noise.
+  audit:
+    name: dependency audit (npm + pip)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: 20
-      - name: npm audit (scripts/whatsapp)
-        working-directory: scripts/whatsapp
-        run: |
-          if [ ! -f package-lock.json ] && [ ! -f npm-shrinkwrap.json ]; then
-            npm install --package-lock-only --ignore-scripts
-          fi
-          npm audit --audit-level=high
-
-  pip-audit:
-    # One job per Python sub-project (services + skills). fail-fast is
-    # off so every sub-project is audited even when one has a finding.
-    # pip-audit reads the OSV / PyPI advisory database; a genuinely
-    # unfixable advisory can be waived with `--ignore-vuln <GHSA-id>`
-    # plus a justifying comment, never by deleting this gate.
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        dir:
-          - services/health-mcp
-          - services/memory-api
-          - skills/nano-banana
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.11'
-      - name: pip-audit (${{ matrix.dir }})
-        working-directory: ${{ matrix.dir }}
+
+      - name: audit every sub-project (npm + pip)
         run: |
-          python -m pip install --quiet pip-audit
-          if [ -f requirements.txt ]; then
-            pip-audit --requirement requirements.txt
-          elif [ -f pyproject.toml ]; then
-            python -c "import sys,tomllib; sys.stdout.write(chr(10).join(tomllib.load(open('pyproject.toml','rb')).get('project',{}).get('dependencies',[])))" > /tmp/security-audit-deps.txt
-            if [ -s /tmp/security-audit-deps.txt ]; then
-              pip-audit --requirement /tmp/security-audit-deps.txt
-            else
-              echo "security-audit: pyproject.toml declares no [project.dependencies]; nothing to audit."
+          set -u
+          fail=0
+
+          # ---- npm sub-project -------------------------------------------
+          # scripts/whatsapp is the only one. Threshold is `high`: high +
+          # critical fail the build; moderate and low stay with Dependabot PRs
+          # so the gate is signal, not noise.
+          echo "::group::npm audit (scripts/whatsapp)"
+          (
+            set -e
+            cd scripts/whatsapp
+            if [ ! -f package-lock.json ] && [ ! -f npm-shrinkwrap.json ]; then
+              npm install --package-lock-only --ignore-scripts
             fi
-          else
-            echo "security-audit: no requirements.txt or pyproject.toml; nothing to audit."
+            npm audit --audit-level=high
+          ) || fail=1
+          echo "::endgroup::"
+
+          # ---- python sub-projects ---------------------------------------
+          # Fail CLOSED if the auditor itself cannot be installed: a gate that
+          # silently skips is vacuous exactly when it is least able to protect.
+          if ! python -m pip install --quiet pip-audit; then
+            echo "::error::pip-audit failed to install - this gate cannot run and must not pass vacuously."
+            exit 1
           fi
+
+          # pip-audit reads the OSV / PyPI advisory database. A genuinely
+          # unfixable advisory can be waived with `--ignore-vuln <GHSA-id>` plus
+          # a justifying comment, never by deleting this gate. The loop keeps
+          # going after a finding - the matrix's fail-fast: false behavior.
+          for d in services/health-mcp services/memory-api skills/nano-banana; do
+            echo "::group::pip-audit ($d)"
+            (
+              set -e
+              cd "$d"
+              if [ -f requirements.txt ]; then
+                pip-audit --requirement requirements.txt
+              elif [ -f pyproject.toml ]; then
+                # A fresh temp file per sub-project. The old matrix gave each
+                # dir its own runner, so a fixed /tmp path was safe; sharing one
+                # runner, a fixed path would let one project's dependency list
+                # leak into the next project's audit.
+                deps="$(mktemp)"
+                python -c "import sys,tomllib; sys.stdout.write(chr(10).join(tomllib.load(open('pyproject.toml','rb')).get('project',{}).get('dependencies',[])))" > "$deps"
+                if [ -s "$deps" ]; then
+                  pip-audit --requirement "$deps"
+                else
+                  echo "security-audit: pyproject.toml declares no [project.dependencies]; nothing to audit."
+                fi
+              else
+                echo "security-audit: no requirements.txt or pyproject.toml; nothing to audit."
+              fi
+            ) || fail=1
+            echo "::endgroup::"
+          done
+
+          if [ "$fail" != 0 ]; then
+            echo "::error::dependency audit reported at least one vulnerability - see the grouped output above for which sub-project."
+            exit 1
+          fi
+          echo "All dependency audits passed (npm + 3 Python sub-projects)."
