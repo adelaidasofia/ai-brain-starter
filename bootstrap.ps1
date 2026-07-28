@@ -678,7 +678,7 @@ if ((Test-Path "$SkillDir\SKILL.md") -or $DryRun) { Ok "ai-brain-starter at $Ski
 Hdr "Installing bundled sub-skills (with safety checks)"
 $stamp = Get-Date -Format "yyyy-MM-dd-HHmm"
 
-foreach ($sub in @("graphify", "meeting-todos", "patterns", "insights", "deconstruct", "daily-journal", "rise", "repurpose-talk", "nano-banana", "second-brain-mapping", "setup-vault-types", "diagnose", "note-todos", "sunday-review", "coach", "coaching", "backfill-journal-body-context", "longitudinal", "resolver-query", "for-my-team", "health-context", "health-doctor", "health-setup", "ingest-github", "ingest-health", "ingest-youtube", "evolve", "instinct-export", "instinct-import", "interview-me", "doubt-driven-development", "secret-warn")) {
+foreach ($sub in @("graphify", "cierre-de-llamada", "meeting-todos", "patterns", "insights", "deconstruct", "daily-journal", "rise", "repurpose-talk", "nano-banana", "second-brain-mapping", "setup-vault-types", "diagnose", "note-todos", "sunday-review", "coach", "coaching", "backfill-journal-body-context", "longitudinal", "resolver-query", "for-my-team", "health-context", "health-doctor", "health-setup", "ingest-github", "ingest-health", "ingest-youtube", "evolve", "instinct-export", "instinct-import", "interview-me", "doubt-driven-development", "secret-warn")) {
     $src = "$SkillDir\skills\$sub"
     $dst = "$env:USERPROFILE\.claude\skills\$sub"
 
@@ -847,7 +847,7 @@ if ($DryRun) {
 foreach ($pair in @(@("graphify","graphify"), @("node","node"), @("npm","npm"), @("pipx","pipx"), @("gh","gh"))) {
     if (Have $pair[1]) { Ok $pair[0] } else { Err "$($pair[0]) not callable" }
 }
-foreach ($sub in @("graphify","meeting-todos","patterns","insights","deconstruct","daily-journal","rise","repurpose-talk","nano-banana","humanizer","ai-brain-starter","diagnose","second-brain-mapping","setup-vault-types","note-todos","sunday-review","coach","coaching","backfill-journal-body-context","longitudinal","resolver-query","for-my-team","health-context","health-doctor","health-setup","ingest-github","ingest-health","ingest-youtube","evolve","instinct-export","instinct-import","interview-me","doubt-driven-development","secret-warn")) {
+foreach ($sub in @("graphify","cierre-de-llamada","meeting-todos","patterns","insights","deconstruct","daily-journal","rise","repurpose-talk","nano-banana","humanizer","ai-brain-starter","diagnose","second-brain-mapping","setup-vault-types","note-todos","sunday-review","coach","coaching","backfill-journal-body-context","longitudinal","resolver-query","for-my-team","health-context","health-doctor","health-setup","ingest-github","ingest-health","ingest-youtube","evolve","instinct-export","instinct-import","interview-me","doubt-driven-development","secret-warn")) {
     if (Test-Path "$env:USERPROFILE\.claude\skills\$sub") { Ok "skill: $sub" } else { Err "skill missing: $sub" }
 }
 if (Test-Path "$env:USERPROFILE\.claude\skills\graphify\scripts") { Ok "graphify scripts" } else { Err "graphify scripts missing" }
