@@ -174,8 +174,11 @@ def _render() -> None:
     if cached is not None:
         claim_section, n_unpushed_claims = cached
     else:
-        claims = collect_claim_bearing(repos)
-        claim_section = format_claim_section(claims)
+        scan_stats: dict = {}
+        claims = collect_claim_bearing(repos, stats=scan_stats)
+        claim_section = format_claim_section(
+            claims, truncated=bool(scan_stats.get("truncated"))
+        )
         n_unpushed_claims = sum(1 for c in claims if c.state == ClaimState.UNPUSHED)
         _claim_cache_write(claim_section, n_unpushed_claims)
 

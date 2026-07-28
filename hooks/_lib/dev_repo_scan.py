@@ -1420,6 +1420,7 @@ class ClaimBranch:
     subject: str               # tip commit subject — tells finished from mid-edit
     tree: str                  # tip tree sha, for identical-content dedupe
     promoted_by: str           # "ticket-id" | "volume"
+    branch_class: str = ""     # BranchClass — content-vs-origin verdict, not ref topology
     duplicates: list = field(default_factory=list)  # sibling branch names, same tree
 
 
@@ -1591,12 +1592,47 @@ def _claim_branches_for_repo(
         except ValueError:
             unpushed = 0
 
+        # `--not --remotes` reads LOCAL remote-tracking refs, which only exist for
+        # branches the repo's fetch refspec actually covers. A repo cloned
+        # single-branch (`+refs/heads/main:refs/remotes/origin/main` — what
+        # `git clone --single-branch` leaves behind) never gets a tracking ref for
+        # ANY topic branch, so every one of them reads as "backed up nowhere"
+        # forever. Measured on a real fleet: 15 of 56 repos were in that state,
+        # and one flagged branch was provably on origin — `ls-remote` returned the
+        # identical sha while the count still said 1 unpushed. Claiming
+        # un-backed-up work that is in fact safe is the cry-wolf direction, and a
+        # false one sits in the same list as the real ones and dilutes them.
+        # So before asserting the strongest claim this surface makes, confirm it
+        # against the SYSTEM OF RECORD. Bounded: runs only for the handful of
+        # branches that already passed every cheap filter above.
+        if unpushed:
+            rc_ls, ls_out, _ = _git(repo, "ls-remote", "--heads", "origin", branch, timeout=10)
+            if rc_ls == 0 and ls_out.strip():
+                remote_sha = ls_out.split()[0]
+                rc_tip, tip, _ = _git(repo, "rev-parse", ref)
+                if rc_tip == 0 and tip.strip() == remote_sha:
+                    unpushed = 0  # identical on origin: pushed, tracking ref just absent
+
+        # Is this branch's CONTENT already on origin, just not under this ref?
+        # Without this the surface cannot tell a stale iteration of SHIPPED work
+        # from genuinely unmerged work, and both read as "claimed and stranded".
+        # Squash-merges guarantee the confusing shape — the tip is never an
+        # ancestor of the default branch — so "differs from main" was never
+        # evidence of anything on a merge-queue repo. classify_branch already
+        # answers it; it simply was not asked.
+        try:
+            cls = classify_branch(repo, branch, default)
+        except Exception:
+            cls = BranchClass.UNKNOWN
+        if cls in REAPABLE_CLASSES:
+            continue  # content provably on origin -> shipped, not a stranded claim
+
         entry = ClaimBranch(
             repo=repo.name, branch=branch, ticket=ticket,
             state=ClaimState.UNPUSHED if unpushed else ClaimState.PUSHED_NO_PR,
             commits=ahead, age_hours=age_hours,
             subject=_clean_subject(raw_subject), tree=tree,
-            promoted_by=promoted_by,
+            promoted_by=promoted_by, branch_class=cls,
         )
         (found if unpushed else pushed_pending).append(entry)
 
@@ -1643,6 +1679,7 @@ def collect_claim_bearing(
     max_workers: int = 8,
     now_ts: Optional[float] = None,
     budget_sec: Optional[float] = None,
+    stats: Optional[dict] = None,
 ) -> list:
     """Stranded claim-bearing branches across the fleet, oldest first.
 
@@ -1651,19 +1688,31 @@ def collect_claim_bearing(
     code. Parallel + read-only; any repo that errors contributes nothing rather
     than failing the scan.
 
-    HARD WALL-CLOCK BUDGET (CLAIM_BRANCH_BUDGET_SEC, default 15s). The algorithm
+    HARD WALL-CLOCK BUDGET (CLAIM_BRANCH_BUDGET_SEC, default 45s). The algorithm
     is fast now, but "fast on this fleet today" is not a guarantee — repo count
     and branch count only grow, and a hung `gh` on a flaky network answers to no
     algorithm. Past the deadline the scan stops and returns what it has. Partial
     output is the right failure mode for a surfacer: a hook that overruns is
     killed and reports NOTHING, which is indistinguishable from a clean fleet and
     is exactly the silent coverage loss this whole surface exists to prevent.
+
+    A truncated scan SAYS SO. Pass `stats` (a dict) to receive
+    {"truncated": bool, "repos": int}; the caller renders it. Without it, hitting
+    the budget silently drops repos while the banner still reads as a complete
+    answer — measured on a real fleet, 29 entries reported when the true count
+    was 109, with nothing in the output to tell the two apart. A cap nobody can
+    see is the same bug class this surface exists to catch, one level up.
     """
     if not repos:
         return []
     if budget_sec is None:
         try:
-            budget_sec = float(os.environ.get("CLAIM_BRANCH_BUDGET_SEC", 15.0))
+            # 45s, sized off a MEASURED complete scan (29.9s over 56 repos / 109
+            # entries). The first value chosen (15s) silently truncated EVERY
+            # real run — it reported 29 entries when the true count was 109, with
+            # nothing in the output distinguishing the two. Sized under the
+            # caller's cache, not under a single session's patience.
+            budget_sec = float(os.environ.get("CLAIM_BRANCH_BUDGET_SEC", 45.0))
         except (TypeError, ValueError):
             budget_sec = 15.0
     deadline = time.time() + budget_sec if budget_sec > 0 else None
@@ -1696,13 +1745,34 @@ def collect_claim_bearing(
     except Exception:
         results = [_one(r) for r in repos]
 
+    if stats is not None:
+        stats["repos"] = len(repos)
+        # Overrunning the deadline is the only way coverage is dropped here, so
+        # it is also the only thing the caller has to be told about.
+        stats["truncated"] = bool(deadline and time.time() > deadline)
+
     flat: list = []
     for r in results:
         flat.extend(r)
     return sorted(flat, key=lambda e: (-e.age_hours, e.repo, e.branch))
 
 
-def format_claim_section(entries: list, limit: int = 10) -> Optional[str]:
+def _partial_scan_notice() -> str:
+    """Emitted whenever the budget cut the scan short and nothing else would be
+    said. "No claims found" and "I ran out of time looking" are different
+    answers, and only one of them is safe to act on."""
+    return (
+        "[claimed-work-stranded]\n\n"
+        "⚠ PARTIAL SCAN — the claim-bearing branch scan hit its time budget "
+        "before finishing, so coverage is INCOMPLETE. No claim-bearing branches "
+        "were confirmed either way; this is NOT a clean result. Re-run for full "
+        "coverage with a larger `CLAIM_BRANCH_BUDGET_SEC`."
+    )
+
+
+def format_claim_section(
+    entries: list, limit: int = 10, truncated: bool = False
+) -> Optional[str]:
     """The headlined claim-bearing block, or None when there is nothing to say.
 
     TICKET-BEARING branches are headlined individually; VOLUME-promoted ones are
@@ -1717,27 +1787,41 @@ def format_claim_section(entries: list, limit: int = 10) -> Optional[str]:
     classify a RELIC properly, and this surfacer deliberately does not try.
     """
     if not entries:
-        return None
+        # A scan that ran out of budget before finding anything is NOT a clean
+        # fleet, and must not render as one.
+        return _partial_scan_notice() if truncated else None
     ticketed = [e for e in entries if e.ticket]
     volume_only = [e for e in entries if not e.ticket]
     if not ticketed:
         # Nothing claimed against a tracked issue. The volume-only set is the
-        # reaper's job, and it is not worth a banner of its own.
-        return None
+        # reaper's job and is not worth a banner of its own -- UNLESS the scan
+        # was cut short, in which case "no claims found" is an artifact of the
+        # budget rather than a finding, and silence would be a silent cap.
+        return _partial_scan_notice() if truncated else None
 
     n = len(ticketed)
     plural = "es" if n != 1 else ""
+    at_least = "at least " if truncated else ""
     lines = [
         "[claimed-work-stranded]",
         "",
         (
-            f"{n} branch{plural} carry CLAIMED work against a tracked issue that no "
-            f"other session can act on. A fresh session's default path is to write it "
-            f"AGAIN from scratch; the cost is duplicated judgment, not lost bytes. "
-            f"Check here BEFORE starting work on any ticket named below."
+            f"{at_least}{n} branch{plural} carry CLAIMED work against a tracked issue "
+            f"that no other session can act on. A fresh session's default path is to "
+            f"write it AGAIN from scratch; the cost is duplicated judgment, not lost "
+            f"bytes. Check here BEFORE starting work on any ticket named below."
         ),
         "",
     ]
+    if truncated:
+        lines += [
+            (
+                "⚠ PARTIAL — the scan hit its time budget, so this list is INCOMPLETE "
+                "and the count is a floor, not a total. Re-run with a larger "
+                "`CLAIM_BRANCH_BUDGET_SEC` for full coverage."
+            ),
+            "",
+        ]
     for e in ticketed[:limit]:
         who = e.ticket or f"unnamed, {e.commits} commits"
         if e.state == ClaimState.UNPUSHED:
