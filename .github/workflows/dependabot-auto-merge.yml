@@ -7,15 +7,6 @@ on:
 permissions:
   pull-requests: write
   contents: write
-concurrency:
-  # A superseded push to the same PR cancels the in-flight run instead of
-  # billing it to completion. Scoped to pull_request ONLY: push / schedule runs
-  # are never cancelled (and if a merge queue is ever wired here, cancelling a
-  # queued group would deadlock it). Added by MYC-3180 after ci-cost-audit.py
-  # flagged this workflow as billing every superseded push in full.
-  group: dependabot-auto-merge-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   auto-merge:
     runs-on: ubuntu-latest
