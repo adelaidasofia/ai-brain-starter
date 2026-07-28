@@ -233,6 +233,26 @@ RELOCWATCH="$SCRIPT_DIR/relocate-sweep.py"
 if [ "${ABS_NO_AUTO_GC:-0}" = "1" ]; then
   log "[auto-gc] SKIPPED - ABS_NO_AUTO_GC=1"
 else
+  # LOOK-BEFORE-DELETE (client trust). Reclaiming a regenerable CACHE needs no
+  # ceremony — nobody mourns a cache, and a fast-forward destroys nothing. But
+  # the two legs that DELETE a person's git branches and directories must not do
+  # that on day one, before they have ever seen what this pass does. Those two
+  # REPORT on the first run and APPLY from the second onward.
+  #
+  # This does NOT gate the VALUE behind an opt-in — that would leave the default
+  # install dirty forever, the bug MYC-2363 fixed. Nothing is asked of the user,
+  # no flag is needed, and the reclaim still arrives automatically: one cycle
+  # later for the destructive legs, with a report banked first.
+  # ABS_GC_APPLY_NOW=1 skips the dry first pass.
+  GC_SEEN_MARKER="$HOME/.claude/.auto-gc-first-report"
+  if [ -f "$GC_SEEN_MARKER" ] || [ "${ABS_GC_APPLY_NOW:-0}" = "1" ]; then
+    DESTRUCTIVE_MODE="--apply"
+  else
+    DESTRUCTIVE_MODE=""
+    log "[auto-gc] FIRST RUN — branch/worktree reclaim REPORTS ONLY this pass."
+    log "[auto-gc] Review below; the next run applies. Force now: ABS_GC_APPLY_NOW=1"
+  fi
+
   # 1. Vault scratch worktrees + orphan dirs + orphan branches + old snapshots.
   WTPRUNE="$SCRIPT_DIR/worktree-prune.sh"
   [ -f "$WTPRUNE" ] && VAULT_ROOT="$VAULT" run "worktree-prune" /bin/bash "$WTPRUNE"
@@ -250,13 +270,13 @@ else
   #    provably preserved on a remote; un-backed-up work is surfaced, never
   #    touched, and every deletion writes a recovery manifest.
   REAPER="$SCRIPT_DIR/dev-repo-reaper.py"
-  [ -f "$REAPER" ] && run "dev-repo-reaper" /usr/bin/env python3 "$REAPER" --apply
+  [ -f "$REAPER" ] && run "dev-repo-reaper" /usr/bin/env python3 "$REAPER" $DESTRUCTIVE_MODE
 
   # 4. Orphaned <dev-root>/<repo>-<slug> session worktrees (MYC-587/677).
   #    Nothing swept these before: the vault pruner deliberately excludes them.
   #    Dirty ones are snapshotted before removal; un-backed-up ones are kept.
   WTREAP="$SCRIPT_DIR/dev-worktree-prune.py"
-  [ -f "$WTREAP" ] && run "dev-worktree-prune" /usr/bin/env python3 "$WTREAP" --apply
+  [ -f "$WTREAP" ] && run "dev-worktree-prune" /usr/bin/env python3 "$WTREAP" $DESTRUCTIVE_MODE
 
   # 5. Bare ~/dev hub freshness — fast-forward the clean ones so a recon read is
   #    never weeks stale (MYC-677 STALE-BARE-CHECKOUT-READ). Dirty / diverged
@@ -269,6 +289,14 @@ else
 
   HUBREFRESH="$SCRIPT_DIR/dev-hub-refresh.py"
   [ -f "$HUBREFRESH" ] && run "dev-hub-refresh" /usr/bin/env python3 "$HUBREFRESH" --apply
+fi
+
+# Bank the first report so the NEXT pass applies. Written after the legs ran, so
+# a crashed first pass reports again rather than silently escalating to delete on
+# a run nobody ever saw.
+if [ "${ABS_NO_AUTO_GC:-0}" != "1" ] && [ -n "${GC_SEEN_MARKER:-}" ] && [ ! -f "$GC_SEEN_MARKER" ]; then
+  mkdir -p "$(dirname "$GC_SEEN_MARKER")" 2>/dev/null
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$GC_SEEN_MARKER" 2>/dev/null
 fi
 
 close_mutex_release

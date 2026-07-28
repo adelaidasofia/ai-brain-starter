@@ -365,6 +365,7 @@ PY_DIRECT=(
   hooks/test_footprint_aggregate_bloat.py
   hooks/test_unpushed_drift_surface.py
   hooks/test_claim_surface_honesty.py
+  hooks/test_narrow_refspec_falsealarm.py
 )
 dormant_py=()
 while IFS= read -r -d '' f; do

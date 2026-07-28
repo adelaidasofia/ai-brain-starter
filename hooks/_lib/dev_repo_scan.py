@@ -366,10 +366,17 @@ def find_unpushed_local_commits(
         branch_names: list[str] = []
         for ref in refs.split(","):
             ref = ref.strip()
-            if not ref or ref.startswith("tag:") or ref.startswith("HEAD"):
+            if not ref or ref.startswith("tag:"):
                 continue
+            # Unwrap BEFORE the bare-HEAD skip. These were the other way round,
+            # so `HEAD -> claude/my-branch` hit the startswith("HEAD") skip and
+            # the unwrap was DEAD CODE — the branch you are CURRENTLY ON was
+            # never counted. That is the branch most likely to be carrying your
+            # work, so both surfaces under-reported by exactly it.
             if ref.startswith("HEAD -> "):
                 ref = ref[len("HEAD -> "):]
+            elif ref.startswith("HEAD"):
+                continue  # bare detached-HEAD decoration, no branch name
             if ref.startswith("origin/") or ref.startswith("upstream/"):
                 continue
             branch_names.append(ref)
@@ -1139,6 +1146,72 @@ def discover_primary_repos(
     return sorted(set(by_common.values()))
 
 
+def has_full_fetch_refspec(repo: Path) -> bool:
+    """True when this repo fetches ALL branches, not just one.
+
+    A single-branch clone (`git clone --single-branch`, `gh repo clone` of a
+    large repo, most CI checkouts) carries
+    `+refs/heads/main:refs/remotes/origin/main`. `git fetch` then updates
+    origin/main and NOTHING else, so every OTHER branch has no local
+    remote-tracking ref no matter how thoroughly it was pushed.
+
+    That matters because every backup check here is `git log <ref> --not
+    --remotes`, which asks "is this commit reachable from a LOCAL remote-
+    tracking ref". On a narrow clone the honest answer to "is this pushed" is
+    NOT "no" — it is "this repo cannot tell you locally". Reporting the first
+    when the truth is the second is cry-wolf by construction, on a clone shape
+    that is completely normal. Measured live: two repos reported 1 un-backed-up
+    commit each; `git ls-remote` showed both commits sitting on origin.
+    """
+    rc, out, _ = _git(repo, "config", "--get-regexp", r"^remote\..*\.fetch$")
+    if rc != 0 or not out.strip():
+        return False
+    return any("refs/heads/*" in line for line in out.splitlines())
+
+
+def narrow_refspec_repos(repos: list) -> list:
+    """Repos whose local backup state is UNVERIFIABLE (single-branch clones).
+
+    Surfaced separately with a one-command remedy rather than folded into the
+    drift count — "I cannot tell" is a different message from "your work is at
+    risk", and conflating them is what makes a banner ignorable.
+    """
+    out = []
+    for r in repos:
+        r = Path(r)
+        try:
+            if repo_has_any_remote_ref(r) and not has_full_fetch_refspec(r):
+                out.append(r)
+        except OSError:
+            continue
+    return out
+
+
+def format_narrow_refspec_section(repos: list, limit: int = 6) -> str:
+    """One advisory block, or "" when every repo can verify itself."""
+    if not repos:
+        return ""
+    lines = [
+        "[unverifiable-backup-state]",
+        "",
+        (f"{len(repos)} repo(s) are single-branch clones, so whether their "
+         f"branches are pushed CANNOT be determined locally — `git fetch` only "
+         f"updates one branch. Their branches are NOT reported as at-risk above, "
+         f"because the honest answer is \"unknown\", not \"unbacked\"."),
+        "",
+    ]
+    for r in repos[:limit]:
+        lines.append(f"- `{Path(r).name}`")
+    if len(repos) > limit:
+        lines.append(f"- ... and {len(repos) - limit} more")
+    lines += [
+        "",
+        "**Fix (per repo, one time):** "
+        "`git remote set-branches origin '*' && git fetch origin`",
+    ]
+    return "\n".join(lines)
+
+
 def repo_has_any_remote_ref(repo: Path) -> bool:
     """True if the repo has at least one remote-tracking ref (a known backup).
 
@@ -1274,10 +1347,17 @@ def _count_topic_branches_with_unpushed(repo: Path, default: Optional[str]) -> i
     for line in out.splitlines():
         for ref in line.split(","):
             ref = ref.strip()
-            if not ref or ref.startswith("tag:") or ref.startswith("HEAD"):
+            if not ref or ref.startswith("tag:"):
                 continue
+            # Unwrap BEFORE the bare-HEAD skip. These were the other way round,
+            # so `HEAD -> claude/my-branch` hit the startswith("HEAD") skip and
+            # the unwrap was DEAD CODE — the branch you are CURRENTLY ON was
+            # never counted. That is the branch most likely to be carrying your
+            # work, so both surfaces under-reported by exactly it.
             if ref.startswith("HEAD -> "):
                 ref = ref[len("HEAD -> "):]
+            elif ref.startswith("HEAD"):
+                continue  # bare detached-HEAD decoration, no branch name
             if ref.startswith("origin/") or ref.startswith("upstream/"):
                 continue
             if default and ref == default:
@@ -1299,6 +1379,18 @@ def _repo_drift(repo: Path, min_age_minutes: int) -> tuple[list, int]:
         entry = _no_remote_repo_drift(repo, min_age_minutes)
         return ([entry] if entry else []), 0
     default = detect_default_branch(repo)
+    if not has_full_fetch_refspec(repo):
+        # Single-branch clone: `--not --remotes` cannot distinguish "unpushed"
+        # from "never fetched", so every claim it would make here is a coin
+        # flip. Report nothing; narrow_refspec_repos() surfaces the repo with
+        # the one-command fix instead. The DEFAULT branch is the one exception
+        # — it IS in the narrow refspec, so its answer is still trustworthy.
+        g: list = []
+        if default:
+            n_def = _unpushed_count_on_ref(repo, default, min_age_minutes)
+            if n_def > 0:
+                g.append((repo.name, default, n_def, BranchClass.GENUINE_UNIQUE))
+        return g, 0
     g: list = []
     if default:
         n_def = _unpushed_count_on_ref(repo, default, min_age_minutes)
