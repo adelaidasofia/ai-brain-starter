@@ -118,6 +118,12 @@ ABS_FINGERPRINTS = [
     # Bare ~/dev hub-rot guard (read-time detection) + surfacer (MYC-1893):
     "ai-brain-starter/hooks/warn-stale-dev-checkout.py",
     "ai-brain-starter/hooks/dev-hub-refresh-on-session-start.py",
+    # The highest-value member of that same dev-hygiene family, and the last one
+    # still missing from a client install: "you have committed work backed up
+    # NOWHERE" (MYC-2070). Its four lighter siblings above were already public;
+    # shipping the file without registering it here would leave it dormant on
+    # every fresh install (ARTIFACT-WITHOUT-ACTIVATION).
+    "ai-brain-starter/hooks/list-unpushed-commits-on-session-start.py",
     # Client-side deployed==committed drift detector (MYC-2507): surfaces when this
     # deploy step itself failed silently and settings.json fell behind hooks.json.
     "ai-brain-starter/hooks/surface-deployed-hooks-behind.py",
@@ -167,6 +173,7 @@ ABS_OWNED_BASENAMES = {
     "warn-workflow-call-permission-elevation.py",
     "warn-vault-session-in-worktree.py", "warn-learning-to-tool-private-memory.py",
     "warn-stale-dev-checkout.py", "dev-hub-refresh-on-session-start.py",
+    "list-unpushed-commits-on-session-start.py",
     # Session-start context loaders (MYC-2359 UPS -> SessionStart relocation):
     "session-start-context.py", "inject-instinct-context.py",
     # Client-side deployed==committed drift detector (MYC-2507):

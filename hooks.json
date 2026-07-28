@@ -303,6 +303,11 @@
           },
           {
             "type": "command",
+            "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/list-unpushed-commits-on-session-start.py 2>/dev/null || echo '{\"continue\":true,\"suppressOutput\":true}'",
+            "statusMessage": "Checking for work backed up nowhere (unpushed / no-remote drift)..."
+          },
+          {
+            "type": "command",
             "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/surface-deployed-hooks-behind.py 2>/dev/null || echo '{\"continue\":true,\"suppressOutput\":true}'",
             "statusMessage": "Checking deployed hooks match what was pulled (deploy-fails-open drift)..."
           },
