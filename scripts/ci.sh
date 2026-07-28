@@ -362,6 +362,7 @@ PY_DIRECT=(
   hooks/test_secret_patterns_fp_filter.py
   hooks/test_check_fabricated_verification.py
   hooks/test_warn_chained_state_command.py
+  hooks/test_footprint_aggregate_bloat.py
 )
 dormant_py=()
 while IFS= read -r -d '' f; do
