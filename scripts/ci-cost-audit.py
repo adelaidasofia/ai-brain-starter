@@ -308,43 +308,105 @@ def static_audit(root: Path) -> tuple[list[Finding], int]:
 # MEASURED ANALYSIS
 # --------------------------------------------------------------------------
 
-def _gh_json(args: list[str]) -> object | None:
+def _gh_run(args: list[str]) -> str | None:
+    """Run `gh` and return stdout, or None if the CALL ITSELF failed.
+
+    None means "this did not happen" (gh missing, non-zero exit, timeout). It
+    never means "there were no records". Collapsing those two into one value is
+    what let this gate look healthy while dead - see _decode_stream.
+    """
     try:
         out = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if out.returncode != 0:
         return None
-    try:
-        return json.loads(out.stdout)
-    except json.JSONDecodeError:
+    return out.stdout
+
+
+def _decode_stream(raw: str | None) -> list | None:
+    """Decode gh output that may be SEVERAL concatenated JSON values.
+
+    `gh api --paginate` against an endpoint returning an OBJECT - which both
+    /actions/runs and /actions/runs/<id>/jobs do - emits one complete object
+    PER PAGE, back to back. That is not valid JSON. The previous code called
+    json.loads() on it, caught the inevitable JSONDecodeError, and returned
+    None, which the caller then reported as "no runs in window, or gh
+    unavailable / unauthenticated".
+
+    So the MEASURED half of this auditor returned an empty result on every repo
+    busy enough to have more than one page of runs - i.e. exactly the repos
+    whose spend it exists to measure - while blaming the operator's gh auth.
+    A cost gate is unproven until the burn rate moves, and this one could not
+    read the burn rate at all. Decoding page by page is the fix.
+    """
+    if raw is None:
         return None
+    dec = json.JSONDecoder()
+    idx, n, pages = 0, len(raw), []
+    while idx < n:
+        while idx < n and raw[idx].isspace():
+            idx += 1
+        if idx >= n:
+            break
+        try:
+            obj, idx = dec.raw_decode(raw, idx)
+        except ValueError:
+            return None
+        pages.append(obj)
+    return pages
+
+
+def _gh_pages(args: list[str], key: str) -> list | None:
+    """Every record under `key`, merged across pages. None = the gh call failed."""
+    pages = _decode_stream(_gh_run(args))
+    if pages is None:
+        return None
+    merged: list = []
+    for page in pages:
+        if isinstance(page, dict):
+            merged.extend(page.get(key, []) or [])
+        elif isinstance(page, list):
+            merged.extend(page)
+    return merged
 
 
 def measured_audit(repo: str, hours: int) -> list[str]:
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
     lines: list[str] = []
-    runs = _gh_json(["api", "--paginate",
-                     f"/repos/{repo}/actions/runs?created=%3E%3D{since.date().isoformat()}&per_page=100"])
+    runs = _gh_pages(["api", "--paginate",
+                      f"/repos/{repo}/actions/runs"
+                      f"?created=%3E%3D{since.date().isoformat()}&per_page=100"],
+                     "workflow_runs")
+    # Distinguish the three causes the old single message conflated. "The call
+    # failed" and "the repo spent nothing" must never print the same line.
+    if runs is None:
+        return ["  (could NOT measure: the `gh` call failed - missing binary,"
+                " not authenticated, or an API error.",
+                "   Check `gh auth status`. This is NOT a zero-spend result.)"]
     ids: list[int] = []
-    if isinstance(runs, dict):
-        for r in runs.get("workflow_runs", []) or []:
-            started = r.get("run_started_at") or ""
-            if started and started >= since.strftime("%Y-%m-%dT%H:%M:%SZ"):
-                ids.append(r["id"])
+    cutoff = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+    for r in runs:
+        started = r.get("run_started_at") or ""
+        if started and started >= cutoff:
+            ids.append(r["id"])
     if not ids:
-        return ["  (no runs in window, or `gh` unavailable / unauthenticated)"]
+        return [f"  (gh reached the API and returned {len(runs)} run(s), none started"
+                f" inside the last {hours}h window - widen it with --hours.)"]
 
     agg: dict[str, dict] = defaultdict(lambda: {"jobs": 0, "wmin": 0, "secs": 0.0, "floor": 0})
     totals = {"wmin": 0, "floorwmin": 0, "cost": 0.0, "jobs": 0}
     by_os: dict[str, dict] = defaultdict(lambda: {"jobs": 0, "min": 0})
 
     for rid in ids[:400]:  # bounded: 400 runs is plenty to characterise a repo
-        data = _gh_json(["api", "--paginate",
-                         f"/repos/{repo}/actions/runs/{rid}/jobs?per_page=100&filter=all"])
-        if not isinstance(data, dict):
+        # Same paginated-object shape as the runs endpoint above: a run with
+        # more than 100 jobs pages, and a plain json.loads() would drop it.
+        jobs = _gh_pages(["api", "--paginate",
+                          f"/repos/{repo}/actions/runs/{rid}/jobs?per_page=100&filter=all"],
+                         "jobs")
+        if jobs is None:
             continue
-        for j in data.get("jobs", []) or []:
+        for j in jobs:
             # A skipped job never allocates a runner and is NOT billed.
             if j.get("conclusion") == "skipped":
                 continue
@@ -494,6 +556,38 @@ def self_test() -> int:
     print(f"  [{'ok  ' if ok else 'FAIL'}] a GATED macOS job is advisory, not high")
     if not ok:
         rc = 1
+
+    # ---- MEASURED-half controls ------------------------------------------
+    # The static checks above all passed for months while the MEASURED half was
+    # dead: `gh api --paginate` returns one JSON object PER PAGE, json.loads()
+    # rejected the concatenation, and the error surfaced as "no runs in window".
+    # A measurement that silently reports nothing is indistinguishable from a
+    # repo that spent nothing, so these controls pin the decoder directly.
+    one_page = '{"total_count": 2, "workflow_runs": [{"id": 1}, {"id": 2}]}'
+    two_pages = one_page + "\n" + '{"total_count": 2, "workflow_runs": [{"id": 3}]}'
+
+    def merged(raw):
+        pages = _decode_stream(raw)
+        if pages is None:
+            return None
+        out = []
+        for p in pages:
+            out.extend(p.get("workflow_runs", []) or [])
+        return out
+
+    measured_checks = [
+        ("single-page gh output decodes", merged(one_page), [{"id": 1}, {"id": 2}]),
+        ("MULTI-page --paginate output decodes (the bug this gate missed)",
+         merged(two_pages), [{"id": 1}, {"id": 2}, {"id": 3}]),
+        ("a failed gh call stays None, never an empty result", merged(None), None),
+        ("unparseable output stays None, never an empty result",
+         merged("not json at all"), None),
+    ]
+    for label, got, want in measured_checks:
+        ok = got == want
+        print(f"  [{'ok  ' if ok else 'FAIL'}] {label}")
+        if not ok:
+            rc = 1
 
     if rc == 0:
         print("  ci-cost-audit self-test: all controls pass "
