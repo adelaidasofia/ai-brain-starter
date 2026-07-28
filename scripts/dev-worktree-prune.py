@@ -119,27 +119,38 @@ def main_checkout_of(worktree: Path):
 
 def has_live_session_lock(path: Path, now_ts: float) -> bool:
     """A session actively working in this worktree. Removing it out from under a
-    live run is how a 45-minute gate loses its files mid-flight."""
+    live run is how a 45-minute gate loses its files mid-flight.
+
+    An OSError while probing a lock reads as LOCKED, not unlocked. "I could not
+    tell" and "nobody is here" are different answers, and only one of them is
+    safe to act on when the action is deletion.
+    """
     for cand in (path / ".session-lock", path / ".claude" / ".session-lock"):
         try:
             if cand.exists() and (now_ts - cand.stat().st_mtime) < SESSION_LOCK_LIVE_WINDOW_SEC:
                 return True
         except OSError:
-            continue
+            return True  # unreadable lock -> assume a session holds it
     return False
 
 
-def dirty_paths(worktree: Path) -> list:
-    """Uncommitted divergence: modified/staged tracked files + untracked files
-    git would not ignore. `--porcelain` so parsing does not depend on locale."""
+def dirty_paths(worktree: Path):
+    """(paths, known) — uncommitted divergence, and whether git could tell us.
+
+    `known` is False when `git status` failed (index lock contention, a timeout,
+    a broken worktree). That is NOT the same as a clean tree, and collapsing the
+    two would let a failed status call read as "nothing to lose" and delete
+    someone's uncommitted work. The caller SURFACEs instead.
+    `--porcelain` so parsing does not depend on locale.
+    """
     rc, out, _ = _git(worktree, "status", "--porcelain", "--untracked-files=all")
     if rc != 0:
-        return []
+        return [], False
     paths = []
     for line in out.splitlines():
         if len(line) > 3:
             paths.append(line[3:].strip().strip('"'))
-    return paths
+    return paths, True
 
 
 def branch_of(worktree: Path):
@@ -206,7 +217,11 @@ def classify(worktree: Path, idle_floor: float, now_ts: float) -> dict:
         # is already on a remote, which is the property that matters. A branch
         # that vanished upstream lands here too (nothing left to preserve).
 
-    dirty = dirty_paths(worktree)
+    dirty, known = dirty_paths(worktree)
+    if not known:
+        v["reason"] = ("`git status` failed here, so whether it holds uncommitted "
+                       "work is UNKNOWN — never the same as clean")
+        return v
     v["dirty"] = len(dirty)
     if dirty:
         v["verdict"] = SNAPSHOT_REAP
@@ -220,33 +235,41 @@ def classify(worktree: Path, idle_floor: float, now_ts: float) -> dict:
 
 
 def snapshot(worktree: Path, paths: list, apply: bool):
-    """Copy the uncommitted divergence somewhere durable. Returns the dest path
-    (or a would-be path in dry-run). An abandoned session's unsaved work is the
-    ONLY thing a worktree removal can destroy, so this runs BEFORE any removal."""
+    """Copy the uncommitted divergence somewhere durable.
+
+    Returns (dest, failed_paths). An abandoned session's unsaved work is the ONLY
+    thing a worktree removal can destroy, so this runs BEFORE any removal — and a
+    non-empty `failed` means the copy is INCOMPLETE and the removal must not
+    happen (a partial snapshot plus a removal is still data loss).
+    """
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dest = SNAPSHOT_ROOT / f"{worktree.name}-{stamp}"
     if not apply:
-        return dest
+        return dest, []
     dest.mkdir(parents=True, exist_ok=True)
     # The patch covers tracked modifications; the file copies cover untracked
     # ones (which no diff can reconstruct).
     rc, diff, _ = _git(worktree, "diff", "HEAD")
     if rc == 0 and diff:
         (dest / "uncommitted.patch").write_text(diff + "\n", encoding="utf-8")
+    failed = []
     for rel in paths:
         src = worktree / rel
         try:
             if not src.is_file():
-                continue
+                continue  # a dir or vanished entry carries no bytes to preserve
             out = dest / "files" / rel
             out.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, out)
-        except OSError:
-            continue
+        except OSError as exc:
+            # Skipping a file we could not copy and then removing the worktree
+            # DESTROYS it. Record the failure; the caller refuses the removal.
+            failed.append(f"{rel}: {exc}")
     (dest / "ORIGIN.txt").write_text(
-        f"worktree: {worktree}\nsnapshotted: {stamp}\npaths: {len(paths)}\n",
+        f"worktree: {worktree}\nsnapshotted: {stamp}\npaths: {len(paths)}\n"
+        f"failed: {len(failed)}\n" + "".join(f"  {f}\n" for f in failed),
         encoding="utf-8")
-    return dest
+    return dest, failed
 
 
 def remove(worktree: Path, apply: bool) -> tuple:
@@ -293,8 +316,21 @@ def main() -> int:
             continue
         wt = Path(v["path"])
         if v["verdict"] == SNAPSHOT_REAP:
-            dest = snapshot(wt, dirty_paths(wt), args.apply)
+            paths, known = dirty_paths(wt)
+            if not known:
+                v["note"] = "git status became unreadable between plan and apply"
+                failed.append(v)
+                continue
+            dest, snap_failed = snapshot(wt, paths, args.apply)
             v["snapshot"] = str(dest)
+            if snap_failed:
+                # Incomplete snapshot -> refuse. Better a worktree that stays
+                # than one removed with its only copy of something half-saved.
+                v["note"] = (f"snapshot INCOMPLETE ({len(snap_failed)} file(s) "
+                             f"could not be copied) — refusing to remove")
+                v["removed"] = False
+                failed.append(v)
+                continue
             snapped.append(v)
         ok, note = remove(wt, args.apply)
         v["removed"] = ok

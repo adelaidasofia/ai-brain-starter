@@ -177,4 +177,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313): the failure output carries non-ASCII
+    # (em dashes, the check glyph). An unguarded print raises UnicodeEncodeError
+    # there, and a test whose FAILURE output cannot print reads as a pass.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())
