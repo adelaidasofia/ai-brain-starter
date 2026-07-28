@@ -1162,10 +1162,20 @@ def has_full_fetch_refspec(repo: Path) -> bool:
     when the truth is the second is cry-wolf by construction, on a clone shape
     that is completely normal. Measured live: two repos reported 1 un-backed-up
     commit each; `git ls-remote` showed both commits sitting on origin.
+
+    FAIL-SAFE DIRECTION. A False from this function SUPPRESSES drift warnings
+    for the repo, so it must require POSITIVE evidence of a narrow refspec —
+    never merely the absence of evidence. A timed-out or failed `git config`
+    would otherwise silently switch off a safety warning for a repo that might
+    genuinely be holding un-backed-up work. So: narrow ONLY when git answered
+    cleanly AND what it returned lacks `refs/heads/*`; every failure mode reads
+    as full (warnings stay on).
     """
     rc, out, _ = _git(repo, "config", "--get-regexp", r"^remote\..*\.fetch$")
     if rc != 0 or not out.strip():
-        return False
+        # Could not read the config (timeout, permissions, no fetch refspec at
+        # all). Unknown -> do NOT suppress.
+        return True
     return any("refs/heads/*" in line for line in out.splitlines())
 
 

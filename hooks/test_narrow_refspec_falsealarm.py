@@ -108,6 +108,19 @@ def main() -> int:
               "a normal clone was read as single-branch — this would suppress "
               "REAL un-backed-up findings, the dangerous direction")
 
+        # --- a FAILED config read must NOT suppress --------------------------
+        # False here switches OFF drift warnings for a repo. It must require
+        # positive evidence of a narrow refspec, never the absence of evidence:
+        # a timed-out `git config` silently disabling a safety warning is how a
+        # repo holding real un-backed-up work goes unreported.
+        real_git = drs._git
+        drs._git = lambda repo, *a, **k: (99, "", "timeout") if a and a[0] == "config" else real_git(repo, *a, **k)
+        unreadable = drs.has_full_fetch_refspec(narrow)
+        drs._git = real_git
+        check(unreadable is True,
+              "an UNREADABLE git config was treated as a narrow refspec — a "
+              "transient failure would silently suppress drift warnings")
+
         # --- the narrow repo is NOT counted as risk --------------------------
         repos = drs.discover_primary_repos()
         check({p.name for p in repos} == {"narrow", "full"},
