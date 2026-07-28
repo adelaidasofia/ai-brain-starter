@@ -20,6 +20,18 @@ on:
   pull_request:
   push:
     branches: [main]
+  # MYC-3418: this gate is a REQUIRED status check on repos with a merge queue,
+  # so it must also run on the predicted-merge state the queue builds. A
+  # required context that never posts on `merge_group` makes the queue wait
+  # forever. This lives in the GENERATOR, not in any repo: the file is
+  # auto-managed, so a hand-added trigger is reverted on the next daily pass
+  # (MYC-3412). Harmless where no queue exists: `merge_group` never fires.
+  #
+  # NOTE for future edits to this template: no apostrophes. The heredoc is
+  # quoted but sits inside $(...), and bash scans a command substitution for
+  # quote pairs BEFORE heredoc processing, so one bare apostrophe here is an
+  # unterminated quote that breaks the whole script. Caught by the self-test.
+  merge_group:
   schedule:
     - cron: '0 12 * * 1'   # Mondays 12:00 UTC
   workflow_dispatch:
