@@ -37,6 +37,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # A required status check MUST also run inside the merge queue (MYC-3418).
+  # The queue exists to validate the PREDICTED merge; a required context with no
+  # `merge_group:` trigger never posts there, so the queue waits forever for a
+  # check that will never arrive. Both jobs in this file are required contexts.
+  # Pairs with the `cancel-in-progress` guard below, which already refuses to
+  # cancel a merge_group run — a cancelled run never reports either.
+  merge_group:
   workflow_dispatch:
 
 concurrency:
