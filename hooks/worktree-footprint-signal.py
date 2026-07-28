@@ -55,6 +55,7 @@ from pathlib import Path
 HOOK_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOK_DIR))
 
+from _lib.safe_read import safe_read_text  # noqa: E402
 from _lib.worktree_safety import (  # noqa: E402
     WORKTREES_SEG,
     detect_cloud_sync,
@@ -88,6 +89,16 @@ DEFAULT_BLOAT_DIRS = (
 # Scripts dir of the installed skill — where the auto-capable relocate helpers
 # live. The offer prints ready-to-run commands against this canonical path.
 SKILL_SCRIPTS = "~/.claude/skills/ai-brain-starter/scripts"
+
+
+
+def _read_text_bounded(path: Path) -> str | None:
+    """Shared regular-file boundary: skips placeholders/special files, bounded
+    in size and wall-clock. Required because this module now walks recursively,
+    and the dirs it walks (.smart-env especially) commonly live inside a synced
+    vault where a plain read materializes placeholders and can stall."""
+    result = safe_read_text(path, timeout=2.0, max_bytes=1_000_000)
+    return result.text if result.ok else None
 
 
 def _emit(ctx: str | None) -> int:
@@ -203,9 +214,12 @@ def _machinery_relocated(vault: Path) -> bool:
         except OSError:
             continue
         for man in manifests:
+            raw = _read_text_bounded(man)
+            if raw is None:
+                continue
             try:
-                doc = json.loads(man.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
+                doc = json.loads(raw)
+            except ValueError:
                 continue
             mv = doc.get("vault") if isinstance(doc, dict) else None
             if not isinstance(mv, str):
@@ -456,9 +470,12 @@ def _measure_bloat(vault: Path, budget: int, deadline: float = None) -> dict:
 
 
 def _load_cache() -> dict:
+    raw = _read_text_bounded(_bloat_cache_path())
+    if raw is None:
+        return {}
     try:
-        doc = json.loads(_bloat_cache_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        doc = json.loads(raw)
+    except ValueError:
         return {}
     return doc if isinstance(doc, dict) else {}
 
@@ -596,6 +613,45 @@ def bloat_signal(vault: Path) -> str:
     )
 
 
+DEFAULT_SIBLING_WARN = 20
+
+
+def sibling_worktree_signal() -> str:
+    """Orphaned <dev-root>/<repo>-<slug> session worktrees (MYC-587).
+
+    `claude-dev-worktree cleanup` removes these; a session that ends without it
+    leaves one behind, and nothing swept them at all — the vault's own pruner
+    excludes them by design. A 2026-06-07 probe found 60+.
+
+    Bounded by construction: ONE iterdir level and an is_file() per child, no
+    git calls and no recursion, so this stays cheap even on a large fleet.
+    """
+    try:
+        warn_at = max(1, int(os.environ.get("DEV_WORKTREE_WARN", DEFAULT_SIBLING_WARN)))
+    except ValueError:
+        warn_at = DEFAULT_SIBLING_WARN
+    root = os.environ.get("ABS_DEV_ROOT", "").strip()
+    dev_root = Path(root).expanduser() if root else Path.home() / "dev"
+    try:
+        if not dev_root.is_dir():
+            return ""
+        # A LINKED worktree's `.git` is a pointer FILE; a real checkout's is a
+        # directory. That discriminator is what keeps actual clones out.
+        n = sum(1 for c in dev_root.iterdir()
+                if c.is_dir() and (c / ".git").is_file())
+    except OSError:
+        return ""
+    if n <= warn_at:
+        return ""
+    return (
+        f"[footprint] {n} leftover session worktree(s) under {dev_root} "
+        f"(soft cap {warn_at}). Each is close to a full checkout. The daily "
+        f"maintenance pass reclaims the safe ones automatically; force it now "
+        f"with `python3 scripts/dev-worktree-prune.py` (dry-run) then `--apply` "
+        f"— dirty ones are snapshotted first and un-backed-up ones are kept."
+    )
+
+
 def main() -> int:
     if os.environ.get("WORKTREE_FOOTPRINT_BYPASS") == "1":
         return _emit(None)
@@ -625,6 +681,12 @@ def main() -> int:
             continue
         if sig:
             lines.append(sig)
+
+    # Leftover session worktrees under the dev root (MYC-587). Independent of
+    # main_repo: these are code-repo siblings, not vault scratch worktrees.
+    sib = sibling_worktree_signal()
+    if sib:
+        lines.append(sib)
 
     # Footprint observability needs a repo to measure — gated on main_repo.
     if main_repo is not None:

@@ -1,40 +1,60 @@
 #!/usr/bin/env python3
-"""SessionStart hook: surface GENUINE un-backed-up drift across ~/dev (MYC-683).
+"""dev-drift-report — GENUINE un-backed-up drift across the dev root (MYC-683/2070).
 
-This is the HARM metric, not a proxy. The original version counted commits
-whose exact SHA was on no remote (`git log --branches --not --remotes`). That
-conflates three very different things and cried wolf at ~25x:
+Reports the HARM, not a proxy. Counting commits whose SHA is on no remote
+(`git log --branches --not --remotes`) conflates three very different things and
+cried wolf at ~25x:
 
-  - GENUINE_UNIQUE  : real divergent work backed up nowhere  -> the ONLY real drift
+  - GENUINE_UNIQUE  : real divergent work backed up nowhere -> the ONLY real drift
   - TRUE_MERGED/SQUASH_MERGED_STALE : content already on origin (squash artifacts)
   - RELIC           : pre-history-rewrite orphans (obsolete, not stranded)
 
-A cry-wolf banner trains everyone to ignore it, which defeats the whole point.
-So we run the cheap SHA pre-filter (find_unpushed_local_commits) to get the
-suspect branches, then CLASSIFY each (classify_branch) and headline only the
-GENUINE_UNIQUE count. The content-safe + relic buckets are noted separately and
-pointed at `dev-repo-reaper.py`, which drains them safely. A Δ-over-24h signal
-flags whether genuine drift is GROWING (the real alarm) vs holding steady.
+A cry-wolf banner trains everyone to ignore it, which defeats the point. So the
+cheap SHA pre-filter finds the suspect branches, each is CLASSIFIED, and only the
+genuine count is headlined; the drainable buckets are demoted to one line
+pointing at dev-repo-reaper.py. A delta-over-24h signal says whether genuine
+drift is GROWING (the real alarm) or holding steady.
 
-Codified MYC-683. Pairs with list-wip-stashes-on-session-start.py.
+WHY THIS IS NOT A SessionStart HOOK. The scan is fleet-wide git I/O (~15s cold
+over ~56 repos). Paying that at every session start costs a process and seconds
+on the interactive path, and a surfacer that overruns its hook timeout is killed
+and reports nothing -- which reads exactly like a clean fleet. So the expensive
+leg runs once in the daily maintenance pass with --write-state, and the
+SessionStart surface (dev-hub-refresh-on-session-start.py, which already reads a
+state file about this same fleet) renders it for free: same guarantee, no added
+fan-out (docs/adr/0004-footprint-sla-gate.md).
 
 Client-safe posture (MYC-2070): the dev root is $ABS_DEV_ROOT / the `dev_root`
 key in ~/.claude/dev-hygiene.json / ~/dev, and a repo that is DELIBERATELY
-local-only opts out with a `.no-remote-ok` file (or the config's `no_remote_ok`
-list) so it is not surfaced every session forever.
+local-only opts out with a `.no-remote-ok` file (or the config `no_remote_ok`
+list) so it is not surfaced forever.
 
-WIRING (SessionStart):
-  python3 ${CLAUDE_PLUGIN_ROOT}/hooks/list-unpushed-commits-on-session-start.py
+Usage:
+  dev-drift-report.py                 # print the section ("" = clean fleet)
+  dev-drift-report.py --write-state   # also persist it for the SessionStart surface
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# This lives in scripts/ now, so reach the hooks/_lib package explicitly. Own
+# sibling FIRST: a ~/.claude/hooks copy can be an older deploy, and a stale
+# classifier here would report a clean fleet it cannot actually see.
+for _cand in (
+    os.environ.get("DEV_REPO_SCAN_DIR"),
+    str(Path(__file__).resolve().parent.parent / "hooks"),
+    str(Path.home() / ".claude" / "skills" / "ai-brain-starter" / "hooks"),
+    str(Path.home() / ".claude" / "hooks"),
+):
+    if _cand and (Path(_cand) / "_lib" / "dev_repo_scan.py").exists():
+        sys.path.insert(0, _cand)
+        break
 
 try:
     from _lib.dev_repo_scan import (  # type: ignore
@@ -46,9 +66,11 @@ try:
         fetch_repos_capped,
         format_claim_section,
     )
-except Exception:
-    print(json.dumps({}))
-    sys.exit(0)
+except Exception as _exc:  # a lib older than this script -> fail LOUD, never silent
+    print(f"dev-drift-report: _lib/dev_repo_scan.py is missing or older than this "
+          f"script ({_exc}). Re-run scripts/install-hooks-user-level.py.",
+          file=sys.stderr)
+    sys.exit(2)
 
 STATE_PATH = Path.home() / ".claude" / ".drift-surfacer-state.json"
 STATE_RETENTION_S = 7 * 24 * 3600
@@ -84,17 +106,22 @@ def _claim_cache_write(section: str | None, n_unpushed: int) -> None:
         pass  # cache is an optimization, never a correctness dependency
 
 
+DRIFT_STATE_PATH = Path(
+    os.environ.get("DEV_DRIFT_STATE")
+    or (Path.home() / ".claude" / ".dev-drift-state.json")
+)
+
+
+class _Done(Exception):
+    """Carries the finished section out of the render path's early exits."""
+
+    def __init__(self, message=None):
+        Exception.__init__(self)
+        self.message = message or ""
+
+
 def _emit(message: str | None = None) -> None:
-    if message:
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": message,
-            }
-        }))
-    else:
-        print(json.dumps({}))
-    sys.exit(0)
+    raise _Done(message)
 
 
 def _delta_24h(genuine_now: int) -> int | None:
@@ -123,12 +150,7 @@ def _delta_24h(genuine_now: int) -> int | None:
     return None if baseline is None else genuine_now - baseline
 
 
-def main() -> None:
-    try:
-        json.load(sys.stdin)
-    except Exception:
-        pass
-
+def _render() -> None:
     # FULL FLEET, worktree-deduped — every git repo under the dev root, not
     # just the ones touched in the last hour (MYC-1894: the active-window filter
     # is the coverage hole that hid three whole un-backed-up repos, one +13).
@@ -240,5 +262,56 @@ def main() -> None:
     _emit(f"{claim_section}\n\n{body}" if claim_section else body)
 
 
+def build_section() -> str:
+    """The rendered drift section, or "" when nothing needs a human."""
+    try:
+        _render()
+    except _Done as done:
+        return done.message
+    return ""
+
+
+def write_state(section: str, path: Path = None) -> Path:
+    """Persist the section for the SessionStart surface to render for free.
+
+    Written even when the fleet is CLEAN: the reader must be able to tell
+    "measured, nothing wrong" from "never measured", and an absent file must
+    never be reported as a clean fleet.
+    """
+    path = path or DRIFT_STATE_PATH
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps({"ts": time.time(), "section": section}),
+                       encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        print(f"dev-drift-report: could not write {path}: {exc}", file=sys.stderr)
+    return path
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description="Report un-backed-up drift across the dev root.")
+    ap.add_argument("--write-state", action="store_true",
+                    help="persist the section for the SessionStart surface")
+    args = ap.parse_args()
+    section = build_section()
+    if args.write_state:
+        write_state(section)
+    if section:
+        print(section)
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    # Windows cp1252-console safety (#313): these CLIs print em dashes and warning
+    # glyphs, and an unguarded non-ASCII print raises UnicodeEncodeError there --
+    # the caller then reads the empty output as "nothing to report", which on a
+    # drift/reap surface means "clean fleet". Force UTF-8 so it cannot happen.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(main())

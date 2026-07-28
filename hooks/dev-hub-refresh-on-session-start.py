@@ -19,7 +19,21 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
+
+# Drift state written by the daily `dev-drift-report.py --write-state` leg. Read
+# here rather than recomputed: the scan is ~15s of fleet-wide git I/O, and this
+# hook exists precisely to keep the interactive path free of it (MYC-2070 +
+# docs/adr/0004-footprint-sla-gate.md — rendering it here adds NO fan-out, while
+# a second SessionStart hook would have added a process to every session start).
+DRIFT_STATE_PATH = Path(
+    os.environ.get("DEV_DRIFT_STATE")
+    or (Path.home() / ".claude" / ".dev-drift-state.json")
+)
+# Past this, the reading describes a fleet that may have moved on. Say so rather
+# than presenting it as current — a stale "all clear" is the failure mode.
+DRIFT_STALE_HOURS = 36.0
 
 STATE_PATH = Path(
     os.environ.get("DEV_HUB_REFRESH_STATE")
@@ -48,6 +62,34 @@ def _emit(message: str | None = None) -> None:
     sys.exit(0)
 
 
+def drift_section() -> str:
+    """The un-backed-up-drift section from the daily leg's state file, or "".
+
+    Absent state is SILENT, never "clean": nothing has measured this fleet yet
+    (fresh install, or the daily pass has not run), and reporting that as a
+    clean bill of health is exactly the false-assurance this surface exists to
+    prevent. Daemon liveness is surface-stale-automation-failures.py's job.
+    """
+    try:
+        doc = json.loads(DRIFT_STATE_PATH.read_text())
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(doc, dict):
+        return ""
+    section = doc.get("section") or ""
+    if not section:
+        return ""
+    try:
+        age_h = (time.time() - float(doc.get("ts", 0))) / 3600
+    except (TypeError, ValueError):
+        return section
+    if age_h > DRIFT_STALE_HOURS:
+        return (f"{section}\n\n_(measured {age_h:.0f}h ago — the daily maintenance "
+                f"pass has not run since; refresh with "
+                f"`python3 scripts/dev-drift-report.py`.)_")
+    return section
+
+
 def main() -> None:
     try:
         json.load(sys.stdin)
@@ -63,7 +105,8 @@ def main() -> None:
     if not isinstance(summary, dict):
         _emit()
 
-    _emit(format_hub_surface_line(summary, threshold=THRESHOLD))
+    sections = [x for x in (drift_section(), format_hub_surface_line(summary, threshold=THRESHOLD)) if x]
+    _emit("\n\n".join(sections) if sections else None)
 
 
 if __name__ == "__main__":

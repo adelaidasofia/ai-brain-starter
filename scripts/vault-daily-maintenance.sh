@@ -101,6 +101,49 @@ if [ $FORCE -eq 0 ] && close_resource_high; then
   exit 0
 fi
 
+# --- idle gate (MYC-2363) ---------------------------------------------------
+# The load average says the machine is not busy; it does not say the machine is
+# a good place to spend a few minutes of disk churn right now. Two cases where
+# it is not, both invisible to loadavg:
+#   * ON BATTERY - a GC pass is never worth someone's remaining charge. It is a
+#     daily job; tomorrow (or the next time they plug in) is soon enough.
+#   * SOMEONE IS TYPING - felt footprint is the point. Work that lands while the
+#     user is mid-task is exactly the "the install made my machine slower"
+#     experience this whole track exists to prevent.
+# Both fail OPEN: a machine we cannot interrogate runs the pass as before.
+# --force overrides (the manual "run it now" path).
+on_battery() {
+  if command -v pmset >/dev/null 2>&1; then
+    pmset -g batt 2>/dev/null | grep -q "Now drawing from 'Battery Power'" && return 0
+    return 1
+  fi
+  for s in /sys/class/power_supply/BAT*/status; do
+    [ -r "$s" ] && grep -qi discharging "$s" && return 0
+  done
+  return 1
+}
+
+# Seconds since the last keyboard/mouse event, or empty when unknowable.
+user_idle_seconds() {
+  if command -v ioreg >/dev/null 2>&1; then
+    ioreg -c IOHIDSystem 2>/dev/null \
+      | awk '/HIDIdleTime/ {print int($NF/1000000000); exit}'
+  fi
+}
+
+if [ $FORCE -eq 0 ]; then
+  if on_battery; then
+    log "DEFERRED - on battery. A daily GC pass is not worth someone's charge; next run catches up."
+    exit 0
+  fi
+  IDLE_S="$(user_idle_seconds)"
+  IDLE_FLOOR="${MAINT_MIN_USER_IDLE_SEC:-300}"
+  if [ -n "$IDLE_S" ] && [ "$IDLE_S" -lt "$IDLE_FLOOR" ] 2>/dev/null; then
+    log "DEFERRED - someone is at the keyboard (idle ${IDLE_S}s < ${IDLE_FLOOR}s). Next daily run will catch up."
+    exit 0
+  fi
+fi
+
 # --- serialize against a live close cascade --------------------------------
 if ! close_mutex_acquire 60; then
   log "DEFERRED - a close cascade (or another maintenance pass) holds the mutex. Next daily run will catch up."
@@ -177,6 +220,56 @@ PASSIVE="$SCRIPT_DIR/passive-capture.py"
 # no relocation was ever recorded. rc=1 (ALARM) is logged, never fatal (set +e + run).
 RELOCWATCH="$SCRIPT_DIR/relocate-sweep.py"
 [ -f "$RELOCWATCH" ] && run "relocate-watch" /usr/bin/env python3 "$RELOCWATCH" --watch
+
+# === AUTO-GC (MYC-2363) =====================================================
+# The reclaim tier. Every piece below already existed and every one was OPT-IN,
+# so on a default install NOTHING ever ran them and the machine only ever got
+# fuller. An install should leave the machine BETTER over time, so the GC runs
+# by default — behind the same load + battery + idle gates as everything above.
+#
+# There is no opt-in toggle: a toggle that gates the VALUE means the default
+# install stays dirty, which is the bug. ABS_NO_AUTO_GC=1 turns it OFF for a
+# power user who wants to drive reclaim by hand.
+if [ "${ABS_NO_AUTO_GC:-0}" = "1" ]; then
+  log "[auto-gc] SKIPPED - ABS_NO_AUTO_GC=1"
+else
+  # 1. Vault scratch worktrees + orphan dirs + orphan branches + old snapshots.
+  WTPRUNE="$SCRIPT_DIR/worktree-prune.sh"
+  [ -f "$WTPRUNE" ] && VAULT_ROOT="$VAULT" run "worktree-prune" /bin/bash "$WTPRUNE"
+
+  # 2. Stale graph-cache entries (regenerable by construction). The corpus is
+  #    the WHOLE vault ('.') on purpose: the tool drops cache keys that match no
+  #    current file in the corpus, so the widest corpus is the SAFEST one — it
+  #    can only under-prune, never delete a key some other corpus still uses.
+  #    No-ops (rc!=0, logged) when the vault has no graph cache at all.
+  GCACHE="$SCRIPT_DIR/graphify_prune_stale_cache.py"
+  [ -f "$GCACHE" ] && run "graphify-cache-prune" \
+      /usr/bin/env python3 "$GCACHE" . --vault-root "$VAULT"
+
+  # 3. Code-repo branch/worktree/stash drift. --apply reaps ONLY what is
+  #    provably preserved on a remote; un-backed-up work is surfaced, never
+  #    touched, and every deletion writes a recovery manifest.
+  REAPER="$SCRIPT_DIR/dev-repo-reaper.py"
+  [ -f "$REAPER" ] && run "dev-repo-reaper" /usr/bin/env python3 "$REAPER" --apply
+
+  # 4. Orphaned <dev-root>/<repo>-<slug> session worktrees (MYC-587/677).
+  #    Nothing swept these before: the vault pruner deliberately excludes them.
+  #    Dirty ones are snapshotted before removal; un-backed-up ones are kept.
+  WTREAP="$SCRIPT_DIR/dev-worktree-prune.py"
+  [ -f "$WTREAP" ] && run "dev-worktree-prune" /usr/bin/env python3 "$WTREAP" --apply
+
+  # 5. Bare ~/dev hub freshness — fast-forward the clean ones so a recon read is
+  #    never weeks stale (MYC-677 STALE-BARE-CHECKOUT-READ). Dirty / diverged
+  #    hubs are surfaced by the SessionStart hook, never force-moved here.
+  # 6. Un-backed-up drift report -> state file. The EXPENSIVE leg (fleet-wide
+  #    git I/O) lives here so the SessionStart surface can render it for free
+  #    instead of paying ~15s and a process on every interactive start.
+  DRIFT="$SCRIPT_DIR/dev-drift-report.py"
+  [ -f "$DRIFT" ] && run "dev-drift-report" /usr/bin/env python3 "$DRIFT" --write-state
+
+  HUBREFRESH="$SCRIPT_DIR/dev-hub-refresh.py"
+  [ -f "$HUBREFRESH" ] && run "dev-hub-refresh" /usr/bin/env python3 "$HUBREFRESH" --apply
+fi
 
 close_mutex_release
 log "=== vault-daily-maintenance COMPLETE @ $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="

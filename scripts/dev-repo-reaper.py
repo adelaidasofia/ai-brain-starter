@@ -285,4 +285,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313): these CLIs print em dashes and warning
+    # glyphs, and an unguarded non-ASCII print raises UnicodeEncodeError there --
+    # the caller then reads the empty output as "nothing to report", which on a
+    # drift/reap surface means "clean fleet". Force UTF-8 so it cannot happen.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())

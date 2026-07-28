@@ -157,6 +157,46 @@ def main() -> int:
               "the reaper surfaced a `.no-remote-ok` repo the surfacer suppresses "
               "(two consumers, one policy — they must not disagree)")
 
+        # --- ACTIVATION: the surface actually reaches a session ------------
+        # The capability was missing from client installs, so "the classifier
+        # is right" is only half the ticket — the verdict has to arrive
+        # somewhere a person reads. The expensive scan runs in the daily pass
+        # and writes state; the existing dev-hub SessionStart hook renders it,
+        # which is why this adds no fan-out (footprint SLA, ADR-0004).
+        state = tmp / "drift-state.json"
+        env = dict(os.environ, ABS_DEV_ROOT=str(dev), DEV_DRIFT_STATE=str(state),
+                   DEV_REPO_SCAN_DIR=str(HOOKS))
+        rep = subprocess.run(
+            [sys.executable, str(HOOKS.parent / "scripts" / "dev-drift-report.py"),
+             "--write-state"], capture_output=True, text=True, env=env)
+        check(rep.returncode == 0, f"dev-drift-report failed: {rep.stderr[-400:]}")
+        check(state.is_file(),
+              "the daily leg wrote no state file — the SessionStart surface "
+              "would have nothing to render")
+        doc = json.loads(state.read_text(encoding="utf-8"))
+        check("no-remote" in (doc.get("section") or ""),
+              f"the persisted section does not name the un-backed-up repo: "
+              f"{(doc.get('section') or '')[:200]!r}")
+
+        hook = subprocess.run(
+            [sys.executable, str(HOOKS / "dev-hub-refresh-on-session-start.py")],
+            input="{}", capture_output=True, text=True, env=env)
+        rendered = json.loads(hook.stdout or "{}")
+        ctx = (rendered.get("hookSpecificOutput") or {}).get("additionalContext", "")
+        check("no-remote" in ctx,
+              f"the SessionStart surface did not render the drift section "
+              f"(got {ctx[:200]!r}) — the verdict never reaches a human")
+
+        # An ABSENT state file must be SILENT, never reported as a clean fleet.
+        state.unlink()
+        hook = subprocess.run(
+            [sys.executable, str(HOOKS / "dev-hub-refresh-on-session-start.py")],
+            input="{}", capture_output=True, text=True, env=env)
+        ctx2 = (json.loads(hook.stdout or "{}").get("hookSpecificOutput") or {}).get(
+            "additionalContext", "")
+        check("no-remote" not in ctx2 and "LOST-WORK" not in ctx2,
+              "an absent state file still produced a drift verdict")
+
     if failures:
         print("FAILED — unpushed/no-remote drift surface (MYC-2070):")
         for f in failures:
