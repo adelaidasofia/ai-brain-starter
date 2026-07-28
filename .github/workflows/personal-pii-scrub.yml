@@ -27,20 +27,11 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  # A superseded push to the same PR cancels the in-flight run instead of
-  # billing it to completion. Scoped to pull_request ONLY: push / schedule runs
-  # are never cancelled (and if a merge queue is ever wired here, cancelling a
-  # queued group would deadlock it). Added by MYC-3180 after ci-cost-audit.py
-  # flagged this workflow as billing every superseded push in full.
-  group: personal-pii-scrub-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   scrub:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           fetch-depth: 0
       - name: Personal-name + vault-path scrub (source files)
