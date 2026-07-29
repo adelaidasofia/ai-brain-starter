@@ -146,6 +146,11 @@ INTEGRATION_TESTS=(
   test_offmain_strand_guard
   test_session_coordination_guards
   test_cd_worktree_guard_wiring
+  # CHECK A of the same hook (git mutation into a MID-OPERATION repo). Its
+  # anti-trap controls are the load-bearing ones: they prove the guard never
+  # blocks --abort/--quit/--continue/--skip, i.e. never locks the operator
+  # inside the state it flags.
+  test_git_midoperation_guard
   test_trust_prompt_preframing
   test_onboarding_wrong_surface_and_nudge
   test_post_update_email_ask
