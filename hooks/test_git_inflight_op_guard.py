@@ -342,6 +342,38 @@ def main():
     else:
         bad("12. noise", "blocked=%s non-bash-rc=%s" % (noise, rc))
 
+    # 12b. Cross-platform: on Windows the command is `git.exe`. A bare
+    # basename(tok) != "git" test made the guard silently inert on an entire
+    # platform -- worse than not shipping it there. Runs on every OS: the
+    # parser is pure string work, so the Windows shape is testable from here.
+    # Covers what Git Bash / WSL / PATH invocations actually look like. A
+    # Windows absolute path written with BACKSLASHES is a documented gap (the
+    # command arrives as a Bash string, where `\` is legitimately an escape);
+    # asserting it here would be asserting a behavior the hook deliberately
+    # does not have.
+    win_forms = [
+        "git.exe commit -m x",
+        "GIT.EXE commit -m x",
+        '"/c/Program Files/Git/cmd/git.exe" commit -m x',
+    ]
+    missed = []
+    for cmd in win_forms:
+        rc, _, _ = run_hook(cmd, cwd=stalled)
+        if rc != 2:
+            missed.append(cmd)
+    if not missed:
+        ok("12b. Catches `git.exe` / absolute Windows git paths (not inert on Windows)")
+    else:
+        bad("12b. windows git.exe", "not blocked: %s" % missed)
+
+    # And the negative side: a program merely NAMED like git must not match.
+    rc, _, _ = run_hook("gitk --all", cwd=stalled)
+    rc2, _, _ = run_hook("git-foo commit", cwd=stalled)
+    if rc == 0 and rc2 == 0:
+        ok("12c. `gitk` / `git-foo` are not mistaken for git")
+    else:
+        bad("12c. git-lookalike", "gitk rc=%s git-foo rc=%s" % (rc, rc2))
+
     # ----------------------------------------------------------------- leg 13
     _, _, err = run_hook("git commit -m x", cwd=stalled)
     required = [

@@ -77,10 +77,19 @@ state and stops; it never suggests a resolution verb.
 KNOWN GAPS (documented, low-incidence -- stated so nobody reads this hook as
 total coverage). A `git` buried inside another program's argument is not parsed:
 `bash -c "git commit"`, `ssh host git commit`, a git call inside a heredoc or a
-script this hook never sees. The parser reads leading env assignments, transparent
-wrappers (`env`/`sudo`/...), `-C`, `--git-dir`, `GIT_DIR` and `GIT_WORK_TREE`,
-which is the shape real sessions and agents actually emit. The incidents this
-exists for were plain `git commit` calls.
+script this hook never sees. A Windows ABSOLUTE path written with backslashes
+(`C:\\Program Files\\Git\\cmd\\git.exe commit`) is also missed, because the command
+arrives as a Bash string and `shlex` correctly treats a backslash as an escape;
+parsing it would mean guessing the quoting dialect per command, which would
+break ordinary POSIX quoting for everyone to catch a form that a Bash tool
+call essentially never emits. Bare `git`, `git.exe` (any case), and
+forward-slash paths ARE covered, which is what Git Bash / WSL / PATH
+invocations actually look like.
+
+The parser reads leading env assignments, transparent wrappers (`env`/`sudo`/
+...), `-C`, `--git-dir`, `GIT_DIR` and `GIT_WORK_TREE`, which is the shape real
+sessions and agents emit. The incidents this exists for were plain `git commit`
+calls.
 
 Fails OPEN on any error (missing git, unreadable dir, timeout). A correctness
 guard that hard-fails would block every git command in the repo on a transient
@@ -163,6 +172,21 @@ def _inline_bypass(command: str, var: str) -> bool:
     return False
 
 
+def _is_git_exe(token: str) -> bool:
+    """True iff `token` invokes git, on every platform this ships to.
+
+    A bare `basename(token) != "git"` test is inert on Windows, where the
+    command is `git.exe` (and `C:\\Program Files\\Git\\cmd\\git.exe` for an
+    absolute invocation) -- the guard would silently never fire for an entire
+    platform, which is worse than not shipping it there. Case-folded because
+    Windows paths are case-insensitive.
+    """
+    base = os.path.basename(token.replace("\\", "/")).lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+    return base == "git"
+
+
 def _git_invocations(command: str):
     """Yield (subcommand, args, workdir_override, gitdir_override) for each git
     call in `command`. Skips leading env assignments and transparent wrappers so
@@ -198,7 +222,7 @@ def _git_invocations(command: str):
             i += 1
         if i >= len(tokens):
             continue
-        if os.path.basename(tokens[i]) != "git":
+        if not _is_git_exe(tokens[i]):
             continue
         i += 1
 
@@ -365,8 +389,10 @@ def main() -> int:
         return 0
 
     # Cheapest possible reject: the overwhelming majority of Bash calls are not
-    # git at all, and must cost nothing beyond this substring test.
-    if "git" not in command:
+    # git at all, and must cost nothing beyond this substring test. Case-folded
+    # -- a case-sensitive test here silently skipped `GIT.EXE commit` on
+    # Windows, defeating the whole hook before the parser ever ran.
+    if "git" not in command.lower():
         return 0
 
     if _inline_bypass(command, BYPASS_VAR):
