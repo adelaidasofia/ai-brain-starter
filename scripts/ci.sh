@@ -314,6 +314,12 @@ INTEGRATION_TESTS=(
   # copy, with a negative control that a first install from a dev tree still
   # wires a runner that exists.
   test_hook_runner_path_stability
+  # In-flight git-operation gate (incident 2026-07-28): proves a fresh install
+  # REGISTERS the guard, wires it in the block-preserving `if [ -f ]` form, and
+  # that the SHIPPED command refuses a commit into a genuinely stalled rebase
+  # while allowing one in a clean repo. Registration is the assertion — a guard
+  # present on disk and absent from settings.json protects nobody.
+  test_installer_registers_inflight_guard
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new
@@ -623,6 +629,7 @@ PY_DIRECT=(
   # ran the hook, so nothing noticed. Also carries the CLASS guard: no hook may
   # resolve a zone at module level.
   hooks/test_auto_capture_ships_tz.py
+  hooks/test_git_inflight_op_guard.py
 )
 dormant_py=()
 while IFS= read -r -d '' f; do

@@ -121,6 +121,14 @@ ABS_FINGERPRINTS = [
     # here until now: present on disk, dormant in behavior on every fresh
     # install (ARTIFACT-WITHOUT-ACTIVATION).
     "ai-brain-starter/hooks/check-cd-outside-worktree.py",
+    # In-flight git-operation gate (incident 2026-07-28). Sibling to the gate
+    # above, same bug family one layer deeper: that one keeps a session's HEAD
+    # isolated, this one refuses to mutate a repo whose .git is ALREADY
+    # mid-operation (paused rebase, unresolved merge, stopped cherry-pick).
+    # MODEL-GENERAL — any agent, any repo, anything that shells out to git can
+    # commit into a stalled rebase — so it belongs in the substrate and is
+    # ACTIVATED here, not left in one machine's ~/.claude (MYC-1017).
+    "ai-brain-starter/hooks/block-git-mutation-mid-operation.py",
     # Auto-remediation (the FIX side of the surfacing hooks):
     "ai-brain-starter/hooks/remediate-runaway-procs.py",
     # Write-time secret guard:
@@ -190,6 +198,10 @@ ABS_OWNED_BASENAMES = {
     # ~/.claude/hooks/ — the hand-wired form on pre-registration machines —
     # dedups against the skill-path copy instead of double-firing.
     "check-cd-outside-worktree.py",
+    # In-flight git-operation gate (2026-07-28). Same reason as its sibling
+    # above: a hand-wired ~/.claude/hooks/ copy must dedup against the
+    # skill-path copy, or the block fires twice on every git command.
+    "block-git-mutation-mid-operation.py",
     "block-secret-in-note.py", "context-budget-measure.py",
     "validate-handoff-frontmatter.py",
     "block-populated-public-skill.py",
