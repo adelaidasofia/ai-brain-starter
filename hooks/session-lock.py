@@ -24,6 +24,27 @@ PreToolUse(Bash)  [the enforcement layer]
 Stop / any other invocation
     Activity heartbeat: bump last_activity_at on this session's entry.
 
+SCOPE LIMIT -- THIS HOOK GATES THE VERB, NOT THE REPO'S STATE
+    `rebase` appears in the gated-verb list above, and that has been misread as
+    "rebases are covered." It is not. This hook stops you STARTING a rebase
+    while a sibling is live. It has NO idea whether one is ALREADY IN FLIGHT.
+
+    Worse, its signal is LIVENESS, which structurally cannot see the dangerous
+    case: a session that starts a rebase and then dies (usage limit, closed
+    terminal, crash) leaves the repo mid-operation while looking exactly like
+    "no session" to a heartbeat check. Incident 2026-07-28: a rebase stalled
+    22+ hours, ~22 commits from several sessions landed on its detached HEAD,
+    and six commits from four sessions fell off `main`. This hook was working
+    correctly the entire time -- a session was stopped from STARTING a rebase,
+    then allowed to commit into someone else's.
+
+    In-flight operation state (rebase-merge/, rebase-apply/, MERGE_HEAD,
+    CHERRY_PICK_HEAD, REVERT_HEAD, BISECT_LOG) is covered by a separate,
+    liveness-independent gate: hooks/block-git-mutation-mid-operation.py.
+    Do not add state checks here -- the two signals have different lifetimes
+    and merging them would make this hook's liveness cache authoritative over
+    facts that outlive any session.
+
 WHY
 ---
 Worktree isolation (per-session git worktrees) prevents the shared-HEAD
