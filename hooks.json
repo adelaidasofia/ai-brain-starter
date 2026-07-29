@@ -127,11 +127,6 @@
             "_comment": "BLOCKING gate (CONCURRENT-SESSION-HEAD-DRIFT). From a worktree-rooted session, blocks `cd`/`pushd` into the MAIN checkout, which shares one .git/HEAD with every other main-checkout session. No-op unless cwd matches <main>/.claude/worktrees/<slug>. Wired in the `if [ -f ]` form on purpose: this hook signals by EXIT CODE 2 and writes its remediation prose to STDERR, so the usual `<script> 2>/dev/null || echo <allow>` idiom would discard the message AND convert the block into an allow. Bypass: WORKTREE_CD_BYPASS=1.",
             "type": "command",
             "command": "if [ -f ~/.claude/skills/ai-brain-starter/hooks/check-cd-outside-worktree.py ]; then [PYTHON] ~/.claude/skills/ai-brain-starter/hooks/check-cd-outside-worktree.py; else echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'; fi"
-          },
-          {
-            "_comment": "BLOCKING gate (GIT-MUTATION-INTO-STALLED-OPERATION). Sibling to the cd guard above: that one stops a session reaching the WRONG HEAD, this one stops any session MUTATING a repo whose HEAD is mid-rebase/merge/cherry-pick. A stalled rebase leaves HEAD detached and is invisible to every routine pre-commit check, so concurrent sessions commit onto it and those commits belong to no branch. The exits (--abort/--quit/--continue/--skip) and all reads stay allowed, or the guard traps the operator inside the state it flags. Per-worktree via `rev-parse --absolute-git-dir`, and follows `git -C <path>`. Wired in the `if [ -f ]` form on purpose: signals by EXIT CODE 2 with remediation prose on STDERR, so the `2>/dev/null || echo <allow>` idiom would discard the message AND convert the block into an allow. Bypass: GIT_MIDOP_BYPASS=1.",
-            "type": "command",
-            "command": "if [ -f ~/.claude/skills/ai-brain-starter/hooks/block-git-mutation-midoperation.py ]; then [PYTHON] ~/.claude/skills/ai-brain-starter/hooks/block-git-mutation-midoperation.py; else echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'; fi"
           }
         ]
       },

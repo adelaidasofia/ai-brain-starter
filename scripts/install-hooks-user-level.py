@@ -120,13 +120,6 @@ ABS_FINGERPRINTS = [
     # here until now: present on disk, dormant in behavior on every fresh
     # install (ARTIFACT-WITHOUT-ACTIVATION).
     "ai-brain-starter/hooks/check-cd-outside-worktree.py",
-    # Git mid-operation gate. check-cd-outside-worktree.py stops a session
-    # reaching the WRONG HEAD; this one stops any session mutating a repo whose
-    # HEAD is mid-rebase/merge/cherry-pick. The prior layer gated the VERB (no
-    # starting a rebase while a sibling is live) and never the STATE, so a
-    # stalled rebase stayed invisible to every routine pre-commit check while
-    # sessions committed into it (GIT-MUTATION-INTO-STALLED-OPERATION).
-    "ai-brain-starter/hooks/block-git-mutation-midoperation.py",
     # Auto-remediation (the FIX side of the surfacing hooks):
     "ai-brain-starter/hooks/remediate-runaway-procs.py",
     # Write-time secret guard:
@@ -191,7 +184,6 @@ ABS_OWNED_BASENAMES = {
     # ~/.claude/hooks/ — the hand-wired form on pre-registration machines —
     # dedups against the skill-path copy instead of double-firing.
     "check-cd-outside-worktree.py",
-    "block-git-mutation-midoperation.py",
     "block-secret-in-note.py", "context-budget-measure.py",
     "block-populated-public-skill.py",
     "warn-workflow-call-permission-elevation.py",
