@@ -25,6 +25,7 @@ agentic-os                                 # template-MYC254
 # ── skills/ directory entries (one per skill dir) ───────────────────────────
 skills/_shared                             # teaching
 skills/backfill-journal-body-context       # personal
+skills/cierre-de-llamada                  # teaching
 skills/coach                               # personal
 skills/coaching                            # personal
 skills/daily-journal                       # personal
