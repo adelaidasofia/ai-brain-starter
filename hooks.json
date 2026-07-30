@@ -157,6 +157,11 @@
           },
           {
             "type": "command",
+            "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/validate-handoff-frontmatter.py 2>/dev/null || echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'",
+            "statusMessage": "Checking handoff files declare consumes_when..."
+          },
+          {
+            "type": "command",
             "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/block-populated-public-skill.py 2>/dev/null || echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'",
             "statusMessage": "Checking template purity (populated data in a public skill)..."
           },

@@ -15,10 +15,23 @@ A file is a handoff if EITHER:
   - frontmatter `type:` is handoff / session-handoff / session-starter /
     prompt
 
-This hook fires on Write and Edit. It scopes to the personal vault
-($HOME/vault/, including its
-.claude/worktrees/ children) so it never fires on unrelated Anthropic
-projects elsewhere on disk.
+This hook fires on Write, Edit and MultiEdit. It scopes to a VAULT so it never
+fires on unrelated projects elsewhere on disk.
+
+Vault detection (issue #375): the old code read
+`os.environ.get("VAULT_ROOT", str(Path.home() / "vault"))`. Nothing sets
+VAULT_ROOT, so it silently defaulted to ~/vault and in_vault() returned False
+for every real file on any vault not literally named "vault" - the guard was
+inert everywhere, with no signal that it was doing nothing.
+
+Now: explicit $VAULT_ROOT wins; otherwise walk up from the target file for the
+nearest ancestor containing a Meta-suffixed folder ("Meta" / "⚙️ Meta"), the
+same signature scripts/_meta_resolver.py keys on. A CLAUDE.md marker is NOT
+usable here: every code repo has one, so it would fire this guard on source
+trees. Detection is deliberately self-contained (no import off scripts/) so a
+hook that gates every Write cannot be broken by an import error.
+
+FAIL OPEN: if no vault can be identified, the write is allowed.
 
 Bypass: HANDOFF_FRONTMATTER_BYPASS=1 in the environment.
 """
@@ -30,7 +43,42 @@ import re
 import sys
 from pathlib import Path
 
-VAULT_ROOT = Path(os.environ.get("VAULT_ROOT", str(Path.home() / "vault")))
+
+def find_vault_root(start: Path) -> Path | None:
+    """Nearest ancestor of `start` that contains a Meta-suffixed folder, or None."""
+    try:
+        here = start.resolve()
+    except (OSError, RuntimeError):
+        return None
+    for cand in (here, *here.parents):
+        try:
+            if any(c.is_dir() and c.name.endswith("Meta") for c in cand.iterdir()):
+                return cand
+        except (OSError, PermissionError):
+            continue
+    return None
+
+
+def vault_root_for(path: Path) -> Path | None:
+    """Vault root governing `path`: auto-detected from the file, else $VAULT_ROOT.
+
+    Detection comes FIRST on purpose. $VAULT_ROOT names ONE vault, but a machine
+    routinely has several (a personal vault plus one per project). If the env var
+    won, every write into any OTHER vault would resolve to a root it does not sit
+    under, in_vault() would be False, and the guard would silently skip exactly
+    the files it exists to check. Per-file detection is correct for all of them;
+    $VAULT_ROOT stays as the fallback for a vault with no Meta-suffixed folder.
+    """
+    found = find_vault_root(path.parent)
+    if found is not None:
+        return found
+    env = (os.environ.get("VAULT_ROOT") or "").strip()
+    if env:
+        try:
+            return Path(env).expanduser().resolve()
+        except (OSError, RuntimeError):
+            return None
+    return None
 
 HANDOFF_FILENAME_RE = re.compile(
     r"(?:^|/)(?:[^/]*[Hh]andoff[^/]*|next-session-[^/]+)\.md$"
@@ -38,16 +86,26 @@ HANDOFF_FILENAME_RE = re.compile(
 
 HANDOFF_TYPES = {"handoff", "session-handoff", "session-starter", "prompt"}
 
+# A handoff is markdown by definition (the lifecycle rule puts them in
+# `⚙️ Meta/Handoffs/*.md`, and HANDOFF_FILENAME_RE already requires .md). Gating
+# on the extension lets the common case (writing code) exit before any I/O.
+MARKDOWN_EXTS = {".md", ".markdown", ".mdx"}
+
 FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 TYPE_LINE_RE = re.compile(r"^type:\s*(\S+)\s*$", re.MULTILINE)
 CONSUMES_LINE_RE = re.compile(r"^consumes_when:\s*(.*?)\s*$", re.MULTILINE)
 
 
 def in_vault(path: Path) -> bool:
+    """True only when `path` sits under an identifiable vault root. No vault
+    found -> False, so the caller allows the write (fail open)."""
+    root = vault_root_for(path)
+    if root is None:
+        return False
     try:
-        path.resolve().relative_to(VAULT_ROOT.resolve())
+        path.resolve().relative_to(root)
         return True
-    except ValueError:
+    except (ValueError, OSError, RuntimeError):
         return False
 
 
@@ -88,6 +146,20 @@ def has_valid_consumes_when(content: str) -> bool:
     return bool(value)
 
 
+def _allow() -> int:
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "permissionDecision": "allow"}}))
+    return 0
+
+
+def _deny(reason: str) -> int:
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": reason}}))
+    return 0
+
+
 def simulate_edit(current: str, old_string: str, new_string: str,
                   replace_all: bool) -> str | None:
     if old_string not in current:
@@ -97,52 +169,78 @@ def simulate_edit(current: str, old_string: str, new_string: str,
     return current.replace(old_string, new_string, 1)
 
 
-def main() -> None:
+def main() -> int:
     if os.environ.get("HANDOFF_FRONTMATTER_BYPASS") == "1":
-        sys.exit(0)
+        return _allow()
 
     try:
         payload = json.load(sys.stdin)
     except Exception:
-        sys.exit(0)
+        return _allow()
 
     tool_name = payload.get("tool_name") or ""
-    if tool_name not in {"Write", "Edit"}:
-        sys.exit(0)
+    # MultiEdit is included deliberately: it can produce exactly the same final
+    # content as Edit, so a guard that ignored it was bypassable by switching tool.
+    if tool_name not in {"Write", "Edit", "MultiEdit"}:
+        return _allow()
 
     tool_input = payload.get("tool_input") or {}
     file_path_str = tool_input.get("file_path") or ""
     if not file_path_str:
-        sys.exit(0)
+        return _allow()
 
     file_path = Path(file_path_str)
-    if not in_vault(file_path):
-        sys.exit(0)
+    # CHEAP GATES FIRST. This hook runs on every Write/Edit/MultiEdit, so the
+    # ordering below is deliberate: the only filesystem WALK (in_vault) happens
+    # last, after the string checks have already ruled out the overwhelming
+    # majority of writes. A handoff is markdown by definition, so a non-markdown
+    # path can exit before any I/O at all.
+    if file_path.suffix.lower() not in MARKDOWN_EXTS:
+        return _allow()
 
     if tool_name == "Write":
         proposed = tool_input.get("content") or ""
     else:
-        old_string = tool_input.get("old_string") or ""
-        new_string = tool_input.get("new_string") or ""
-        replace_all = bool(tool_input.get("replace_all"))
-        if not file_path.exists():
-            sys.exit(0)
+        if tool_name == "MultiEdit":
+            edits = tool_input.get("edits") or []
+        else:
+            edits = [{
+                "old_string": tool_input.get("old_string") or "",
+                "new_string": tool_input.get("new_string") or "",
+                "replace_all": bool(tool_input.get("replace_all")),
+            }]
+        if not edits or not file_path.exists():
+            return _allow()
         try:
             current = file_path.read_text(encoding="utf-8")
         except Exception:
-            sys.exit(0)
-        result = simulate_edit(current, old_string, new_string, replace_all)
-        if result is None:
-            sys.exit(0)
-        proposed = result
+            return _allow()
+        # Apply sequentially, exactly as the tool would. Any edit that does not
+        # apply means we cannot model the result -> allow (fail open).
+        for e in edits:
+            result = simulate_edit(current, e.get("old_string") or "",
+                                   e.get("new_string") or "",
+                                   bool(e.get("replace_all")))
+            if result is None:
+                return _allow()
+            current = result
+        proposed = current
 
     if not is_handoff(file_path, proposed):
-        sys.exit(0)
+        return _allow()
 
     if has_valid_consumes_when(proposed):
-        sys.exit(0)
+        return _allow()
 
-    sys.stderr.write(
+    # Only a file that WOULD be denied pays for the vault walk.
+    if not in_vault(file_path):
+        return _allow()
+
+    # DENY on stdout as JSON, exit 0. NOT stderr+exit 2: the canonical wrapper in
+    # hooks.json is `<hook> 2>/dev/null || echo '{...permissionDecision:allow}'`,
+    # so a non-zero exit is swallowed and REWRITTEN into an allow. A guard that
+    # blocked via exit 2 under that wrapper would be wired and still never block.
+    return _deny(
         "HANDOFF FRONTMATTER MISSING `consumes_when:`\n"
         f"  file: {file_path}\n"
         "\n"
@@ -166,8 +264,21 @@ def main() -> None:
         "Full lifecycle rule: ⚙️ Meta/rules/handoff-files.md\n"
         "Bypass (rare): HANDOFF_FRONTMATTER_BYPASS=1\n"
     )
-    sys.exit(2)
 
 
 if __name__ == "__main__":
-    main()
+    # Windows cp1252-console safety (#313): force UTF-8 so the non-ASCII reason
+    # text can't crash the hook on a Windows console.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
+    try:
+        sys.exit(main())
+    except Exception:
+        # FAIL OPEN: a write-time guard must never block a legitimate write on a
+        # bug of its own. Matches hooks/block-secret-in-note.py.
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "allow"}}))
+        sys.exit(0)
