@@ -56,14 +56,32 @@ PREFLIGHT_BASENAME = "journal-preflight.py"
 # always the matchers hooks.json actually registers the guard under.
 FALLBACK_MATCHERS = ("Bash", "Write|Edit|MultiEdit")
 HEAL_COOLDOWN_SECONDS = 6 * 3600
-# A guard command names its script as a quoted or bare ~/ or / path ending in the guard
-# basename. Tolerates the `python3 <path> 2>/dev/null || echo ...` fallback-chain form.
+# A guard command names its script as a quoted or bare ABSOLUTE path ending in the guard
+# basename. Covers POSIX (`/...`, `~/...`) AND Windows drive paths (`C:\...`), quoted or
+# bare, with or without spaces in the path. Tolerates both the POSIX
+# `python3 <path> 2>/dev/null || echo ...` fallback-chain form and the Windows
+# `py -3 "<hook_runner>" --fallback allow "<guard>"` form the installer writes.
+#
+# WHY the platform branch matters: install-hooks-user-level.py writes Windows ABS paths
+# (`"C:\Users\...\warn-journal-saved-without-context.py"`). A POSIX-only pattern never
+# matches them, so _guard_script_exists() returns False for a guard that IS correctly
+# registered and DOES exist -> every matcher reads as missing -> this hook nags on every
+# session forever, and the install command it tells the user to run cannot ever clear it.
+_ABS_START = r"(?:~|/|[A-Za-z]:[\\/])"
 _GUARD_PATH_RE = re.compile(
-    r"['\"]?((?:~|/)[^\s'\"|&;]*" + re.escape(GUARD_BASENAME) + r")['\"]?"
+    r"\"(" + _ABS_START + r"[^\"]*?" + re.escape(GUARD_BASENAME) + r")\""
+    r"|'(" + _ABS_START + r"[^']*?" + re.escape(GUARD_BASENAME) + r")'"
+    # Bare form must begin at an argument boundary, else the `/` inside a RELATIVE path
+    # (`hooks/warn-...py`) matches and a relative command passes as absolute.
+    r"|(?:^|(?<=[\s=]))(" + _ABS_START + r"[^\s'\"|&;]*?"
+    + re.escape(GUARD_BASENAME) + r")"
 )
 # The installed vault hooks embed the absolute vault path right before the meta folder;
-# same regex sync-vault-scripts.sh uses, so both resolve the identical root.
-_VAULT_FROM_CMD_RE = re.compile(r"(/[^'\"]+?)/(?:⚙️ Meta|Meta)/scripts/")
+# same shape sync-vault-scripts.(sh|ps1) uses, so all three resolve the identical root.
+# Separator is [\\/] and the drive-letter form is accepted for the same reason as above.
+_VAULT_FROM_CMD_RE = re.compile(
+    r"((?:/|[A-Za-z]:[\\/])[^'\"]+?)[\\/](?:⚙️ Meta|Meta)[\\/]scripts[\\/]"
+)
 
 
 # --------------------------------------------------------------------------- helpers
@@ -125,7 +143,9 @@ def _guard_script_exists(cmd: str) -> bool:
     m = _GUARD_PATH_RE.search(cmd)
     if not m:
         return False
-    return Path(os.path.expanduser(m.group(1))).is_file()
+    # One group per quoting form (double / single / bare); exactly one is populated.
+    path = m.group(1) or m.group(2) or m.group(3)
+    return Path(os.path.expanduser(path)).is_file()
 
 
 def healthy_matchers(settings: dict) -> "set":
@@ -502,6 +522,48 @@ def self_test() -> int:
         ]}}
         check("negative-stale-script-is-gap",
               "Bash" in diagnose(stale, clone)["missing_matchers"])
+
+        # PLATFORM-SHAPE controls: the path parser must recognise every command form the
+        # installers actually write. These assert on the EXTRACTED path rather than on
+        # is_file(), so they are hermetic and give identical results on POSIX and Windows.
+        # Regression guarded: a POSIX-only pattern silently reports a correctly-registered
+        # Windows guard as missing, which nags forever and no install command can clear.
+        bs = chr(92)
+        win_guard = "C:" + bs + "U" + bs + "JUAN DOE" + bs + "hooks" + bs + GUARD_BASENAME
+        win_runner = "C:" + bs + "U" + bs + "JUAN DOE" + bs + "scripts" + bs + "runner.py"
+        forms = (
+            # Windows installer form: TWO quoted paths, spaces in them, guard is the 2nd.
+            ("win-quoted",
+             'py -3 "' + win_runner + '" --fallback allow "' + win_guard + '"', win_guard),
+            ("posix-tilde-bare",
+             "python3 ~/.claude/hooks/" + GUARD_BASENAME + " 2>/dev/null",
+             "~/.claude/hooks/" + GUARD_BASENAME),
+            ("posix-single-quoted",
+             "python3 '/home/u/hooks/" + GUARD_BASENAME + "'",
+             "/home/u/hooks/" + GUARD_BASENAME),
+            ("posix-spaces-quoted",
+             'python3 "/home/juan doe/hooks/' + GUARD_BASENAME + '"',
+             "/home/juan doe/hooks/" + GUARD_BASENAME),
+        )
+        for label, cmd, want in forms:
+            m = _GUARD_PATH_RE.search(cmd)
+            got = (m.group(1) or m.group(2) or m.group(3)) if m else None
+            check("guard-path-" + label, got == want)
+        # A RELATIVE path must NOT pass as absolute: the `/` inside `hooks/` is not a root.
+        check("guard-path-rejects-relative",
+              _GUARD_PATH_RE.search("python3 hooks/" + GUARD_BASENAME) is None)
+
+        # Vault extraction from an installed vault-hook command: both separators, both
+        # meta-folder spellings.
+        for label, cmd, want in (
+            ("win",
+             'bash "C:' + bs + "v" + bs + "my vault" + bs + "⚙️ Meta" + bs + "scripts"
+             + bs + 'write-hook.sh"',
+             "C:" + bs + "v" + bs + "my vault"),
+            ("posix", "bash '/home/u/v/Meta/scripts/write-hook.sh'", "/home/u/v"),
+        ):
+            m = _VAULT_FROM_CMD_RE.search(cmd)
+            check("vault-from-cmd-" + label, (m.group(1) if m else None) == want)
 
         # REPAIR closes the gap: run the real registration repair against the empty
         # settings and re-diagnose. Proves the guard IS wired under both matchers.
