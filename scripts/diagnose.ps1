@@ -332,7 +332,28 @@ if ($checkBackup) {
     $bverdict = "$(& $py.Source $checkBackup --porcelain $Vault 2>$null)".Trim()
     if ($bverdict -like "BACKED_UP:vault-backup:*") {
       $age = ($bverdict -split ":")[-1]
-      Ok "Off-machine backup present (vault-backup, ~$age days old)"
+      # An archive that EXISTS is not the same as a backup that RUNS. Mirror the
+      # staleness contract of hooks/surface-backup-status.py so the two surfaces
+      # cannot disagree: past the threshold, a snapshot is evidence the schedule
+      # stopped firing, not evidence of a healthy backup.
+      $staleDays = 3.0
+      $envStale = 0.0
+      if ($env:VAULT_BACKUP_STALE_DAYS -and [double]::TryParse(
+            $env:VAULT_BACKUP_STALE_DAYS, [Globalization.NumberStyles]::Float,
+            [Globalization.CultureInfo]::InvariantCulture, [ref]$envStale)) {
+        $staleDays = $envStale
+      }
+      # InvariantCulture on purpose: check-vault-backup.py always emits a '.'
+      # decimal, which a comma-decimal locale (es-ES, de-DE, fr-FR) would fail
+      # to parse, silently collapsing every age to 0 and re-greening the check.
+      $ageNum = 0.0
+      $ageOk = [double]::TryParse($age, [Globalization.NumberStyles]::Float,
+                                  [Globalization.CultureInfo]::InvariantCulture, [ref]$ageNum)
+      if ($ageOk -and $ageNum -gt $staleDays) {
+        Warn "Last vault snapshot is ~$age days old (> ${staleDays}d) - the backup is not running on schedule" "Run it now: pwsh scripts/vault-backup.ps1 run -Vault '$Vault'. Then find out why the schedule stopped: on Windows a task with DisallowStartIfOnBatteries never fires on a laptop running on battery (last result 0x800710E0)."
+      } else {
+        Ok "Off-machine backup present (vault-backup, ~$age days old)"
+      }
     } elseif ($bverdict -eq "BACKED_UP:timemachine") {
       Ok "Off-machine backup present (Time Machine destination configured)"
     } elseif ($bverdict -like "BACKED_UP:cloud:*") {

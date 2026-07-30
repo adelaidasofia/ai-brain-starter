@@ -345,7 +345,18 @@ if [ -n "$CHECK_BACKUP" ]; then
   bverdict="$(python3 "$CHECK_BACKUP" --porcelain "$VAULT" 2>/dev/null)"
   case "$bverdict" in
     BACKED_UP:vault-backup:*)
-      ok "Off-machine backup present (vault-backup, ~${bverdict##*:} days old)" ;;
+      # An archive that EXISTS is not the same as a backup that RUNS. Mirror the
+      # staleness contract of hooks/surface-backup-status.py so the two surfaces
+      # cannot disagree: past the threshold, a snapshot is evidence the schedule
+      # stopped firing, not evidence of a healthy backup.
+      _bage="${bverdict##*:}"
+      _bstale="${VAULT_BACKUP_STALE_DAYS:-3}"
+      if awk "BEGIN{exit !($_bage > $_bstale)}" 2>/dev/null; then
+        warn "Last vault snapshot is ~${_bage} days old (> ${_bstale}d) — the backup is not running on schedule" \
+          "Run it now: bash scripts/vault-backup.sh run --vault '$VAULT'. Then find out why the schedule stopped firing."
+      else
+        ok "Off-machine backup present (vault-backup, ~${_bage} days old)"
+      fi ;;
     BACKED_UP:timemachine)   ok "Off-machine backup present (Time Machine destination configured)" ;;
     BACKED_UP:cloud:*)       ok "Off-machine copy present (${bverdict#BACKED_UP:cloud:} — a cloud copy; single-file snapshots are safer, see docs/BACKUP.md)" ;;
     BACKED_UP:git-remote)    ok "Off-machine backup present (git HEAD pushed to a remote)" ;;
