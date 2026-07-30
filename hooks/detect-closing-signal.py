@@ -25,6 +25,9 @@ Behavior contract:
     list, recently-touched-files list, session-file shell pre-build)
   - Returns additionalContext that injects all of the above plus the cascade
     instructions inline (no separate rule-file read needed)
+  - Adds Phase 4b when this session set a `/goal`: that installs a
+    session-scoped Stop hook which would block the close, and only the user
+    can run `/goal clear`
   - Skips entirely if session is trivial (<5 user messages, no captures detected)
   - Fails open: any error returns empty context, never blocks the user
 
@@ -517,6 +520,78 @@ def count_user_messages(transcript_path: str | None) -> int:
     return count
 
 
+# /goal renders in the transcript as a client-side command record:
+#   <command-name>/goal</command-name> ... <command-args>CONDITION</command-args>
+# Bare `/goal` (no args) is a status query; `/goal clear` clears. Anything else
+# sets the condition.
+_GOAL_CMD = "<command-name>/goal</command-name>"
+_GOAL_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
+
+
+def _record_text(rec: dict) -> str:
+    """Flatten a transcript record's message content to plain text."""
+    msg = rec.get("message")
+    if not isinstance(msg, dict):
+        return ""
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            blk.get("text", "") for blk in content if isinstance(blk, dict)
+        )
+    return ""
+
+
+def active_session_goal(transcript_path: str | None) -> str | None:
+    """Return the condition of a /goal still set on this session, else None.
+
+    `/goal <condition>` installs a session-scoped Stop hook that blocks stopping
+    until the condition holds, so a goal that is still set will fight a
+    deliberate close: the cascade finishes, Stop fires, the goal hook blocks,
+    and the model is re-invoked with nothing left to do.
+
+    The condition lives only in Claude Code's in-memory session state — there is
+    no goal state file — so the transcript is the sole readable record. Replay
+    the /goal invocations in order and keep the last one that SET a goal.
+
+    Blind spot, handled model-side: a goal auto-clears once its condition is
+    met, and that leaves no transcript marker. So a True here means "a goal was
+    set and never explicitly cleared", NOT "a goal is definitely still live".
+    The injected phase tells the model to stay silent when the condition was in
+    fact met — nagging after success is the one case the harness rules out.
+    """
+    if not transcript_path:
+        return None
+    p = Path(transcript_path)
+    if not p.is_file():
+        return None
+    goal: str | None = None
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            for line in f:
+                if _GOAL_CMD not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                text = _record_text(rec)
+                if _GOAL_CMD not in text:
+                    continue  # matched inside some other field, not a command
+                m = _GOAL_ARGS_RE.search(text)
+                args = (m.group(1).strip() if m else "")
+                if not args:
+                    continue  # bare /goal is a status query
+                if args.lower() == "clear":
+                    goal = None
+                else:
+                    goal = args
+    except OSError:
+        return None
+    return goal
+
+
 def list_decisions_with_empty_outcome(meta_dir: Path) -> list[str]:
     """Return relative paths of Decisions/ files where Outcome: is blank."""
     decisions_dir = meta_dir / "Decisions"
@@ -624,6 +699,7 @@ def build_injected_context(
     pending_outcomes: list[str],
     is_trivial: bool,
     is_ambiguous: bool,
+    goal_condition: str | None = None,
 ) -> str:
     """Compose the system block injected into the model's context.
 
@@ -631,11 +707,14 @@ def build_injected_context(
     inline so the model doesn't need to read a separate rule file.
     """
     if is_trivial:
+        # A live /goal blocks stopping regardless of how small the session was,
+        # so the goal note survives the skip-if-trivial rule.
         return (
             f"SESSION CLOSE detected (signal: {matched!r}, confidence: {confidence}). "
             f"This session is trivial (<5 user messages). Per the skip rule, "
             f"skip the cascade and just say a clean goodbye. The Stop hook will "
             f"still log a timestamp."
+            + _goal_clear_block(goal_condition, trivial=True)
         )
 
     if is_ambiguous:
@@ -660,9 +739,46 @@ def build_injected_context(
         + _full_cascade_block(
             timestamp_human, timestamp_file, worktree, vault_root,
             meta_dir, session_file, decisions_dir, captures_file,
-            pending_outcomes,
+            pending_outcomes, goal_condition,
         )
     )
+
+
+def _goal_clear_block(goal_condition: str | None, trivial: bool = False) -> str:
+    """Tail block telling the model to hand `/goal clear` back to the user.
+
+    Empty string when this session never set a goal — no goal, no nag.
+    """
+    if not goal_condition:
+        return ""
+    cond = " ".join(goal_condition.split())
+    if len(cond) > 160:
+        cond = cond[:157] + "..."
+    if trivial:
+        instruction = "End your goodbye with one plain line asking them to type:"
+    else:
+        instruction = (
+            'Add one plain line to the PHASE 4 summary, after "Anything I '
+            'missed?", asking them to type:'
+        )
+    return f"""
+
+PHASE 4b — CLEAR THE SESSION GOAL (fires only because this session set one):
+  Goal on record: "{cond}"
+
+`/goal` installed a session-scoped Stop hook that blocks stopping until that
+condition holds. A close is a deliberate EARLY stop, so unless the condition is
+actually met the goal hook will block this close and re-invoke you with nothing
+left to do — the loop the user is trying to end.
+
+You CANNOT clear it yourself: `/goal` is a client-side command with no tool
+behind it. Only the user can. {instruction}
+
+  /goal clear
+
+EXCEPTION — if the goal's condition was genuinely MET this session, it already
+auto-cleared. Say nothing. Telling the user to clear a goal that succeeded is
+the one case the harness explicitly rules out."""
 
 
 def _full_cascade_block(
@@ -675,6 +791,7 @@ def _full_cascade_block(
     decisions_dir: Path,
     captures_file: Path,
     pending_outcomes: list[str],
+    goal_condition: str | None = None,
 ) -> str:
     """The reusable cascade-instruction block."""
     pending = ", ".join(pending_outcomes) if pending_outcomes else "(none)"
@@ -863,7 +980,7 @@ off M items[, broadcast to <workspaces> if Phase 1.8 fired]. Anything I
 missed?"
 
 Then say goodbye in the user's primary language, warm, no machinery
-narration."""
+narration.{_goal_clear_block(goal_condition)}"""
 
 
 def main() -> int:
@@ -1016,6 +1133,7 @@ def main() -> int:
             pending_outcomes=pending_outcomes,
             is_trivial=is_trivial,
             is_ambiguous=is_ambiguous,
+            goal_condition=active_session_goal(transcript_path),
         )
         emit_context(context)
         log_debug(f"injected context for {confidence} signal in {int((time.time() - start) * 1000)}ms")

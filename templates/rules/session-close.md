@@ -72,6 +72,10 @@ All edits in parallel. No read-write ping-pong. No tool-call narration.
 
 Tell the user plainly what you saved: "Saved to your vault: N decisions, M to-dos, the belief shift about Y. Anything I missed?" Then a warm goodbye in their language. No machinery, no phase names, no file paths unless they ask.
 
+**If this session set a `/goal`, add one line: ask them to type `/goal clear`.** `/goal` installs a session-scoped Stop hook that blocks stopping until its condition holds, so at a deliberate close it blocks the close and re-invokes you with nothing left to do. You cannot clear it — `/goal` is a client-side command with no tool behind it — so the instruction has to go back to the user. The detector injects this as **Phase 4b** when it sees a `/goal` that was never cleared; you do not have to look for it yourself.
+
+**The one exception:** a goal whose condition was actually met auto-cleared already. Say nothing then. Telling someone to clear a goal that succeeded is noise.
+
 ## Phase 4 — Automatic finalization (the Stop hook — you do nothing)
 
 Runs after your turn with zero involvement from you, and silently from the user's view:
