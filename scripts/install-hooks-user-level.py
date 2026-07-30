@@ -103,6 +103,11 @@ ABS_FINGERPRINTS = [
     "ai-brain-starter/hooks/remediate-runaway-procs.py",
     # Write-time secret guard:
     "ai-brain-starter/hooks/block-secret-in-note.py",
+    # Handoff lifecycle guard (issue #375). Shipped since the handoff-files rule
+    # existed but was never registered here, so templates/rules/handoff-files.md
+    # documented an enforcement that did nothing on every install
+    # (ARTIFACT-WITHOUT-ACTIVATION).
+    "ai-brain-starter/hooks/validate-handoff-frontmatter.py",
     # Write-time template-purity guard (MYC-1765, structural isolation plane):
     "ai-brain-starter/hooks/block-populated-public-skill.py",
     # Write-time reusable-workflow permission guard. A callee asking for a scope
@@ -164,6 +169,7 @@ ABS_OWNED_BASENAMES = {
     # dedups against the skill-path copy instead of double-firing.
     "check-cd-outside-worktree.py",
     "block-secret-in-note.py", "context-budget-measure.py",
+    "validate-handoff-frontmatter.py",
     "block-populated-public-skill.py",
     "warn-workflow-call-permission-elevation.py",
     "warn-vault-session-in-worktree.py", "warn-learning-to-tool-private-memory.py",

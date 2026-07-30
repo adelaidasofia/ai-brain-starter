@@ -230,6 +230,10 @@ INTEGRATION_TESTS=(
   # matchers whose stored interpreter path drifted duplicated per matcher; proves owning
   # observe-tool-calls + the dedupe pass collapse the drift copy and never touch user hooks.
   test_installer_dedupes_owned_hooks
+  # Handoff consumes_when guard (#375): proves the guard detects a vault by its
+  # Meta folder (not a hardcoded ~/vault), denies via the JSON protocol the
+  # hooks.json wrapper preserves, covers MultiEdit, and fails OPEN off-vault.
+  test_handoff_frontmatter_guard
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new

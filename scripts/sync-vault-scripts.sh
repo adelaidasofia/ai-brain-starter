@@ -86,12 +86,36 @@ CREATED=(); UPDATED=(); BACKED_UP=(); SKIPPED=(); ABSENT=(); ERRORS=()
 
 note() { [ "$QUIET" -eq 1 ] || echo "$1"; }
 
+# --- pick a REAL python interpreter -------------------------------------------
+# Mirrors the probe sync-vault-scripts.ps1 uses (#313). Under git-bash / MSYS on
+# Windows a bare `python3` on PATH is usually the Microsoft Store
+# app-execution-alias shim: it satisfies `command -v`, but prints nothing and
+# pops the Store, so the resolver call came back EMPTY and this script misread
+# it as "no Meta folder" and silently no-opped (issue #375). Trust only a
+# candidate that actually reports major version 3.
+PY_CMD=""
+_probe_python() {
+  [ "$("$@" -c 'import sys; print(sys.version_info[0])' 2>/dev/null \
+        | head -n1 | tr -d '\r')" = "3" ]
+}
+for _cand in python3 python py; do
+  command -v "$_cand" >/dev/null 2>&1 || continue
+  if [ "$_cand" = "py" ]; then
+    # The Windows launcher needs -3 to guarantee a Python 3 interpreter.
+    _probe_python py -3 && { PY_CMD="py -3"; break; }
+  else
+    _probe_python "$_cand" && { PY_CMD="$_cand"; break; }
+  fi
+done
+unset _cand
+
 # --- Resolve the vault root ---------------------------------------------------
 resolve_vault_from_settings() {
   local settings="$HOME/.claude/settings.json"
   [ -f "$settings" ] || return 1
-  command -v python3 >/dev/null 2>&1 || return 1
-  python3 - "$settings" <<'PY' 2>/dev/null
+  [ -n "$PY_CMD" ] || return 1
+  # shellcheck disable=SC2086  # PY_CMD may be "py -3"; word-splitting intended
+  $PY_CMD - "$settings" <<'PY' 2>/dev/null
 import json, re, sys
 try:
     data = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -126,7 +150,8 @@ fi
 # resolution.sh bans re-implementing the glob in shell); it prefers whichever
 # Meta variant holds a known human subfolder. Disambiguate on folders the human
 # meta owns. It lives beside this script in the repo, so $SCRIPT_DIR resolves it.
-META="$(python3 "$SCRIPT_DIR/_meta_resolver.py" "$VAULT" scripts Decisions Sessions 2>/dev/null || true)"
+# shellcheck disable=SC2086  # PY_CMD may be "py -3"; word-splitting intended
+META="$([ -n "$PY_CMD" ] && $PY_CMD "$SCRIPT_DIR/_meta_resolver.py" "$VAULT" scripts Decisions Sessions 2>/dev/null || true)"
 if [ -z "$META" ]; then
   note "sync-vault-scripts: no Meta folder in $VAULT — skipping (non-fatal)."
   exit 0
