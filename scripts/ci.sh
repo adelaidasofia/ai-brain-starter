@@ -331,6 +331,17 @@ else
   utf8_note="passed"
 fi
 
+# ---- (e2) Hook block-protocol ----------------------------------------------
+# scripts/check-hook-block-protocol.py fails a hook that is registered with the
+# allow-fallback wrapper (`... || echo '{...permissionDecision:allow}'`) but
+# blocks by exiting non-zero. That `||` fires on ANY non-zero exit, so such a
+# hook is rewritten into an ALLOW: present, registered, auditable, and unable to
+# block anything. Caught live on validate-handoff-frontmatter.py (#375) -- the
+# WIRED-BUT-NEUTERED sibling of ARTIFACT-WITHOUT-ACTIVATION. Pure stdlib, so it
+# always runs here.
+echo "==> (e2) hook block-protocol: $PY scripts/check-hook-block-protocol.py"
+"$PY" scripts/check-hook-block-protocol.py
+
 # ---- (f) Python unit tests (scripts/ + hooks/ + tests/) --------------------
 # Every Python unit suite in the repo, run under the SAME interpreter as the rest
 # of the gate. Gate (a) py_compiles them (proves they parse); this proves their
@@ -398,4 +409,4 @@ done
 echo "    OK - ${#PY_DIRECT[@]} hooks/+tests/ direct suite(s) passed; dormancy invariant clean"
 
 echo
-echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + utf8 console guard [$utf8_note]."
+echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed]."
