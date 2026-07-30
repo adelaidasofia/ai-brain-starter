@@ -353,11 +353,22 @@ def classify_signal(
         log_debug("customOnly set and no custom match — skipping shared pack tiers")
         return (None, None)
 
+    # Sign-offs are short; a pasted brief, spec, or handoff is work, not a
+    # wave. Three false positives in nine days (22-jul "ya está", 28-jul
+    # "estoy listo", 30-jul "Borrador listo" inside a 60-line handoff) shared
+    # two causes: re.MULTILINE let $-anchored patterns match ANY line end,
+    # and message length was never considered. Shared pack tiers now match
+    # without MULTILINE ($ = true end of message) and only on short prompts.
+    # User custom phrases keep their original semantics — they are deliberate.
+    es_corto = len(text) <= 300
+
     # Strong tiers (explicit, high_confidence) override FP guards
     for level in ("explicit", "high_confidence"):
+        if level == "high_confidence" and not es_corto:
+            continue
         for pattern in packs.get(level, []):
             try:
-                if re.search(pattern, text, re.IGNORECASE | re.MULTILINE):
+                if re.search(pattern, text, re.IGNORECASE):
                     log_debug(f"matched [{level}] (FP guard bypassed): {pattern}")
                     return (level, pattern)
             except re.error as e:
@@ -365,6 +376,9 @@ def classify_signal(
                 continue
 
     # For weaker tiers (emoji_only, ambiguous), apply FP guards
+    if not es_corto:
+        log_debug("prompt too long for weak-tier sign-off detection, skipping")
+        return (None, None)
     if is_false_positive(text, packs.get("false_positive_guards", [])):
         log_debug("false-positive guard matched (no strong-tier match), skipping")
         return (None, None)
@@ -372,7 +386,7 @@ def classify_signal(
     for level in ("emoji_only", "ambiguous"):
         for pattern in packs.get(level, []):
             try:
-                if re.search(pattern, text, re.IGNORECASE | re.MULTILINE):
+                if re.search(pattern, text, re.IGNORECASE):
                     log_debug(f"matched [{level}]: {pattern}")
                     return (level, pattern)
             except re.error as e:

@@ -53,6 +53,13 @@
     "^[\\s]*✌️?[\\s]*$"
   ],
 
+  "strict_guards": [
+    {
+      "_comment": "'estoy listo/a' = readiness, not goodbye (FP 28-jul-2026 'estoy listo para el día')",
+      "pattern": "\\bestoy\\s+list[oa]\\b"
+    }
+  ],
+
   "false_positive_guards": [
     {
       "_comment": "Don't match 'chao' or 'bye' inside quotes",
