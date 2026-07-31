@@ -41,6 +41,14 @@ trap 'rm -rf "$TMP"' EXIT
 SETTINGS="$TMP/.claude/settings.json"
 mkdir -p "$TMP/.claude"
 
+# A real install has the repo at ~/.claude/skills/ai-brain-starter. Seed it so
+# the path baked into the wired command RESOLVES. Without this, running the
+# repo copy instead would prove nothing about the installed wiring — a stale or
+# missing installed copy would stay invisible, which is the exact
+# ARTIFACT-WITHOUT-ACTIVATION class this file exists to close.
+mkdir -p "$TMP/.claude/skills"
+ln -s "$REPO_ROOT" "$TMP/.claude/skills/ai-brain-starter"
+
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # --- 0. negative control -------------------------------------------------------
@@ -74,18 +82,31 @@ echo "PASS  2. registered command names an existing script"
 MEM="$TMP/memory"; mkdir -p "$MEM"
 printf -- '---\nname: ghost\n---\n\nbody\n' > "$MEM/ghost.md"
 printf -- '# Index\n\n' > "$MEM/MEMORY.md"
-OUT="$(AGENT_MEMORY_DIR="$MEM" "$PY" "$LOADER" <<< '{}')"
+# Run the command string the INSTALLER WROTE, verbatim, with HOME pointed at
+# the sandbox so `~` resolves to the seeded install. Not the repo copy.
+WIRED="$("$PY" - "$SETTINGS" "$LOADER_NAME" <<'PYEOF'
+import json, sys
+settings, needle = sys.argv[1], sys.argv[2]
+for blocks in json.load(open(settings)).get("hooks", {}).values():
+    for blk in blocks:
+        for e in blk.get("hooks", []):
+            if needle in e.get("command", ""):
+                print(e["command"]); raise SystemExit
+PYEOF
+)"
+[ -n "$WIRED" ] || fail "could not read the wired command out of settings.json"
+OUT="$(cd "$TMP" && HOME="$TMP" AGENT_MEMORY_DIR="$MEM" bash -c "$WIRED" <<< '{}')"
 printf '%s' "$OUT" | grep -q "ghost.md" \
-  || fail "loader did not announce the unreachable memo. stdout: ${OUT:0:300}"
+  || fail "the WIRED command did not announce the unreachable memo. cmd: $WIRED | stdout: ${OUT:0:300}"
 printf '%s' "$OUT" | grep -q "memory-index" \
   || fail "announcement missing its [memory-index] tag"
-echo "PASS  3. end-to-end: unreachable memo is announced"
+echo "PASS  3. end-to-end: the WIRED command announces an unreachable memo"
 
 # --- 4. END-TO-END negative control -------------------------------------------
 MEM2="$TMP/memory-ok"; mkdir -p "$MEM2"
 printf -- '---\nname: alpha\n---\n\nbody\n' > "$MEM2/alpha.md"
 printf -- '# Index\n\n- [Alpha](alpha.md) - hook\n' > "$MEM2/MEMORY.md"
-OUT2="$(AGENT_MEMORY_DIR="$MEM2" "$PY" "$LOADER" <<< '{}')"
+OUT2="$(cd "$TMP" && HOME="$TMP" AGENT_MEMORY_DIR="$MEM2" bash -c "$WIRED" <<< '{}')"
 printf '%s' "$OUT2" | grep -q "memory-index" \
   && fail "false positive: healthy memory dir produced an announcement"
 echo "PASS  4. end-to-end negative control: healthy dir is silent"

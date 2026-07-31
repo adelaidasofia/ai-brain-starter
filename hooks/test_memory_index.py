@@ -194,6 +194,126 @@ def main() -> int:
         check("healthy dir adds nothing to the loader payload",
               "memory-index" not in ctx, ctx[-200:])
 
+
+    # --- regression tests added after adversarial review of 619ee45 ----------
+
+    # 12. ALIAS DEDUPE (measured 208x amplification on a real machine): many
+    #     project keys symlink to ONE memory dir. Auditing per-alias meant a
+    #     full second per session start and 208 copies of every line.
+    #     Mutation killed: removing _dedup_dirs.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        real = root / "projects" / "real" / "memory"
+        real.mkdir(parents=True)
+        memo(real, "ghost.md")
+        (real / "MEMORY.md").write_text("# Index\n", encoding="utf-8")
+        for i in range(6):
+            alias = root / "projects" / ("alias%d" % i)
+            alias.mkdir(parents=True)
+            try:
+                (alias / "memory").symlink_to(real, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                pass
+        seen = memory_index._dedup_dirs(
+            [d for d in (root / "projects").glob("*/memory") if d.is_dir()])
+        check("aliases of one dir collapse to one", len(seen) == 1,
+              "got {}".format([str(x) for x in seen]))
+
+    # 13. LINK FORMS: a memo indexed in any plausible markdown spelling is NOT
+    #     reported. Mutation killed: narrowing back to the canonical form only.
+    forms = [
+        "- [A](alpha.md) - h",
+        "- [A](./alpha.md) - h",
+        "- [A](<alpha.md>) - h",
+        '- [A](alpha.md "title") - h',
+        "- [A](alpha.md#anchor) - h",
+        "[ref]: alpha.md",
+        "see `alpha.md` for detail",
+    ]
+    for form in forms:
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            memo(d, "alpha.md")
+            (d / "MEMORY.md").write_text("# Index\n\n" + form + "\n", encoding="utf-8")
+            r = report_for(d)
+            check("link form indexed: {}".format(form[:28]), r == "", r[:160])
+
+    # 14. ORPHAN TIER-2 must NOT mask an unreachable memo. This is mutation A
+    #     from the review: trusting every _index_*.md in the dir, linked or not.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        memo(d, "zeta.md")
+        (d / "MEMORY.md").write_text("# Index\n", encoding="utf-8")
+        (d / "_index_stale.md").write_text("# Stale\n\n- [Z](zeta.md) - h\n",
+                                           encoding="utf-8")
+        r = report_for(d)
+        check("orphaned tier-2 does not mask an unreachable memo",
+              "zeta.md" in r or "not linked from MEMORY.md" in r, r[:250])
+        check("orphaned tier-2 is itself reported",
+              "_index_stale.md" in r, r[:250])
+
+    # 15. TIER-2 SIZE is measured too. The advice says "move entries to tier 2";
+    #     if tier 2 is never measured, the advice relocates data into a blind
+    #     spot. Mutation killed: size-checking tier 1 only.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        memo(d, "alpha.md")
+        (d / "MEMORY.md").write_text(
+            "# Index\n\n- [A](alpha.md) - h\n- [More](_index_big.md) - t2\n",
+            encoding="utf-8")
+        pad = "\n".join("- [P{}](alpha.md) - {}".format(i, "p" * 60) for i in range(600))
+        (d / "_index_big.md").write_text("# Big\n\n" + pad, encoding="utf-8")
+        r = report_for(d)
+        check("oversized tier-2 index is reported",
+              "_index_big.md" in r and "read cliff" in r, r[:250])
+
+    # 16. UNREADABLE tier-2 is announced as unknown, NOT as mass-unreachable.
+    #     A failed read is not an empty answer.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        memo(d, "deep.md")
+        (d / "MEMORY.md").write_text(
+            "# Index\n\n- [More](_index_locked.md) - t2\n", encoding="utf-8")
+        locked = d / "_index_locked.md"
+        locked.write_text("# L\n\n- [D](deep.md) - h\n", encoding="utf-8")
+        try:
+            os.chmod(locked, 0o000)
+            r = report_for(d)
+            readable_again = True
+        except Exception:
+            r, readable_again = "", False
+        finally:
+            try:
+                os.chmod(locked, 0o644)
+            except Exception:
+                pass
+        if readable_again and os.geteuid() != 0:
+            check("unreadable tier-2 is announced as unknown",
+                  "could not be READ" in r, r[:250])
+        else:
+            check("unreadable tier-2 (skipped: running as root)", True)
+
+    # 17. MAX_NAMED truncation path is exercised. Mutation killed: corrupting
+    #     the "and N more" arithmetic, which no fixture previously reached.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        for i in range(memory_index.MAX_NAMED + 5):
+            memo(d, "orphan{:02d}.md".format(i))
+        (d / "MEMORY.md").write_text("# Index\n", encoding="utf-8")
+        r = report_for(d)
+        check("truncation says 'and 5 more'", "and 5 more" in r, r[:250])
+
+    # 18. THRESHOLD BOUNDARIES are pinned. Mutation killed: > -> >=.
+    def _size_labels(n):
+        return " ".join(memory_index._size_problems("X", n))
+    check("size == WARN is silent", _size_labels(memory_index.WARN_BYTES) == "")
+    check("size == WARN+1 warns",
+          "over the" in _size_labels(memory_index.WARN_BYTES + 1))
+    check("size == CLIFF is warn, not loss",
+          "over the" in _size_labels(memory_index.READ_CLIFF_BYTES))
+    check("size == CLIFF+1 is loss",
+          "NOT being loaded" in _size_labels(memory_index.READ_CLIFF_BYTES + 1))
+
     print("\n{} passed, {} failed".format(PASS, FAIL))
     return 1 if FAIL else 0
 
