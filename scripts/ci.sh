@@ -271,6 +271,13 @@ INTEGRATION_TESTS=(
   # every test ran against the vault the env var already named, which makes
   # "resolve from the env" and "resolve from the target" indistinguishable.
   test_hook_vault_root_per_target
+  # The rm -rf rule in that same hook, which MYC-3529 left alone: its regex
+  # spelled the vault root `$HOME/vault` -- a SHELL string in a PYTHON regex,
+  # where `$` is an end-of-line anchor, so the branch was dead and the vault
+  # root was never blocked. Asserts on RESOLVED targets (abs, relative, quoted,
+  # escaped) against a vault named neither "vault" nor by any hardcoded folder
+  # name, so a rule that pattern-matches names cannot pass it.
+  test_rm_rf_vault_target
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new
