@@ -21,6 +21,9 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INSTALLER="$REPO_ROOT/scripts/install-hooks-user-level.py"
+# HOME alone does not sandbox the installer on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$SCRIPT_DIR/lib/sandbox_home.sh"
 
 PASS=0; FAIL=0
 TMP="$(mktemp -d)"
@@ -40,7 +43,7 @@ cat > "$TMP/.claude/settings.json" <<'JSON'
 ] } ] } }
 JSON
 
-HOME="$TMP" python3 "$INSTALLER" --hooks-source "$REPO_ROOT/hooks.json" --quiet >/dev/null 2>&1
+run_sandboxed "$TMP" python3 "$INSTALLER" --hooks-source "$REPO_ROOT/hooks.json" --quiet >/dev/null 2>&1
 
 assert_events() { # $1 settings.json  $2 basename  $3 expected-events-csv  $4 label
   got="$(python3 - "$1" "$2" <<'PY'
@@ -63,7 +66,7 @@ echo "=== 2. PRESERVE: user's own UPS hook untouched ==="
 assert_events "$TMP/.claude/settings.json" "MY_OWN_USER_HOOK" "UserPromptSubmit" "user's own hook preserved"
 
 echo "=== 3. IDEMPOTENT: second install keeps exactly one copy ==="
-HOME="$TMP" python3 "$INSTALLER" --hooks-source "$REPO_ROOT/hooks.json" --quiet >/dev/null 2>&1
+run_sandboxed "$TMP" python3 "$INSTALLER" --hooks-source "$REPO_ROOT/hooks.json" --quiet >/dev/null 2>&1
 dup="$(python3 - "$TMP/.claude/settings.json" <<'PY'
 import json, sys
 h = json.load(open(sys.argv[1]))["hooks"]

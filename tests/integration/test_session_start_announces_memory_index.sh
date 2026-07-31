@@ -19,6 +19,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# HOME alone does not sandbox ~ on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$REPO_ROOT/tests/integration/lib/sandbox_home.sh"
 
 # A REAL interpreter, resolved absolutely. Bare `python3` may be a refuse-shim
 # that exit-1s on every invocation, failing this test for an unrelated reason.
@@ -56,7 +59,7 @@ printf '{"hooks":{}}' > "$SETTINGS"
 grep -q "$LOADER_NAME" "$SETTINGS" && fail "negative control broken: loader present pre-install"
 echo "PASS  0. pre-install settings.json has no session-start loader"
 
-env -u CLAUDECODE HOME="$TMP" "$PY" "$INSTALLER" \
+run_sandboxed "$TMP" env -u CLAUDECODE "$PY" "$INSTALLER" \
   --hooks-source "$REPO_ROOT/hooks.json" --settings "$SETTINGS" --quiet
 
 # --- 1. registered on SessionStart --------------------------------------------
@@ -95,7 +98,7 @@ for blocks in json.load(open(settings)).get("hooks", {}).values():
 PYEOF
 )"
 [ -n "$WIRED" ] || fail "could not read the wired command out of settings.json"
-OUT="$(cd "$TMP" && HOME="$TMP" AGENT_MEMORY_DIR="$MEM" bash -c "$WIRED" <<< '{}')"
+OUT="$(cd "$TMP" && run_sandboxed "$TMP" env AGENT_MEMORY_DIR="$MEM" bash -c "$WIRED" <<< '{}')"
 printf '%s' "$OUT" | grep -q "ghost.md" \
   || fail "the WIRED command did not announce the unreachable memo. cmd: $WIRED | stdout: ${OUT:0:300}"
 printf '%s' "$OUT" | grep -q "memory-index" \
@@ -106,7 +109,7 @@ echo "PASS  3. end-to-end: the WIRED command announces an unreachable memo"
 MEM2="$TMP/memory-ok"; mkdir -p "$MEM2"
 printf -- '---\nname: alpha\n---\n\nbody\n' > "$MEM2/alpha.md"
 printf -- '# Index\n\n- [Alpha](alpha.md) - hook\n' > "$MEM2/MEMORY.md"
-OUT2="$(cd "$TMP" && HOME="$TMP" AGENT_MEMORY_DIR="$MEM2" bash -c "$WIRED" <<< '{}')"
+OUT2="$(cd "$TMP" && run_sandboxed "$TMP" env AGENT_MEMORY_DIR="$MEM2" bash -c "$WIRED" <<< '{}')"
 printf '%s' "$OUT2" | grep -q "memory-index" \
   && fail "false positive: healthy memory dir produced an announcement"
 echo "PASS  4. end-to-end negative control: healthy dir is silent"

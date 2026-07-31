@@ -284,6 +284,20 @@ INTEGRATION_TESTS=(
   # -- the control that matters -- that normalizing did not make the drift guard
   # blind to a genuine hand-edit on either line ending.
   test_high_rise_pin
+  # Windows HOME-sandbox hermeticity (MYC-3536): a test that redirects HOME must
+  # redirect USERPROFILE with it, because Python on Windows resolves "~" from
+  # USERPROFILE and ignores HOME. Without this the suite rewrote the developer's
+  # REAL ~/.claude/settings.json, pointing 95 of 111 hook entries at a temp
+  # worktree; once deleted every hook exited 2 (the BLOCK signal) and denied
+  # every tool call. This static half runs on Linux CI, where the runtime
+  # tripwire below cannot see the bug because HOME works there.
+  test_home_sandbox_hermeticity
+  # Root cause of the same incident: the runner path baked into settings.json
+  # came from Path(__file__), so installing from a throwaway worktree wired ~95
+  # hooks to a path that vanished with it. Pins the resolution to the INSTALLED
+  # copy, with a negative control that a first install from a dev tree still
+  # wires a runner that exists.
+  test_hook_runner_path_stability
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new
@@ -308,7 +322,44 @@ if [ "${#missing_from_gate[@]}" -gt 0 ]; then
   exit 1
 fi
 
+# ---- Real-home tripwire (MYC-3536) ------------------------------------------
+# The suite must never touch the developer's real ~/.claude/settings.json. It is
+# not enough to trust each test's own sandboxing: on Windows `HOME=...` does NOT
+# redirect "~" for Python (ntpath.expanduser reads USERPROFILE and ignores HOME),
+# so tests that look sandboxed ran against the real file for months. Live damage
+# on 2026-07-30: the suite rewrote the real settings.json to point 95 of 111 hook
+# entries at hook_runner.py inside the throwaway worktree the tests ran from;
+# deleting that worktree made every hook exit 2 (Claude Code's BLOCK signal) and
+# denied every tool call in later, unrelated sessions.
+#
+# This is the assertion that would have caught it: content + mtime, before and
+# after EVERY test, so the failure names the exact culprit instead of surfacing
+# weeks later as an unexplained fail-closed harness.
+#
+# The path is resolved through Python's Path.home() — the same resolution the
+# installer uses — deliberately NOT through $HOME, because on Windows those two
+# disagree and $HOME would watch the wrong file.
+REAL_SETTINGS="$(python3 -c 'from pathlib import Path; print(Path.home() / ".claude" / "settings.json")')"
+real_home_fingerprint() {
+  python3 - "$REAL_SETTINGS" <<'PY'
+import hashlib, glob, os, sys
+p = sys.argv[1]
+try:
+    with open(p, "rb") as f:
+        stamp = hashlib.sha256(f.read()).hexdigest()
+    stamp += " mtime=%r" % (os.path.getmtime(p),)
+except FileNotFoundError:
+    stamp = "ABSENT"
+# Installer backups are a dead giveaway that a run wrote here and rolled back,
+# leaving content identical but the side effect on disk.
+stamp += " baks=%d" % len(glob.glob(p + ".bak-*"))
+print(stamp)
+PY
+}
+_home_before_suite="$(real_home_fingerprint)"
+
 echo "==> (b) Shell integration: ${#INTEGRATION_TESTS[@]} tests"
+echo "    real-home tripwire watching: $REAL_SETTINGS"
 for t in "${INTEGRATION_TESTS[@]}"; do
   script="tests/integration/$t.sh"
   if [ ! -f "$script" ]; then
@@ -316,8 +367,21 @@ for t in "${INTEGRATION_TESTS[@]}"; do
     exit 1
   fi
   echo "--- $t"
+  _home_before="$(real_home_fingerprint)"
   bash "$script"
+  _home_after="$(real_home_fingerprint)"
+  if [ "$_home_before" != "$_home_after" ]; then
+    echo "::error::$t modified the real $REAL_SETTINGS — the suite must sandbox HOME *and* USERPROFILE (source tests/integration/lib/sandbox_home.sh and use sandbox_home/run_sandboxed). before=[$_home_before] after=[$_home_after]"
+    exit 1
+  fi
 done
+# Belt and braces: catches a test that restores the file itself but leaves the
+# suite as a whole having moved it (e.g. mtime churn across several tests).
+_home_after_suite="$(real_home_fingerprint)"
+if [ "$_home_before_suite" != "$_home_after_suite" ]; then
+  echo "::error::the integration suite modified the real $REAL_SETTINGS. before=[$_home_before_suite] after=[$_home_after_suite]"
+  exit 1
+fi
 
 # ---- (c) Shell static analysis gate ----------------------------------------
 # Runs the SAME canonical gate as lint.yml's `shellcheck` job - scripts/shellcheck.sh
