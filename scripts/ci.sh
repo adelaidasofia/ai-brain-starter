@@ -60,6 +60,16 @@
 #                           a never-deployed hook look identical to one the user
 #                           switched off, so it never fires and nothing says so.
 #                           Same SILENT-NO-OP family as (e)/(e2)/(e3); pure stdlib.
+#   (e5) subprocess decode - scripts/check-utf8-subprocess.py is the READ half of (e).
+#                           (e) fails a CLI that PRINTS non-ASCII without a UTF-8
+#                           stdout guard; this fails one that READS a child's output
+#                           with text=True and no encoding=, so the decode uses the
+#                           console code page. Every child here prints a vault path
+#                           and every vault path carries the gear emoji, whose 0x8F
+#                           byte is unmapped in cp1252 -> UnicodeDecodeError inside
+#                           subprocess.run(). Shipped twice: #313 (write side) and
+#                           #430 (read side, memory stranded outside the vault).
+#                           Content-pinned in scripts/utf8-subprocess-baseline.txt.
 #   (f) Python unit tests - the scripts/test_*.py stdlib suites (the claude-router
 #                           structured-envelope gate, the graph-liveness
 #                           STAMP-GREEN-WHILE-GONE guard). Gate (a) py_compiles them,
@@ -492,6 +502,17 @@ echo "==> (e3) vault-root reads: $PY scripts/check-vault-root-reads.py"
 echo "==> (e4) home-hook deploy: $PY scripts/check-home-hook-deploy.py"
 "$PY" scripts/check-home-hook-deploy.py
 
+# ---- (e5) Locale-decoded subprocess output ---------------------------------
+# The READ half of (e). scripts/check-utf8-subprocess.py fails a subprocess call
+# that decodes a child's output with the LOCALE encoding instead of an explicit
+# one. On a Spanish/French Windows that is cp1252, and any vault path carries the
+# gear emoji whose 0x8F byte is unmapped there -- subprocess.run() raises before
+# the caller sees a byte. Self-test first (proves the gate still bites), then the
+# fleet against the content-pinned baseline. Pure stdlib, always runs here.
+echo "==> (e5) subprocess decode: $PY scripts/check-utf8-subprocess.py"
+"$PY" scripts/check-utf8-subprocess.py --self-test >/dev/null
+"$PY" scripts/check-utf8-subprocess.py
+
 # ---- (f) Python unit tests (scripts/ + hooks/ + tests/) --------------------
 # Every Python unit suite in the repo, run under the SAME interpreter as the rest
 # of the gate. Gate (a) py_compiles them (proves they parse); this proves their
@@ -566,4 +587,4 @@ done
 echo "    OK - ${#PY_DIRECT[@]} hooks/+tests/ direct suite(s) passed; dormancy invariant clean"
 
 echo
-echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed] + home-hook deploy [passed]."
+echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed] + home-hook deploy [passed] + subprocess decode [passed]."

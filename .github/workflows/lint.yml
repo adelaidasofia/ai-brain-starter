@@ -165,6 +165,21 @@ jobs:
       - name: every ~/.claude/hooks reference has a deploy route
         run: python3 scripts/check-home-hook-deploy.py
 
+      # The READ half of the UTF-8 console guard below. That one fails a CLI that
+      # PRINTS non-ASCII without reconfiguring stdout; this fails one that READS a
+      # child's output with text=True and no encoding=, so the decode uses the
+      # console code page. Every child here prints a vault path, every vault path
+      # carries the gear emoji, and its 0x8F byte is unmapped in cp1252 -- so
+      # subprocess.run() raises before the caller sees a byte. Shipped twice:
+      # #313 (write side) and #430 (read side: the installer reported "could NOT
+      # link Claude Code memory into the vault" on machines where it was fine).
+      # Self-test first (cheap, proves the guard still bites), then the tree.
+      - name: subprocess decode negative controls (the guard must still bite)
+        run: python3 scripts/check-utf8-subprocess.py --self-test
+
+      - name: no locale-decoded subprocess output (pin encoding="utf-8")
+        run: python3 scripts/check-utf8-subprocess.py
+
       # Phase docs distinguish between two kinds of `scripts/foo.sh` references:
       #
       #   1. Backticked relative paths like `scripts/foo.sh` -> should exist in the repo.
