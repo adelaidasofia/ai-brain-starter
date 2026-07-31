@@ -36,6 +36,13 @@
 #                           reads the empty output as failure (ai-brain-starter#313).
 #                           A dedicated lint.yml 'utf8-console-guard' job is
 #                           authoritative in CI; here it runs locally (pure stdlib).
+#   (e2) Hook block-protocol - scripts/check-hook-block-protocol.py fails a hook
+#                           registered with the allow-fallback wrapper
+#                           (`... || echo '{...permissionDecision:allow}'`) that
+#                           blocks by exiting non-zero: the `||` fires on ANY
+#                           non-zero exit, so the block is rewritten into an
+#                           ALLOW and the guard is structurally unable to say no
+#                           (#405). Pure stdlib.
 #   (e3) VAULT_ROOT reads - scripts/check-vault-root-reads.py fails code that
 #                           reads the VAULT_ROOT env var outside a sanctioned
 #                           resolver. A globally-exported VAULT_ROOT names ONE
