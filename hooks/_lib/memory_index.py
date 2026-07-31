@@ -64,6 +64,19 @@ WARN_BYTES = 17_000
 # emits a readable message rather than a wall of text.
 MAX_NAMED = 12
 
+# Each finding carries the remediation that fixes IT, so the closing advice
+# names only what actually fired. A blanket "trim the oversized index" printed
+# for an index well under budget sends the reader to do work that is not needed
+# — and an announcement that prescribes the wrong fix teaches them to discount
+# the whole thing, which is exactly the silence this module exists to prevent.
+FIX_SIZE = ("split the oversized index by topic into `_index_*.md` files "
+            "linked from MEMORY.md")
+FIX_UNREADABLE = ("fix the unreadable tier-2 index file(s) before trusting any "
+                  "reachability result")
+FIX_ORPHAN = "link the orphaned `_index_*.md` file(s) from MEMORY.md"
+FIX_UNREACHABLE = ("add the unindexed memory file(s) to MEMORY.md or to a "
+                   "linked `_index_*.md`")
+
 # Structural link forms, used to find which tier-2 files tier 1 actually links
 # to. Tolerates `<...>`, a title, an anchor and a path prefix.
 LINK_RE = re.compile(r"\]\(\s*<?([^)>\s]+?\.md)(?:#[^)>\s]*)?>?(?:\s+[^)]*)?\)")
@@ -133,7 +146,16 @@ def _linked_tier2(mdir: Path, tier1_text: str):
 
 
 def audit(mdir: Path):
-    """Problems for one memory dir. Empty list = healthy."""
+    """Problems for one memory dir, as text. Empty list = healthy."""
+    return [text for text, _fix in _audit_tagged(mdir)]
+
+
+def _audit_tagged(mdir: Path):
+    """(problem text, remediation) pairs for one memory dir.
+
+    The remediation travels WITH the finding so the caller can close on the
+    fixes that actually fired instead of reciting every fix this module knows.
+    """
     tier1 = mdir / "MEMORY.md"
     if not tier1.exists():
         return []
@@ -144,7 +166,7 @@ def audit(mdir: Path):
         return []
 
     problems = []
-    problems.extend(_size_problems("MEMORY.md", size))
+    problems.extend((t, FIX_SIZE) for t in _size_problems("MEMORY.md", size))
 
     linked, orphans = _linked_tier2(mdir, text)
 
@@ -155,24 +177,27 @@ def audit(mdir: Path):
     for sub in linked:
         try:
             loaded_text.append(sub.read_text(encoding="utf-8", errors="replace"))
-            problems.extend(_size_problems(sub.name, sub.stat().st_size))
+            problems.extend(
+                (t, FIX_SIZE) for t in _size_problems(sub.name, sub.stat().st_size))
         except OSError as exc:
             unreadable.append("{} ({})".format(sub.name, exc.__class__.__name__))
     haystack = "\n".join(loaded_text)
 
     if unreadable:
-        problems.append(
+        problems.append((
             "{} tier-2 index file(s) could not be READ, so what they list is "
             "unknown, not absent: {}. Fix the read before trusting any "
-            "reachability result below.".format(len(unreadable), ", ".join(unreadable))
-        )
+            "reachability result below.".format(len(unreadable), ", ".join(unreadable)),
+            FIX_UNREADABLE,
+        ))
 
     if orphans:
-        problems.append(
+        problems.append((
             "{} tier-2 index file(s) are not linked from MEMORY.md, so nothing "
             "loads them and any memory only they list is invisible: {}.".format(
-                len(orphans), ", ".join(p.name for p in orphans))
-        )
+                len(orphans), ", ".join(p.name for p in orphans)),
+            FIX_ORPHAN,
+        ))
 
     unreachable = [p.name for p in _topic_files(mdir) if p.name not in haystack]
     if unreachable:
@@ -184,11 +209,12 @@ def audit(mdir: Path):
             if linked
             else " (no linked tier-2 `_index_*.md` files; a large corpus needs them)"
         )
-        problems.append(
+        problems.append((
             "{} memory file(s) are referenced by NO index{} — invisible to this "
             "and every future session: {}{}.".format(
-                len(unreachable), tier_note, shown, more)
-        )
+                len(unreachable), tier_note, shown, more),
+            FIX_UNREACHABLE,
+        ))
     return problems
 
 
@@ -210,21 +236,23 @@ def report() -> str:
     if os.environ.get("MEMORY_INDEX_TRUNCATION_BYPASS") == "1":
         return ""
     lines = []
+    fixes = []  # fired remediations, first-seen order, deduped across dirs
     for mdir in memory_dirs():
         try:
-            problems = audit(mdir)
+            problems = _audit_tagged(mdir)
         except Exception:
             continue  # one bad dir must not suppress the others
         label = mdir.parent.name or str(mdir)
-        for p in problems:
-            lines.append("  [{}] {}".format(label, p))
+        for text, fix in problems:
+            lines.append("  [{}] {}".format(label, text))
+            if fix not in fixes:
+                fixes.append(fix)
     if not lines:
         return ""
     return (
-        "**[memory-index]** The memory index cannot be fully loaded. An indexed "
-        "entry is either loaded or its omission is announced — this is the "
-        "announcement.\n\n" + "\n".join(lines) + "\n\n"
-        "Trim the oversized index, link any orphaned `_index_*.md` from "
-        "MEMORY.md, and index anything listed as unreachable, so nothing is "
-        "dropped in silence. Bypass: MEMORY_INDEX_TRUNCATION_BYPASS=1"
+        "**[memory-index]** Something in the memory system will not reach a "
+        "future session. An indexed entry is either loaded or its omission is "
+        "announced — this is the announcement.\n\n" + "\n".join(lines) + "\n\n"
+        "Fix: " + "; ".join(fixes) + " — so nothing is dropped in silence. "
+        "Bypass: MEMORY_INDEX_TRUNCATION_BYPASS=1"
     )
