@@ -359,6 +359,12 @@ def run_self_test() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    # vault-root-ok: CLI default for an explicit --vault-root flag on a standalone
+    # validator that checks ANY vault by path. This script ships in the skill dir and
+    # is never itself inside a vault, so a location-derived _resolve_vault_root() would
+    # resolve to the skill rather than to the vault under test. In --file mode (how
+    # lint-vault-frontmatter.py invokes it) the value is computed but never read: the
+    # --file branch resolves the target path directly. Caller always wins.
     ap.add_argument("--vault-root", default=os.environ.get("VAULT_ROOT", os.getcwd()))
     ap.add_argument("--type", choices=["decision", "session", "journal", "all"], default="all")
     ap.add_argument("--file", help="validate one specific file")
