@@ -289,6 +289,64 @@ else
   fail "a shell \$VAR is sitting unescaped in a regex literal (\$ is an anchor; the branch is dead): $dollar_hits"
 fi
 
+# --------------------------------------------------------------------------
+# 5. EVERY rule in the table has a positive control
+#
+#     This is the generalised lesson, and it is the reason the rm -rf defect
+#     survived as long as it did. The rule was in RULES, it was wired, it was
+#     documented in the module docstring, and it read fine. Nothing anywhere
+#     asserted that it could actually FIRE, so "enforced" and "inert" were
+#     indistinguishable from the outside -- by inspection, by lint, and by CI.
+#
+#     Auditing this file's five rules while fixing rm -rf found that `git
+#     status` had NO positive control either (it does fire -- checked -- but
+#     nobody had ever proven it). One untested blocking rule is how you get
+#     the next silent no-op.
+#
+#     So: a sample per rule, run inside a real vault, each asserted to block.
+#     The COUNT is asserted too, which is the part that keeps this honest --
+#     add a sixth rule and this test fails until it gets a control of its own.
+# --------------------------------------------------------------------------
+git -C "$VAULT" init -q 2>/dev/null
+git -C "$VAULT" config user.email t@t
+git -C "$VAULT" config user.name t
+echo seed > "$VAULT/seed.txt"
+git -C "$VAULT" add seed.txt >/dev/null 2>&1
+git -C "$VAULT" -c commit.gpgsign=false commit -qm init >/dev/null 2>&1
+
+rule_count="$(python3 -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("h", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(len(m.RULES))' "$HOOK")"
+
+# One positive control per rule, in table order.
+RULE_SAMPLES=(
+  "git push"
+  "git status"
+  "rm -rf \"$VAULT\""
+  "grep foo note.md"
+  "find . -name '*.md'"
+)
+
+if [ "$rule_count" != "${#RULE_SAMPLES[@]}" ]; then
+  fail "RULES has $rule_count entries but this test carries ${#RULE_SAMPLES[@]} positive control(s) -- a rule with no proof that it fires is how the rm -rf defect stayed invisible. Add a sample."
+else
+  pass "every one of the $rule_count rules has a positive control"
+fi
+
+fired_all=1
+for sample in "${RULE_SAMPLES[@]}"; do
+  run_rm "$sample" "$VAULT"
+  if [ "$RC" -ne 2 ]; then
+    fail "rule sample does not fire inside a vault: $sample (rc=$RC)"
+    fired_all=0
+  fi
+done
+if [ "$fired_all" -eq 1 ]; then
+  pass "all ${#RULE_SAMPLES[@]} rules actually fire on a live vault (none is silently inert)"
+fi
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "All assertions passed. rm -rf is blocked by resolved TARGET, not by folder name."
