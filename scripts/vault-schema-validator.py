@@ -350,10 +350,37 @@ def run_self_test() -> int:
             print(f"FAIL [{desc}]: expected pass={should_pass}, got pass={actual_pass}")
         else:
             print(f"PASS [{desc}]")
+    # Line-ending regression (the bug behind the Windows total-denial incident).
+    # safe_read_text decodes raw bytes with NO universal-newline translation, so a
+    # file authored on Windows -- or a temp file written in text mode -- reaches
+    # extract_frontmatter with \r\n intact. An LF-only delimiter pattern rejected
+    # it as "not properly closed", which denied EVERY Write/Edit of a vault .md
+    # file on Windows regardless of content.
+    #
+    # Asserting "no error" alone is not enough: a pattern that matched but captured
+    # the wrong span would still look clean. Assert the captured frontmatter too.
+    body = "creationDate: 2026-04-30\nfloor: 16"
+    line_ending_cases = [
+        ("LF line endings", "---\n" + body + "\n---\n\nbody\n"),
+        ("CRLF line endings", ("---\n" + body + "\n---\n\nbody\n").replace("\n", "\r\n")),
+    ]
+    for desc, text in line_ending_cases:
+        fm, err = extract_frontmatter(text)
+        normalized = (fm or "").replace("\r\n", "\n")
+        if err or fm is None:
+            failures += 1
+            print(f"FAIL [{desc}]: {err or 'no frontmatter extracted'}")
+        elif normalized != body:
+            failures += 1
+            print(f"FAIL [{desc}]: captured {normalized!r}, expected {body!r}")
+        else:
+            print(f"PASS [{desc}]")
+
+    total = len(fixtures) + len(line_ending_cases)
     if failures:
-        print(f"\n{failures}/{len(fixtures)} fixtures failed.")
+        print(f"\n{failures}/{total} fixtures failed.")
         return 1
-    print(f"\n{len(fixtures)}/{len(fixtures)} fixtures passed.")
+    print(f"\n{total}/{total} fixtures passed.")
     return 0
 
 
