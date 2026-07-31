@@ -438,6 +438,12 @@ PY_DIRECT=(
   hooks/test_unpushed_drift_surface.py
   hooks/test_claim_surface_honesty.py
   hooks/test_narrow_refspec_falsealarm.py
+  # auto-capture-public-ships shipped `ZoneInfo("America/user-local-tz")`, an
+  # unsubstituted placeholder that raised at IMPORT, so the SessionEnd hook
+  # exited 1 on every machine and captured nothing for its entire life. Nothing
+  # ran the hook, so nothing noticed. Also carries the CLASS guard: no hook may
+  # resolve a zone at module level.
+  hooks/test_auto_capture_ships_tz.py
 )
 dormant_py=()
 while IFS= read -r -d '' f; do

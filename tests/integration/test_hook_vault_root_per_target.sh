@@ -549,37 +549,66 @@ for hook in verify-session-close-cascade.py verify-discoverability-on-close.py; 
 done
 
 # --------------------------------------------------------------------------
-# 11. auto-capture-public-ships.py -- files ships into the OTHER vault
+# 11. auto-capture-public-ships.py -- files the day's ships into the vault the
+#     SESSION is in, and creates nothing in the vault $VAULT_ROOT names.
 #
-#     NOTE, and it is not this ticket's to fix: this hook cannot be run
-#     end-to-end on any machine. Line 34 is
+#     This one runs the hook FOR REAL: stdin, exit code, file on disk. It could
+#     not until the timezone placeholder was fixed -- the module was
 #         TZ = ZoneInfo("America/user-local-tz")
-#     an unsubstituted template placeholder that is not an IANA zone, so the
-#     module raises ZoneInfoNotFoundError at IMPORT, before main() is reached.
-#     That is a separate, pre-existing defect (nothing in the repo substitutes
-#     it). The vault-root fix is still assertable: stub zoneinfo, import, and
-#     ask pending_dir() where the day's ships would be filed.
+#     an unsubstituted template placeholder that is not an IANA key, so it
+#     raised ZoneInfoNotFoundError at IMPORT and the hook exited 1 everywhere.
+#     This case used to stub out `zoneinfo` and ask pending_dir() where ships
+#     WOULD be filed. The stub went out with the bug, and the end-to-end run
+#     that replaced it now pins BOTH defects: a placeholder coming back reddens
+#     this case, not just the dedicated tz suite.
+#
+#     The ~/dev repo is created and torn down inside this case so no later
+#     assertion inherits a populated fake home.
 # --------------------------------------------------------------------------
-got="$( cd "$OTHER" || exit 1
-  env "${CLEAN_ENV[@]}" "VAULT_ROOT=$DECOY" python3 - "$HOOKS/auto-capture-public-ships.py" <<'PY' 2>&1
-import importlib.util, sys, types
-fake = types.ModuleType("zoneinfo")
-class ZoneInfo:  # placeholder-tolerant stand-in; see the note above
-    def __init__(self, key): self.key = key
-fake.ZoneInfo = ZoneInfo
-sys.modules["zoneinfo"] = fake
-spec = importlib.util.spec_from_file_location("hook_under_test", sys.argv[1])
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-print(str(mod.pending_dir()).replace(chr(92), "/"))
+mkdir -p "$FAKEHOME/dev/ai-brain-starter"
+git_repo "$FAKEHOME/dev/ai-brain-starter"
+( cd "$OTHER" || exit 1
+  printf '{}' | env "${CLEAN_ENV[@]}" "VAULT_ROOT=$DECOY" \
+    "HOME=$FAKEHOME" "USERPROFILE=$FAKEHOME" \
+    python3 "$HOOKS/auto-capture-public-ships.py" >"$OUT" 2>"$ERR" )
+RC=$?
+got="$(python3 - "$OTHER" "$DECOY" "$OUT" <<'PY'
+import json, sys
+from pathlib import Path
+
+other, decoy, out = (Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]))
+sub = ("\U0001F344 the user's consulting brand", "\U0001F4CB Pending Signals")
+landed, forbidden = other.joinpath(*sub), decoy.joinpath(*sub)
+bad = []
+
+files = sorted(landed.glob("*.md")) if landed.is_dir() else []
+if not files:
+    bad.append("no Pending Signals file under the session's vault")
+elif "ai-brain-starter" not in files[0].read_text(encoding="utf-8"):
+    bad.append("%s never names the repo that shipped" % files[0].name)
+if forbidden.exists():
+    bad.append("the hook CREATED Pending Signals inside the $VAULT_ROOT decoy")
+
+try:
+    payload = json.loads(out.read_text(encoding="utf-8"))
+except Exception as exc:
+    bad.append("stdout was not JSON (%s)" % exc)
+else:
+    if not payload.get("tz"):
+        bad.append("hook did not report which zone it resolved")
+    if payload.get("captured", 0) < 1:
+        bad.append("hook captured nothing: %r" % (payload,))
+
+print("OK" if not bad else "; ".join(bad))
 PY
 )"
-case "$got" in
-  "$OTHER"*)
-    pass "auto-capture-public-ships files ships into the cwd's vault, not \$VAULT_ROOT's" ;;
-  *)
-    fail "auto-capture-public-ships resolved '$got'; expected a path under '$OTHER'" ;;
-esac
+if [ "$RC" -eq 0 ] && [ "$got" = "OK" ]; then
+  pass "auto-capture-public-ships runs end-to-end and files ships into the cwd's vault, not \$VAULT_ROOT's"
+else
+  fail "auto-capture-public-ships end-to-end: rc=$RC $got"
+  show_streams
+fi
+rm -rf "${FAKEHOME:?}/dev"
 
 # --------------------------------------------------------------------------
 # 12. build-runbook-check.py -- behaviour is identical with and without
