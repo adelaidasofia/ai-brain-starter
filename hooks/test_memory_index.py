@@ -278,20 +278,31 @@ def main() -> int:
         locked.write_text("# L\n\n- [D](deep.md) - h\n", encoding="utf-8")
         try:
             os.chmod(locked, 0o000)
+            # Probe whether the mode is actually ENFORCED rather than inferring
+            # it from the uid. chmod 000 denies reads only where POSIX
+            # permissions bite: root bypasses them, and on Windows chmod only
+            # toggles the read-only bit so the file stays readable and there is
+            # nothing for the guard to report. The old proxy called
+            # os.geteuid(), which does not exist on Windows at all -- it raised
+            # AttributeError and took the whole suite down with it.
+            try:
+                locked.read_text(encoding="utf-8")
+                denied = False
+            except OSError:
+                denied = True
             r = report_for(d)
-            readable_again = True
         except Exception:
-            r, readable_again = "", False
+            r, denied = "", False
         finally:
             try:
                 os.chmod(locked, 0o644)
             except Exception:
                 pass
-        if readable_again and os.geteuid() != 0:
+        if denied:
             check("unreadable tier-2 is announced as unknown",
                   "could not be READ" in r, r[:250])
         else:
-            check("unreadable tier-2 (skipped: running as root)", True)
+            check("unreadable tier-2 (skipped: file mode not enforced here)", True)
 
     # 17. MAX_NAMED truncation path is exercised. Mutation killed: corrupting
     #     the "and N more" arithmetic, which no fixture previously reached.
@@ -313,6 +324,38 @@ def main() -> int:
           "over the" in _size_labels(memory_index.READ_CLIFF_BYTES))
     check("size == CLIFF+1 is loss",
           "NOT being loaded" in _size_labels(memory_index.READ_CLIFF_BYTES + 1))
+
+    # 19. The closing advice names ONLY the fix that fired. The report used to
+    #     recite every remediation this module knows, so an index well under
+    #     budget was still told to "trim the oversized index" -- work that is
+    #     not needed, on a reading that is not true. Advice that is wrong for
+    #     the finding in front of you teaches you to discount the whole
+    #     announcement, which is the silence this module exists to prevent.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        memo(d, "alpha.md")
+        memo(d, "unindexed.md")
+        (d / "MEMORY.md").write_text(
+            "# Index\n\n- [A](alpha.md) - h\n", encoding="utf-8")
+        r = report_for(d)
+        check("unreachable-only names the indexing fix",
+              memory_index.FIX_UNREACHABLE in r, r[:250])
+        check("unreachable-only does NOT prescribe trimming",
+              memory_index.FIX_SIZE not in r and "oversized" not in r, r[:250])
+
+    # 20. ...and the converse, so 19 cannot pass by the advice going silent.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        memo(d, "alpha.md")
+        pad = "\n".join("- [P{}](alpha.md) - {}".format(i, "p" * 60)
+                        for i in range(600))
+        (d / "MEMORY.md").write_text(
+            "# Index\n\n- [A](alpha.md) - h\n" + pad, encoding="utf-8")
+        r = report_for(d)
+        check("oversized-only names the split fix",
+              memory_index.FIX_SIZE in r, r[:250])
+        check("oversized-only does NOT prescribe indexing memories",
+              memory_index.FIX_UNREACHABLE not in r, r[:250])
 
     print("\n{} passed, {} failed".format(PASS, FAIL))
     return 1 if FAIL else 0
