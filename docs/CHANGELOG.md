@@ -9,6 +9,20 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-07-30: closing a session no longer gets stuck behind a goal you set
+
+**Who this affects:** anyone who uses `/goal`.
+
+`/goal <condition>` tells Claude "keep working until this is true." It does that by holding the exit door shut — which is right in the middle of a session and wrong at the end of one. You say "close this session," Claude finishes the close checklist, tries to stop, the goal blocks it, and Claude comes back with nothing left to do. Then again. The only way out is `/goal clear`, and **Claude cannot type it for you** — it is a command your terminal handles, with no tool behind it. So it has to hand you the line.
+
+Now it does. When a session set a goal that was never cleared, the close ends by asking you to type `/goal clear`, quoting the goal so you know which one. If the goal's condition was actually met it already cleared itself, and Claude says nothing — being told to clear something that succeeded is noise.
+
+**Also fixed, same area:** the session-close rule and the close instructions Claude receives had drifted apart on what their step numbers meant. "Phase 3" was the goodbye in one and the audit in the other; "Phase 4" was the goodbye in one and the automatic cleanup in the other. Two documents describing one process, disagreeing about which step is which — and each was internally consistent, so nothing looked wrong. The rule was also missing its commit step entirely, which could hard-block a close. Both are fixed, and a checker now runs against **your** copy of the rule during daily maintenance, since a customised rule is exactly where this drifts.
+
+**On macOS:** the `vault-root` test suite had been failing on every Mac for a path-spelling reason (`/var` vs `/private/var`) that never appeared in CI. Fixed. A gate that is always red on your platform is a gate you learn to skip.
+
+---
+
 ## 2026-07-14: the secret detector stopped crying wolf over container IDs and migration checksums
 
 **Who this affects:** everyone — a detector that flags things that aren't secrets teaches you to stop trusting its real alerts.
