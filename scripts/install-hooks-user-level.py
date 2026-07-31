@@ -433,6 +433,45 @@ def substitute_python_interpreter(template: dict) -> dict:
 _WIN_PY_PATH_RE = re.compile(r"(~?[^\s'\"|&;]+\.py)\b")
 
 
+def _runner_path() -> str:
+    """Absolute path to hook_runner.py to bake into every Windows hook command.
+
+    Prefers the INSTALLED copy under ~/.claude/skills over the checkout this
+    process happens to be running from.
+
+    Why this is not `Path(__file__).parent / "hook_runner.py"` (MYC-3536): that
+    path is written into settings.json and outlives this process by months. Run
+    the installer — or any test that invokes it — from a throwaway git worktree
+    under $TMP and every hook is wired to <worktree>/scripts/hook_runner.py.
+    When the worktree is deleted the launcher can't open the runner and CPython
+    exits 2 — which is Claude Code's intentional-BLOCK signal, not "hook
+    unavailable". So every tool call in every later session is denied, with
+    nothing tying the failure back to the worktree that caused it. Seen live
+    2026-07-30: 95 of 111 entries pointed into four deleted temp worktrees.
+    Same fail-closed class as #375 and #409.
+
+    The hook TARGETS in these same commands already resolve to the ~/.claude
+    install, so anchoring the runner there keeps one command internally
+    consistent instead of straddling two checkouts.
+
+    Falls back to the running checkout only when no installed copy exists (a
+    first install from a dev tree, before the skill is deployed). ABS_HOOK_RUNNER
+    overrides both, for hermetic tests.
+    """
+    override = os.environ.get("ABS_HOOK_RUNNER")
+    if override:
+        return str(Path(override).expanduser())
+    local = Path(__file__).resolve().parent / "hook_runner.py"
+    installed = (Path.home() / ".claude" / "skills" / "ai-brain-starter"
+                 / "scripts" / "hook_runner.py")
+    try:
+        if installed.is_file():
+            return str(installed.resolve())
+    except OSError:
+        pass
+    return str(local)
+
+
 def platformize_template_for_windows(template: dict) -> tuple[dict, list[str]]:
     """Rewrite the (already vault-substituted) template's POSIX shell commands
     into a form native Windows can execute.
@@ -472,7 +511,7 @@ def platformize_template_for_windows(template: dict) -> tuple[dict, list[str]]:
               file=sys.stderr)
         return template, skipped
 
-    runner = str(Path(__file__).resolve().parent / "hook_runner.py")
+    runner = _runner_path()
     out = json.loads(json.dumps(template, ensure_ascii=False))  # deep copy
     home = str(Path.home())
 
