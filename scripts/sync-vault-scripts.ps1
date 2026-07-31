@@ -29,7 +29,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Stamp = Get-Date -Format "yyyy-MM-dd-HHmm"
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptDir = Split-Path -Parent $PSCommandPath
 $StarterDir = if ($env:STARTER_DIR) { $env:STARTER_DIR } else { Split-Path -Parent $ScriptDir }
 
 function Note($m) { if (-not $Quiet) { Write-Output $m } }

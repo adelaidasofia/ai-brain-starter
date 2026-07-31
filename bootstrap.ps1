@@ -220,7 +220,7 @@ if ($env:EMAIL_GATE_BYPASS -ne "1" -and -not $DryRun -and -not (Test-Path $email
 }
 
 # ─── Pre-flight gate (skip with $env:PREFLIGHT_BYPASS = "1") ──────────────────
-$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptRoot = Split-Path -Parent $PSCommandPath
 $preflightLocal = Join-Path $scriptRoot "scripts\preflight.ps1"
 $preflightInstalled = "$env:USERPROFILE\.claude\skills\ai-brain-starter\scripts\preflight.ps1"
 $preflightToRun = ""
