@@ -400,6 +400,20 @@ def main() -> int:
     return 2 if r.errors else 0
 
 
+USAGE = """usage: sync-skills.py [--check | --help]
+
+Propagate skill updates from the ai-brain-starter checkout into the user's
+installed ~/.claude/skills/ directory.
+
+  (no arguments)  Perform the sync. WRITES: every installed skill file that
+                  differs from the checkout is overwritten, after being backed
+                  up to <file>.bak-YYYY-MM-DD-HHMM.
+  --check         Read-only drift report. Makes no changes. Use this first.
+  -h, --help      Show this message.
+
+Exit codes: 0 ok / clean, 1 drift found (--check), 2 errors or bad arguments."""
+
+
 if __name__ == "__main__":
     # Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
     for _stream in (sys.stdout, sys.stderr):
@@ -408,4 +422,19 @@ if __name__ == "__main__":
         except (AttributeError, ValueError):
             pass
     # --check is the read-only drift report (MYC-3076); default is the sync.
-    sys.exit(check_mode() if "--check" in sys.argv[1:] else main())
+    #
+    # Guard the argument surface. This dispatch used to be a bare
+    # `"--check" in sys.argv[1:]`, so EVERY other argument -- including the
+    # reflexive `--help` -- fell through to the mutating sync. Reaching for
+    # `--help` to find out whether a dry-run exists would rewrite every
+    # installed skill instead of answering the question. A tool that mutates
+    # by default must not treat an unrecognized flag as consent.
+    _args = sys.argv[1:]
+    if _args in ([], ["--check"]):
+        sys.exit(check_mode() if _args == ["--check"] else main())
+    if _args in (["-h"], ["--help"]):
+        print(USAGE)
+        sys.exit(0)
+    print(f"sync-skills: unrecognized argument(s): {' '.join(_args)}\n", file=sys.stderr)
+    print(USAGE, file=sys.stderr)
+    sys.exit(2)
