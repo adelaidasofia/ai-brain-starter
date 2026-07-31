@@ -7,9 +7,16 @@
 # and carries no UTF-8 reconfigure guard - the ai-brain-starter#313 cp1252 crash
 # class. They predate the guard's SCOPE, not its predicate: until MYC-3530 this
 # lint only ever scanned scripts/*.py, so hooks/ was never looked at. All 78
-# rows are files the ORIGINAL, unwidened predicate would already have flagged.
-# Pinning them lets the CLASS-level guard cover hooks/ without a 78-file
-# rewrite, while still failing the build for anything new.
+# rows pinned at the start were files the ORIGINAL, unwidened predicate would
+# already have flagged. Pinning them lets the CLASS-level guard cover hooks/
+# without a 78-file rewrite, while still failing the build for anything new.
+#
+# BURN-DOWN: 78 pinned at MYC-3530, 77 remain.
+#   - hooks/vault-command-nudges.py  guarded + unpinned in PR #416. It was
+#     edited there (the rm -rf rule now quotes the RESOLVED target back to the
+#     user, so an emoji vault folder reaches stderr from the filesystem), which
+#     staled its row and forced the choice this file already documents below:
+#     guard it and delete the row, never re-pin. Deleted, per that rule.
 #
 # THE RATCHET (same mechanism as scripts/vault-root-read-baseline.txt #407 and
 # scripts/cloud-safe-walker-baseline.txt #411)
@@ -80,7 +87,6 @@ d08aadf9dfa1db19269f8866ac0b35a787dbae82baa510b41c323c3d7582b414 SEV-1-hard-cras
 0e5e50ea4361108fbcf77fed5ebcf8ab037275a1d0f385931a80a77eb786ad75 SEV-1-hard-crash hooks/test_relocation_orphan_reclaim.py
 0e0c411a3187e40e800a042f4911b0fec095e4ae6f5caecd15453c83012a31bf SEV-1-hard-crash hooks/test_unpushed_drift_surface.py
 62b8c0391f03aefe44ebf7a17a79063325d41eddae6a77150e4a2feb5e02800d SEV-1-hard-crash hooks/validate-calendar-timezone.py
-21c4531125c368cf3d2ec1654d64768c4b1e27e094e1f63510b09a4bcf95c8c5 SEV-1-hard-crash hooks/vault-command-nudges.py
 21173c16a8465b41d6d0d112453433541df97470beb22c9d9bd73d9b547a2ff4 SEV-1-hard-crash hooks/verify-discoverability-on-close.py
 cc08c6d1c065ae338cf5934cfae3c8489aa35814ba489bc63c16158b2c19711a SEV-1-hard-crash hooks/verify-session-close-cascade.py
 8d2689812e1ca9e8dcb9b1a984e0759d6a6f5d397516a0a9ad1293bead26f15c SEV-1-hard-crash hooks/warn-recreate-deleted-file.test.py
