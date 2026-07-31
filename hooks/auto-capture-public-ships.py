@@ -22,8 +22,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-VAULT = Path(os.environ.get("VAULT_ROOT", str(Path.home() / "vault")))
-PENDING_DIR = VAULT / "🍄 the user's consulting brand" / "📋 Pending Signals"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from _lib.vault_root import vault_root_for  # noqa: E402
+except Exception:  # fail-open: a SessionEnd capture must never break the close
+    def vault_root_for(target: Path):  # type: ignore
+        return None
+
+PENDING_SUBPATH = ("🍄 the user's consulting brand", "📋 Pending Signals")
 DEV = Path.home() / "dev"
 TZ = ZoneInfo("America/user-local-tz")
 
@@ -84,11 +90,31 @@ def existing_repos(file: Path) -> set[str]:
     return {r for r in PUBLIC_REPOS if f"`{r}`" in text}
 
 
-def append_bullets(bullets: list[str]) -> None:
+def pending_dir() -> Path | None:
+    """Where today's Pending Signals file lives, in the vault owning this cwd.
+
+    MYC-3529 — resolved per invocation, not from a naive
+    `os.environ.get("VAULT_ROOT", str(Path.home() / "vault"))` at import. This
+    hook WRITES, and append_bullets() calls mkdir(parents=True), so the naive
+    default did not merely read the wrong place: UNSET, on every vault not
+    literally named "vault", it CREATED `~/vault/🍄 .../📋 Pending Signals/` and
+    filed the day's ships into a phantom vault the user never opens. The signals
+    were not lost loudly, they were lost quietly, which is worse.
+
+    None = no vault identifiable from the cwd and no $VAULT_ROOT fallback. The
+    caller must skip; there is no correct place to invent.
+    """
+    vault = vault_root_for(Path.cwd())
+    if vault is None:
+        return None
+    return vault.joinpath(*PENDING_SUBPATH)
+
+
+def append_bullets(pending: Path, bullets: list[str]) -> None:
     if not bullets:
         return
-    PENDING_DIR.mkdir(parents=True, exist_ok=True)
-    file = PENDING_DIR / f"{target_date()}.md"
+    pending.mkdir(parents=True, exist_ok=True)
+    file = pending / f"{target_date()}.md"
     if not file.exists():
         file.write_text(
             f"---\ntype: pending-signals\nworkspace: mycelium\ncreated: {target_date()}\n---\n\n"
@@ -102,7 +128,14 @@ def main() -> int:
         print(json.dumps({"continue": True, "suppressOutput": True}))
         return 0
 
-    file = PENDING_DIR / f"{target_date()}.md"
+    pending = pending_dir()
+    if pending is None:
+        # No vault to file into. Say so instead of inventing ~/vault.
+        print(json.dumps({"continue": True, "suppressOutput": True,
+                          "captured": 0, "skipped": "no vault resolved"}))
+        return 0
+
+    file = pending / f"{target_date()}.md"
     seen = existing_repos(file)
     since = window_start()
     captured_at = datetime.now(TZ).strftime("%H:%M")
@@ -123,7 +156,7 @@ def main() -> int:
             f"— source: `~/dev/{name}` git log · captured: {captured_at} (auto)"
         )
 
-    append_bullets(bullets)
+    append_bullets(pending, bullets)
     print(json.dumps({"continue": True, "suppressOutput": True, "captured": len(bullets)}))
     return 0
 

@@ -27,7 +27,14 @@ import re
 import sys
 from pathlib import Path
 
-VAULT_ROOT = Path(os.environ.get("VAULT_ROOT", str(Path.home() / "vault")))
+# NO VAULT_ROOT here on purpose (MYC-3529). This hook never touches the vault:
+# it matches BUILD_STANDARDS / MCP_RUNBOOK as bare FILENAME substrings against
+# `file_path` arguments recorded in the session transcript under
+# ~/.claude/projects, so it already works for a Read of either runbook in ANY
+# vault. The module used to bind `VAULT_ROOT` from the env var with a ~/vault
+# default and then never reference it — a dead read that made the file look
+# vault-rooted to every reader and to the MYC-2505 survey, which is why it was
+# tagged SEV-A. Deleting it is the whole fix; nothing here needs a vault root.
 BUILD_STANDARDS = "Build Standards.md"
 MCP_RUNBOOK = "MCP Build Runbook.md"
 TRANSCRIPT_DIR = Path.home() / ".claude" / "projects"

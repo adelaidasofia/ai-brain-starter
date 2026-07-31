@@ -28,13 +28,9 @@
 # SET failure mode (a globally-exported VAULT_ROOT names ONE vault and silently
 # wins over the one the caller meant).
 #
-#   SEV-A-home-vault   default is `Path.home() / "vault"`. Inert on every vault
-#                      not literally named "vault" - the guard/hook does nothing
-#                      and says nothing. This is the exact shape of #375/#404.
-#                      All 12 are in hooks/, the higher-severity surface: a hook
-#                      fires on files in ANY vault, so a wrong root makes it fail
-#                      silently OPEN. Fix per-file (see vault_root_for in
-#                      hooks/validate-handoff-frontmatter.py), not per-process.
+#   SEV-A-home-vault   CLEARED by MYC-3529 - see below. Default was
+#                      `Path.home() / "vault"`: inert on every vault not
+#                      literally named "vault", the exact shape of #375/#404.
 #   SEV-B-cwd          default is the process cwd. Right often enough to look
 #                      fine, wrong whenever the tool is run from anywhere else.
 #   SEV-C-script-loc   default derives from __file__. This is the RIGHT default
@@ -47,19 +43,22 @@
 #                      with the None/"". Needs reading case by case.
 #
 
-# ---- SEV-A-home-vault  (12 file(s), 12 read(s)) ----
-77d67b3c9295d7dd2b3c34868679cf86b2e1e62eaad17b5ee4adf20245731dd6 SEV-A-home-vault hooks/auto-capture-public-ships.py
-8f0b58bc3dd57112be05fbf554216c2680dde61fbdf9470e60007fd1d8b4b45f SEV-A-home-vault hooks/block-raw-vault-git.py
-3bec2b51063086d5db9b20dc9f136a08401a780d0efcf97fde2d90ef3981d3cf SEV-A-home-vault hooks/block-vault-git-fullwalk.py
-85a233806b9756b451f3a0b81b8c75eae33afe687d08dfa0f1271a53f9203d5c SEV-A-home-vault hooks/block-worktree-shared-edit.py
-628b715ae85d0f2fdbd043a166f6ed60e1c964a85c9dd6f4265f20e1b17b11aa SEV-A-home-vault hooks/build-runbook-check.py
-dce3ed5df366f6a56d5cd20338302a94932932b87e2f40d867ef772b7ef38266 SEV-A-home-vault hooks/create-dev-repo-checkpoint.py
-d23de68310d25dd3bf5f5508e1a84b89b7d156ea2daeedbd3ee321c872b07149 SEV-A-home-vault hooks/surface-stale-automation-failures.py
-d90976775414288e229f198825f2ab6b904d23c6163b185fa106eb9dff6af2ca SEV-A-home-vault hooks/vault-command-nudges.py
-792c1593b8b22f6dea63a5d7d657a5d0b1ec6f9270531b9357bb2201c15a4e7f SEV-A-home-vault hooks/vault-context.py
-306fd985cd1e1f43314209ad8b9d3f0f9a33613474d91bcdc843bb37409ed1eb SEV-A-home-vault hooks/verify-discoverability-on-close.py
-c2b8ab2406e954ee6688c6b9450d998ff17b18ec1a66f8259ff8eea055df0e10 SEV-A-home-vault hooks/verify-session-close-cascade.py
-3cfa5a97dc3604c9ae6c8ff715e7bd6590176496674a3d2e823400035de56e86 SEV-A-home-vault hooks/worktree-archive-autoprep.py
+# ---- SEV-A-home-vault  (0 file(s), 0 read(s)) -- CLEARED by MYC-3529 --------
+# All 12 rows deleted, not re-pinned. Every one is now resolved per target
+# through hooks/_lib/vault_root.py: vault_root_for() for the per-target surface
+# (detection from the file/dir being acted on FIRST, $VAULT_ROOT as fallback,
+# None when no vault can be identified) and resolve_vault_root(cwd, env) for
+# the two session-close verifiers. hooks/build-runbook-check.py had no fix to
+# make: its VAULT_ROOT binding was dead code and was deleted.
+#
+# No exemptions were issued for this tier. Every one of the 12 was a real
+# silent-open defect.
+#
+# Class invariant guarding the tier: tests/integration/test_hook_vault_root_per_target.sh
+# — each converted hook is exercised against a vault that is NOT $VAULT_ROOT,
+# with $VAULT_ROOT pointed at a decoy. That is the assertion the class was
+# missing; #404's bug survived because the suite only ever ran on the
+# env-named vault.
 
 # ---- SEV-B-cwd  (16 file(s), 16 read(s)) ----
 dd3795425a250401136ea1739bbc0090324a54ca2ac737fcb7ed36f7268d66a3 SEV-B-cwd scripts/check-claude-md-drift.py

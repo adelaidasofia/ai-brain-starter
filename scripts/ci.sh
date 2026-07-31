@@ -259,6 +259,13 @@ INTEGRATION_TESTS=(
   # blind (fleet scan still matches, sanctioned resolver names still exist,
   # pinned rows are still real violations, guard still wired into both gates).
   test_vault_root_read_guard
+  # SEV-A remediation (MYC-3529): the guard above froze 12 naive VAULT_ROOT reads
+  # in hooks/; this proves they are FIXED. Every assertion points $VAULT_ROOT at a
+  # decoy vault and acts on a different one, because that is the assertion the
+  # whole class was missing -- #404's bug survived a full suite precisely because
+  # every test ran against the vault the env var already named, which makes
+  # "resolve from the env" and "resolve from the target" indistinguishable.
+  test_hook_vault_root_per_target
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new

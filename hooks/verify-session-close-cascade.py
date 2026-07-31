@@ -114,16 +114,24 @@ def _find_meta_dir(vault_root: Path) -> Path:
     return vault_root / "Meta"
 
 
-# Import-time placeholders (env-var-only, home-relative default) so the
-# module stays importable without a hook payload. main() calls
-# _resolve_vault_context(cwd) immediately after reading cwd from stdin,
-# before any gate function runs, rebinding these to the SAME repo-aware
-# vault detect-closing-signal.py resolved for this session.
-VAULT_ROOT = Path(os.environ.get("VAULT_ROOT", str(Path.home() / "vault")))
-META_DIR = _find_meta_dir(VAULT_ROOT)
-META_NAME = META_DIR.name
-SESSIONS_DIR = META_DIR / "Sessions"
-RUNNER_SCRIPT = META_DIR / "scripts" / "session-close-runner.sh"
+# Import-time placeholders so the module stays importable without a hook
+# payload. main() calls _resolve_vault_context(cwd) immediately after reading
+# cwd from stdin, before any gate function runs, rebinding these to the SAME
+# repo-aware vault detect-closing-signal.py resolved for this session.
+#
+# MYC-3529: these used to be seeded from a naive
+# `os.environ.get("VAULT_ROOT", str(Path.home() / "vault"))`. The seed was
+# always overwritten before use, but it is the exact #375/#404 shape and it
+# made the module's import-time answer wrong for every vault not literally
+# named "vault" — including for anything that imports this module without
+# calling main(). They are now seeded through the SAME sanctioned resolver
+# the rebind uses, so the import-time answer and the per-invocation answer
+# can never disagree by construction.
+VAULT_ROOT: Path
+META_DIR: Path
+META_NAME: str
+SESSIONS_DIR: Path
+RUNNER_SCRIPT: Path
 
 
 def _resolve_vault_context(cwd: str) -> None:
@@ -134,11 +142,18 @@ def _resolve_vault_context(cwd: str) -> None:
     with — no signature changes needed downstream.
     """
     global VAULT_ROOT, META_DIR, META_NAME, SESSIONS_DIR, RUNNER_SCRIPT
-    VAULT_ROOT = resolve_vault_root(Path(cwd), os.environ.get("VAULT_ROOT"))
+    VAULT_ROOT = resolve_vault_root(Path(cwd) if cwd else Path.cwd(), os.environ.get("VAULT_ROOT"))
     META_DIR = _find_meta_dir(VAULT_ROOT)
     META_NAME = META_DIR.name
     SESSIONS_DIR = META_DIR / "Sessions"
     RUNNER_SCRIPT = META_DIR / "scripts" / "session-close-runner.sh"
+
+
+# Seed the module globals declared above. Going through _resolve_vault_context
+# rather than repeating the expression is the point: one resolution path, so an
+# import-time read can never drift from the per-invocation rebind.
+_resolve_vault_context("")
+
 # Default is the exact path session-close-runner.sh writes; the env override is
 # for hermetic tests (and any setup where both sides agree to relocate it).
 # The literal /tmp (NOT tempfile.gettempdir()) is deliberate on POSIX: the bash
