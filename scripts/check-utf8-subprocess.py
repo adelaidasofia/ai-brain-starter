@@ -74,6 +74,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "hooks"))
+
+from _lib.safe_read import safe_read_text  # noqa: E402
+
 DEFAULT_BASELINE = ROOT / "scripts" / "utf8-subprocess-baseline.txt"
 
 # The subprocess entry points that decode child output for you.
@@ -145,9 +149,21 @@ def _tracked_files() -> list[Path]:
     return [ROOT / p for p in res.stdout.split() if p]
 
 
+def _read(path: Path) -> str | None:
+    """Bounded read via the shared primitive (scripts/check-cloud-safe-file-walkers.py).
+
+    This lint walks the whole tracked fleet, which is precisely the shape that
+    primitive exists for: on a cloud-synced checkout a single dehydrated
+    placeholder would otherwise block the gate or hand back partial bytes that
+    silently change a pinned hash.
+    """
+    result = safe_read_text(path, timeout=5.0, max_bytes=1_000_000)
+    return result.text if result.ok else None
+
+
 def _digest(path: Path) -> str:
     return hashlib.sha256(
-        normalize(path.read_text(encoding="utf-8")).encode("utf-8")
+        normalize(_read(path) or "").encode("utf-8")
     ).hexdigest()
 
 
@@ -155,7 +171,7 @@ def _load_baseline(path: Path) -> dict[str, str]:
     entries: dict[str, str] = {}
     if not path.is_file():
         return entries
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in (_read(path) or "").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -169,11 +185,10 @@ def _load_baseline(path: Path) -> dict[str, str]:
 def _scan() -> dict[str, list[tuple[int, str]]]:
     found: dict[str, list[tuple[int, str]]] = {}
     for f in _tracked_files():
-        try:
-            src = normalize(f.read_text(encoding="utf-8"))
-        except OSError:
+        raw = _read(f)
+        if raw is None:
             continue
-        v = find_violations(src)
+        v = find_violations(normalize(raw))
         if v:
             found[f.relative_to(ROOT).as_posix()] = v
     return found
