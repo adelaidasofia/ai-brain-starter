@@ -101,7 +101,12 @@ def extract_frontmatter(text: str) -> tuple[str | None, str | None]:
     """Return (frontmatter_text, error_message_or_None)."""
     if not text.startswith("---"):
         return (None, None)  # no frontmatter, that's fine for many files
-    m = re.match(r"^---\n(.*?)\n---\s*", text, re.DOTALL)
+    # \r?\n throughout: this text arrives from safe_read_text, which decodes
+    # bytes directly with no universal-newline translation. A vault authored or
+    # touched on Windows genuinely contains CRLF on disk (the session-close
+    # cascade's own pre-built session shell is one), so an LF-only pattern
+    # reports perfectly valid frontmatter as unterminated.
+    m = re.match(r"^---\r?\n(.*?)\r?\n---\s*", text, re.DOTALL)
     if not m:
         return (None, "frontmatter delimiter '---' not properly closed")
     return (m.group(1), None)
