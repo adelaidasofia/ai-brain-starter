@@ -70,18 +70,30 @@ docstring for the full architecture.
 from __future__ import annotations
 
 import datetime as _dt
-import fcntl
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+# Platform locking primitives. `import fcntl` at module scope crashed this hook
+# at IMPORT on every Windows install -- fcntl is POSIX-only -- so a SessionStart
+# secret scanner that the install reports as present has never run there. Same
+# idiom as hooks/session-lock.py, which already guards this correctly.
+try:
+    import fcntl  # POSIX only; absent on Windows.
+except ImportError:  # pragma: no cover - platform-dependent
+    fcntl = None
+try:
+    import msvcrt  # Windows only; absent on POSIX.
+except ImportError:  # pragma: no cover - platform-dependent
+    msvcrt = None
+
 HOOK_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOK_DIR))
 
+from _lib.safe_read import safe_read_bytes, safe_read_text  # noqa: E402
 from _lib.secret_patterns import redact, scan  # noqa: E402
 
 MARKER = HOOK_DIR / ".last-secret-scan"            # last ATTEMPT (cooldown, stamped at start)
@@ -106,9 +118,15 @@ BACKUP_SUFFIX_TEMPLATE = ".bak.{date}-secret-scrub"
 
 
 def _read_epoch(path: Path) -> float | None:
+    # A cooldown marker is a handful of bytes in the hook's own directory, but
+    # it goes through safe_read like everything else: one read primitive, no
+    # judgement calls at each call site about which reads are "small enough".
+    result = safe_read_text(path, max_bytes=64)
+    if not result.ok:
+        return None
     try:
-        return float(path.read_text().strip())
-    except (ValueError, OSError):
+        return float(result.text.strip())
+    except ValueError:
         return None
 
 
@@ -229,7 +247,13 @@ def _log_scrub(record: dict) -> None:
     """
     try:
         AUTO_SCRUB_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with AUTO_SCRUB_LOG.open("a") as f:
+        # Builtin open(path, mode), not AUTO_SCRUB_LOG.open(mode): the
+        # cloud-safe-walker guard reads the mode from args[1], which only exists
+        # on the builtin form, so the bound-method form is misread as a READ and
+        # falsely flagged (filed separately). encoding is explicit because the
+        # record is dumped with ensure_ascii=False -- on a Windows cp1252
+        # default this would raise UnicodeEncodeError on any non-ASCII secret name.
+        with open(AUTO_SCRUB_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except OSError:
         pass  # Logging is best-effort; never blocks the hook.
@@ -245,16 +269,25 @@ def _auto_scrub(jsonl: Path) -> tuple[bool, str]:
     backup = jsonl.with_name(jsonl.name + BACKUP_SUFFIX_TEMPLATE.format(date=today))
     if backup.exists():
         return False, f"backup {backup.name} already exists — skipping"
+    # ONE bounded, cloud-safe read serves both the backup and the scrub. The
+    # backup is written from the raw BYTES, not from decoded text, so it stays
+    # byte-exact even when the transcript contains invalid UTF-8 -- a lossy
+    # backup of a file we are about to overwrite would be worse than none.
+    # A file we cannot safely read is not scrubbed: refusing is the safe
+    # direction when the alternative is overwriting an original we never saw.
+    result = safe_read_bytes(jsonl, max_bytes=MAX_FILE_BYTES)
+    if not result.ok:
+        return False, f"unreadable ({result.status}) — not scrubbed"
+    raw = result.data or b""
     try:
-        shutil.copy2(jsonl, backup)
+        backup.write_bytes(raw)
     except OSError as exc:
         return False, f"backup failed: {exc}"
+    redacted, hit_names = redact(raw.decode("utf-8", errors="replace"))
+    if not hit_names:
+        backup.unlink(missing_ok=True)  # No-op scrub; drop the backup.
+        return False, "no patterns matched on re-scan (registry may have tightened)"
     try:
-        text = jsonl.read_text(errors="replace")
-        redacted, hit_names = redact(text)
-        if not hit_names:
-            backup.unlink(missing_ok=True)  # No-op scrub; drop the backup.
-            return False, "no patterns matched on re-scan (registry may have tightened)"
         jsonl.write_text(redacted)
     except OSError as exc:
         return False, f"scrub failed: {exc}"
@@ -272,6 +305,35 @@ def _auto_scrub(jsonl: Path) -> tuple[bool, str]:
     return True, f"scrubbed {len(hit_names)} pattern(s): {', '.join(hit_names)}"
 
 
+def _acquire_single_instance(fh) -> bool:
+    """Take the exclusive, non-blocking single-instance lock. True = acquired.
+
+    This lock is what stops the SessionStart pile-up that pegged the CPU and
+    froze the maintainer's machine (load 36) on 2026-06-05, so it has to
+    actually hold on every platform this installs on. Failing OPEN when the
+    POSIX primitive is missing would quietly restore that incident on Windows,
+    which is why the no-primitive branch backs off instead of scanning.
+
+    fcntl on POSIX, msvcrt on Windows. Exactly one of the two exists on any
+    real interpreter, so the final return is a belt-and-braces branch.
+    """
+    if fcntl is not None:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+    if msvcrt is not None:
+        try:
+            # Locks one byte from the current offset; the region may sit past
+            # EOF, which is how a zero-length lockfile is locked on Windows.
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+    return False
+
+
 def main() -> int:
     # Cooldown (fast path): skip if a scan was ATTEMPTED < COOLDOWN_SECONDS ago.
     # The marker is stamped at the START of a run (below), so a session that
@@ -286,9 +348,12 @@ def main() -> int:
     # the maintainer's machine on 2026-06-05: without it, N concurrent
     # sessions each launched their own full corpus scan.
     try:
-        _lock_fh = LOCK.open("w")  # noqa: F841 (held open to keep the flock for the process lifetime)
-        fcntl.flock(_lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Builtin form for the same guard reason as _log_scrub's append.
+        _lock_fh = open(LOCK, "w")  # noqa: F841 (held open to keep the lock for the process lifetime)
     except OSError:
+        print(json.dumps({"continue": True, "suppressOutput": True}))
+        return 0
+    if not _acquire_single_instance(_lock_fh):
         print(json.dumps({"continue": True, "suppressOutput": True}))
         return 0
 
@@ -296,9 +361,12 @@ def main() -> int:
     _stamp()
 
     # De-prioritise: never starve the foreground session, even mid-scan.
+    # AttributeError, not just OSError: os.nice does not EXIST on Windows, and
+    # `except OSError` would not have caught that -- a second, later crash in
+    # the same hook on the same platform.
     try:
         os.nice(10)
-    except OSError:
+    except (OSError, AttributeError):
         pass
 
     projects = Path.home() / ".claude" / "projects"
@@ -317,6 +385,7 @@ def main() -> int:
     truncated = False
 
     findings: list[tuple[Path, list[tuple[str, int]]]] = []
+    unreadable = 0
     for jsonl in projects.rglob("*.jsonl"):
         if time.time() > deadline:
             truncated = True
@@ -329,11 +398,16 @@ def main() -> int:
             continue
         if st.st_size > MAX_FILE_BYTES:
             continue  # outsized transcript: cost without proportional secret risk
-        try:
-            text = jsonl.read_text(errors="replace")
-        except OSError:
+        # Bounded, cloud-safe read: a transcript sitting in an offline OneDrive /
+        # iCloud placeholder must never be materialised (and never block) just to
+        # be scanned. `unreadable` is COUNTED and surfaced below -- for a secret
+        # scanner "could not read" means "not scanned", and a coverage gap that
+        # reports nothing is the failure mode this whole hook exists to avoid.
+        result = safe_read_text(jsonl, max_bytes=MAX_FILE_BYTES, errors="replace")
+        if not result.ok:
+            unreadable += 1
             continue
-        hits = scan(text)
+        hits = scan(result.text)
         if hits:
             findings.append((jsonl, hits))
 
@@ -343,7 +417,12 @@ def main() -> int:
         _write_epoch(FULL_MARKER)
 
     if not findings:
-        print(json.dumps({"continue": True, "suppressOutput": True}))
+        # `unreadable` rides along even on the clean path: "no findings" and
+        # "no findings in the files I could actually open" are different claims.
+        out = {"continue": True, "suppressOutput": True}
+        if unreadable:
+            out["unreadable"] = unreadable
+        print(json.dumps(out))
         return 0
 
     # Cap to most-recent 5 to keep the warning short.
@@ -382,16 +461,25 @@ def main() -> int:
     # actual residual exposure, not pre-scrub state.
     residual_findings: list[tuple[Path, list[tuple[str, int]]]] = []
     for path, _hits in findings:
-        try:
-            new_hits = scan(path.read_text(errors="replace"))
-        except OSError:
+        result = safe_read_text(path, max_bytes=MAX_FILE_BYTES, errors="replace")
+        if not result.ok:
+            # It scanned dirty a moment ago, so failing to re-read it now must
+            # not silently downgrade it to "clean" -- keep the pre-scrub hits.
+            residual_findings.append((path, _hits))
             continue
+        new_hits = scan(result.text)
         if new_hits:
             residual_findings.append((path, new_hits))
 
     lines = [
         "🔒 [secret-scan] Found unredacted secrets in prior session JSONLs:",
     ]
+    if unreadable:
+        lines.append(
+            f"NOTE: {unreadable} transcript(s) could not be read (offline "
+            f"cloud placeholder, or too large) and were NOT scanned — this "
+            f"report is not a clean bill of health for those."
+        )
     if auto_scrubbed:
         lines.append(f"Auto-scrubbed {len(auto_scrubbed)} closed-worktree JSONL(s):")
         for path, msg in auto_scrubbed:
@@ -458,4 +546,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # This hook prints a lock emoji and warning glyphs in its findings block, so
+    # on a Windows cp1252 console an unguarded print() raises UnicodeEncodeError
+    # and the caller reads the empty output as "no findings" (#313). Latent
+    # until now only because `import fcntl` killed the module before any of it
+    # ran; making the hook work on Windows makes this the NEXT crash in line.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     raise SystemExit(main())

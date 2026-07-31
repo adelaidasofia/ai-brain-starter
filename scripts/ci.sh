@@ -539,6 +539,14 @@ PY_DIRECT=(
   # ran the hook, so nothing noticed. Also carries the CLASS guard: no hook may
   # resolve a zone at module level.
   hooks/test_auto_capture_ships_tz.py
+  # The generalisation of the line above (MYC-3537). Two hooks were dead on
+  # arrival for their whole lives because NOTHING executed them: the tz
+  # placeholder, and `import fcntl` at module scope in the SessionStart secret
+  # scanner -- POSIX-only, so it crashed at import on every Windows install.
+  # Runs every hook on a minimal payload AND statically bans an unguarded
+  # platform-only import, because a Linux runner structurally cannot observe a
+  # Windows-only import crash.
+  hooks/test_hook_smoke.py
 )
 dormant_py=()
 while IFS= read -r -d '' f; do
