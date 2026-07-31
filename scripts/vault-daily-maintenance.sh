@@ -209,6 +209,20 @@ fi
 RULECONF="$SCRIPT_DIR/check-rule-conflicts.py"
 [ -f "$RULECONF" ] && VAULT_ROOT="$VAULT" run "check-rule-conflicts" /usr/bin/env python3 "$RULECONF" --scan-all
 
+# Session-close phase contract: this install's session-close rule vs the numbered
+# cascade detect-closing-signal.py injects at close. Both reach the model, so a
+# number that means different things in the two is worse than no number — and the
+# drift is silent, because each file reads fine on its own. STRUCTURAL tier only
+# (duplicate numbers, orphan sub-phases): an installed rule is customised prose,
+# and pinning its wording would fail on legitimate edits, which is how a check
+# earns itself an --ignore. Skips cleanly when either file is absent.
+PHASECHECK="$SCRIPT_DIR/check-close-phase-contract.py"
+CLOSE_RULE="$META_DIR/rules/session-close.md"
+CLOSE_CASCADE="$SCRIPT_DIR/../hooks/detect-closing-signal.py"
+[ -f "$PHASECHECK" ] && [ -f "$CLOSE_RULE" ] && [ -f "$CLOSE_CASCADE" ] && \
+  run "close-phase-contract" /usr/bin/env python3 "$PHASECHECK" \
+    --rule "$CLOSE_RULE" --cascade "$CLOSE_CASCADE"
+
 # Passive capture of the day's content (full-tree scan of today's transcripts).
 PASSIVE="$SCRIPT_DIR/passive-capture.py"
 [ -f "$PASSIVE" ] && VAULT_ROOT="$VAULT" run "passive-capture" /usr/bin/env python3 "$PASSIVE" --scan-today
