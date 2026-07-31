@@ -7,10 +7,10 @@ Adapted from anthropics/claude-code examples/hooks/bash_command_validator_exampl
 Enforces CLAUDE.md rules that were codified but not hook-blocked:
 - Blocks `git push` against the personal vault repo (no remote configured)
 - Blocks unscoped `git status` against the vault repo (60K-file walk)
-- Blocks `rm -rf` against the vault root or top-level emoji folders
+- Blocks `rm -rf` against a vault root or any of its top-level folders
 - Nudges `grep` -> Grep tool / rg, `find -name` -> Glob tool
 
-Two scoping models, tagged per rule:
+Three scoping models, tagged per rule:
 
 - repo-scoped (git push / git status): fire ONLY when the git op targets
   the personal vault repo itself, or a worktree of it. Repo identity is
@@ -23,11 +23,14 @@ Two scoping models, tagged per rule:
   `--namespace`) are matched WITH their separate-argument value, so a
   subcommand cannot hide behind the value or a quoted value's space.
 
-- namespace-scoped (rm -rf / grep / find): fire whenever the command
-  touches the vault path namespace (cwd under it, or the literal path in
-  the command). `rm -rf` through the 🍄 symlink still destroys real data,
-  and the grep/find slow-walk concern is about the filesystem tree, not
-  git, so these keep the path-prefix gate.
+- namespace-scoped (grep / find): fire whenever the command touches the
+  vault path namespace (cwd under it, or the literal path in the
+  command). The grep/find slow-walk concern is about the filesystem tree,
+  not git, so these keep the path-prefix gate.
+
+- target-scoped (rm -rf): parse the rm's OPERANDS, resolve each one
+  against the effective cwd, and fire only when a resolved target IS a
+  vault root or a direct child of one. See _rm_verdicts.
 
 Escape hatch: prefix the command with VAULT_VALIDATOR_BYPASS=1.
 """
@@ -143,6 +146,164 @@ def _effective_cwd(command: str, initial: str) -> str:
             new_path = os.path.expanduser(next(g for g in m.groups() if g is not None))
             cwd = new_path if os.path.isabs(new_path) else os.path.normpath(os.path.join(cwd, new_path))
     return cwd
+
+
+# ---------------------------------------------------------------------------
+# rm -rf targeting (target-scoped)
+#
+# The rule this replaces pattern-matched FOLDER NAMES immediately after the
+# flags:
+#     ...rm\s+(?:-[A-Za-z]*[rRf][A-Za-z]*\s+)+"?(?:$HOME/vault|⚙️ Meta|...)
+# Two independent defects, and the rule advertised in the docstring above was
+# never actually enforced:
+#
+#   1. `$HOME/vault` is a SHELL string sitting in a PYTHON regex. `$` is an
+#      end-of-line anchor, so that branch parses as "end of line, then the
+#      literal text HOME/vault" and cannot match any input, ever. The vault
+#      ROOT — the most destructive target of all — was never blocked.
+#   2. The four emoji branches are literal names anchored right after the
+#      flags, so they only fire on a bare relative `rm -rf "⚙️ Meta"`. An
+#      absolute `rm -rf "/Users/x/Brain/⚙️ Meta"` — the same deletion, spelled
+#      the way an agent actually spells it — sailed straight through.
+#
+# Both are fixed by asking the filesystem instead of the string: parse the
+# rm's operands, resolve each against the effective cwd, and compare the
+# RESULT to the vault that governs it. Names stop mattering, so a vault whose
+# folders are not the four hardcoded ones is covered too, and depth stops
+# mattering, so every spelling of the same target behaves identically.
+_RM_FLAG = r'(?:--[A-Za-z][A-Za-z-]*|--|-[A-Za-z]+)'
+_RM_RE = re.compile(
+    r'(?:^|&&|\|\|?|;(?!;))\s*rm\s+'      # `rm` at a command boundary
+    r'((?:' + _RM_FLAG + r'\s+)*)'        # 1: leading flag blob
+    r'([^;&|\n]*)'                        # 2: operands, to the end of the chunk
+)
+
+# One shell word: double-quoted, single-quoted, or bare. The bare arm accepts
+# a backslash-escaped space (`⚙️\ Meta`) as part of the word, because that is
+# the idiomatic unquoted spelling of these folder names. Every OTHER backslash
+# stays literal, so a Windows `C:\Users\x\Brain` is not mangled into an escape
+# sequence.
+_RM_TOKEN_RE = re.compile(
+    r'"([^"]*)"'
+    r"|'([^']*)'"
+    r'|((?:\\ |[^\s])+)'
+)
+
+
+def _is_destructive_rm(flag_blob: str, operand_text: str) -> bool:
+    """True iff these rm flags can destroy a directory tree.
+
+    Keeps the predecessor's `[rRf]` reach (recursive OR force) rather than
+    narrowing to `-r`: a guard on the vault root should not be the place we
+    get clever about which flag combination happens to succeed. Flags are
+    read from BOTH sides of the operands, so `rm dir -rf` counts.
+    """
+    for blob in (flag_blob, operand_text):
+        for tok in re.findall(_RM_FLAG, blob):
+            if tok.startswith("--"):
+                if tok in ("--recursive", "--force"):
+                    return True
+            elif any(c in tok for c in "rRf"):
+                return True
+    return False
+
+
+def _rm_operands(operand_text: str, flag_blob: str):
+    """Shell words in an rm's operand text that are TARGETS, not flags."""
+    targets = []
+    for m in _RM_TOKEN_RE.finditer(operand_text):
+        dq, sq, bare = m.groups()
+        if dq is not None:
+            word = dq
+        elif sq is not None:
+            word = sq
+        else:
+            word = bare.replace("\\ ", " ")
+        if not word or (word.startswith("-") and dq is None and sq is None):
+            continue  # a flag, not a target
+        targets.append(word)
+    return targets
+
+
+def _resolve_operand(word: str, cwd: str) -> str:
+    """An rm operand as an absolute path, WITHOUT resolving symlinks.
+
+    Lexical on purpose, matching _is_under: `<vault>/🍄 brand` is a symlink to
+    a separate repo, and `rm -rf` through it still destroys the vault's own
+    top-level entry. Resolving it first would retarget the check at the
+    symlink's destination and lose exactly that case.
+    """
+    path = os.path.expanduser(word.strip())
+    # Trailing separators are cosmetic (`rm -rf "⚙️ Meta/"`); dirname would
+    # otherwise hand back the folder itself instead of its parent.
+    stripped = path.rstrip("/\\")
+    if stripped and not re.fullmatch(r'[A-Za-z]:', stripped):
+        path = stripped
+    if not os.path.isabs(path):
+        path = os.path.join(cwd or os.getcwd(), path)
+    return os.path.normpath(os.path.abspath(path))
+
+
+def _same_dir(a: str, b) -> bool:
+    """True iff two path spellings denote the same directory.
+
+    Compared lexically AND through realpath: `vault_root_for` hands back a
+    RESOLVED root, while the operand above is deliberately unresolved, so a
+    tmpdir that is itself a symlink (`/var` -> `/private/var` on macOS) would
+    make an otherwise-correct match fail on spelling alone.
+    """
+    try:
+        pairs = (
+            (os.path.abspath(str(a)), os.path.abspath(str(b))),
+            (os.path.realpath(str(a)), os.path.realpath(str(b))),
+        )
+    except (OSError, ValueError):
+        return False
+    return any(os.path.normcase(x) == os.path.normcase(y) for x, y in pairs)
+
+
+def _rm_target_verdict(target: str):
+    """'root' | 'top-level' | None for one resolved rm target.
+
+    The vault is resolved PER TARGET (MYC-3529), so this covers every vault on
+    the machine, not the one $VAULT_ROOT happens to name.
+
+    The parent is probed SEPARATELY rather than by walking up from the target,
+    because vault_root_for() resolves symlinks: asking about `<vault>/🍄 brand`
+    directly answers for the repo that symlink points AT. Asking about its
+    parent answers about the vault whose top-level entry is being deleted.
+
+    Depth beyond a direct child is deliberately NOT blocked — `<vault>/⚙️
+    Meta/rules/foo.md` is the "explicit file paths" the message recommends.
+    """
+    root = vault_root_for(Path(target))
+    if root is not None and _same_dir(target, root):
+        return "root"
+    parent = os.path.dirname(target)
+    if parent and parent != target:
+        proot = vault_root_for(Path(parent))
+        if proot is not None and _same_dir(parent, proot):
+            return "top-level"
+    return None
+
+
+def _rm_verdicts(command: str, cwd: str):
+    """Every (target, verdict) in `command` that a destructive rm would hit."""
+    found = []
+    probed = 0
+    for m in _RM_RE.finditer(command):
+        flag_blob, operand_text = m.group(1) or "", m.group(2) or ""
+        if not _is_destructive_rm(flag_blob, operand_text):
+            continue
+        for word in _rm_operands(operand_text, flag_blob):
+            probed += 1
+            if probed > _MAX_PATH_TOKENS:  # same stat-storm bound as above
+                return found
+            target = _resolve_operand(word, cwd)
+            verdict = _rm_target_verdict(target)
+            if verdict is not None:
+                found.append((target, verdict))
+    return found
 
 
 # A git option's value argument:
@@ -269,12 +430,17 @@ def _targets_vault(opts_blob: str, base_cwd: str) -> bool:
     return _targets_vault_repo(eff_cwd)
 
 
-# (regex, severity, message, repo_scoped).
+# (regex, severity, message, scope).
 #   severity 'block' -> exit 2 ; 'nudge' -> exit 2 with softer wording.
-#   repo_scoped True  -> fire only when the op targets the vault repo. The
+#   scope 'repo'      -> fire only when the op targets the vault repo. The
 #                        regex captures the git options blob as group 1 so
 #                        targeting can follow any `git -C <dir>`.
-#   repo_scoped False -> fire whenever the command is in the vault namespace.
+#   scope 'namespace' -> fire whenever the command is in the vault namespace.
+#   scope 'rm-target' -> fire only when a parsed rm target resolves to a vault
+#                        root or a direct child of one. The regex is a cheap
+#                        prefilter; _rm_verdicts is what actually decides.
+SCOPE_REPO, SCOPE_NAMESPACE, SCOPE_RM_TARGET = 'repo', 'namespace', 'rm-target'
+
 RULES = [
     (
         r'(?:^|&&|\|\|?|;(?!;))\s*git\s+' + _GIT_OPTS_CAP + r'push\b',
@@ -282,7 +448,7 @@ RULES = [
         "git push in the vault: no remote is configured. This is a local-only snapshot repo. "
         "If you truly need to push, set up a remote first and confirm with the user. "
         "Rule: CLAUDE.md §'Git in this vault'.",
-        True,
+        SCOPE_REPO,
     ),
     (
         r'(?:^|&&|\|\|?|;(?!;))\s*git\s+' + _GIT_OPTS_CAP + r'status\s*(?:$|&&|;|\|)',
@@ -290,28 +456,28 @@ RULES = [
         "Unscoped `git status` in a 60K-file vault walks the full tree (~10min, locks .git/index.lock). "
         "Pass explicit paths: git status -- \"⚙️ Meta/\" \"path/to/file.md\" "
         "Or use `git status --short --untracked-files=no -- <path>`.",
-        True,
+        SCOPE_REPO,
     ),
     (
-        r'(?:^|&&|\|\|?|;(?!;))\s*rm\s+(?:-[A-Za-z]*[rRf][A-Za-z]*\s+)+"?(?:$HOME/vault|⚙️ Meta|✍️ Writing|📓 Journals|🚀 team-vault)',
+        _RM_RE.pattern,
         'block',
-        "rm -rf against the vault root or a top-level emoji folder would destroy live work. "
-        "Use explicit file paths or move to Archive/ instead.",
-        False,
+        "rm -rf against a vault root or one of its top-level folders would destroy live work. "
+        "Use explicit file paths (deeper than a top-level folder) or move to Archive/ instead.",
+        SCOPE_RM_TARGET,
     ),
     (
         r'(?:^|&&|\|\|?|;(?!;)|\|)\s*grep\b(?!\s+--?version|\s+--?help)',
         'nudge',
         "Prefer the Grep tool (or `rg`) over `grep` — faster, proper ignores, no full-tree walks. "
         "If you really need plain grep (e.g. piping fixed stdin), prefix with VAULT_VALIDATOR_BYPASS=1.",
-        False,
+        SCOPE_NAMESPACE,
     ),
     (
         r'(?:^|&&|\|\|?|;(?!;)|\|)\s*find\s+\S+\s+-name\b',
         'nudge',
         "Prefer the Glob tool over `find -name` — faster and respects vault ignores. "
         "If you really need find, prefix with VAULT_VALIDATOR_BYPASS=1.",
-        False,
+        SCOPE_NAMESPACE,
     ),
 ]
 
@@ -358,15 +524,26 @@ def main():
         return repo_cache[opts_blob]
 
     hits = []
-    for pattern, severity, message, repo_scoped in RULES:
+    for pattern, severity, message, scope in RULES:
         matches = list(re.finditer(pattern, command, re.MULTILINE))
         if not matches:
             continue
-        if repo_scoped:
+        if scope == SCOPE_REPO:
             fired = any(
                 opts_target_vault(m.group(1) or "")
                 for m in matches
             )
+        elif scope == SCOPE_RM_TARGET:
+            # The regex only said "a destructive rm is in here somewhere".
+            # Naming the resolved targets is what makes the block actionable —
+            # and, when it is wrong, obviously wrong to the reader.
+            verdicts = _rm_verdicts(command, cwd)
+            fired = bool(verdicts)
+            if fired:
+                message += "\n  Target(s): " + "; ".join(
+                    f"{t} ({'vault root' if v == 'root' else 'top-level folder'})"
+                    for t, v in verdicts
+                )
         else:
             fired = in_vault_namespace()
         if fired:
