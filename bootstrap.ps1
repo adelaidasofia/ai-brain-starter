@@ -650,7 +650,21 @@ if (Test-Path "$SkillDir\.git") {
             $stashMsg = "bootstrap auto-stash $(Get-Date -Format 'yyyy-MM-dd-HHmm')"
             Log "Detected local uncommitted changes - stashing as: $stashMsg"
             Log "Recover later with: cd $SkillDir; git stash list; git stash pop"
-            if (-not $DryRun) { git stash push -u -m $stashMsg 2>$null | Out-Null }
+            if (-not $DryRun) {
+                git stash push -u -m $stashMsg 2>$null | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    # The checkout is now pristine upstream with the user's patches
+                    # removed. sync-vault-scripts.ps1 refuses to run while this is
+                    # set, so the vault keeps its patched scripts instead of having
+                    # the UNPATCHED upstream copies written over them (the reported
+                    # session-close-runner.sh / vault-safe-commit.sh regression).
+                    $env:ABS_CLONE_PATCHES_STASHED = $stashMsg
+                    Warn "Your vault's <meta>/scripts/ will NOT be refreshed this run - this"
+                    Warn "  clone no longer holds your patches, and syncing would overwrite the"
+                    Warn "  patched copies in your vault. Restore and sync when ready:"
+                    Warn "    cd $SkillDir; git stash pop; pwsh scripts/sync-vault-scripts.ps1"
+                }
+            }
         }
         if ($DryRun) { Dry "would: git pull --quiet (fast-forward $behind commit(s))" }
         else { git pull --quiet 2>$null }

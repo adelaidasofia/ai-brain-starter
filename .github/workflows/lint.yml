@@ -153,6 +153,18 @@ jobs:
       - name: no naive VAULT_ROOT reads (resolve via _resolve_vault_root)
         run: python3 scripts/check-vault-root-reads.py
 
+      # Same SILENT-NO-OP family: hooks.json wires several hooks by their
+      # ~/.claude/hooks/ path behind a `[ -f <path> ] &&` guard. The guard is
+      # correct at runtime (a deleted optional hook should be silent) and lethal
+      # at install time - a hook nobody ever COPIED there looks exactly like one
+      # the user turned off. pre-write-settings-lint.py, lint-claude-settings.py
+      # and check-claude-code-version.sh shipped that way: wired in 11 places on
+      # a real settings.json, on disk 0 times, and reported OK by the installer's
+      # own verification (it only inspects ABS-owned commands, and they were not
+      # owned). This asserts every such reference has exactly one deploy route.
+      - name: every ~/.claude/hooks reference has a deploy route
+        run: python3 scripts/check-home-hook-deploy.py
+
       # Phase docs distinguish between two kinds of `scripts/foo.sh` references:
       #
       #   1. Backticked relative paths like `scripts/foo.sh` -> should exist in the repo.

@@ -22,9 +22,14 @@ Preview without writing:
 python3 ~/.claude/skills/ai-brain-starter/scripts/install-hooks-user-level.py --dry-run
 ```
 
-Verify after install (fires each hook with sample input):
+Install, then verify every referenced script is on disk (this WRITES settings.json):
 ```bash
 python3 ~/.claude/skills/ai-brain-starter/scripts/install-hooks-user-level.py --verify
+```
+
+Check an existing install without changing it (writes nothing, installs nothing):
+```bash
+python3 ~/.claude/skills/ai-brain-starter/scripts/install-hooks-user-level.py --verify-only
 ```
 
 Uninstall:
