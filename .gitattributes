@@ -1,0 +1,23 @@
+# Line endings are a property of this repo, not of whoever cloned it.
+#
+# Every blob already stores LF (verified at the commit that added this file: 0
+# of 862 tracked blobs contained CRLF or a bare CR), so this rewrites NO
+# history -- `git add --renormalize .` is a no-op here. What it changes is the
+# WORKING TREE: every clone now checks out LF on every platform instead of
+# deferring to each machine's core.autocrlf.
+#
+# Why that is worth pinning: without it, a Windows clone with core.autocrlf=true
+# has CRLF on disk while the Linux CI runner has LF. Any tool that hashes or
+# byte-compares file content then disagrees across platforms for reasons that
+# have nothing to do with the content. That is not hypothetical -- the
+# cloud-safe walker ratchet reported all 41 of its reviewed rows STALE on a
+# Windows checkout while CI stayed green (#411).
+#
+# This is defense in depth and NOT the primary fix. Any tool that pins a content
+# hash must still normalize internally -- see normalize() in
+# scripts/check-cloud-safe-file-walkers.py and scripts/check-vault-root-reads.py
+# -- because .gitattributes only governs checkouts that honor it. An existing
+# working tree keeps its CRLF until each file is next written, and a contributor
+# can always override core.eol locally. The in-tool normalize holds regardless;
+# this file just stops the mismatch from being created in the first place.
+* text=auto eol=lf
