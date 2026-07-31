@@ -31,6 +31,14 @@ Two scoping models, tagged per rule:
 
 Escape hatch: prefix the command with VAULT_VALIDATOR_BYPASS=1.
 """
+# MYC-3529: REQUIRED, not cosmetic. This module annotates with PEP-604
+# `X | None`, which is evaluated at def-time and is a TypeError on Python
+# 3.9 -- the floor version scripts/ci.sh's gate actually runs. py_compile
+# does NOT catch it (the annotation compiles fine and only blows up when
+# the def executes), so the import crash is invisible to the lint gates and
+# shows up only as a hook that silently does nothing.
+from __future__ import annotations
+
 import os
 from pathlib import Path
 import json, sys, re, os, subprocess

@@ -267,6 +267,54 @@ else
   pass "build-runbook-check.py carries no VAULT_ROOT binding at all"
 fi
 
+# PYTHON FLOOR. scripts/ci.sh's gate runs on Python 3.9, but a contributor's
+# laptop is usually 3.12+. A PEP-604 `X | None` annotation is evaluated at
+# def-time and raises TypeError on 3.9 unless the module carries
+# `from __future__ import annotations` -- so the hook crashes at IMPORT and,
+# under the hooks.json wrapper, silently does nothing. Exactly the failure mode
+# this whole ticket is about, arriving by a different road.
+#
+# py_compile does NOT catch it: the annotation compiles fine and only blows up
+# when the def executes. The behavioural assertions below DO catch it, but only
+# when they run on 3.9 -- which means a dev on 3.12 sees green locally and red
+# in CI. This check catches it on every interpreter. (Caught live: this suite
+# reddened CI on 3.9 for four of these hooks, two of which were already broken
+# on origin/main and had simply never been imported by a test.)
+floor_bad="$(python3 - "$HOOKS" "${SEV_A[@]}" <<'PY'
+import ast, sys
+from pathlib import Path
+hooks = Path(sys.argv[1])
+bad = []
+for name in sys.argv[2:]:
+    tree = ast.parse((hooks / name).read_text(encoding="utf-8"))
+    future = any(
+        isinstance(n, ast.ImportFrom) and n.module == "__future__"
+        and any(a.name == "annotations" for a in n.names)
+        for n in tree.body
+    )
+    if future:
+        continue
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        args = node.args
+        anns = [a.annotation for a in args.args + args.kwonlyargs + args.posonlyargs
+                if a.annotation]
+        if node.returns:
+            anns.append(node.returns)
+        if any(isinstance(s, ast.BinOp) and isinstance(s.op, ast.BitOr)
+               for a in anns for s in ast.walk(a)):
+            bad.append(f"{name}:{node.name}")
+            break
+print(" ".join(bad))
+PY
+)"
+if [ -n "$floor_bad" ]; then
+  fail "PEP-604 annotation without \`from __future__ import annotations\` -- TypeError at import on Python 3.9, the version scripts/ci.sh runs: $floor_bad"
+else
+  pass "no SEV-A hook uses a PEP-604 annotation that would crash the import on Python 3.9"
+fi
+
 # --------------------------------------------------------------------------
 # 1. vault-context.py -- injects the OTHER vault's priorities, not the decoy's
 # --------------------------------------------------------------------------
