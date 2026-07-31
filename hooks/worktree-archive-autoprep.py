@@ -43,11 +43,36 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Where the prep script lives. Must be the MAIN vault path (the
-# worktree filesystem won't have it under the same path because the
-# worktree is a sparse checkout of the same git repo).
-MAIN_VAULT = Path(os.environ.get("VAULT_ROOT", str(Path.home() / "vault")))
-PREP_SCRIPT = MAIN_VAULT / "⚙️ Meta/scripts/worktree-archive-prep.py"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from _lib.vault_root import vault_root_for  # noqa: E402
+except Exception:  # fail-open: a Stop hook must never break the turn
+    def vault_root_for(target: Path):  # type: ignore
+        return None
+
+# MYC-3529 — the MAIN vault is derived from the WORKTREE WE ARE IN, not from
+# $VAULT_ROOT. This hook only ever runs inside `<vault>/.claude/worktrees/<slug>/`,
+# so the cwd already names the vault unambiguously; vault_root_for collapses the
+# worktree segment and confirms the result is really a vault. The old code bound
+# `MAIN_VAULT = os.environ.get("VAULT_ROOT", str(Path.home() / "vault"))` at
+# import: UNSET it looked for the prep script under ~/vault, found nothing, and
+# returned 0 silently on every install whose vault is not named "vault" — the
+# false-alarm archive warning this hook exists to kill fired anyway, with no
+# signal that the fix was inert. SET, a worktree of a SECOND vault ran the FIRST
+# vault's prep script against it (or, more often, silently skipped).
+
+
+def _prep_script_for(cwd: Path) -> Path | None:
+    """The main vault's worktree-archive-prep.py for the vault owning `cwd`.
+
+    Must resolve to the MAIN vault path: the worktree checkout won't have the
+    script at the same path, because the worktree is a sparse checkout of the
+    same git repo.
+    """
+    vault = vault_root_for(cwd)
+    if vault is None:
+        return None
+    return vault / "⚙️ Meta/scripts/worktree-archive-prep.py"
 
 
 def main() -> int:
@@ -55,13 +80,19 @@ def main() -> int:
         return 0
 
     cwd = Path.cwd().resolve()
-    cwd_str = str(cwd)
+    cwd_str = str(cwd).replace("\\", "/")
 
     # Only run when actually inside a worktree.
     if "/.claude/worktrees/" not in cwd_str:
         return 0
 
-    if not PREP_SCRIPT.exists():
+    prep_script = _prep_script_for(cwd)
+    if prep_script is None:
+        # No vault owns this worktree (and no $VAULT_ROOT fallback) — nothing
+        # to run. Silent no-op, same as a missing prep script.
+        return 0
+
+    if not prep_script.exists():
         # Prep script missing — silent no-op. Don't break Stop hook
         # chain on a transient state.
         return 0
@@ -73,7 +104,7 @@ def main() -> int:
     # uv-nudge shim installed 2026-05-09) don't silently 1-out the call.
     try:
         result = subprocess.run(
-            [sys.executable, str(PREP_SCRIPT)],
+            [sys.executable, str(prep_script)],
             cwd=cwd,
             capture_output=True,
             text=True,

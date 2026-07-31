@@ -31,12 +31,106 @@ Two scoping models, tagged per rule:
 
 Escape hatch: prefix the command with VAULT_VALIDATOR_BYPASS=1.
 """
+# MYC-3529: REQUIRED, not cosmetic. This module annotates with PEP-604
+# `X | None`, which is evaluated at def-time and is a TypeError on Python
+# 3.9 -- the floor version scripts/ci.sh's gate actually runs. py_compile
+# does NOT catch it (the annotation compiles fine and only blows up when
+# the def executes), so the import crash is invisible to the lint gates and
+# shows up only as a hook that silently does nothing.
+from __future__ import annotations
+
 import os
 from pathlib import Path
 import json, sys, re, os, subprocess
 
-VAULT = os.environ.get("VAULT_ROOT", str(Path.home() / "vault"))
-VAULT_GIT_DIR = os.path.realpath(os.path.join(VAULT, ".git"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from _lib.vault_root import vault_root_for  # noqa: E402
+except Exception:  # fail-open: never block a command on an import error
+    def vault_root_for(target: Path):  # type: ignore
+        return None
+
+# MYC-3529 — every vault root used below is resolved PER TARGET. The module
+# used to bind
+#     VAULT = os.environ.get("VAULT_ROOT", str(Path.home() / "vault"))
+#     VAULT_GIT_DIR = os.path.realpath(os.path.join(VAULT, ".git"))
+# once, at import. That is the #375/#404 shape, and BOTH scoping models here
+# inherited it. UNSET, every rule compared against `~/vault`, which exists on
+# almost no install: `git push`/`git status` in the vault were never blocked,
+# and `rm -rf` against a top-level vault folder was never blocked either — a
+# destructive-command guard that was inert and silent about it. SET, all five
+# rules protected exactly ONE vault while every other vault on the machine was
+# unguarded.
+
+# Cap on how many absolute path tokens a single command may be probed for.
+# Namespace scoping has to consider paths NAMED in the command (`cd /tmp &&
+# rm -rf "<abs vault path>"`), and each probe is a bounded filesystem walk-up.
+# Real commands name a handful of paths; the cap keeps a pathological one-liner
+# from turning a PreToolUse hook into a stat storm.
+_MAX_PATH_TOKENS = 12
+_ABS_PATH_TOKEN_RE = re.compile(
+    r'"([^"]{2,})"' r"|'([^']{2,})'" r'|((?:~|/|[A-Za-z]:[\\/])[^\s;|&]+)'
+)
+
+
+def _vault_git_dir_for(target: str) -> str | None:
+    """realpath of the `.git` of the vault governing `target`, or None.
+
+    None = no vault governs this path; the caller must fail open (allow), which
+    is what keeps every ~/dev/* repo and non-vault repo passing straight
+    through.
+    """
+    try:
+        root = vault_root_for(Path(target) if target else Path.cwd())
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if root is None:
+        return None
+    return os.path.realpath(os.path.join(str(root), ".git"))
+
+
+def _in_vault_namespace(command: str, cwd: str) -> bool:
+    """True iff this command touches SOME vault's path namespace.
+
+    Namespace-scoped rules (rm -rf / grep / find) are about the filesystem
+    tree, not git identity, so the question is "is a vault path involved" —
+    for ANY vault, not just the one $VAULT_ROOT happens to name. Two signals,
+    matching the pre-MYC-3529 intent:
+      - the effective cwd sits inside a vault, or
+      - the command NAMES a path that sits inside a vault (so
+        `cd /tmp && rm -rf "<abs vault path>"` is still caught).
+    """
+    if cwd:
+        root = vault_root_for(Path(cwd))
+        if root is not None and _is_under(cwd, root):
+            return True
+
+    seen: set[str] = set()
+    for m in _ABS_PATH_TOKEN_RE.finditer(command):
+        raw = next((g for g in m.groups() if g is not None), None)
+        if raw is None:
+            continue
+        token = os.path.expanduser(raw.strip())
+        if not os.path.isabs(token) or token in seen:
+            continue
+        seen.add(token)
+        if len(seen) > _MAX_PATH_TOKENS:
+            break
+        root = vault_root_for(Path(token))
+        if root is not None and _is_under(token, root):
+            return True
+    return False
+
+
+def _is_under(path: str, root: Path) -> bool:
+    """True iff `path` is `root` or sits beneath it. Lexical, no existence
+    requirement — `rm -rf <vault>/x` must be caught before x exists."""
+    try:
+        a = os.path.normcase(os.path.abspath(str(path)))
+        b = os.path.normcase(os.path.abspath(str(root)))
+    except (OSError, ValueError):
+        return False
+    return a == b or a.startswith(b.rstrip(os.sep) + os.sep)
 
 
 def _effective_cwd(command: str, initial: str) -> str:
@@ -116,8 +210,11 @@ def _targets_vault_repo(cwd: str) -> bool:
         return False
     if out.returncode != 0 or not out.stdout.strip():
         return False
+    vault_git_dir = _vault_git_dir_for(cwd)
+    if vault_git_dir is None:
+        return False
     common_dir = os.path.realpath(os.path.join(cwd, out.stdout.strip()))
-    return common_dir == VAULT_GIT_DIR
+    return common_dir == vault_git_dir
 
 
 def _git_dir_arg(opts_blob: str):
@@ -151,7 +248,10 @@ def _git_dir_is_vault(git_dir: str) -> bool:
             cands.append(os.path.join(git_dir, out.stdout.strip()))
     except Exception:
         pass
-    return any(os.path.realpath(c) == VAULT_GIT_DIR for c in cands)
+    vault_git_dir = _vault_git_dir_for(git_dir)
+    if vault_git_dir is None:
+        return False
+    return any(os.path.realpath(c) == vault_git_dir for c in cands)
 
 
 def _targets_vault(opts_blob: str, base_cwd: str) -> bool:
@@ -235,10 +335,17 @@ def main():
     cwd = os.environ.get("CLAUDE_CWD", data.get("cwd", ""))
     cwd = _effective_cwd(command, cwd)
 
-    # Namespace-scoped rules fire when the command touches the vault path
-    # namespace: cwd under the vault, or the literal vault path in the
-    # command (so `cd /tmp && rm -rf <abs vault path>` is still caught).
-    in_vault_namespace = (bool(cwd) and cwd.startswith(VAULT)) or (VAULT in command)
+    # Namespace-scoped rules fire when the command touches SOME vault's path
+    # namespace: cwd under a vault, or a vault path named in the command (so
+    # `cd /tmp && rm -rf <abs vault path>` is still caught). Computed lazily
+    # and once — every probe is a filesystem walk-up, and the overwhelming
+    # majority of Bash calls never match a namespace-scoped rule at all.
+    namespace_cache: list[bool] = []
+
+    def in_vault_namespace() -> bool:
+        if not namespace_cache:
+            namespace_cache.append(_in_vault_namespace(command, cwd))
+        return namespace_cache[0]
 
     # Repo-scoped rules consult `git rev-parse` -- run it lazily, and
     # cache by the captured git-options blob.
@@ -261,7 +368,7 @@ def main():
                 for m in matches
             )
         else:
-            fired = in_vault_namespace
+            fired = in_vault_namespace()
         if fired:
             hits.append((severity, message))
 
