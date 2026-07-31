@@ -287,8 +287,179 @@ else
   check "guarded Meta-path fixture PRINTS the path under cp1252" "ok" "crash"
 fi
 
-# --- Fixture F: the real scripts/ tree must be clean -------------------------
-check "real scripts/ tree passes the lint (exit 0)" "0" "$(rc)"
+# =============================================================================
+# MYC-3530: the SCOPE gap. Everything above tests the PREDICATE. None of it
+# tested WHICH FILES the predicate is pointed at, and the answer was
+# "scripts/*.py only" - so hooks/, the surface where this crash is WORSE, had
+# never been scanned. A hook that dies mid-gate either fails silently open or
+# denies every Write with no legible cause (#375, #409).
+#
+# Fixtures J/K/L assert (i) a planted unguarded hook that prints a Meta path
+# FAILS the fleet lint, (ii) the same hook PASSES once guarded, (iii) with ONLY
+# the scan-scope reverted to scripts-only the planted hook goes GREEN - so the
+# widening is load-bearing and not tautological - and (iv) the revert is
+# surgical: the scripts-only checker still fails a planted SCRIPT.
+#
+# Fixtures M/N assert the ratchet: a pinned row pardons, an EDITED pinned file
+# goes STALE, and the pin is over NEWLINE-NORMALIZED content so a CRLF checkout
+# and an LF checkout produce the same digest (#411 - hashing raw pins the
+# CHECKOUT, not the CONTENT, and reds the other platform).
+#
+# These run against a hermetic throwaway git repo, never the real tree: the
+# fleet scan is defined by `git ls-files` from the checker's own repo root, so
+# planting into the real checkout would be the only alternative and would leave
+# debris on an interrupted run.
+# =============================================================================
+
+repo="$base/fleet"
+mkdir -p "$repo/scripts" "$repo/hooks"
+cp "$CHECKER" "$repo/scripts/check-utf8-stdout.py"
+cp "$HERE/_meta_resolver.py" "$repo/scripts/_meta_resolver.py"
+git -C "$repo" init -q >/dev/null 2>&1
+FLEET="$repo/scripts/check-utf8-stdout.py"
+BASELINE="$repo/scripts/utf8-stdout-baseline.txt"
+echo "# hermetic fixture baseline - intentionally empty" > "$BASELINE"
+
+# The planted hook is a faithful miniature of the real population: ASCII-only
+# source, resolves a Meta dir off the FILESYSTEM, prints the path. Its flag can
+# therefore only come from the resolver signal + the scan reaching hooks/.
+planted="$repo/hooks/planted-meta-print.py"
+cat > "$planted" <<'PY'
+#!/usr/bin/env python3
+"""PreToolUse-shaped hook that prints a Meta path resolved at runtime.
+
+usage: planted-meta-print.py VAULT_ROOT
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+from _meta_resolver import find_meta_dir  # noqa: E402
+
+
+def main():
+    meta = find_meta_dir(Path(sys.argv[1]))
+    print("GATE: inspecting {}".format(meta))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+PY
+
+# The control is only meaningful if the fixture is genuinely ASCII: otherwise
+# the ORIGINAL non-ASCII-source signal would catch it and prove nothing about
+# scope.
+check "planted hook source is genuinely ASCII-only" "ascii" "$(is_ascii "$planted")"
+
+# --- Fixture J: the planted hook FAILS the fleet lint ------------------------
+check "planted unguarded hooks/ CLI FAILS the fleet lint (exit 1)" \
+  "1" "$(rc_with "$FLEET")"
+# Exit code alone could come from anything in the fixture repo; require the
+# planted hook to be NAMED, so this cannot pass green-for-the-wrong-reason.
+named="$(python3 "$FLEET" 2>&1 | grep -c 'planted-meta-print.py' || true)"
+check "the failure NAMES the planted hook" "yes" "$([ "$named" -gt 0 ] && echo yes || echo no)"
+
+# --- Fixture K: same hook, guarded -> the fleet lint passes ------------------
+cp "$planted" "$base/planted-backup.py"
+python3 - "$planted" <<'PY'
+import sys
+p = sys.argv[1]
+src = open(p, encoding="utf-8").read()
+src = src.replace(
+    'if __name__ == "__main__":\n    raise SystemExit(main())\n',
+    'if __name__ == "__main__":\n'
+    '    for _stream in (sys.stdout, sys.stderr):\n'
+    '        try:\n'
+    '            _stream.reconfigure(encoding="utf-8")  # Python 3.7+\n'
+    '        except (AttributeError, ValueError):\n'
+    '            pass\n'
+    '    raise SystemExit(main())\n',
+)
+open(p, "w", encoding="utf-8", newline="\n").write(src)
+PY
+check "planted hooks/ CLI WITH the guard passes the fleet lint (exit 0)" \
+  "0" "$(rc_with "$FLEET")"
+cp "$base/planted-backup.py" "$planted"   # back to unguarded for the control
+
+# --- Fixture L: the scope widening is LIVE, not tautological -----------------
+# Build a copy of the checker with ONLY the scan scope reverted to the
+# pre-MYC-3530 tuple and require the planted hook to go GREEN under it. That is
+# "revert the scope change and the fixture stops failing", asserted instead of
+# claimed. Fails loud if the anchor line is gone (control went blind).
+python3 - "$FLEET" "$repo/scripts/checker-scripts-only.py" <<'PY'
+import sys
+
+src = open(sys.argv[1], encoding="utf-8").read().splitlines(keepends=True)
+anchor = "_SCAN_PATHSPECS = ("
+hits = [i for i, line in enumerate(src) if line.startswith(anchor)]
+if len(hits) != 1:
+    sys.stderr.write(
+        "BLIND CONTROL: expected exactly ONE line starting with '%s' in %s, "
+        "found %d. The negative control can no longer revert the scan scope - "
+        "update this test to track the new shape, or it is asserting nothing.\n"
+        % (anchor, sys.argv[1], len(hits))
+    )
+    raise SystemExit(3)
+src[hits[0]] = '_SCAN_PATHSPECS = ("scripts/*.py",)  # pre-MYC-3530, for the negative control\n'
+open(sys.argv[2], "w", encoding="utf-8", newline="\n").write("".join(src))
+PY
+check "with the scan scope REVERTED to scripts-only, the planted hook goes GREEN (exit 0)" \
+  "0" "$(rc_with "$repo/scripts/checker-scripts-only.py")"
+
+# ...and the revert must be surgical: scripts/ is still scanned, so the SAME
+# body planted under scripts/ still fails the scripts-only checker. Without
+# this, a control that broke the checker entirely would also "pass".
+cp "$planted" "$repo/scripts/planted-meta-print.py"
+check "reverted checker still FAILS the same body planted under scripts/ (exit 1)" \
+  "1" "$(rc_with "$repo/scripts/checker-scripts-only.py")"
+rm -f "$repo/scripts/planted-meta-print.py"
+
+# --- Fixture M: the ratchet pardons a pinned row and BITES on an edit --------
+pin() {  # pin <relpath> -> append a baseline row for its normalized content
+  python3 - "$repo" "$1" "$BASELINE" <<'PY'
+import hashlib, sys
+from pathlib import Path
+root, rel, baseline = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+text = (root / rel).read_bytes().decode("utf-8", "replace")
+norm = text.replace("\r\n", "\n").replace("\r", "\n")
+digest = hashlib.sha256(norm.encode("utf-8")).hexdigest()
+with baseline.open("a", encoding="utf-8", newline="\n") as fh:
+    fh.write("{} SEV-1-hard-crash {}\n".format(digest, rel))
+PY
+}
+pin "hooks/planted-meta-print.py"
+check "a pinned legacy row PARDONS the file (exit 0)" "0" "$(rc_with "$FLEET")"
+
+printf '\n# touched\n' >> "$planted"
+check "EDITING a pinned file goes STALE and fails (exit 1)" "1" "$(rc_with "$FLEET")"
+stale_named="$(python3 "$FLEET" 2>&1 | grep -c 'STALE BASELINE' || true)"
+check "the stale row is reported as STALE BASELINE" \
+  "yes" "$([ "$stale_named" -gt 0 ] && echo yes || echo no)"
+
+# --- Fixture N: the pin is over CONTENT, not the checkout (#411) -------------
+# Same body written LF and then CRLF must hash identically, or a baseline pinned
+# on a Windows checkout reds every row on the Linux runner (and vice versa).
+digests="$(python3 - "$FLEET" <<'PY'
+import importlib.util, sys, tempfile
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("cu", sys.argv[1])
+cu = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cu)
+body = 'import sys\n\n\ndef main():\n    print("x")\n\n\nif __name__ == "__main__":\n    main()\n'
+out = []
+with tempfile.TemporaryDirectory() as td:
+    for name, data in (("lf.py", body), ("crlf.py", body.replace("\n", "\r\n"))):
+        p = Path(td) / name
+        p.write_bytes(data.encode("utf-8"))
+        out.append(cu.content_digest(p))
+print("same" if out[0] == out[1] else "DIFFER:%s/%s" % (out[0][:8], out[1][:8]))
+PY
+)"
+check "LF and CRLF copies of one body hash IDENTICALLY (content-pinned)" "same" "$digests"
+
+# --- Fixture F: the real scripts/ + hooks/ tree must be clean ----------------
+check "real scripts/ + hooks/ tree passes the lint (exit 0)" "0" "$(rc)"
 
 if [ "$fail" != 0 ]; then
   echo "FAILED: utf8-console-guard regression test"

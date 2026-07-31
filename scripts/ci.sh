@@ -28,12 +28,16 @@
 #                           py_compile does not catch undefined names). A dedicated
 #                           lint.yml job enforces this in CI (as the shellcheck job
 #                           does); here it is best-effort, skipped without a linter.
-#   (e) UTF-8 console guard - scripts/check-utf8-stdout.py fails a runnable vault
-#                           CLI that print()s non-ASCII (the "gear Meta" emoji, an
-#                           em dash, an accented name) without reconfiguring
-#                           stdout/stderr to UTF-8. On a Windows cp1252 console
-#                           that print() raises UnicodeEncodeError and the caller
-#                           reads the empty output as failure (ai-brain-starter#313).
+#   (e) UTF-8 console guard - scripts/check-utf8-stdout.py fails a runnable
+#                           scripts/*.py or hooks/*.py CLI that print()s non-ASCII
+#                           (the "gear Meta" emoji, an em dash, an accented name)
+#                           without reconfiguring stdout/stderr to UTF-8. On a
+#                           Windows cp1252 console that print() raises
+#                           UnicodeEncodeError and the caller reads the empty
+#                           output as failure (ai-brain-starter#313). hooks/ came
+#                           into scope in MYC-3530; its 78 pre-existing violations
+#                           are content-pinned in scripts/utf8-stdout-baseline.txt,
+#                           so an edit to any of them reds this gate.
 #                           A dedicated lint.yml 'utf8-console-guard' job is
 #                           authoritative in CI; here it runs locally (pure stdlib).
 #   (e2) Hook block-protocol - scripts/check-hook-block-protocol.py fails a hook
@@ -346,10 +350,14 @@ else
 fi
 
 # ---- (e) UTF-8 console guard -----------------------------------------------
-# scripts/check-utf8-stdout.py fails a runnable vault CLI that print()s non-ASCII
-# without the UTF-8 stdout/stderr reconfigure guard - the Windows cp1252 crash
-# class (ai-brain-starter#313: a non-ASCII print raised UnicodeEncodeError, the
-# caller captured an empty string, and read it as "no Meta folder"). Mirrors how
+# scripts/check-utf8-stdout.py fails a runnable scripts/*.py or hooks/*.py CLI
+# that print()s non-ASCII without the UTF-8 stdout/stderr reconfigure guard - the
+# Windows cp1252 crash class (ai-brain-starter#313: a non-ASCII print raised
+# UnicodeEncodeError, the caller captured an empty string, and read it as "no
+# Meta folder"). In a HOOK the same crash is worse than in a script: a hook gates
+# the tool call, so it either fails silently open or denies every Write with no
+# legible cause (#375, #409). hooks/ was outside this gate's scan until MYC-3530.
+# Mirrors how
 # the shell static-analysis gate is wired: a dedicated lint.yml 'utf8-console-guard'
 # job is authoritative in CI; here it runs locally so the pre-push gate catches the crash
 # class before a Windows console does. Pure stdlib - no external linter to skip on,
