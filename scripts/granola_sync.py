@@ -139,4 +139,16 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # This module's own source is pure ASCII, but the values it prints are not:
+    # detect_vault_root() matches on the emoji-prefixed Meta folder,
+    # detect_meeting_dir() globs the emoji-prefixed meeting-notes folder, and the
+    # per-note line prints filepath.name built from an arbitrary meeting title
+    # (accented names, em dashes). On a Windows cp1252 console each of those
+    # raises UnicodeEncodeError mid-run (ai-brain-starter#313). Force UTF-8 on
+    # the CLI streams; a no-op on an already-UTF-8 console.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     main()
