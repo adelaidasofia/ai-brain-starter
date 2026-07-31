@@ -29,11 +29,33 @@
 #   If none resolve, this is a NON-FATAL no-op (logs the reason, exits 0): a box
 #   with no vault set up yet must not error during an auto-update.
 #
+# THE SOURCE MUST BE TRUSTWORTHY  ($ABS_CLONE_PATCHES_STASHED)
+#   This script's whole job is "the repo is newer than the vault, push the repo
+#   version". That is only true when the repo checkout actually holds what the
+#   user expects it to hold.
+#
+#   bootstrap auto-stashes local uncommitted changes before its `git pull`. For
+#   the ~40 seconds that follow, the checkout is a pristine origin/main with the
+#   user's patches REMOVED — and running this script in that window copies the
+#   UNPATCHED file over the patched one in the vault. Reported on Windows:
+#   session-close-runner.sh and vault-safe-commit.sh in "⚙️ Meta/scripts" were
+#   both reverted this way. The .bak is written faithfully and holds the good
+#   version, which is precisely why nobody notices: the run reports "Updated: 2"
+#   like any healthy update, and the regression is only visible by diffing a
+#   backup nobody has a reason to open.
+#
+#   So bootstrap exports ABS_CLONE_PATCHES_STASHED=<stash message> around the
+#   pull, and this script refuses to propagate while it is set. Stale-but-
+#   working beats silently-regressed. The guard lives HERE rather than at the
+#   call site because there are three call paths (bootstrap.ps1 directly,
+#   bootstrap.sh -> sync-skills.sh -> sync-skills.py, and manual runs) and a
+#   fourth would not know to re-implement it.
+#
 # USAGE
 #   bash sync-vault-scripts.sh [--vault PATH] [--dry-run] [--quiet]
 #
-# EXIT: 0 = clean / nothing to do / vault not resolvable (non-fatal);
-#       2 = a real copy or backup error occurred.
+# EXIT: 0 = clean / nothing to do / vault not resolvable / source untrustworthy
+#       (all non-fatal); 2 = a real copy or backup error occurred.
 
 # Intentionally NOT using `set -u` — macOS bash 3.2 treats empty-array expansion
 # as "unbound", which would false-positive on a clean first run (same reason as
@@ -85,6 +107,22 @@ VAULT_SCRIPTS=(
 CREATED=(); UPDATED=(); BACKED_UP=(); SKIPPED=(); ABSENT=(); ERRORS=()
 
 note() { [ "$QUIET" -eq 1 ] || echo "$1"; }
+
+# --- REFUSE to propagate from a knowingly-degraded checkout --------------------
+# See "THE SOURCE MUST BE TRUSTWORTHY" in the header. Deliberately printed even
+# under --quiet: the whole failure mode is that this step looks like a normal
+# update, and bootstrap calls it with --quiet.
+if [ -n "${ABS_CLONE_PATCHES_STASHED:-}" ]; then
+  echo "sync-vault-scripts: SKIPPED — not propagating to the vault."
+  echo "  This bootstrap run stashed your local changes to $STARTER_DIR before"
+  echo "  pulling, so the scripts here are currently the UNPATCHED upstream copies."
+  echo "  Copying them into the vault would overwrite your patched vault scripts"
+  echo "  with the versions you patched them to fix. Your vault is untouched."
+  echo "  Your changes are in: git stash -> ${ABS_CLONE_PATCHES_STASHED}"
+  echo "  To restore them and then sync the vault:"
+  echo "    cd \"$STARTER_DIR\" && git stash pop && bash scripts/sync-vault-scripts.sh"
+  exit 0
+fi
 
 # --- pick a REAL python interpreter -------------------------------------------
 # Mirrors the probe sync-vault-scripts.ps1 uses (#313). Under git-bash / MSYS on

@@ -29,7 +29,8 @@ Usage:
   python3 install-hooks-user-level.py --uninstall              # remove
   python3 install-hooks-user-level.py --hooks-source PATH      # custom source
   python3 install-hooks-user-level.py --quiet                  # only summary
-  python3 install-hooks-user-level.py --verify                 # verify after install
+  python3 install-hooks-user-level.py --verify                 # install, then verify
+  python3 install-hooks-user-level.py --verify-only            # verify only, writes nothing
 
 Why user-level: project-level hooks at <project>/.claude/settings.json
 silently don't fire when cwd is inside <project>/.claude/worktrees/<name>/.
@@ -53,6 +54,27 @@ import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
+
+
+# Decode child-process output as UTF-8, never as the console code page.
+#
+# `text=True` alone decodes with locale.getpreferredencoding(False) — cp1252 on
+# a Spanish/Portuguese/French Windows, cp437 under cmd.exe, ASCII in a C-locale
+# pipe. Every child this installer runs prints the VAULT PATH, and that path
+# contains "⚙️ Meta" — U+FE0F decodes to byte 0x8F under cp1252, which has no
+# mapping, so subprocess.run() raises UnicodeDecodeError before we ever see the
+# output. link_agent_memory_into_vault() then reported "could NOT link Claude
+# Code memory into the vault" on a machine where the linker itself was fine,
+# and the user's memory stayed in ~/.claude — the exact outcome that script
+# exists to prevent.
+#
+# This is the READ side of the cp1252 bug that #313 fixed on the WRITE side
+# (the sys.stdout.reconfigure guard at the bottom of this file, enforced fleet-
+# wide by scripts/check-utf8-stdout.py). Our children are our own scripts and
+# they all emit UTF-8. errors="replace" keeps a genuinely undecodable byte from
+# turning a warning into a crash: a mojibake character in a diagnostic is
+# always better than losing the diagnostic.
+_TEXT_UTF8 = {"text": True, "encoding": "utf-8", "errors": "replace"}
 
 
 # Fingerprint substrings — any hook command containing one of these is
@@ -187,6 +209,40 @@ ABS_OWNED_BASENAMES = {
     # Instinct-engine observer, shipped under two matchers (dedup by basename so an
     # interpreter-path change can't double it):
     "observe-tool-calls.py",
+    # Settings-integrity guards (see HOME_HOOKS_INSTALLER_DEPLOYS). Owned so
+    # verify_paths_on_disk() can SEE them: an unowned command is skipped by
+    # verification entirely, which is why these read as a clean install for
+    # months while never once firing.
+    #
+    # check-claude-code-version.sh is deliberately NOT owned even though this
+    # installer deploys it: it is bash-only, so platformize_template_for_windows
+    # skips wiring it on Windows. An owned-but-never-wired hook is permanent
+    # false drift for hooks/surface-deployed-hooks-behind.py, which diffs owned
+    # committed basenames against owned deployed ones — every Windows user would
+    # get a "1 background helper is not active" nag that no action can clear.
+    "pre-write-settings-lint.py", "lint-claude-settings.py",
+}
+
+# Hooks that hooks.json invokes from ~/.claude/hooks/ and that THIS INSTALLER is
+# responsible for putting there.
+#
+# hooks.json guards each of these with `[ -f <path> ] &&`, so a missing file is
+# not an error — it is a silent no-op. That is the right runtime behaviour and
+# the wrong install behaviour: nothing in the repo ever copied these three, no
+# phase doc mentions them, and they were absent from ABS_OWNED_BASENAMES, so
+# verification skipped them too. Net effect: wired in 11 places in a real
+# settings.json, present on disk 0 times, reported OK. Shipped-but-never-once-
+# executed, on every install, since they were merged (#313's follow-on).
+#
+# The complement — retry-budget.py, validate-mcp-json.py, vault-context.py — is
+# deliberately NOT here: phase-05 copies those during /setup-brain, some only
+# when the user opts in. scripts/check-home-hook-deploy.py asserts that every
+# ~/.claude/hooks/ reference in hooks.json is covered by exactly one of the two
+# routes, so the next hook added to the template cannot land in neither.
+HOME_HOOKS_INSTALLER_DEPLOYS = {
+    "pre-write-settings-lint.py",   # PreToolUse(Write|Edit) settings-integrity blocker
+    "lint-claude-settings.py",      # SessionStart settings drift lint (+ --test self-check)
+    "check-claude-code-version.sh",  # SessionStart version check (POSIX only; bash)
 }
 
 # Hooks ai-brain-starter USED TO ship and has deliberately RETIRED. The
@@ -333,6 +389,79 @@ def _is_windows() -> bool:
     return os.environ.get("ABS_FORCE_WINDOWS") == "1" or os.name == "nt"
 
 
+def _win_short_path(path: str) -> str | None:
+    """8.3 short form of an EXISTING Windows path, or None if unavailable.
+
+    GetShortPathNameW only resolves components that exist on disk, so the caller
+    is responsible for passing a real path (see _ascii_safe_win_path, which
+    shortens the longest existing ancestor). Returns None on any failure —
+    non-Windows, 8.3 name creation disabled on the volume (`fsutil 8dot3name
+    query`, the default on many modern SSD installs), or a path that has no
+    short name — so the caller can degrade honestly instead of emitting a
+    silently-wrong command.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        get_short = ctypes.windll.kernel32.GetShortPathNameW
+        get_short.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+        get_short.restype = wintypes.DWORD
+        needed = get_short(path, None, 0)
+        if needed == 0:
+            return None
+        buf = ctypes.create_unicode_buffer(needed)
+        if get_short(path, buf, needed) == 0:
+            return None
+        return buf.value or None
+    except Exception:  # noqa: BLE001 — ctypes/kernel32 unavailable: degrade
+        return None
+
+
+def _ascii_safe_win_path(path: str) -> str:
+    """Rewrite a Windows path so the command line carrying it is pure ASCII.
+
+    WHY: every hook command this installer writes embeds absolute paths, and on
+    a Windows account like "JuanArturoGómez" (or any name with ñ, á, ü) those
+    paths carry non-ASCII. settings.json stores them correctly as UTF-8, but
+    Claude Code hands the command to a shell whose code page is cp1252/cp437,
+    the accented byte is mangled in transit, the path no longer resolves, and
+    EVERY hook fails — 53 of them on the reporting install, which blocks the
+    session outright. The account name is not something a user can change.
+
+    The fix is the 8.3 short name (C:\\Users\\JUANAR~1), which is ASCII by
+    construction and which every Windows shell resolves to the same directory.
+    This is exactly the workaround the affected users apply by hand.
+
+    An ASCII path is returned UNCHANGED — the overwhelmingly common case stays
+    byte-identical, so this cannot churn existing installs. A path that cannot
+    be made ASCII (8.3 disabled, or the non-ASCII sits in a component that does
+    not exist yet) is returned unchanged too; the caller detects that and warns.
+    """
+    if path.isascii():
+        return path
+    short = _win_short_path(path)
+    if short and short.isascii():
+        return short
+    # The tail may not exist yet (a hook we are about to deploy). Shorten the
+    # longest EXISTING ancestor — the non-ASCII is in the profile directory in
+    # every reported case — and re-attach the (ASCII) remainder.
+    p = Path(path)
+    tail: list[str] = []
+    for parent in [p, *p.parents]:
+        if parent == parent.parent:  # reached the drive root
+            break
+        if parent.exists():
+            short_parent = _win_short_path(str(parent))
+            if short_parent and short_parent.isascii():
+                return str(Path(short_parent, *reversed(tail)))
+            break
+        tail.append(parent.name)
+    return path
+
+
 def _windows_launcher() -> list[str] | None:
     """Resolve a Python launcher that parses as a bare command in EVERY shell
     Claude Code may use for hooks on Windows (PowerShell 5.1 / 7, cmd.exe, Git
@@ -358,7 +487,10 @@ def _windows_launcher() -> list[str] | None:
                 return argv
         except Exception:  # noqa: BLE001 — a broken candidate is just skipped
             continue
-    exe = sys.executable or ""
+    # ASCII-safed for the same reason the hook paths are: this token is written
+    # UNQUOTED, so an accented profile directory in the interpreter path breaks
+    # every hook command the moment the shell's code page mangles it.
+    exe = _ascii_safe_win_path(sys.executable or "")
     if exe and " " not in exe:
         return [exe]  # unquoted absolute path parses everywhere iff space-free
     return None
@@ -511,9 +643,12 @@ def platformize_template_for_windows(template: dict) -> tuple[dict, list[str]]:
               file=sys.stderr)
         return template, skipped
 
-    runner = _runner_path()
+    runner = _ascii_safe_win_path(_runner_path())
     out = json.loads(json.dumps(template, ensure_ascii=False))  # deep copy
     home = str(Path.home())
+    non_ascii: set[str] = set()
+    if not runner.isascii():
+        non_ascii.add(runner)
 
     for event in list((out.get("hooks") or {}).keys()):
         surviving_groups = []
@@ -533,7 +668,9 @@ def platformize_template_for_windows(template: dict) -> tuple[dict, list[str]]:
                 target = paths[-1]
                 if target.startswith("~"):
                     target = home + target[1:]
-                target = str(Path(target))
+                target = _ascii_safe_win_path(str(Path(target)))
+                if not target.isascii():
+                    non_ascii.add(target)
                 fb = "allow" if "permissionDecision" in cmd else "silent"
                 h = dict(h)
                 h["command"] = " ".join(
@@ -547,6 +684,23 @@ def platformize_template_for_windows(template: dict) -> tuple[dict, list[str]]:
             out["hooks"][event] = surviving_groups
         else:
             del out["hooks"][event]
+    if non_ascii:
+        # Reached only when 8.3 short names are unavailable. Never silent: the
+        # symptom otherwise is "every hook errors on every prompt" with no
+        # legible cause, and the user cannot rename their Windows account.
+        print("WARNING: these hook paths contain non-ASCII characters and could "
+              "NOT be shortened to an 8.3 name:", file=sys.stderr)
+        for p in sorted(non_ascii):
+            print(f"           {p}", file=sys.stderr)
+        print("  Windows hands hook commands to a shell running a legacy code "
+              "page (cp1252/cp437), which mangles those characters, so the "
+              "paths will not resolve and the hooks will fail on every prompt.\n"
+              "  Cause: 8.3 name creation is disabled on this volume. Check with:\n"
+              "    fsutil 8dot3name query %SystemDrive%\n"
+              "  Fix: enable it (`fsutil 8dot3name set 0`, then re-create the "
+              "affected directory so it gets a short name), or move the vault / "
+              "clone to an all-ASCII path and re-run this installer.",
+              file=sys.stderr)
     return out, skipped
 
 
@@ -859,7 +1013,7 @@ def link_agent_memory_into_vault(vault_path: str, quiet: bool) -> None:
     if quiet:
         cmd.append("--quiet")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(cmd, capture_output=True, timeout=60, **_TEXT_UTF8)
     except Exception as e:  # noqa: BLE001 — never let this brick the install
         print(f"WARNING: linking memory into the vault failed to run: {e}", file=sys.stderr)
         return
@@ -919,7 +1073,7 @@ def install_auto_gc(vault_path: str, quiet: bool) -> None:
     if quiet:
         cmd.append("--quiet")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, timeout=120, **_TEXT_UTF8)
     except Exception as e:  # noqa: BLE001 — scheduling must never brick the install
         print(f"WARNING: could not schedule daily auto-GC: {e}", file=sys.stderr)
         return
@@ -933,6 +1087,68 @@ def install_auto_gc(vault_path: str, quiet: bool) -> None:
               f"  bash {installer} '{vault_path}'", file=sys.stderr)
         if result.stderr:
             print(result.stderr, file=sys.stderr)
+
+
+def deploy_home_hooks(
+    repo_hooks_dir: Path,
+    config_dir: Path,
+    *,
+    dry_run: bool,
+    quiet: bool,
+) -> list[str]:
+    """Copy the HOME_HOOKS_INSTALLER_DEPLOYS scripts into <config_dir>/hooks/.
+
+    Closes the DEPLOYED-vs-COMMITTED gap for the hooks that hooks.json invokes
+    by their ~/.claude/hooks/ path. Wiring a command that names a file nobody
+    ever writes is a hook that cannot fire; the `[ -f ]` guard then makes the
+    absence look like health.
+
+    Contract:
+      - COPY-IF-DIFFERENT: an identical destination is a no-op, so re-runs and
+        the daily update pass are quiet and idempotent.
+      - A destination that DIFFERS is backed up to <file>.bak-YYYY-MM-DD-HHMM
+        before being overwritten, so a hand-patched copy is always recoverable
+        (same contract as sync-vault-scripts).
+      - Executable bit set on POSIX; the SessionStart version check is invoked
+        via `bash <path>`, but a hand-run copy should work too.
+      - NEVER fatal. A hook that cannot be deployed is reported and the install
+        continues — the same fail-open posture as the rest of this installer.
+
+    Returns human-readable status lines for the caller to print.
+    """
+    notes: list[str] = []
+    dest_dir = config_dir / "hooks"
+    for name in sorted(HOME_HOOKS_INSTALLER_DEPLOYS):
+        src = repo_hooks_dir / name
+        dest = dest_dir / name
+        if not src.is_file():
+            notes.append(f"  ! {name}: not in {repo_hooks_dir} — hook will not fire")
+            continue
+        try:
+            payload = src.read_bytes()
+            if dest.is_file() and dest.read_bytes() == payload:
+                continue
+            if dry_run:
+                notes.append(f"  + {name} (would {'update' if dest.is_file() else 'deploy'})")
+                continue
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            if dest.is_file():
+                backup = dest.with_name(
+                    f"{name}.bak-{datetime.now().strftime('%Y-%m-%d-%H%M')}")
+                shutil.copyfile(dest, backup)
+                notes.append(f"  ~ {name} (updated; previous copy at {backup.name})")
+            else:
+                notes.append(f"  + {name} (deployed)")
+            shutil.copyfile(src, dest)
+            if os.name != "nt":
+                try:
+                    dest.chmod(dest.stat().st_mode | 0o111)
+                except OSError:
+                    pass
+        except OSError as e:
+            # One unwritable hook must not abort the install.
+            notes.append(f"  ! {name}: {e}")
+    return notes
 
 
 def _hookify_templates_dir(hooks_template_path: Path) -> Path:
@@ -1064,11 +1280,36 @@ def main() -> int:
                     help="target settings.json (default: ~/.claude/settings.json)")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--verify", action="store_true",
-                    help="after install, verify each referenced script exists on disk and report")
+                    help="INSTALL, then verify each referenced script exists on disk "
+                         "and report. This WRITES settings.json — use --verify-only "
+                         "to inspect an install without changing it.")
+    ap.add_argument("--verify-only", action="store_true",
+                    help="READ-ONLY: verify the hook scripts referenced by the CURRENT "
+                         "settings.json exist on disk. Writes nothing, installs nothing.")
     ap.add_argument("--fail-on-missing", action="store_true",
                     help="exit nonzero if any required hook script is missing on disk "
                          "(implies --verify; used by bootstrap.sh to escalate divergent-fork strands)")
     args = ap.parse_args()
+
+    settings_path = Path(args.settings).expanduser()
+
+    # === --verify-only: inspect without touching anything ===
+    # --verify has always meant "install, THEN verify" (docs/HOOKS_INSTALL.md,
+    # "Verify after install"), which is a legitimate mode but leaves no way to
+    # answer "is my install healthy?" without rewriting settings.json first.
+    # Anyone reaching for a diagnostic gets a mutation, and any diagnostic that
+    # mutates cannot be used to investigate a suspected bad write.
+    if args.verify_only:
+        current = {}
+        if settings_path.is_file():
+            try:
+                current = json.loads(settings_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as e:
+                print(f"ERROR: {settings_path} is not valid JSON: {e}", file=sys.stderr)
+                return 2
+        elif not args.quiet:
+            print(f"NOTE: {settings_path} does not exist — nothing is wired yet.")
+        return run_verification(current, fail_on_missing=args.fail_on_missing)
 
     # === make the vault the home of Claude Code's memory ===
     # Independent of the hooks install and idempotent, so do it first whenever a
@@ -1098,6 +1339,25 @@ def main() -> int:
         return 2
 
     template = load_hooks_template(hooks_template_path)
+
+    # === deploy the hooks that hooks.json invokes from ~/.claude/hooks/ ===
+    # BEFORE platformizing and merging: the commands about to be written name
+    # these paths, so the files have to be there for the hook to fire and for
+    # verification to see a truthful picture. Never fatal (see deploy_home_hooks).
+    if not args.uninstall:
+        deploy_notes = deploy_home_hooks(
+            hooks_template_path.resolve().parent / "hooks",
+            settings_path.parent,
+            dry_run=args.dry_run,
+            quiet=args.quiet,
+        )
+        if deploy_notes and not args.quiet:
+            verb = "Would deploy" if args.dry_run else "Deployed"
+            print(f"Home hooks: {verb} {len(deploy_notes)} change(s) in "
+                  f"{settings_path.parent / 'hooks'}")
+            for note in deploy_notes:
+                print(note)
+
     template = normalize_path_substitutions(template, args.vault_path)
     # Bake a shim-safe interpreter into [PYTHON] so the modern-python PATH shim
     # (or any pyenv/conda wrapper) can't turn every hook into a silent no-op.
@@ -1109,8 +1369,6 @@ def main() -> int:
     win_skipped: list[str] = []
     if _is_windows():
         template, win_skipped = platformize_template_for_windows(template)
-
-    settings_path = Path(args.settings).expanduser()
 
     # === load existing ===
     existing = {}
@@ -1208,6 +1466,13 @@ def main() -> int:
             and not moved_count and not deduped_count:
         if not args.quiet:
             print("\nAlready in sync. Nothing to write.")
+        # Verify anyway. "Nothing to write" says the WIRING matches the template;
+        # it says nothing about whether the scripts those commands name are on
+        # disk. Returning early here meant bootstrap's --fail-on-missing check
+        # was skipped on exactly the installs most likely to have drifted — the
+        # ones already in sync — so a missing hook script passed silently.
+        if args.verify or args.fail_on_missing:
+            return run_verification(merged, fail_on_missing=args.fail_on_missing)
         return 0
 
     backup = backup_settings(settings_path)

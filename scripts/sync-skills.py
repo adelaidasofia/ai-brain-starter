@@ -390,11 +390,17 @@ def main() -> int:
             proc = subprocess.run(
                 ["bash", str(vault_sync), "--quiet"],
                 capture_output=True,
-                text=True,
+                # UTF-8 explicitly, never the console code page: this child
+                # prints the vault path, and every vault path contains "⚙️ Meta".
+                # Under `text=True` alone the decode uses cp1252 on a Spanish or
+                # French Windows (and ASCII in a C-locale pipe), where U+FE0F's
+                # 0x8F byte is unmapped -> UnicodeDecodeError, and the whole
+                # vault-script sync is lost to an exception this block swallows.
+                text=True, encoding="utf-8", errors="replace",
             )
             for line in (proc.stdout or "").splitlines():
                 print(f"[vault-scripts] {line}")
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
             pass  # bash missing (Windows) or spawn failure — non-fatal by design
 
     return 2 if r.errors else 0

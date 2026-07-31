@@ -9,6 +9,24 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-07-31: five Windows install bugs, all of them silent
+
+**Who this affects:** everyone on Windows. Two of the five also affect Mac and Linux. All of them were reported by people who ran the installer, were told it succeeded, and found out later that it hadn't.
+
+**Your patched vault scripts are no longer overwritten during an update.** When bootstrap finds uncommitted changes in your copy of the starter, it stashes them before pulling — that part was known. What wasn't: right after the pull it copies the starter's scripts into your vault's `Meta/scripts` folder, and at that moment the starter no longer holds your patches. So the update quietly replaced patched vault scripts with the unpatched versions. One person lost their fixes to `session-close-runner.sh` and `vault-safe-commit.sh` this way. A backup was written, and it held the good version, which is exactly why nobody noticed: the step printed "Updated: 2" and looked like any healthy update. Now the vault sync refuses to run while your patches are stashed, tells you so, and shows you the two commands to restore and sync when you're ready. Your vault keeps working scripts instead of getting silently reverted.
+
+**Your memory now actually lands in your vault on a Spanish-language Windows.** The installer runs a helper that links Claude Code's memory into your vault, and it read that helper's output using the console's language setting rather than UTF-8. Your vault path contains the ⚙️ of the Meta folder, and on a Spanish (or French, or Portuguese) Windows one byte of that character has no meaning in the console's character set, so reading the output crashed. The installer then reported "could NOT link Claude Code memory into the vault" on machines where nothing was actually wrong, and your memory stayed in a hidden tool folder — the one outcome that step exists to prevent.
+
+**Hooks work if your Windows username has an accent in it.** A user named `JuanArturoGómez` had all 53 hooks fail and block the session, every time, because Windows hands hook commands to a shell that mangles the accented character in the path. You can't rename a Windows account, so the installer now writes the short `C:\Users\JUANAR~1` form of the path, which has no accents to mangle. Anyone with á, é, ñ, ü or similar in their username is covered. In the rare case where Windows has short names turned off, the installer says so plainly instead of writing hooks that can't run.
+
+**And once that link step could run, it had to be able to succeed.** Creating the link from Claude Code's memory folder into your vault used a symlink, and Windows only lets you make one if you are an administrator or have Developer Mode turned on. A normal account gets "a required privilege is not held by the client" and the memory stays put. It now falls back to a directory junction, which needs no special permission and behaves the same for reading and writing. If both routes fail you get the exact command to run, instead of a shrug.
+
+**Three hooks that had never once fired now do.** `pre-write-settings-lint.py`, `lint-claude-settings.py` and `check-claude-code-version.sh` were wired into your settings but nothing ever copied them onto disk — on a real machine that was 11 references pointing at 0 files. Because the wiring is written to stay quiet when a hook is missing (so you can delete one you don't want), the absence looked exactly like health, and the installer's own check reported everything fine. The installer now installs them, its check can see them, and a new gate stops a future hook from shipping the same way.
+
+**Also:** `--verify-only` is a new option that checks an existing install and writes nothing. `--verify` still means "install, then verify", which is what it always did — but there was no way to ask "is my install healthy?" without changing it first.
+
+---
+
 ## 2026-07-30: closing a session no longer gets stuck behind a goal you set
 
 **Who this affects:** anyone who uses `/goal`.
