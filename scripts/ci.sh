@@ -446,4 +446,4 @@ done
 echo "    OK - ${#PY_DIRECT[@]} hooks/+tests/ direct suite(s) passed; dormancy invariant clean"
 
 echo
-echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed]."
+echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed]."
