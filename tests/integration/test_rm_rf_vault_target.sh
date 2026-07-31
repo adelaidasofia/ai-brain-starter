@@ -163,8 +163,59 @@ expect_block "'rm -rf .' resolving to the vault root blocks" \
   'rm -rf .' "$VAULT"
 
 # --------------------------------------------------------------------------
+# 1b. the command does not have to START with `rm`
+#
+#     The predecessor's boundary was `(?:^|&&|\|\|?|;(?!;))\s*rm`, so `rm` had
+#     to be the first word after a separator. `sudo rm -rf <vault>` -- plausibly
+#     the single most likely spelling of this mistake -- did not match it, and
+#     neither did a subshell, a brace group, or a plain newline between two
+#     commands. Each of these was verified to pass unblocked before the fix.
+# --------------------------------------------------------------------------
+expect_block "a sudo-prefixed rm blocks" \
+  "sudo rm -rf \"$VAULT\"" "$CODEREPO"
+
+expect_block "sudo with its own flag+value blocks (sudo -u root rm)" \
+  "sudo -u root rm -rf \"$VAULT\"" "$CODEREPO"
+
+expect_block "an env-prefixed rm, with a VAR=VAL arg, blocks" \
+  "env FOO=bar rm -rf \"$VAULT\"" "$CODEREPO"
+
+expect_block "stacked wrappers block (sudo nohup rm)" \
+  "sudo nohup rm -rf \"$VAULT\"" "$CODEREPO"
+
+expect_block "a subshell is not a free pass" \
+  "(rm -rf \"$VAULT\")" "$CODEREPO"
+
+expect_block "a brace group is not a free pass" \
+  "{ rm -rf \"$VAULT\"; }" "$CODEREPO"
+
+# NEWLINE. This one is a regression guard on an internal inconsistency, not on
+# the shell: _RM_RE is compiled here and ALSO handed to main() as a prefilter.
+# If the compiled copy loses re.MULTILINE while main() keeps applying it, `^`
+# means two different things in the two places -- the command prefilters as a
+# hit, then no targets are found to judge, and the rule reports nothing at all.
+expect_block "a newline-separated rm blocks (prefilter and decider agree on ^)" \
+  "cd /tmp
+rm -rf \"$VAULT\"" "$CODEREPO"
+
+# --------------------------------------------------------------------------
 # 2. negatives: the guard must stay out of everything that is not a vault
 # --------------------------------------------------------------------------
+# Widening the boundary above must not decay into "any command containing the
+# word rm". These would resolve their operands against a VAULT cwd if they
+# matched, so a false positive here is a false BLOCK, not a harmless one.
+expect_allow "a commit message that merely quotes rm -rf passes" \
+  'git commit -m "rm -rf the old thing"' "$VAULT"
+
+expect_allow "an echo that merely mentions rm -rf passes" \
+  'echo "run rm -rf later"' "$VAULT"
+
+expect_allow "a command that merely starts with the letters rm passes" \
+  'confirm -rf something' "$VAULT"
+
+expect_allow "sudo rm -rf of a non-vault path still passes" \
+  'sudo rm -rf build/' "$CODEREPO"
+
 expect_allow "rm -rf build/ in a plain code repo passes" \
   'rm -rf build/' "$CODEREPO"
 

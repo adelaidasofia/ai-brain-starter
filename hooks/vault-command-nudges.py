@@ -172,10 +172,33 @@ def _effective_cwd(command: str, initial: str) -> str:
 # folders are not the four hardcoded ones is covered too, and depth stops
 # mattering, so every spelling of the same target behaves identically.
 _RM_FLAG = r'(?:--[A-Za-z][A-Za-z-]*|--|-[A-Za-z]+)'
+
+# Wrapper words that put a token in FRONT of `rm` without changing what the
+# command destroys. The predecessor rule required `rm` to be the first word
+# after a command separator, so `sudo rm -rf <vault>` — the single most likely
+# spelling of this mistake — did not match. `env` may also carry VAR=VAL args.
+_RM_WRAPPER = r'(?:sudo|env|time|nohup|command|exec|builtin)'
+# Up to three tokens may sit between a wrapper and `rm`, which covers a flag
+# whose value is a SEPARATE argument (`sudo -u root rm -rf ...`) and `env
+# FOO=bar`. Bounded, and reachable only AFTER a literal wrapper word, so this
+# cannot degrade into "any command containing the word rm" — `git commit -m "rm
+# -rf x"` never enters this branch, which matters because the operands of a
+# false match would be resolved against a vault cwd.
+_RM_LEAD = r'(?:' + _RM_WRAPPER + r'\s+(?:\S+\s+){0,3})*'
 _RM_RE = re.compile(
-    r'(?:^|&&|\|\|?|;(?!;))\s*rm\s+'      # `rm` at a command boundary
+    # A command boundary — including `(` and `{`, so a subshell or brace group
+    # is not a free pass.
+    r'(?:^|&&|\|\|?|;(?!;)|\(|\{)'
+    r'\s*' + _RM_LEAD +                   # optional sudo/env/time/... wrappers
+    r'rm\s+'
     r'((?:' + _RM_FLAG + r'\s+)*)'        # 1: leading flag blob
-    r'([^;&|\n]*)'                        # 2: operands, to the end of the chunk
+    r'([^;&|\n]*)',                       # 2: operands, to the end of the chunk
+    # REQUIRED, and it must match the flag main() passes when it prefilters with
+    # this same pattern. Without it `^` means "start of the string" here while
+    # meaning "start of any line" there, so a newline-separated
+    # `cd /tmp\nrm -rf <vault>` prefilters as a hit and then finds no targets to
+    # judge — the rule reports nothing and the command runs.
+    re.MULTILINE,
 )
 
 # One shell word: double-quoted, single-quoted, or bare. The bare arm accepts
