@@ -582,4 +582,16 @@ def main():
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313, MYC-3520). This hook's block messages
+    # quote the RESOLVED target back to the user, and a vault's top-level folders
+    # are emoji-prefixed ("⚙️ Meta"), so the crashing value arrives from the
+    # filesystem even on a machine whose command was pure ASCII. Without this,
+    # printing the reason raises UnicodeEncodeError and the block is reported as
+    # a hook error instead of a reason — on the one code path that only ever runs
+    # when live work is about to be deleted.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     main()
