@@ -149,6 +149,7 @@ INTEGRATION_TESTS=(
   test_detect_closing_signal_worktree
   test_detect_closing_signal_repo_aware_vault
   test_detect_closing_signal_goal_clear
+  test_close_phase_numbering_aligned
   test_closing_claim_shared
   test_meta_resolver
   test_meta_resolution_guard
