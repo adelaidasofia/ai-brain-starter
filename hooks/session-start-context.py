@@ -53,11 +53,42 @@ CONTEXT = (
 )
 
 
+def _memory_index_warning() -> str:
+    """Announce it when the memory index cannot be fully loaded.
+
+    The loader is the honest place for this. Past a byte cliff the reader
+    silently stops and entries below the cut are never seen; write-time tooling
+    warns when the index grows, but a session that only READS it gets a
+    truncated list and no signal. An index is proven by what LOADS, so the thing
+    doing the loading announces what it could not load.
+
+    Folded in here rather than shipped as its own SessionStart hook: that event
+    is at its cold-start fan-out budget, and a housekeeping check does not earn
+    a new subprocess on every session for the life of the install.
+
+    Fail-open and cheap: any error yields no warning rather than a broken start.
+    """
+    try:
+        import os
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_lib"))
+        import memory_index
+        return memory_index.report()
+    except Exception:
+        return ""
+
+
 def main() -> int:
+    context = CONTEXT
+    try:
+        warning = _memory_index_warning()
+    except Exception:
+        warning = ""
+    if warning:
+        context = context + "\n\n" + warning
     payload = {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
-            "additionalContext": CONTEXT,
+            "additionalContext": context,
         }
     }
     sys.stdout.write(json.dumps(payload))

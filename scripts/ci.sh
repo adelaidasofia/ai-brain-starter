@@ -122,6 +122,7 @@ echo "    OK - $count file(s) compiled clean"
 # tests/integration/ also holds .sh/.py files that are NOT part of this gate, so
 # it must be an explicit allow-list, never a glob over the directory.
 INTEGRATION_TESTS=(
+  test_session_start_announces_memory_index
   test_worktree_session_close
   test_bootstrap_dry_run
   test_dry_run_purity
@@ -373,6 +374,7 @@ echo "    OK - $unit_count scripts/ unit suite(s) passed"
 # fails the gate LOUD (the false-green class MYC-2922 closed for scripts/, MYC-2959
 # for hooks/+tests/). PY_DIRECT then runs the non-wrapped suites exactly once.
 PY_DIRECT=(
+  hooks/test_memory_index.py
   tests/test_instinct.py
   hooks/test_live_session_reap.py
   hooks/test_relocation_orphan_reclaim.py
