@@ -49,7 +49,7 @@ else
 fi
 
 # The repo-wide gate must catch a brand-new unsafe file, allow only the exact
-# reviewed legacy bytes, then bite again when that legacy file changes.
+# reviewed legacy content, then bite again when that legacy file changes.
 git -C "$TMP" init -q
 : > "$TMP/baseline.txt"
 if python3 "$GUARD" --all --root "$TMP" --baseline "$TMP/baseline.txt" >/dev/null 2>&1; then
@@ -61,15 +61,64 @@ python3 - "$TMP/unsafe.py" "$TMP/baseline.txt" <<'PY'
 import hashlib, sys
 from pathlib import Path
 source = Path(sys.argv[1])
-Path(sys.argv[2]).write_text(f"{hashlib.sha256(source.read_bytes()).hexdigest()} unsafe.py\n")
+# Mirror the guard's own pin: newline-normalized content, not raw bytes. The
+# heredoc above happens to write LF, so this row would match either way today --
+# normalizing keeps the fixture honest instead of accidentally correct.
+content = source.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+Path(sys.argv[2]).write_text(f"{hashlib.sha256(content).hexdigest()} unsafe.py\n")
 PY
-run "fleet ratchet: exact reviewed legacy bytes pass" \
+run "fleet ratchet: exact reviewed legacy content passes" \
   python3 "$GUARD" --all --root "$TMP" --baseline "$TMP/baseline.txt"
 printf '\n# changed after review\n' >> "$TMP/unsafe.py"
 if python3 "$GUARD" --all --root "$TMP" --baseline "$TMP/baseline.txt" >/dev/null 2>&1; then
   bad "fleet ratchet: edited legacy walker trips"
 else
   ok "fleet ratchet: edited legacy walker trips"
+fi
+
+# ---- the pin must describe CONTENT, not the checkout ------------------------
+# This repo has no .gitattributes, so a Windows clone with core.autocrlf=true has
+# CRLF on disk while the Linux CI runner has LF. A raw-decode hash pinned on one
+# platform is 100% stale on the other -- the whole baseline reds the local gate
+# with no real violation behind it, which silently trains Windows maintainers to
+# ignore that gate. (Not hypothetical: before the fix, all 41 reviewed rows in
+# scripts/cloud-safe-walker-baseline.txt reported STALE on a Windows checkout
+# while CI on ubuntu stayed green.) The pin is over newline-
+# normalized source; same body as LF and as CRLF must hash identically.
+if python3 - "$GUARD" <<'PY'
+import importlib.util, shutil, sys, tempfile
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("walkers", sys.argv[1])
+walkers = importlib.util.module_from_spec(spec)
+# Register before exec: the guard defines @dataclass at module scope, and
+# dataclasses resolves the owning module out of sys.modules while decorating.
+sys.modules[spec.name] = walkers
+spec.loader.exec_module(walkers)
+body = (
+    b"import os\n"
+    b"def scan(root):\n"
+    b"    for base, dirs, files in os.walk(root):\n"
+    b"        open(files[0]).read()\n"
+)
+tmp = Path(tempfile.mkdtemp())
+try:
+    out = {}
+    for name, data in (("lf", body), ("crlf", body.replace(b"\n", b"\r\n"))):
+        path = tmp / f"{name}.py"
+        path.write_bytes(data)
+        rc, verdict = walkers.check_file(path)
+        out[name] = (verdict["sha256"], rc, len(verdict["findings"]))
+    assert out["lf"][0] == out["crlf"][0], f"hash differs across line endings: {out}"
+    # A matching hash on two clean files would pass vacuously; pin a real finding.
+    assert out["lf"][1] == out["crlf"][1] == 1, f"verdict differs: {out}"
+    assert out["lf"][2] == out["crlf"][2] == 1, f"finding count differs: {out}"
+finally:
+    shutil.rmtree(tmp, ignore_errors=True)
+PY
+then
+  ok "baseline hash is line-ending independent (CRLF checkout == LF checkout)"
+else
+  bad "baseline hash changes with line endings - the ratchet would red on the other platform"
 fi
 
 cat > "$TMP/metadata.py" <<'PY'
