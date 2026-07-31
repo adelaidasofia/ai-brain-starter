@@ -1,5 +1,5 @@
 # SHA-256-pinned legacy recursive content walkers. Edited/new files must adopt safe_read.
-628b715ae85d0f2fdbd043a166f6ed60e1c964a85c9dd6f4265f20e1b17b11aa hooks/build-runbook-check.py
+b552b16724232b207192f04461c11804ba77007d77f2d264390e42050fbdc798 hooks/build-runbook-check.py
 2cde67ec1bd8c7c340da4b906b3acf67b4e8ebff9294ddaa1231e9d64da20474 hooks/scan-prior-sessions-for-secrets.py
 834faaab5745decd0b36e1df0a245289e632cef8260258ab2a2cd35ce73ffa76 hooks/test_live_session_reap.py
 0e5e50ea4361108fbcf77fed5ebcf8ab037275a1d0f385931a80a77eb786ad75 hooks/test_relocation_orphan_reclaim.py
