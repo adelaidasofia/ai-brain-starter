@@ -278,6 +278,12 @@ INTEGRATION_TESTS=(
   # escaped) against a vault named neither "vault" nor by any hardcoded folder
   # name, so a rule that pattern-matches names cannot pass it.
   test_rm_rf_vault_target
+  # The High-Rise vendor pin is a content hash like the two ratchets above, and
+  # had the same defect: hashing raw bytes made a CRLF checkout report all three
+  # vendored files as hand-edited. Proves the pin is line-ending independent AND
+  # -- the control that matters -- that normalizing did not make the drift guard
+  # blind to a genuine hand-edit on either line ending.
+  test_high_rise_pin
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new
