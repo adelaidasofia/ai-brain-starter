@@ -1014,6 +1014,11 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--uninstall", action="store_true")
     ap.add_argument("--hooks-source", help="path to hooks.json (default: auto-detect)")
+    # vault-root-ok: the installer runs BEFORE the vault it targets is resolvable
+    # from anything else -- it does not live in a vault (no script-location signal)
+    # and has no target file (no per-file signal). --vault-path is the explicit
+    # override, and the default is None, not ~/vault: unset simply skips the
+    # [VAULT_PATH] substitution rather than pointing it at a wrong vault.
     ap.add_argument("--vault-path", default=os.environ.get("VAULT_ROOT"),
                     help="vault path for [VAULT_PATH] substitution (optional)")
     ap.add_argument("--settings", default=str(Path.home() / ".claude" / "settings.json"),

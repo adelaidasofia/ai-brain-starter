@@ -138,6 +138,21 @@ jobs:
       - name: no naive Meta glob (resolve via _meta_resolver)
         run: bash scripts/check-meta-resolution.sh
 
+      # The twin of the check above, for the OTHER globally-exported handle that
+      # silently redirects vault code. VAULT_ROOT names exactly ONE vault, so a
+      # naive read fails two ways and both are silent: UNSET it defaults to
+      # ~/vault, so a guard is inert on every vault not literally named "vault";
+      # SET it overrides the vault the caller actually meant, so a hook checks
+      # the wrong vault and skips the file it exists for. Shipped that way in
+      # hooks/validate-handoff-frontmatter.py and was inert on every install
+      # (#375/#404) - two unrelated users had already hand-patched it identically.
+      # Self-test first (cheap, and proves the guard still bites), then the tree.
+      - name: naive VAULT_ROOT read negative controls (the guard must still bite)
+        run: python3 scripts/check-vault-root-reads.py --self-test
+
+      - name: no naive VAULT_ROOT reads (resolve via _resolve_vault_root)
+        run: python3 scripts/check-vault-root-reads.py
+
       # Phase docs distinguish between two kinds of `scripts/foo.sh` references:
       #
       #   1. Backticked relative paths like `scripts/foo.sh` -> should exist in the repo.
