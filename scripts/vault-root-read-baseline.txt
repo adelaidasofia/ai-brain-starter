@@ -1,0 +1,108 @@
+# vault-root-read-baseline.txt - the legacy population under
+# scripts/check-vault-root-reads.py, pinned by SHA-256.
+#
+# THIS FILE IS A BACKLOG, NOT A SET OF PARDONS.
+#
+# Every row is a file that reads the VAULT_ROOT env var outside a sanctioned
+# resolver. They predate the guard (MYC-2505 shipped the guard; MYC-2439 fixed
+# 3 instances, MYC-2504 fixes 5 more, and this is what is left after those).
+# Pinning them lets the CLASS-level guard land without a 50-file rewrite, while
+# still failing the build for anything new.
+#
+# THE RATCHET (same mechanism as scripts/cloud-safe-walker-baseline.txt)
+#   - A pinned file passes ONLY while it is byte-identical to its row. Edit it
+#     at all and the row goes STALE and the build fails, so the next person to
+#     touch any of these files has to fix the read.
+#   - A file NOT in this list has no grace period: it fails on the first read.
+#   - Rows only ever get DELETED. Do not re-pin an edited file to keep it quiet
+#     -- that converts the backlog into a permanent exemption, which is exactly
+#     the failure mode this file exists to avoid. If a read is genuinely correct,
+#     it gets `# vault-root-ok: <reason>` in the source (where a reviewer sees
+#     it) and its row is deleted from here.
+#
+# ROW FORMAT
+#   <sha256>  <tag>  <path>
+#
+# TAGS - mechanically derived from the DEFAULT expression, worst first. The tag
+# says what happens when the env var is UNSET; every row additionally has the
+# SET failure mode (a globally-exported VAULT_ROOT names ONE vault and silently
+# wins over the one the caller meant).
+#
+#   SEV-A-home-vault   default is `Path.home() / "vault"`. Inert on every vault
+#                      not literally named "vault" - the guard/hook does nothing
+#                      and says nothing. This is the exact shape of #375/#404.
+#                      All 12 are in hooks/, the higher-severity surface: a hook
+#                      fires on files in ANY vault, so a wrong root makes it fail
+#                      silently OPEN. Fix per-file (see vault_root_for in
+#                      hooks/validate-handoff-frontmatter.py), not per-process.
+#   SEV-B-cwd          default is the process cwd. Right often enough to look
+#                      fine, wrong whenever the tool is run from anywhere else.
+#   SEV-C-script-loc   default derives from __file__. This is the RIGHT default
+#                      for a script serving one vault; what is missing is the
+#                      env-var-disagrees guard that _resolve_vault_root() adds
+#                      (scripts/aggregate-sessions.py is the model).
+#   SEV-D-cli-default  the read is an argparse `default=` with an explicit CLI
+#                      override, so a caller can always correct it.
+#   SEV-E-no-default   no default; the failure moves to whatever the caller does
+#                      with the None/"". Needs reading case by case.
+#
+
+# ---- SEV-A-home-vault  (12 file(s), 12 read(s)) ----
+77d67b3c9295d7dd2b3c34868679cf86b2e1e62eaad17b5ee4adf20245731dd6 SEV-A-home-vault hooks/auto-capture-public-ships.py
+8f0b58bc3dd57112be05fbf554216c2680dde61fbdf9470e60007fd1d8b4b45f SEV-A-home-vault hooks/block-raw-vault-git.py
+3bec2b51063086d5db9b20dc9f136a08401a780d0efcf97fde2d90ef3981d3cf SEV-A-home-vault hooks/block-vault-git-fullwalk.py
+85a233806b9756b451f3a0b81b8c75eae33afe687d08dfa0f1271a53f9203d5c SEV-A-home-vault hooks/block-worktree-shared-edit.py
+628b715ae85d0f2fdbd043a166f6ed60e1c964a85c9dd6f4265f20e1b17b11aa SEV-A-home-vault hooks/build-runbook-check.py
+dce3ed5df366f6a56d5cd20338302a94932932b87e2f40d867ef772b7ef38266 SEV-A-home-vault hooks/create-dev-repo-checkpoint.py
+d23de68310d25dd3bf5f5508e1a84b89b7d156ea2daeedbd3ee321c872b07149 SEV-A-home-vault hooks/surface-stale-automation-failures.py
+d90976775414288e229f198825f2ab6b904d23c6163b185fa106eb9dff6af2ca SEV-A-home-vault hooks/vault-command-nudges.py
+792c1593b8b22f6dea63a5d7d657a5d0b1ec6f9270531b9357bb2201c15a4e7f SEV-A-home-vault hooks/vault-context.py
+306fd985cd1e1f43314209ad8b9d3f0f9a33613474d91bcdc843bb37409ed1eb SEV-A-home-vault hooks/verify-discoverability-on-close.py
+c2b8ab2406e954ee6688c6b9450d998ff17b18ec1a66f8259ff8eea055df0e10 SEV-A-home-vault hooks/verify-session-close-cascade.py
+3cfa5a97dc3604c9ae6c8ff715e7bd6590176496674a3d2e823400035de56e86 SEV-A-home-vault hooks/worktree-archive-autoprep.py
+
+# ---- SEV-B-cwd  (16 file(s), 16 read(s)) ----
+dd3795425a250401136ea1739bbc0090324a54ca2ac737fcb7ed36f7268d66a3 SEV-B-cwd scripts/check-claude-md-drift.py
+dfd1dee24edf0b7a56cc5241504e9190ac1625f24df2fc3b1a223baa9802f581 SEV-B-cwd scripts/check-rule-conflicts.py
+ecf437791a2199e922f3b4ea83fd5541e1f9b2852b6323243791ba827770a243 SEV-B-cwd scripts/crm-collision-check.py
+113b61af71c96cce33c625f6865f16050662270b509619ef3d032a5452aaab2a SEV-B-cwd scripts/decision-retrospective.py
+926b37dcb6f6b689dab5c69b74f169a74e911887f20e7ed6aeb3c1b51e507b58 SEV-B-cwd scripts/drift-detection.py
+1c7184abe8bea026809915956b43a5b945e44680a9248a8c83887a66f8d19bf0 SEV-B-cwd scripts/entity-disambiguator.py
+b461174f186d1a5bee479caf657c50c002324a09336324aa1bfef88090bfc8f1 SEV-B-cwd scripts/mcp-config-check.py
+601e5c47d84531274d14e3d0211c411fe4d37d1293879aa9c3c3fa163dd62883 SEV-B-cwd scripts/passive-capture.py
+3c41956000c24ca559be548481031b53a6fc269ef980af1bfedcd3c0bab133f0 SEV-B-cwd scripts/proposed-update-drafter.py
+2bf61214c177290c2408dd5b404d35bce060d22dbd9c06b10792ab4d286df3b9 SEV-B-cwd scripts/resolver-branch-merge-prompt.py
+8484cdc3aaea0a7882dd1f1c1c8d8a0b46c9977995a3c09563ebf74611fb8dd9 SEV-B-cwd scripts/resolver-build.py
+a826003cdacfbeefdfe8019947632e71fb369ae9a5905d7dcce5a947b94b60ee SEV-B-cwd scripts/resolver-conflict-report.py
+30efd1751a2a773b931fb67a12214db06bc8b9820fe49f48028236b42450659d SEV-B-cwd scripts/stale-rule-check.py
+c27dc2a06172b75ca4ed910c9da19b8e45761fd44908161a1fb42afdfd65fcd7 SEV-B-cwd scripts/undo-last-close.py
+8a1bf7b92664f946386b6af0e61b03042422f132d8f0f79b830aecd314385b17 SEV-B-cwd scripts/vault-hygiene.py
+e2db75570334b975049b27838715b8d7c201a996c26cb1287eb9e6f9b11fb0ad SEV-B-cwd scripts/vault-schema-validator.py
+
+# ---- SEV-C-script-loc  (6 file(s), 6 read(s)) ----
+f874491253a72291559c34c46187adf5b74c2ea305ef8ae59343debc784410ee SEV-C-script-loc scripts/compress-vault-doc.py
+c608cc6897ce3366e45301acd6c6bfe46eac6c4bfa2a1d066b1fa931eef97e6e SEV-C-script-loc scripts/context-audit.py
+d89c7a148f7598591627863187f12938ce56ff5c41c5db6805559f3b1f29d499 SEV-C-script-loc scripts/monthly-baseline.py
+fd7dcaf462d1fe6a8a3d350573c2b63c896ca4089a02b7888048b70e9807b459 SEV-C-script-loc scripts/rotate-meta-archives.py
+3c1a5e886fc162733d9f2c3a7575b17e4dd7a3591c45aefaf03882179d97ee09 SEV-C-script-loc scripts/token-usage-report.py
+6f3b4bf43bfe2f4edd00db13a4892399cded87e0b3cf02fb84f5f7f925d2ae50 SEV-C-script-loc scripts/worktree-archive-prep.py
+
+# ---- SEV-D-cli-default  (1 file(s), 1 read(s)) ----
+36aafbca40f8381430c029bb0a53794a679a102007dfe0b06a174d4d72955576 SEV-D-cli-default scripts/whatsapp/rename-contacts.py
+
+# ---- SEV-E-no-default  (15 file(s), 17 read(s)) ----
+85006d7e25f42ba787b2ce616bd1c71590c3990f89f3153a6f958156c93029ed SEV-E-no-default hooks/coach-auto-prescribe-on-journal.py
+33804a89b8c6ac80575f93ea2a5e0f9f6e47aeb3bb6e8dab0413729fd3fc8c94 SEV-E-no-default hooks/inject-love-language-context.py
+439b81f59712732d566301a7a1fe2b7f4f61c8f49a48c56a2b45f69a331c3087 SEV-E-no-default hooks/inject-meeting-workflow-on-trigger.py
+fe6732085fc9a60ca52539a9d4ca30307b5d37d214a00eec58c86353d69cb56f SEV-E-no-default hooks/worktree-footprint-signal.py
+d11e46cfd26ba07935e39f6bd73c36095e242d4a2a5a6856d12a07f7b929195b SEV-E-no-default scripts/backfill-journal-body-context.py
+66295b6759ce0653131ffa32fcbdb4e2c467fb833fe9770f1d72948ece7df513 SEV-E-no-default scripts/extractors/_base.py
+9ceedddb923461f4c803b48b1d8349c9e54f9f6ff73e40969aeb3332206c8824 SEV-E-no-default scripts/granola_core.py
+63fb9c590ff9d6f690249a4238094e595229adda50a5cfc8d55e87c1115b7a9d SEV-E-no-default scripts/graph-to-neo4j.py
+c41c1955f5ecc763a067cff06cd3c6cbe0a8aa47ad20625dd8eb7e779f8fd20d SEV-E-no-default scripts/hallucination-sample-audit.py
+24f7876383293d84f9524173e1e1b795b90eb4f18cee25dc64f5adaa57f59783 SEV-E-no-default scripts/hallucination-watch.py
+6670bcec0a1d80f8ea0d75ae7a8aae27993c4c5790e2e53f5029f9d2b1be7dea SEV-E-no-default scripts/heal-journal-guard.py
+6082be21cce7a61305998c0b07dd6c1148aebe660dcf364d8998d317b7cdcc57 SEV-E-no-default scripts/insight-fact-check.py
+a5aed49db53aae2474b33dd27da96d15a3fb4d13676974aa3d43e6c7d1d900c9 SEV-E-no-default scripts/rotate-last-session.py
+094e856feb69cd63ac7602b4d763d2067201d9b88c79aa7edc6f50fca9f7038a SEV-E-no-default scripts/security-snapshot.py
+af967eddf3c660a13fddafcbb9e5e4d1a9128fff605e3bbf4da1766b55cbf5ab SEV-E-no-default scripts/skill-usage-report.py

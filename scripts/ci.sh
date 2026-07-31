@@ -36,6 +36,13 @@
 #                           reads the empty output as failure (ai-brain-starter#313).
 #                           A dedicated lint.yml 'utf8-console-guard' job is
 #                           authoritative in CI; here it runs locally (pure stdlib).
+#   (e3) VAULT_ROOT reads - scripts/check-vault-root-reads.py fails code that
+#                           reads the VAULT_ROOT env var outside a sanctioned
+#                           resolver. A globally-exported VAULT_ROOT names ONE
+#                           vault: unset, the usual ~/vault default makes a guard
+#                           inert on every vault not named "vault"; set, it
+#                           overrides the vault the caller meant. Same
+#                           SILENT-NO-OP family as (e)/(e2); pure stdlib.
 #   (f) Python unit tests - the scripts/test_*.py stdlib suites (the claude-router
 #                           structured-envelope gate, the graph-liveness
 #                           STAMP-GREEN-WHILE-GONE guard). Gate (a) py_compiles them,
@@ -235,6 +242,14 @@ INTEGRATION_TESTS=(
   # Meta folder (not a hardcoded ~/vault), denies via the JSON protocol the
   # hooks.json wrapper preserves, covers MultiEdit, and fails OPEN off-vault.
   test_handoff_frontmatter_guard
+  # Naive VAULT_ROOT read ban (MYC-2505): negative controls for the (e3) gate.
+  # Proves the guard trips on all four read forms (including one indirected
+  # through a module constant), that an exemption with no reason is itself a
+  # violation, that the hash ratchet bites on an EDITED pinned file and on a row
+  # left behind after its file went clean -- and that the guard has not gone
+  # blind (fleet scan still matches, sanctioned resolver names still exist,
+  # pinned rows are still real violations, guard still wired into both gates).
+  test_vault_root_read_guard
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new
@@ -342,6 +357,20 @@ fi
 # always runs here.
 echo "==> (e2) hook block-protocol: $PY scripts/check-hook-block-protocol.py"
 "$PY" scripts/check-hook-block-protocol.py
+
+# ---- (e3) Naive VAULT_ROOT reads -------------------------------------------
+# scripts/check-vault-root-reads.py fails code that reads the VAULT_ROOT env var
+# outside a sanctioned resolver. A globally-exported VAULT_ROOT names ONE vault,
+# so a naive read fails two ways and both are silent: UNSET it defaults to
+# ~/vault (inert on every vault not literally named "vault"), SET it overrides
+# the vault the caller actually meant. hooks/validate-handoff-frontmatter.py
+# shipped that way and was inert on every install (#375/#404) -- the same
+# SILENT-NO-OP family as (e) and (e2). Twin of the naive *Meta glob ban
+# (scripts/check-meta-resolution.sh, a lint.yml step). The pre-existing
+# population is byte-pinned in scripts/vault-root-read-baseline.txt, so a NEW or
+# EDITED file fails while the backlog burns down. Pure stdlib, always runs here.
+echo "==> (e3) vault-root reads: $PY scripts/check-vault-root-reads.py"
+"$PY" scripts/check-vault-root-reads.py
 
 # ---- (f) Python unit tests (scripts/ + hooks/ + tests/) --------------------
 # Every Python unit suite in the repo, run under the SAME interpreter as the rest
