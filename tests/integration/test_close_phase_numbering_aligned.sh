@@ -1,119 +1,151 @@
 #!/usr/bin/env bash
-# Test: the shipped close rule and the injected close cascade agree on what each
-# phase NUMBER means.
+# Test: scripts/check-close-phase-contract.py holds the session-close rule and
+# the injected cascade to one phase-number contract.
 #
-# Why: templates/rules/session-close.md and hooks/detect-closing-signal.py both
-# reach the model — the template when it reads the rule, the cascade when the
-# hook injects it at close. They describe ONE process. Before this test they
-# disagreed:
+# History this locks (all real, all shipped):
+#   #400 added a `/goal clear` reminder to the shipped rule labelled "Phase 4b",
+#        borrowing the cascade's numbering. Under the rule's own numbering Phase 4
+#        was the automatic step ("you do nothing"), so the label announced that the
+#        goal clears itself — the opposite of the truth.
+#   #401 removed the label.
+#   #415 aligned the rule's numbers to the cascade's.
+#   Then the SAME defect appeared in an installed, customised copy of the rule:
+#        a "Phase 4b" with no Phase 4 anywhere in the file. A guard that only ran
+#        against this repo's own copy could not see it — hence a checker that
+#        takes a --rule PATH.
 #
-#   number   template said              cascade said
-#   3        Goodbye                    Functional audit
-#   4        Automatic finalization     Final summary (the goodbye)
-#             ("you do nothing")
-#
-# That shipped a live trap: #400 added a `/goal clear` reminder to the template
-# and labelled it "Phase 4b", borrowing the cascade's numbering. Under the
-# template's own numbering Phase 4 is the part that happens automatically with
-# no involvement from the reader — so the label said the goal clears itself,
-# which is the exact opposite of the truth.
-#
-# The rule this locks: a phase number present in BOTH files must denote the same
-# step in both. Numbers unique to one file are fine (the cascade is more
-# granular: 0a, 0c/0d/0e, 1.8 have no template section).
+# The checker is two-tier on purpose: STRUCTURAL checks (duplicate numbers,
+# orphan sub-phases) run on any rule file and cannot false-positive; MEANING pins
+# run only with --strict-meaning, on the canonical file, because an installed
+# rule is customised prose and a checker that fails on legitimate customisation
+# is one people switch off.
 #
 # Assertions:
-#   1. Every phase number the template defines is either absent from the cascade
-#      or carries a matching meaning there.
-#   2. The specific historical collisions stay fixed: template 3 is the audit,
-#      template 4 is the goodbye.
-#   3. The template does not reintroduce a bare "Phase 4b" label (#401).
+#   1. The shipped template passes structural + meaning.
+#   2. The #401 regression: no bare "Phase 4b" label in the template.
+#   3. NEGATIVE — a duplicate phase number fails.
+#   4. NEGATIVE — an orphan sub-phase (4b with no 4) fails.
+#   5. NEGATIVE — a meaning swap (Phase 3/4 traded, i.e. the #415 state) fails
+#      under --strict-meaning.
+#   6. POSITIVE control on the exemption — the 0-series (0a/0b with no bare
+#      Phase 0) must NOT fail; it is convention in both files, and flagging it
+#      would teach bypass.
+#   7. FAIL LOUD — an unreadable or phase-less rule exits 2, never 0.
 #
 # Exit 0 = pass, 1 = fail.
 
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+CHECKER="$REPO_ROOT/scripts/check-close-phase-contract.py"
 RULE="$REPO_ROOT/templates/rules/session-close.md"
-HOOK="$REPO_ROOT/hooks/detect-closing-signal.py"
+CASCADE="$REPO_ROOT/hooks/detect-closing-signal.py"
 
-for f in "$RULE" "$HOOK"; do
+for f in "$CHECKER" "$RULE" "$CASCADE"; do
   [ -f "$f" ] || { echo "ERROR: $f not found" >&2; exit 1; }
 done
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
 
 failed=0
 fail() { echo "FAIL: $*" >&2; failed=1; }
 ok() { echo "ok   $*"; }
 
-# --- 1 + 2. Shared numbers must denote the same step ------------------------
-# Pairs of "<number>|<regex the template heading must match>|<regex the cascade
-# phase line must match>". Kept explicit rather than derived: the whole point is
-# to pin MEANING, and a derivation would just re-encode whatever is there today.
-check_pair() {
-  local num="$1" want_rule="$2" want_hook="$3"
-  local rule_line hook_line
-  rule_line="$(grep -iE "^## Phase ${num} " "$RULE" | head -1)"
-  hook_line="$(grep -iE "^PHASE ${num} " "$HOOK" | head -1)"
-
-  if [ -z "$rule_line" ]; then fail "template has no '## Phase ${num}' heading"; return; fi
-  if [ -z "$hook_line" ]; then fail "cascade has no 'PHASE ${num}' line"; return; fi
-
-  echo "$rule_line" | grep -qiE "$want_rule" \
-    || fail "template Phase ${num} should be ${want_rule}, got: ${rule_line}"
-  echo "$hook_line" | grep -qiE "$want_hook" \
-    || fail "cascade PHASE ${num} should be ${want_hook}, got: ${hook_line}"
-
-  ok "Phase ${num} means the same thing in both"
+run_checker() {  # <rule-file> [extra args...] -> echoes exit code
+  local rule="$1"; shift
+  python3 "$CHECKER" --rule "$rule" --cascade "$CASCADE" "$@" >/dev/null 2>&1
+  echo $?
 }
 
-check_pair 1  "scan the conversation" "conversation scan"
-check_pair 2  "write to the vault"    "batch writes"
-check_pair 3  "functional audit"      "functional audit"
-check_pair 4  "goodbye"               "final summary"
+# --- 1. The shipped template passes both tiers ------------------------------
+rc="$(run_checker "$RULE" --strict-meaning)"
+[ "$rc" = "0" ] && ok "shipped template passes structural + meaning" \
+  || fail "shipped template violates the phase contract (exit $rc) — run: python3 $CHECKER --strict-meaning"
 
-# --- 2b. Each number may head at most ONE template section ------------------
-# Without this, re-adding a second "## Phase 4 —" heading is invisible: the
-# meaning checks above read the FIRST match and pass while the file defines the
-# same number twice. Found by mutating the template (mutant B) — the original
-# version of this test was blind to it.
-dupes="$(grep -oE "^## Phase [0-9]+[a-z]? " "$RULE" | sort | uniq -d)"
-if [ -n "$dupes" ]; then
-  fail "template defines the same phase number more than once:"
-  echo "$dupes" | sed 's/^/       /' >&2
-else
-  ok "every template phase number heads exactly one section"
-fi
-
-# --- 2c. Phase 2b (commit) must stay present --------------------------------
-# It is the step whose absence causes a hard block: verify-session-close-cascade
-# fires before the Stop hook and refuses the close while artifacts are
-# uncommitted. A template without it teaches a model to skip the commit.
-if grep -qE "^## Phase 2b " "$RULE"; then
-  ok "template keeps the Phase 2b commit step"
-else
-  fail "template lost its Phase 2b commit step (the close will hard-block)"
-fi
-
-# --- 3. The #401 regression: no bare "Phase 4b" label in the template -------
+# --- 2. #401 regression: no cross-numbered label in the template ------------
 if grep -q "Phase 4b" "$RULE"; then
-  fail "template reintroduced a 'Phase 4b' label (see #401 — the cascade owns that number)"
+  fail "template reintroduced a 'Phase 4b' label (#401 — the cascade owns that number)"
 else
   ok "template carries no cross-numbered 'Phase 4b' label"
 fi
 
-# --- Negative control -------------------------------------------------------
-# Prove the comparison can actually fail: a deliberately wrong expectation must
-# be rejected. Without this, a check_pair that silently matched everything would
-# look identical to a passing suite.
-control="$(grep -iE "^## Phase 4 " "$RULE" | head -1)"
-if echo "$control" | grep -qiE "automatic finalization"; then
-  fail "negative control: template Phase 4 still reads as the automatic step"
-else
-  ok "negative control: a wrong meaning for Phase 4 would be caught"
-fi
+# --- 3. NEGATIVE: duplicate phase number ------------------------------------
+cat > "$TMP/dupe.md" <<'EOF'
+## Phase 1 — Scan the conversation
+body
+## Phase 4 — Goodbye
+body
+## Phase 4 — Automatic finalization
+body
+EOF
+rc="$(run_checker "$TMP/dupe.md")"
+[ "$rc" = "1" ] && ok "duplicate phase number is rejected" \
+  || fail "duplicate phase number NOT caught (exit $rc)"
+
+# --- 4. NEGATIVE: orphan sub-phase (the installed-rule defect) --------------
+cat > "$TMP/orphan.md" <<'EOF'
+## Phase 1 — Scan the conversation
+body
+## Phase 3 — Verification
+body
+## Phase 4b — Clear the session goal
+body
+EOF
+rc="$(run_checker "$TMP/orphan.md")"
+[ "$rc" = "1" ] && ok "orphan sub-phase (4b with no 4) is rejected" \
+  || fail "orphan sub-phase NOT caught (exit $rc)"
+
+# --- 5. NEGATIVE: the #415 state — Phase 3/4 meanings traded ---------------
+cat > "$TMP/swapped.md" <<'EOF'
+## Phase 0b — Unfinished business
+body
+## Phase 1 — Scan the conversation
+body
+## Phase 2 — Write to the vault
+body
+## Phase 2b — Commit what you wrote
+body
+## Phase 3 — Goodbye
+body
+## Phase 4 — Automatic finalization
+body
+EOF
+rc="$(run_checker "$TMP/swapped.md" --strict-meaning)"
+[ "$rc" = "1" ] && ok "swapped Phase 3/4 meanings rejected under --strict-meaning" \
+  || fail "the original #415 collision NOT caught (exit $rc)"
+# ...and the SAME file must pass structurally: it is internally consistent, which
+# is precisely why the collision went unnoticed. If this fails, the structural
+# tier has become over-strict.
+rc="$(run_checker "$TMP/swapped.md")"
+[ "$rc" = "0" ] && ok "that same file passes structurally (tiers are genuinely separate)" \
+  || fail "structural tier over-reached into meaning (exit $rc)"
+
+# --- 6. POSITIVE control: the 0-series exemption ---------------------------
+cat > "$TMP/zeroes.md" <<'EOF'
+## Phase 0a — Run the canonical runner
+body
+## Phase 0b — Unfinished business
+body
+## Phase 1 — Scan the conversation
+body
+EOF
+rc="$(run_checker "$TMP/zeroes.md")"
+[ "$rc" = "0" ] && ok "0-series (0a/0b with no bare Phase 0) is not flagged" \
+  || fail "0-series wrongly flagged as orphans (exit $rc) — this teaches bypass"
+
+# --- 7. FAIL LOUD on unusable input ----------------------------------------
+rc="$(run_checker "$TMP/does-not-exist.md")"
+[ "$rc" = "2" ] && ok "missing rule file exits 2 (cannot-check, not pass)" \
+  || fail "missing rule file returned $rc, expected 2"
+
+printf 'no phase headings here\n' > "$TMP/empty.md"
+rc="$(run_checker "$TMP/empty.md")"
+[ "$rc" = "2" ] && ok "phase-less rule exits 2 (cannot-check, not pass)" \
+  || fail "phase-less rule returned $rc, expected 2"
 
 if [ "$failed" -ne 0 ]; then
-  echo "FAILED: close phase numbering drifted between the rule and the cascade" >&2
+  echo "FAILED: close phase contract" >&2
   exit 1
 fi
-echo "PASS: close phase numbering is aligned between the shipped rule and the cascade"
+echo "PASS: close phase contract holds, and the checker rejects every known defect"
