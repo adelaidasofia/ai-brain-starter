@@ -11,8 +11,14 @@
 # already have flagged. Pinning them lets the CLASS-level guard cover hooks/
 # without a 78-file rewrite, while still failing the build for anything new.
 #
-# BURN-DOWN: 78 pinned at MYC-3530, 77 remain.
-#   - hooks/vault-command-nudges.py  guarded + unpinned in PR #416. It was
+# BURN-DOWN LOG. 78 rows were pinned at MYC-3530. For how many REMAIN, run
+# `python3 scripts/check-utf8-stdout.py` -- it prints the live count and the
+# per-tag split. Deliberately not restated here as a number: two rows came off
+# in PRs that merged 22 minutes apart (#420, then #416), and the second one's
+# hand-written "77 remain" was already wrong by the time it landed. A ledger
+# that has to be hand-decremented is a ledger that lies.
+#   - hooks/auto-capture-public-ships.py   guarded + unpinned in PR #420.
+#   - hooks/vault-command-nudges.py        guarded + unpinned in PR #416. It was
 #     edited there (the rm -rf rule now quotes the RESOLVED target back to the
 #     user, so an emoji vault folder reaches stderr from the filesystem), which
 #     staled its row and forced the choice this file already documents below:
