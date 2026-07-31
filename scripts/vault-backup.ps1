@@ -183,17 +183,52 @@ function Cmd-Setup {
   Cmd-Run
 
   if ($Schedule -eq "daily") {
+    $taskName = "ai-brain-starter vault-backup $slug"
     try {
-      $self = $MyInvocation.MyCommand.Path
-      $action  = New-ScheduledTaskAction -Execute "pwsh" -Argument "-NoProfile -File `"$self`" run -Vault `"$v`""
+      # $PSCommandPath, NOT $MyInvocation.MyCommand.Path. We are inside a
+      # function, where the latter describes the FUNCTION's invocation and is
+      # EMPTY - so this registered `-File ""` and the task could never run.
+      $self = $PSCommandPath
+      if (-not $self) { throw "cannot resolve this script's own path" }
+
+      # pwsh is PowerShell 7 and is NOT on a stock Windows install; the task
+      # then dies with 0x80070002 (file not found) on the INTERPRETER.
+      $exe = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
+      if (-not $exe) { $exe = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source }
+      if (-not $exe) { throw "no PowerShell interpreter found on PATH" }
+
+      $action  = New-ScheduledTaskAction -Execute $exe -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$self`" run -Vault `"$v`""
       $trigger = New-ScheduledTaskTrigger -Daily -At 3am
-      Register-ScheduledTask -TaskName "ai-brain-starter vault-backup $slug" -Action $action -Trigger $trigger -Force | Out-Null
-      Ok "Daily backup scheduled (03:00 local)."
-    } catch { Warn "Could not register a scheduled task; run vault-backup.ps1 run yourself." }
+      # Task Scheduler's DEFAULT settings refuse to start on battery, so on a
+      # laptop the 03:00 run is refused every night (0x800710E0) and the vault
+      # silently goes months without a snapshot. StartWhenAvailable catches up
+      # a window missed while the machine was asleep.
+      $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+      Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
+
+      # Registering is not running. Register-ScheduledTask SUCCEEDS on an action
+      # that can never execute, which is exactly how this shipped broken: setup
+      # printed "Backup is live" over a task that never fired once. Read back
+      # what we actually registered and prove both halves resolve.
+      $reg = (Get-ScheduledTask -TaskName $taskName -ErrorAction Stop).Actions[0]
+      $regFile = [regex]::Match($reg.Arguments, '-File\s+"([^"]+)"').Groups[1].Value
+      if (-not $regFile -or -not (Test-Path -LiteralPath $regFile)) {
+        throw "registered task points at a script path that does not exist: '$regFile'"
+      }
+      if (-not (Get-Command $reg.Execute -ErrorAction SilentlyContinue)) {
+        throw "registered task points at an interpreter that does not resolve: '$($reg.Execute)'"
+      }
+      Ok "Daily backup scheduled (03:00 local), verified runnable."
+    } catch {
+      Warn "Could not register a working scheduled task: $($_.Exception.Message)"
+      Warn "Run it yourself, or re-run setup: $PSCommandPath run -Vault `"$v`""
+    }
   }
   Say ""
   Ok "Backup is live. Now prove it restores (do this once):"
-  Say "    pwsh `"$($MyInvocation.MyCommand.Path)`" verify -Vault `"$v`""
+  $hintExe = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
+  if (-not $hintExe) { $hintExe = "powershell" }
+  Say "    $hintExe `"$PSCommandPath`" verify -Vault `"$v`""
 }
 
 function Cmd-Run {
