@@ -207,9 +207,12 @@ jobs:
       # Windows cp1252 console with UnicodeEncodeError; the caller captures the empty
       # output and misreads it as failure (ai-brain-starter#313: sync-vault-scripts.ps1
       # read it as "no Meta folder" and fell back to a manual copy). PR #313 fixed the
-      # two files that had already broken; scripts/check-utf8-stdout.py fails ANY
-      # runnable vault CLI that writes non-ASCII to the console without the 5-line
-      # stdout/stderr UTF-8 reconfigure guard, so the class cannot recur.
+      # two files that had already broken; scripts/check-utf8-stdout.py fails a
+      # runnable scripts/*.py or hooks/*.py CLI that writes non-ASCII to the console
+      # without the 5-line stdout/stderr UTF-8 reconfigure guard, so the class cannot
+      # recur. (This comment used to say "ANY runnable vault CLI"; that was false -
+      # hooks/ was outside the scan entirely until MYC-3530, which widened the scope
+      # and content-pinned the 78 pre-existing violations it exposed.)
       # scripts/ci.sh runs the SAME checker locally (the `ci-test` pre-push gate),
       # so CI and the laptop gate cannot drift.
       - name: UTF-8 console guard (no cp1252 print crash)

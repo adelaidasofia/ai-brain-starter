@@ -19,8 +19,29 @@ watchdog for the SILENT-NO-OP / cp1252-crash bug: PR #313 fixed the two files
 that had already broken; this makes the NEXT one fail CI instead of a user's
 Windows console.
 
+SCOPE - which files this gate actually looks at (MYC-3530):
+    scripts/*.py  AND  hooks/*.py  (see _SCAN_PATHSPECS).
+
+    This header used to describe the target as "a vault script" and the usage
+    line said "tracked scripts/*.py", while the CI wiring in scripts/ci.sh and
+    .github/workflows/lint.yml both claimed the gate "fails ANY runnable vault
+    CLI". Those two statements are not the same statement, and the second one
+    was false: _tracked_scripts() only ever passed `scripts/*.py` to git
+    ls-files, so hooks/ - 113 tracked Python files, 78 of them flaggable - had
+    never been scanned by this lint at all. That was a SCOPE gap, not a
+    predicate gap: the 78 are files the ORIGINAL, unwidened predicate would
+    already have flagged. The gate simply never looked.
+
+    hooks/ is the HIGHER-severity surface, not the lower one. A script that
+    dies on a cp1252 console produces a bad answer for whoever ran it. A hook
+    gates the tool call: a PreToolUse hook that raises UnicodeEncodeError
+    mid-gate either fails silently OPEN (the protection the user believes is
+    there is not) or denies every Write with no legible cause. That shape has
+    already shipped here twice - #375, and #409 ("vault frontmatter lint denies
+    every Write on Windows").
+
 Rule (deterministic, near-zero false negative):
-    A tracked script FAILS if ALL of:
+    A scanned file FAILS if ALL of:
       - it is a runnable CLI ............ has `if __name__ == "__main__":`
       - it writes to the console ........ a print() with no non-console file=,
                                           or sys.stdout/sys.stderr .write()
@@ -63,12 +84,38 @@ non-ASCII comment or a resolver import can add `# utf8-stdout-ok: <reason>` on
 its own line. The guard itself is a harmless no-op on POSIX (already UTF-8), so
 adding it is almost always the right fix rather than a bypass.
 
+THE RATCHET - scripts/utf8-stdout-baseline.txt (MYC-3530):
+    Widening the scope to hooks/ surfaced 78 pre-existing violations at once.
+    That is far past fix-in-one-PR size, and bulk-adding the 5-line guard from
+    a grep is exactly what the MYC-3520 guardrail forbids. So the legacy
+    population is PINNED by content hash, using the same mechanism as
+    scripts/vault-root-read-baseline.txt (#407) and
+    scripts/cloud-safe-walker-baseline.txt (#411):
+
+      - A pinned file passes ONLY while its content still hashes to its row.
+        Edit it at all and the row goes STALE and the build fails, so the next
+        person to touch any of these files has to fix the guard.
+      - A file NOT in the baseline has no grace period: a new or newly-flagged
+        file fails on the first run. That is the whole point of the widening.
+      - Rows only ever get DELETED. Re-pinning an edited file to keep it quiet
+        converts the backlog into a permanent exemption.
+
+    The hash is taken over NEWLINE-NORMALIZED content, not the bytes on disk.
+    This repo has no .gitattributes, so a Windows clone with core.autocrlf=true
+    has CRLF on disk while the Linux CI runner has LF; hashing raw would pin the
+    CHECKOUT instead of the CONTENT and report every row stale on the other
+    platform (that regression was live and shipped as #411 - read it before
+    changing how this hashes).
+
 Usage:
-    check-utf8-stdout.py                 # lint tracked scripts/*.py, exit 1 on any violation
-    check-utf8-stdout.py FILE [FILE ...] # lint the named files
+    check-utf8-stdout.py                 # lint scripts/*.py + hooks/*.py against
+                                         #   the baseline; exit 1 on any violation
+    check-utf8-stdout.py FILE [FILE ...] # lint the named files, NO baseline
+                                         #   (fixtures and negative controls)
     check-utf8-stdout.py --report [glob] # classify every file, never fail (enumeration)
 """
 import ast
+import hashlib
 import re
 import subprocess
 import sys
@@ -193,18 +240,86 @@ def classify(path):
     }
 
 
-def _tracked_scripts():
-    """Default target: tracked scripts/*.py, resolved from the repo root."""
+def normalize(source):
+    """CRLF/CR -> LF.
+
+    The baseline hash MUST be identical on every checkout or the ratchet is
+    useless. This repo has no .gitattributes, so a Windows clone with
+    core.autocrlf=true has CRLF on disk while the Linux CI runner has LF -- a
+    raw-bytes hash pinned on one platform is 100% stale on the other, which reds
+    the build for everyone with no real violation behind it. Shipped live once
+    already (#411, scripts/cloud-safe-walker-baseline.txt). Normalizing makes
+    the pin describe the CONTENT, not the checkout.
+    """
+    return source.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def content_digest(path):
+    """SHA-256 over the newline-normalized text of `path`."""
+    text = path.read_bytes().decode("utf-8", errors="replace")
+    return hashlib.sha256(normalize(text).encode("utf-8")).hexdigest()
+
+
+# SCOPE ANCHOR (MYC-3530). The two roots this gate scans. scripts/ is the
+# shipped CLI surface; hooks/ is the GATE surface, where the same crash either
+# fails silently open or denies every write (#375, #409). hooks/ was outside the
+# scan until MYC-3530 -- not because its files were clean, but because
+# `_tracked_scripts()` only ever passed `scripts/*.py` to git ls-files.
+#
+# NEGATIVE-CONTROL ANCHOR (scripts/test-utf8-console-guard.sh rewrites this ONE
+# line back to the scripts-only tuple to prove the widening is load-bearing; if
+# you move or rename it, update that test - it fails loud when the anchor is
+# missing rather than silently losing the control).
+_SCAN_PATHSPECS = ("scripts/*.py", "hooks/*.py")
+
+DEFAULT_BASELINE = Path(__file__).resolve().parent / "utf8-stdout-baseline.txt"
+
+
+def _scanned_files():
+    """Default target: scripts/*.py + hooks/*.py, resolved from the repo root.
+
+    `--cached --others --exclude-standard` so a brand-new, not-yet-committed
+    hook is in scope too: the local pre-push gate must catch it before it is
+    ever pushed, not one commit later. Same idiom as
+    scripts/check-vault-root-reads.py and scripts/check-cloud-safe-file-walkers.py.
+    """
     root = Path(__file__).resolve().parent.parent
     try:
         out = subprocess.check_output(
-            ["git", "-C", str(root), "ls-files", "--", "scripts/*.py"],
+            ["git", "-C", str(root), "ls-files", "--cached", "--others",
+             "--exclude-standard", "--", *_SCAN_PATHSPECS],
             text=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
-        # Not a git checkout - fall back to a plain glob.
-        return sorted((root / "scripts").glob("*.py"))
-    return [root / line for line in out.splitlines() if line.strip()]
+        # Not a git checkout - fall back to a plain glob per scanned root. git
+        # pathspec `*` crosses `/`, so mirror that with rglob to keep the two
+        # discovery paths describing the same set (scripts/extractors/*.py,
+        # hooks/_lib/*.py).
+        found = []
+        for spec in _SCAN_PATHSPECS:
+            top, _, pattern = spec.partition("/")
+            found.extend((root / top).rglob(pattern))
+        return sorted(set(found))
+    return sorted({root / line for line in out.splitlines() if line.strip()})
+
+
+def load_baseline(path):
+    """path -> (sha256, tag). Raises ValueError on a malformed or missing file."""
+    if not path.is_file():
+        raise ValueError("baseline not found: {}".format(path))
+    entries = {}
+    text = path.read_bytes().decode("utf-8", errors="replace")
+    for line_no, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 2)
+        if len(parts) != 3 or len(parts[0]) != 64:
+            raise ValueError(
+                "invalid baseline row {}:{}: {!r}".format(path, line_no, raw)
+            )
+        entries[parts[2]] = (parts[0], parts[1])
+    return entries
 
 
 def main(argv):
@@ -215,6 +330,12 @@ def main(argv):
         report_mode = True
         args = args[1:]
 
+    # The baseline ratchet applies to the FLEET scan only. Explicit file
+    # arguments mean "audit exactly these", which is how the fixtures and the
+    # negative controls in scripts/test-utf8-console-guard.sh call this: a
+    # pardon list has no meaning for a file outside the fleet.
+    fleet_mode = not args
+    root = Path(__file__).resolve().parent.parent
     if args:
         # In --report mode a bare glob string is allowed; otherwise treat as paths.
         if report_mode and len(args) == 1 and any(ch in args[0] for ch in "*?"):
@@ -222,7 +343,7 @@ def main(argv):
         else:
             targets = [Path(a) for a in args]
     else:
-        targets = _tracked_scripts()
+        targets = _scanned_files()
 
     results = [classify(p) for p in targets if p.suffix == ".py" and p.is_file()]
 
@@ -231,23 +352,54 @@ def main(argv):
         return 0
 
     violations = [r for r in results if r["flagged"]]
-    if violations:
-        print(
-            "::error::vault script(s) print to a Windows-hostile console without "
-            "the UTF-8 stdout/stderr guard (the ai-brain-starter#313 cp1252 crash "
-            "class). Add the 5-line reconfigure block at the CLI entrypoint:",
-            file=sys.stderr,
-        )
-        print(
-            "    for _stream in (sys.stdout, sys.stderr):\n"
-            "        try:\n"
-            '            _stream.reconfigure(encoding="utf-8")  # Python 3.7+\n'
-            "        except (AttributeError, ValueError):\n"
-            "            pass",
-            file=sys.stderr,
-        )
+    pardoned = {}
+    stale = []
+    if fleet_mode:
+        try:
+            baseline = load_baseline(DEFAULT_BASELINE)
+        except (ValueError, OSError) as exc:
+            print("::error::utf8 console guard: {}".format(exc), file=sys.stderr)
+            return 2
+        live = []
         for r in violations:
-            rel = r["path"]
+            rel = r["path"].relative_to(root).as_posix()
+            digest = content_digest(r["path"])
+            row = baseline.get(rel)
+            if row and row[0] == digest:
+                pardoned[rel] = row[1]
+                continue
+            live.append(r)
+        violations = live
+        # A row is live only while its file is STILL flagged at exactly the
+        # pinned content. Anything else - guard added, file deleted, file
+        # edited, content drifted - is stale and must be removed, not re-pinned.
+        stale = sorted(set(baseline) - set(pardoned))
+
+    if violations or stale:
+        if violations:
+            print(
+                "::error::vault script/hook(s) print to a Windows-hostile console "
+                "without the UTF-8 stdout/stderr guard (the ai-brain-starter#313 "
+                "cp1252 crash class). Add the 5-line reconfigure block at the CLI "
+                "entrypoint:",
+                file=sys.stderr,
+            )
+            print(
+                "    for _stream in (sys.stdout, sys.stderr):\n"
+                "        try:\n"
+                '            _stream.reconfigure(encoding="utf-8")  # Python 3.7+\n'
+                "        except (AttributeError, ValueError):\n"
+                "            pass",
+                file=sys.stderr,
+            )
+        for r in violations:
+            # Repo-relative when we can: a `::error file=` annotation only
+            # attaches to the diff if the path is relative to the repo root, and
+            # the fleet scan hands back absolute paths.
+            try:
+                rel = r["path"].relative_to(root).as_posix()
+            except ValueError:
+                rel = r["path"]
             if r["has_non_ascii"]:
                 why = "carries non-ASCII source"
             else:
@@ -263,13 +415,39 @@ def main(argv):
                 "console output is provably ASCII-only).".format(f=rel, why=why),
                 file=sys.stderr,
             )
+        for rel in stale:
+            print(
+                "::error file={f}::STALE BASELINE {f}: the row in {b} no longer "
+                "matches. The file was edited, guarded, bypassed, or removed. "
+                "Delete the row -- do NOT re-pin edited content to keep it "
+                "exempt, that turns the backlog into a permanent "
+                "exemption.".format(f=rel, b=DEFAULT_BASELINE.name),
+                file=sys.stderr,
+            )
         print(
-            "\nFAILED: {n} script(s) missing the UTF-8 console guard.".format(
-                n=len(violations)
-            ),
+            "\nFAILED: {n} unpinned file(s) missing the UTF-8 console guard, "
+            "{s} stale baseline row(s).".format(n=len(violations), s=len(stale)),
             file=sys.stderr,
         )
         return 1
+
+    if fleet_mode:
+        by_tag = {}
+        for tag in pardoned.values():
+            by_tag[tag] = by_tag.get(tag, 0) + 1
+        tags = ", ".join("{}={}".format(t, n) for t, n in sorted(by_tag.items()))
+        print(
+            "OK - {n} file(s) checked across {roots}; every unpinned printing CLI "
+            "that can emit non-ASCII carries the UTF-8 console guard. "
+            "{p} content-pinned legacy file(s) remain [{tags}] - see {b}.".format(
+                n=len(results),
+                roots=" + ".join(_SCAN_PATHSPECS),
+                p=len(pardoned),
+                tags=tags or "none",
+                b=DEFAULT_BASELINE.name,
+            )
+        )
+        return 0
 
     n_resolver = sum(1 for r in results if r["resolves_vault_path"] and r["is_cli"])
     print(
