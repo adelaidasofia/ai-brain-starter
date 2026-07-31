@@ -75,7 +75,7 @@ show_streams() {
 # SHELL produced against a path PYTHON resolved, so the two must agree on what a
 # path is or the suite tests nothing. python's tempfile answers in the same
 # namespace the hooks run in, on both platforms.
-TMP="$(python3 -c 'import tempfile; print(tempfile.mkdtemp(prefix="abs-vault-root-").replace(chr(92), "/"))')"
+TMP="$(python3 -c 'import os,tempfile; print(os.path.realpath(tempfile.mkdtemp(prefix="abs-vault-root-")).replace(chr(92), "/"))')"
 if [ -z "$TMP" ] || [ ! -d "$TMP" ]; then
   echo "FAIL: could not create a tmpdir python and the shell both agree on" >&2
   exit 1
