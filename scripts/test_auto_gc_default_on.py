@@ -142,8 +142,15 @@ def main() -> int:
     # --- the scheduler honors the opt-out for real (behavior, not grep) -----
     with tempfile.TemporaryDirectory() as td:
         r = subprocess.run(["/bin/bash", str(SCHED), td, "--quiet"],
-                           capture_output=True, text=True,
+                           # encoding pinned: text=True alone decodes with the
+                           # console code page, and every vault path carries the
+                           # gear emoji whose 0x8F byte is unmapped in cp1252.
+                           capture_output=True, text=True, encoding="utf-8",
+                           # USERPROFILE too: Windows resolves "~" from it and
+                           # ignores HOME, so HOME alone leaves the child on the
+                           # real profile (MYC-3536).
                            env={"PATH": "/usr/bin:/bin", "HOME": td,
+                                "USERPROFILE": td,
                                 "ABS_NO_AUTO_GC": "1"}, timeout=60)
         check(r.returncode == 0,
               f"the opt-out path exited {r.returncode}: {r.stderr[-300:]}")
@@ -161,8 +168,9 @@ def main() -> int:
         r = subprocess.run(
             [sys.executable, str(HOOK_INSTALLER), "--vault-path", td, "--quiet",
              "--settings", str(Path(td) / "settings.json")],
-            capture_output=True, text=True,
-            env=dict(os.environ, HOME=td), timeout=120)
+            capture_output=True, text=True, encoding="utf-8",
+            # USERPROFILE too — see above (MYC-3536).
+            env=dict(os.environ, HOME=td, USERPROFILE=td), timeout=120)
         agents = Path(td) / "Library" / "LaunchAgents"
         check(not agents.exists() or not list(agents.glob("com.abs.*")),
               "installing with a $TMPDIR vault scheduled a launchd agent — the "
