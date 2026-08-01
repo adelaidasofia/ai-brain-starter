@@ -9,6 +9,22 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-01: entries that quietly drop out of every query
+
+**Who this affects:** anyone whose notes put wikilinks in a frontmatter field -- `people:`, `related:`, `projects:`, `attendees:`.
+
+A wikilink is made of square brackets. YAML reads square brackets as list syntax. Put them together without quotes and one of two things happens, and neither one tells you.
+
+`people: [[Ada]], [[Alan]]` stops the frontmatter from parsing at all. The consequence is not a warning, it is that the file becomes **invisible** -- Dataview stops returning it, the metadata extractors skip it, and weekly and monthly reviews are computed as if the entry had never been written. Open the note and it looks completely normal. That is why this can run for weeks before anyone wonders why a review came back thinner than the month actually felt.
+
+`related: [[[Ada]], [[Alan]]]` is the worse one, because it **works**. YAML reads the inner brackets as nested lists and gives you lists inside lists where you wanted two links. No error, no unparseable file, nothing to notice. The queries just never match.
+
+The coaching skill's session template was prescribing that second form. It now shows the correct one, and the journal skill states the rule with both failure modes named, so it covers any wikilink field you add later rather than only the ones shipped today.
+
+**The whole fix:** quote each link on its own. `people: ["[[Ada Lovelace]]", "[[Alan Turing]]"]`
+
+---
+
 ## 2026-07-14: the secret detector stopped crying wolf over container IDs and migration checksums
 
 **Who this affects:** everyone — a detector that flags things that aren't secrets teaches you to stop trusting its real alerts.
