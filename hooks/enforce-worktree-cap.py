@@ -53,13 +53,13 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 
 HOOK_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOK_DIR))
 
 from _lib.worktree_safety import (  # noqa: E402
+    append_cleanup_log,
     current_worktree,
     find_main_repo,
     git,
@@ -73,19 +73,14 @@ from _lib.worktree_safety import (  # noqa: E402
     snapshot_unrecoverable,
 )
 
-LOG_REL = "⚙️ Meta/logs/worktree-cleanup.log"
 DEFAULT_CAP = 12
 
 
 def _log(main_repo: Path, msg: str) -> None:
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    try:
-        log = main_repo / LOG_REL
-        log.parent.mkdir(parents=True, exist_ok=True)
-        with open(log, "a", encoding="utf-8") as f:
-            f.write(f"[{ts}] cap: {msg}\n")
-    except OSError:
-        pass
+    """Record one cap/reclaim event. See remove-ended-worktree.py:_log — path
+    resolution is shared in _lib precisely so these two cannot diverge again.
+    """
+    append_cleanup_log(main_repo, f"cap: {msg}")
 
 
 def _emit(ctx: str | None) -> int:
@@ -271,6 +266,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     try:
         sys.exit(main())
     except Exception:
