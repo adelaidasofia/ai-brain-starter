@@ -19,6 +19,11 @@ from pathlib import Path
 
 HOOK_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOK_DIR))
+# Reaper artifacts now resolve to the REAL vault (see _lib.worktree_safety.artifact_base),
+# so redirect them at import time — otherwise this suite writes its fixtures into the
+# user's actual vault. Set before importing anything that resolves a snapshot path.
+os.environ.setdefault("WORKTREE_ARTIFACT_ROOT", tempfile.mkdtemp(prefix="wt-artifacts-"))
+
 
 from _lib import worktree_safety as safety  # noqa: E402
 from _lib.safe_read import SafeBytesRead  # noqa: E402

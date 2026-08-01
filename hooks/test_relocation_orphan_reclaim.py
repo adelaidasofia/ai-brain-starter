@@ -21,6 +21,11 @@ import os, subprocess, sys, tempfile, time, shutil
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Reaper artifacts now resolve to the REAL vault (see _lib.worktree_safety.artifact_base),
+# so redirect them at import time — otherwise this suite writes its fixtures into the
+# user's actual vault. Set before importing anything that resolves a snapshot path.
+os.environ.setdefault("WORKTREE_ARTIFACT_ROOT", tempfile.mkdtemp(prefix="wt-artifacts-"))
+
 from _lib.worktree_safety import (  # noqa: E402
     reclaim_orphan_dir, _is_relocation_orphan, snapshot_dir_for,
 )

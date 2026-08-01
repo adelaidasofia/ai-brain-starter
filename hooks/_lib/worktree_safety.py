@@ -174,6 +174,27 @@ def vault_root_or_none(main_repo: Path) -> Path | None:
     return None
 
 
+def artifact_base(main_repo: Path) -> tuple[Path, bool]:
+    """(base directory for reaper artifacts, whether it is vault-shaped).
+
+    `WORKTREE_ARTIFACT_ROOT` overrides everything. That env var exists for TESTS:
+    these helpers now resolve to the caller's REAL vault, so a suite that builds a
+    throwaway repo and calls snapshot_dir_for() would write its fixtures into the
+    user's actual vault. Before this module took an absolute path, such a suite was
+    contained by accident — the old repo-relative join kept fixtures inside the temp
+    repo. Making the path correct for production therefore REMOVED that containment,
+    and a real run of the recovery suite deposited `regular/UNSAVED.md` and
+    `mode-window/secret.bin` into a live vault before this seam was added.
+    """
+    override = os.environ.get("WORKTREE_ARTIFACT_ROOT")
+    if override:
+        return Path(override).expanduser(), True
+    vault = vault_root_or_none(main_repo)
+    if vault is not None:
+        return vault, True
+    return Path.home() / ".claude", False
+
+
 def snapshot_dir_for(main_repo: Path) -> Path:
     """Canonical snapshot root — the vault when identifiable, else machine-local.
 
@@ -189,18 +210,14 @@ def snapshot_dir_for(main_repo: Path) -> Path:
     in-repo. The old dot-dir fallback was no safer — `.worktree-snapshots` was
     gitignored in none of the repos checked; it was simply losing to `⚙️ Meta`.
     """
-    vault = vault_root_or_none(main_repo)
-    if vault is not None:
-        return vault / SNAPSHOT_REL
-    return Path.home() / ".claude" / SNAPSHOT_REL_FALLBACK
+    base, is_vault = artifact_base(main_repo)
+    return base / SNAPSHOT_REL if is_vault else base / SNAPSHOT_REL_FALLBACK
 
 
 def cleanup_log_path(main_repo: Path) -> Path:
     """Absolute path of the shared worktree-cleanup log. Never inside `main_repo`."""
-    vault = vault_root_or_none(main_repo)
-    if vault is not None:
-        return vault / CLEANUP_LOG_REL
-    return Path.home() / ".claude" / "logs" / "worktree-cleanup.log"
+    base, is_vault = artifact_base(main_repo)
+    return base / CLEANUP_LOG_REL if is_vault else base / "logs" / "worktree-cleanup.log"
 
 
 def append_cleanup_log(main_repo: Path, msg: str) -> None:

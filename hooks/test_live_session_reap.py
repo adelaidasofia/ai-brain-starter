@@ -28,6 +28,11 @@ from pathlib import Path
 
 HOOK_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOK_DIR))
+# Reaper artifacts now resolve to the REAL vault (see _lib.worktree_safety.artifact_base),
+# so redirect them at import time — otherwise this suite writes its fixtures into the
+# user's actual vault. Set before importing anything that resolves a snapshot path.
+os.environ.setdefault("WORKTREE_ARTIFACT_ROOT", tempfile.mkdtemp(prefix="wt-artifacts-"))
+
 from _lib.worktree_safety import live_session_cwds, snapshot_dir_for  # noqa: E402
 
 # Load the hyphenated hook module by path to test its _per_session_backstop().
