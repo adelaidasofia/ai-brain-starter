@@ -636,6 +636,9 @@ people: ["[[Full Name]]", "[[Other Name]]"]   # people who showed up today. EVER
 #   in one vault, and every insight section had been rendering empty for weeks as a
 #   result, with nothing surfacing the failure.
 #   Same rule for ANY key holding wikilinks (`related:`, `projects:`): quote each one.
+#   The bracketed variant is worse, because it SUCCEEDS: `related: [[[A]], [[B]]]`
+#   parses to nested lists ([[["A"]], [["B"]]]) instead of wikilink strings. No
+#   error, no unparseable file, nothing to notice — the queries simply never match.
 # Morning pairing fields — ONLY include if a /rise entry was found in Step 0h:
 # floor_morning: <Floor at sunrise from /rise frontmatter>
 # floor_morning_level: Low | Middle | High
