@@ -40,13 +40,13 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 
 HOOK_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOK_DIR))
 
 from _lib.worktree_safety import (  # noqa: E402
+    append_cleanup_log,
     current_worktree,
     find_main_repo,
     git,
@@ -54,18 +54,16 @@ from _lib.worktree_safety import (  # noqa: E402
     snapshot_unrecoverable,
 )
 
-LOG_REL = "⚙️ Meta/logs/worktree-cleanup.log"
-
 
 def _log(main_repo: Path, msg: str) -> None:
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    try:
-        log = main_repo / LOG_REL
-        log.parent.mkdir(parents=True, exist_ok=True)
-        with open(log, "a", encoding="utf-8") as f:
-            f.write(f"[{ts}] {msg}\n")
-    except OSError:
-        pass
+    """Record one reaping event.
+
+    Path resolution lives in _lib so this hook and enforce-worktree-cap.py cannot
+    drift apart again: they previously held two copies of the same buggy
+    `main_repo / LOG_REL` join, so fixing one left the other still writing vault
+    artifacts into whichever product repo it reaped.
+    """
+    append_cleanup_log(main_repo, msg)
 
 
 def _done() -> int:

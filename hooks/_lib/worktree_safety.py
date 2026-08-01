@@ -40,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import datetime
 import shutil
 import sqlite3
 import subprocess
@@ -50,11 +51,15 @@ from pathlib import Path
 
 from .safe_read import safe_read_bytes, safe_read_text
 
-# Canonical snapshot location — MUST match snapshot-pending-work-on-stop.py and
+# Canonical reaper-artifact locations, relative to the VAULT ROOT (never to the
+# repo being reaped) — MUST match snapshot-pending-work-on-stop.py and
 # surface-orphan-worktree-snapshots.py so orphan-surfacing + weekly prune find
-# snapshots written here. Falls back to a dot-dir for non-vault repos.
+# snapshots written here. Both of those resolve an ABSOLUTE vault path, so the
+# helpers below do too. When no vault can be identified, artifacts go to a
+# machine-local dir under ~/.claude — never into `main_repo`.
 SNAPSHOT_REL = "⚙️ Meta/Worktree Snapshots"
-SNAPSHOT_REL_FALLBACK = ".worktree-snapshots"
+SNAPSHOT_REL_FALLBACK = "worktree-snapshots"
+CLEANUP_LOG_REL = "⚙️ Meta/logs/worktree-cleanup.log"
 WORKTREES_SEG = ".claude/worktrees"
 
 # Heavy machine-exhaust dirs: never counted as "work" for idle detection.
@@ -126,12 +131,93 @@ def current_worktree(cwd: Path | None = None) -> tuple[Path, str] | None:
     return Path(head + marker + slug), slug
 
 
+def vault_root_or_none(main_repo: Path) -> Path | None:
+    """The vault this machine writes session artifacts to, or None if we cannot
+    identify one CONFIDENTLY.
+
+    NEVER returns `main_repo` or anything inside it. Reaper artifacts (the cleanup
+    log, snapshots of unsaved work) describe activity ACROSS repos and must not be
+    written into whichever repo is being reaped: a broad `git add` then stages vault
+    artifacts into a product repo. Measured 2026-07-23 on one machine: 8 repos
+    contaminated this way, two with files already staged for commit.
+
+    `resolve_vault_root()` alone is NOT sufficient here — its documented last resort
+    is `cwd`, which for these hooks is routinely a product repo. Its answer is
+    therefore accepted only when it independently looks like a vault AND is not the
+    repo being reaped.
+    """
+    try:
+        repo = main_repo.expanduser().resolve()
+    except OSError:
+        return None
+
+    candidates: list[Path] = []
+    env = os.environ.get("VAULT_ROOT")
+    if env:
+        candidates.append(Path(env))
+    try:  # optional: absent in a partial install, and this must never be fatal
+        from .vault_root import resolve_vault_root
+
+        candidates.append(resolve_vault_root(Path.cwd(), env))
+    except Exception:
+        pass
+
+    for cand in candidates:
+        try:
+            c = cand.expanduser().resolve()
+        except OSError:
+            continue
+        if c == repo or repo in c.parents:
+            continue  # the repo being reaped, or inside it — the exact bug
+        if (c / "⚙️ Meta").is_dir():
+            return c
+    return None
+
+
 def snapshot_dir_for(main_repo: Path) -> Path:
-    """Canonical snapshot root for this repo (vault dir if present, else dot-dir)."""
-    vault_meta = main_repo / SNAPSHOT_REL
-    if (main_repo / "⚙️ Meta").is_dir() or vault_meta.exists():
-        return vault_meta
-    return main_repo / SNAPSHOT_REL_FALLBACK
+    """Canonical snapshot root — the vault when identifiable, else machine-local.
+
+    Always ABSOLUTE and always OUTSIDE `main_repo`. A snapshot exists to survive the
+    destruction of the worktree it came from, so storing it inside the repo being
+    reaped is self-defeating.
+
+    This previously returned `main_repo / SNAPSHOT_REL` whenever `main_repo/"⚙️ Meta"`
+    merely EXISTED — treating a directory name as proof the repo was the vault. That
+    inference was false, and it CASCADED: the sibling cleanup-log writer created
+    `⚙️ Meta/logs/` inside every product repo it reaped, which then made this sniff
+    answer "vault!" for those repos, so snapshots of UNSAVED WORK began landing
+    in-repo. The old dot-dir fallback was no safer — `.worktree-snapshots` was
+    gitignored in none of the repos checked; it was simply losing to `⚙️ Meta`.
+    """
+    vault = vault_root_or_none(main_repo)
+    if vault is not None:
+        return vault / SNAPSHOT_REL
+    return Path.home() / ".claude" / SNAPSHOT_REL_FALLBACK
+
+
+def cleanup_log_path(main_repo: Path) -> Path:
+    """Absolute path of the shared worktree-cleanup log. Never inside `main_repo`."""
+    vault = vault_root_or_none(main_repo)
+    if vault is not None:
+        return vault / CLEANUP_LOG_REL
+    return Path.home() / ".claude" / "logs" / "worktree-cleanup.log"
+
+
+def append_cleanup_log(main_repo: Path, msg: str) -> None:
+    """Append one line to the shared cleanup log. Best-effort, never fatal.
+
+    ONE log now collects every repo's reaping, so the repo name travels IN the line
+    rather than in the file's location — which is what made a repo-relative path look
+    reasonable in the first place.
+    """
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        path = cleanup_log_path(main_repo)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"[{ts}] [{main_repo.name}] {msg}\n")
+    except OSError:
+        pass
 
 
 def git(repo: Path, args: list[str], timeout: int = GIT_TIMEOUT) -> subprocess.CompletedProcess:
