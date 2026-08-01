@@ -9,6 +9,20 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-01: WhatsApp chats that were all filed as one-on-ones
+
+**Who this affects:** anyone using the WhatsApp bridge, especially if your vault is not in English.
+
+Three things the chat extractor was getting wrong, each of which produced a field that looked filled in and was not.
+
+**Every group chat was labelled a direct message.** The extractor decided group-vs-direct from two signals: a `chat_type` field, or a `jid` ending in `@g.us`. Exports written by older versions of the bridge wrapper carry neither, so on those vaults the answer was always "direct" -- measured at 113 of 113 groups. It now falls back to what those exports do carry: the group subject in the filename, and the `-` discriminator that a group JID has and a phone number never does. It deliberately does not guess from JID length, because direct chats get named after long numeric identifiers too.
+
+**The "this chat contains a decision" flag only spoke English.** The trigger words were `exception, incident, pricing, escalation, outage, edge case, refund`. On a Spanish vault that fired on 6 chats out of 736 -- not a signal, just noise near zero. Spanish equivalents are now included by default, which takes it to 100, and `WHATSAPP_DECISION_TERMS` lets you replace the list entirely for any other language.
+
+**The "people mentioned" field was empty on every single chat.** It reused the helper that finds `[[wikilinks]]`, and a chat file is a verbatim message log that never contains one. Every chat reported nobody, in a vault with 35 people in the CRM. It now matches names as plain text, and resolves the chat's own counterpart to their CRM note even when the phone book spells it differently -- a trailing org tag (`Ana Ruiz 30X`) or missing accents (`Angela` for `Ángela`) previously meant no link at all. On the test vault that went from 0 chats linked to 46.
+
+---
+
 ## 2026-07-31: five Windows install bugs, all of them silent
 
 **Who this affects:** everyone on Windows. Two of the five also affect Mac and Linux. All of them were reported by people who ran the installer, were told it succeeded, and found out later that it hadn't.
