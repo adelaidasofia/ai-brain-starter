@@ -476,6 +476,18 @@ fi
 echo "==> (e2) hook block-protocol: $PY scripts/check-hook-block-protocol.py"
 "$PY" scripts/check-hook-block-protocol.py
 
+# ---- (e2b) Hook activation --------------------------------------------------
+# scripts/check-hook-activation.py fails a hook that ships in hooks/ but is wired
+# in NO activation channel (dormant on every install), and a hook we DO wire that
+# the installer does not own (a re-install duplicates a hand-wired copy instead of
+# replacing it, and verify_paths_on_disk() skips it). Three guards shipped dormant
+# before this existed: MYC-1017, MYC-1031, and MYC-782 / #371.
+# The ARTIFACT-WITHOUT-ACTIVATION half of the family whose WIRED-BUT-NEUTERED half
+# is (e2) and whose wired-but-never-deployed half is (e4). Pure stdlib.
+echo "==> (e2b) hook activation: $PY scripts/check-hook-activation.py"
+"$PY" scripts/check-hook-activation.py --selftest >/dev/null
+"$PY" scripts/check-hook-activation.py
+
 # ---- (e3) Naive VAULT_ROOT reads -------------------------------------------
 # scripts/check-vault-root-reads.py fails code that reads the VAULT_ROOT env var
 # outside a sanctioned resolver. A globally-exported VAULT_ROOT names ONE vault,
