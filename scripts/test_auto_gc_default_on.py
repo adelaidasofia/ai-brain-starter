@@ -143,7 +143,11 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as td:
         r = subprocess.run(["/bin/bash", str(SCHED), td, "--quiet"],
                            capture_output=True, text=True,
+                           # USERPROFILE too: Windows resolves "~" from it and
+                           # ignores HOME, so HOME alone leaves the child on the
+                           # real profile (MYC-3536).
                            env={"PATH": "/usr/bin:/bin", "HOME": td,
+                                "USERPROFILE": td,
                                 "ABS_NO_AUTO_GC": "1"}, timeout=60)
         check(r.returncode == 0,
               f"the opt-out path exited {r.returncode}: {r.stderr[-300:]}")
@@ -162,7 +166,8 @@ def main() -> int:
             [sys.executable, str(HOOK_INSTALLER), "--vault-path", td, "--quiet",
              "--settings", str(Path(td) / "settings.json")],
             capture_output=True, text=True,
-            env=dict(os.environ, HOME=td), timeout=120)
+            # USERPROFILE too — see above (MYC-3536).
+            env=dict(os.environ, HOME=td, USERPROFILE=td), timeout=120)
         agents = Path(td) / "Library" / "LaunchAgents"
         check(not agents.exists() or not list(agents.glob("com.abs.*")),
               "installing with a $TMPDIR vault scheduled a launchd agent — the "
