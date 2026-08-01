@@ -152,6 +152,15 @@ def vault_root_or_none(main_repo: Path) -> Path | None:
         return None
 
     candidates: list[Path] = []
+    # vault-root-ok: read raw, then fed to resolve_vault_root() below as its env
+    # argument (the sanctioned cascade call). The raw value is ALSO tried first
+    # because this helper must not inherit that resolver's two fallbacks: it
+    # returns `cwd` when nothing else matches, and it prefers any ancestor repo
+    # declaring its own close cascade. For a reaper the cwd IS routinely the
+    # product repo being reaped, and reaping a vault-shaped repo (this one,
+    # mycelium-vault) would resolve to that repo rather than the user's vault.
+    # Every candidate is still validated below (must look like a vault, must not
+    # be the reaped repo), so a wrong env value is rejected, not trusted.
     env = os.environ.get("VAULT_ROOT")
     if env:
         candidates.append(Path(env))

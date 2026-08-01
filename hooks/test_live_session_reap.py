@@ -44,7 +44,13 @@ DEAD_PID = 2 ** 31 - 1  # almost certainly not a running process
 
 
 def sh(repo, *args):
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=False, text=True)
+    # encoding pinned: bare text=True decodes with the locale encoding, which raises
+    # UnicodeDecodeError on a non-UTF-8 Windows console the moment git echoes a path
+    # carrying the vault's non-ASCII directory names.
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True, check=False, text=True, encoding="utf-8",
+    )
 
 
 def make_main():
