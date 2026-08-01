@@ -94,26 +94,33 @@ UNCLASSIFIED_BASELINE: Set[str] = {
     "block-branch-switch-with-untracked-build.py",
     "block-claude-mcp-inline-secret.py",
     "block-mcp-config-inline-secret.py",
-    "block-raw-vault-git.py",
-    "block-vault-git-fullwalk.py",
     "block-worktree-shared-edit.py",
     "build-runbook-check.py",
+    "check-cron-paths.sh",
     "check-py-import-precommit.py",
     "check-rule-conflicts-on-write.py",
     "check-sync-folder-machinery.py",
+    "check_fab_shim.py",
+    "claude-scheduled-runner.sh",
     "create-dev-repo-checkpoint.py",
+    "cwd-changed.sh",
     "detect-secrets-in-bash-output.py",
+    "file-changed-settings.sh",
     "health-auto-sync.py",
     "hookify-auto-commit.py",
     "imessage-mcp-auto-export.py",
     "inject-best-of-best-on-consulting.py",
     "list-wip-stashes-on-session-start.py",
     "nudge-checkpoint-after-pytest-pass.py",
-    "permission-denied.py",
+    "pre-compact.sh",
+    "pty-pressure-check.sh",
     "reconcile-worktree-shared.py",
+    "rotate-logs.sh",
     "route-suggest.py",
     "scan-prior-sessions-for-secrets.py",
     "scrub-session-jsonl-secrets.py",
+    "sdd-cache-post.sh",
+    "sdd-cache-pre.sh",
     "session-lock.py",
     "session-turn-counter.py",
     "sessionstart-hook-snapshot-guard.py",
@@ -147,10 +154,43 @@ UNOWNED_BASELINE: Set[str] = {
 }
 
 
+PHASE_HOOK_RE = re.compile(r"hooks/([\w.-]+\.(?:py|sh))")
+
+
+def phase_doc_registrations(repo_root: Path) -> Set[str]:
+    """Hooks a phase doc tells the installing assistant to wire.
+
+    THE THIRD CHANNEL. hooks.json calls itself canonical, and it is not the
+    whole truth: some hooks are registered by instructions inside phases/*.md
+    (block-raw-vault-git.py and block-vault-git-fullwalk.py via
+    phase-05-context-layer.md). A gate that knows only the JSON channels
+    reports those as dormant -- debt that is not debt, which is exactly the
+    kind of false alarm that teaches people to ignore a gate. Surfaced by
+    MYC-3550, which owns classifying what remains.
+
+    KNOWN LIMITATION, accepted deliberately. This matches ANY `hooks/<name>`
+    mention in a phase doc, including prose and negative examples -- a line
+    reading "do NOT wire hooks/evil.py" marks evil.py activated. Tightening it
+    means guessing which prose is an instruction, which is exactly the fragile
+    heuristic that makes a gate untrustworthy. The failure mode is a false
+    NEGATIVE (the gate stays quiet about one hook); it can never produce a
+    false BLOCK, so it cannot wedge a build. Given the alternative was
+    reporting 3 genuinely-activated hooks as dormant, quiet-on-one beats
+    crying-wolf-on-three. If phases/*.md is ever formalised as a registration
+    surface (MYC-3550 item 2), key this off that structure instead.
+    """
+    found: Set[str] = set()
+    for doc in sorted(glob.glob(str(repo_root / "phases" / "*.md"))):
+        found.update(PHASE_HOOK_RE.findall(
+            Path(doc).read_text(encoding="utf-8", errors="replace")))
+    return found
+
+
 def is_test_file(basename: str) -> bool:
     """Structural exemption: a test is not a hook. Kept as CODE, not a list, so
-    adding a test never requires touching an allow-list."""
-    return basename.startswith("test_") or basename.endswith(".test.py")
+    adding a test never requires touching an allow-list. Covers both naming
+    conventions in hooks/: the `test_*` prefix and the `*.test.{py,sh}` infix."""
+    return basename.startswith("test_") or ".test." in basename
 
 
 def wired_basenames(*docs: dict) -> Set[str]:
@@ -241,13 +281,15 @@ def check_ownership(commands: Iterable[str], is_owned: Callable[[str], bool],
 
 def run_gate(repo_root: Path) -> int:
     template = json.loads((repo_root / "hooks.json").read_text(encoding="utf-8"))
-    plugin_path = repo_root / "hooks" / "hooks.json"
-    plugin = (json.loads(plugin_path.read_text(encoding="utf-8"))
-              if plugin_path.is_file() else {})
+    docs = [template]
+    for extra in sorted(set(glob.glob(str(repo_root / "hooks" / "hooks.json"))
+                            + glob.glob(str(repo_root / "skills" / "*" / "hooks" / "hooks.json")))):
+        docs.append(json.loads(Path(extra).read_text(encoding="utf-8")))
 
-    wired = wired_basenames(template, plugin)
+    wired = wired_basenames(*docs) | phase_doc_registrations(repo_root)
     hook_files = [os.path.basename(p)
-                  for p in glob.glob(str(repo_root / "hooks" / "*.py"))]
+                  for p in glob.glob(str(repo_root / "hooks" / "*.py"))
+                  + glob.glob(str(repo_root / "hooks" / "*.sh"))]
 
     spec = importlib.util.spec_from_file_location(
         "abs_installer", repo_root / "scripts" / "install-hooks-user-level.py")
@@ -301,6 +343,24 @@ def self_test() -> int:
     case("A: tests are not hooks -> pass",
          bool(check_activation({"test_x.py", "y.test.py"}, set(), {}, set())),
          False)
+    # Both naming conventions live in hooks/; missing either re-opens the false
+    # alarm that .test.sh files are dormant hooks.
+    case("A: .test.sh is not a hook -> pass",
+         bool(check_activation({"y.test.sh"}, set(), {}, set())), False)
+    # Shell hooks are in scope. They were NOT, and 9 of them (PreCompact,
+    # FileChanged, SessionStart, WebFetch pre/post) sat outside the gate
+    # entirely -- the guard's own scope as its blind spot.
+    case("A: unwired .sh hook -> FAIL",
+         bool(check_activation({"guard.sh"}, set(), {}, set())), True)
+    case("A: wired .sh hook -> pass",
+         bool(check_activation({"guard.sh"}, {"guard.sh"}, {}, set())), False)
+    # The third channel: a hook registered by a phase doc is ACTIVATED. Treating
+    # it as dormant is a false alarm, and false alarms are how a gate gets
+    # ignored. `wired` is the union of every channel, so this is the same path
+    # phase_doc_registrations() feeds.
+    case("A: registered via a phase doc -> pass",
+         bool(check_activation({"block-raw-vault-git.py"},
+                               {"block-raw-vault-git.py"}, {}, set())), False)
     # Ratchet.
     case("A: stale baseline entry (file gone) -> FAIL",
          bool(check_activation(set(), set(), {}, {"gone.py"})), True)
