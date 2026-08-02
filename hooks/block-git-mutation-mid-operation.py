@@ -154,7 +154,7 @@ IN_FLIGHT_MARKERS = [
     # on a conflict you get CHERRY_PICK_HEAD *and* sequencer, and the entry
     # above wins with the more specific message. But once the conflict is
     # resolved and COMMITTED, git clears CHERRY_PICK_HEAD while the remaining
-    # picks stay queued — leaving `sequencer` as the only evidence that the
+    # picks stay queued, leaving `sequencer` as the only evidence that the
     # operation is still in flight. Verified empirically: after
     # `git cherry-pick A B` stops on A and the resolution is committed,
     # sequencer is present and all six markers above are absent, so without
