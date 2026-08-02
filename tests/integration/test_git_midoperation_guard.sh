@@ -37,7 +37,7 @@ print(json.dumps({"tool_name":"Bash","cwd":sys.argv[1],"tool_input":{"command":s
 
 # --- fixture: a repo genuinely stalled mid-rebase ---------------------------
 R="$TD/stalled"
-git init -q "$R"; cd "$R"
+git init -q "$R"; cd "$R" || exit 1
 git config user.email t@t; git config user.name t
 printf 'a\n' > f; git add f; git commit -qm base
 printf 'b\n' > f; git add f; git commit -qm second
@@ -53,7 +53,7 @@ echo "fixture: repo is mid-rebase (positive controls are meaningful)"
 
 # --- fixture: a clean repo --------------------------------------------------
 C="$TD/clean"
-git init -q "$C"; cd "$C"
+git init -q "$C"; cd "$C" || exit 1
 git config user.email t@t; git config user.name t
 printf 'a\n' > f; git add f; git commit -qm base
 
