@@ -79,8 +79,30 @@ _TEXT_UTF8 = {"text": True, "encoding": "utf-8", "errors": "replace"}
 
 # Fingerprint substrings — any hook command containing one of these is
 # considered "owned by ai-brain-starter" and may be replaced or removed.
-# Extend this list when adding new hooks; the name must be unique enough
-# that no third-party hook would accidentally include it.
+# The name must be unique enough that no third-party hook would accidentally
+# include it.
+#
+# !! THIS LIST DOES NOT INSTALL ANYTHING. !!
+#
+# Membership here confers OWNERSHIP only: dedup, replace, retire, uninstall
+# recognition. `merge_hooks()` wires exactly what `hooks.json` declares and
+# nothing else, so **hooks.json is the ONLY activation predicate**. A hook
+# added here but not to hooks.json is an "owned dormant hook": the installer
+# claims it, inspection makes it look registered, and it never fires.
+#
+# Adding a hook therefore takes BOTH:
+#   1. an entry in hooks.json  <- this is what actually installs it
+#   2. an entry here (+ ABS_OWNED_BASENAMES) so re-installs dedup it properly
+#
+# If it signals by EXIT CODE 2 (a blocking gate), wire it in hooks.json as
+# `if [ -f <path> ]; then <path>; else <allow-json>; fi` — the common
+# `<path> 2>/dev/null || echo <allow-json>` idiom discards the stderr message
+# AND rewrites the block into an allow.
+#
+# This comment replaced "Extend this list when adding new hooks", which read as
+# the complete instruction and is how the most recent dormant hook happened:
+# the author registered in both lists below, believed it was active, and said
+# so in the commit message. Tracked as MYC-1031 (structural CI gate).
 ABS_FINGERPRINTS = [
     "ai-brain-starter/hooks/detect-closing-signal.py",
     "ai-brain-starter/hooks/verify-session-close-cascade.py",

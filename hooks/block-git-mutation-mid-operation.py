@@ -149,6 +149,18 @@ IN_FLIGHT_MARKERS = [
     ("CHERRY_PICK_HEAD", "cherry-pick stopped at conflicts", "cherry-pick"),
     ("REVERT_HEAD", "revert stopped at conflicts", "revert"),
     ("BISECT_LOG", "bisect in progress", "bisect"),
+    # LAST on purpose. `.git/sequencer` is the multi-commit cherry-pick/revert
+    # queue, and it OUTLIVES the per-stop markers above: when a sequence stops
+    # on a conflict you get CHERRY_PICK_HEAD *and* sequencer, and the entry
+    # above wins with the more specific message. But once the conflict is
+    # resolved and COMMITTED, git clears CHERRY_PICK_HEAD while the remaining
+    # picks stay queued — leaving `sequencer` as the only evidence that the
+    # operation is still in flight. Verified empirically: after
+    # `git cherry-pick A B` stops on A and the resolution is committed,
+    # sequencer is present and all six markers above are absent, so without
+    # this entry the guard goes quiet mid-sequence and a commit lands inside
+    # someone else's unfinished cherry-pick.
+    ("sequencer", "multi-commit cherry-pick/revert sequence, mid-run", "cherry-pick"),
 ]
 
 GIT_TIMEOUT_SEC = 5
