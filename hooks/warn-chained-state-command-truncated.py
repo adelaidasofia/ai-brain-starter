@@ -34,6 +34,16 @@ import re
 import sys
 from pathlib import Path
 
+# UTF-8 console guard (ai-brain-starter#313 cp1252 crash class). This file's
+# advisory messages carry non-ASCII (em dashes, arrows), and on a Windows
+# console defaulting to cp1252 printing them raises UnicodeEncodeError — which
+# would crash the hook on the very call it is trying to warn about.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+    except (AttributeError, ValueError):
+        pass
+
 # Fire telemetry (MYC-285). Fail-open: a missing _lib must never break the
 # guard or its tests.
 try:
