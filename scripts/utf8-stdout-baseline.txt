@@ -146,7 +146,6 @@ f80eabd72629d45963442fc83dcc504c0156648e181893c487c964115a4b0a48 SEV-4-json-enco
 3beb198ac196050ff050b3448b181f1914d2b161e0f8bf41ff6890d78af74cad SEV-4-json-encoded hooks/surface-stale-automation-failures.py
 ef44e1e697864634bd4f41c5041e9d3c445aa429c37d35bb7dbdb613c76c3592 SEV-4-json-encoded hooks/surface-stranded-session-artifacts.py
 bde2c3d7a3b64f2828d4b6a7be9e33381c7496877cf11eea0fdbb6068382b4e1 SEV-4-json-encoded hooks/vault-context.py
-8938205c9c8e97366c342136a9a9154b72abd66183e71d729180ea3c20521256 SEV-4-json-encoded hooks/warn-chained-state-command-truncated.py
 381d8c9eec790997f7736fc89e088fdb12f7dd1606b4be8e753ba0bf0d43e497 SEV-4-json-encoded hooks/warn-learning-to-tool-private-memory.py
 6141c3d8cc8a60cf6ae1c9a3d8fcde728808188e2bbe4cfedd581276076bf1c3 SEV-4-json-encoded hooks/warn-recreate-deleted-file.py
 a201c72df70798c65e0a3db62587a38eec99b1989b83b808826604dcf2f42fd2 SEV-4-json-encoded hooks/warn-stale-dev-checkout.py
