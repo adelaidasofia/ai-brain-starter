@@ -103,7 +103,6 @@ a81fcb075dedb8e0f3dcf449b848df59e2844a4eb5701201c413d9d1edfc5f8a SEV-2-ascii-pip
 4fca1425ffd9aacdbab80b6e6288877ce97c84cd2f6d11d3d61ac6d2f62fce25 SEV-2-ascii-pipe hooks/lint-claude-settings.py
 75deb6801de640f2d51a3a0a2979595e08749e16dd4a8c5f28710a40f4757654 SEV-2-ascii-pipe hooks/remediate-runaway-procs.py
 da873a5f63aafaa04901e77e41ec9e570e57fa5379c5cd76451a49b21e3d2c70 SEV-2-ascii-pipe hooks/scrub-session-jsonl-secrets.py
-da3894bdeb58dc0413c4e62ab5475a7006680b071f78e1a5162864aef00f81ab SEV-2-ascii-pipe hooks/session-lock.py
 61b5ccea257dfaeafe03d71e09434a200730d3eae3fb4b1e949fd7b5fb0914a2 SEV-2-ascii-pipe hooks/test_secret_patterns_fp_filter.py
 c6ca0766f6a0ac0aed97544f79a173149184c3ce493b281e210c46d45f7fbd67 SEV-2-ascii-pipe hooks/validate-subagent-return.py
 

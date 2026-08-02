@@ -908,4 +908,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # This hook prints repo paths, and a vault path carries non-ASCII. On a
+    # cp1252 Windows console that print() raises UnicodeEncodeError, the caller
+    # reads the empty output as failure, and a coordination lock that cannot
+    # speak is a lock that silently stops coordinating.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())
