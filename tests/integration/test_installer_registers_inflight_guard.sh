@@ -28,6 +28,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INSTALLER="$REPO_ROOT/scripts/install-hooks-user-level.py"
 GUARD="block-git-mutation-mid-operation.py"
 
+# HOME alone does not sandbox `~` on Windows: Python resolves expanduser("~")
+# through USERPROFILE and ignores HOME entirely, so a bare `HOME=$TMP installer`
+# runs the REAL installer against the developer's REAL ~/.claude. This suite
+# runs a real installer twice, so that is not theoretical.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$REPO_ROOT/tests/integration/lib/sandbox_home.sh"
+
 PASS=0; FAIL=0
 TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }
@@ -82,7 +89,7 @@ else
 fi
 
 echo "=== run the REAL installer against a sandboxed HOME ==="
-HOME="$TMP" "$PY" "$INSTALLER" --quiet >/dev/null 2>&1
+run_sandboxed "$TMP" "$PY" "$INSTALLER" --quiet >/dev/null 2>&1
 inst_rc=$?
 if [ "$inst_rc" -ne 0 ]; then
   # Non-fatal on its own: assert on the OUTCOME below, not the exit code.
@@ -151,7 +158,7 @@ print(json.dumps({"tool_name": "Bash", "cwd": sys.argv[1],
                   "tool_input": {"command": "git commit -m x"}}))
 PY
 )"
-    printf '%s' "$payload" | HOME="$TMP" bash -c "${CMD//\[PYTHON\]/$PY}" >/dev/null 2>&1
+    printf '%s' "$payload" | run_sandboxed "$TMP" bash -c "${CMD//\[PYTHON\]/$PY}" >/dev/null 2>&1
     echo $?
   }
 
@@ -174,7 +181,7 @@ fi
 
 echo "=== 6. idempotent: a second install does not duplicate ==="
 before="$(registered_entries "$GUARD" | wc -l | tr -d ' ')"
-HOME="$TMP" "$PY" "$INSTALLER" --quiet >/dev/null 2>&1
+run_sandboxed "$TMP" "$PY" "$INSTALLER" --quiet >/dev/null 2>&1
 after="$(registered_entries "$GUARD" | wc -l | tr -d ' ')"
 if [ "$before" = "$after" ]; then
   ok "6. second install did not duplicate the entry ($after)"
