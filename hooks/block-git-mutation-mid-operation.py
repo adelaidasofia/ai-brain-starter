@@ -277,7 +277,12 @@ def _resolve_git_dir(workdir: str, gitdir_override):
     try:
         out = subprocess.run(
             ["git", "-C", workdir, "rev-parse", "--git-dir"],
-            capture_output=True, text=True, timeout=GIT_TIMEOUT_SEC,
+            capture_output=True, text=True,
+            # A vault path carries non-ASCII; text=True alone decodes with the
+            # console code page, so on a cp1252 Windows console reading it
+            # raises UnicodeDecodeError INSIDE subprocess.run and this guard
+            # dies on the very repos it protects.
+            encoding="utf-8", errors="replace", timeout=GIT_TIMEOUT_SEC,
         )
     except (OSError, subprocess.SubprocessError):
         return None

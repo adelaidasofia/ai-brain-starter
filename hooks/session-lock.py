@@ -175,7 +175,8 @@ def _git_common_dir(cwd):
         try:
             r = subprocess.run(
                 ["git", "-C", cwd] + args,
-                capture_output=True, text=True, timeout=GIT_TIMEOUT_SEC,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=GIT_TIMEOUT_SEC,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             return ""

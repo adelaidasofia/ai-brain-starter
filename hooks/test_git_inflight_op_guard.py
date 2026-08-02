@@ -66,7 +66,8 @@ def git(repo, *args, **kw):
     env.setdefault("GIT_COMMITTER_EMAIL", "t@example.com")
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     return subprocess.run(["git", "-C", repo] + list(args),
-                          capture_output=True, text=True, env=env, **kw)
+                          capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", env=env, **kw)
 
 
 def run_hook(command, cwd, env=None, tool_name="Bash"):
@@ -81,7 +82,8 @@ def run_hook(command, cwd, env=None, tool_name="Bash"):
     if env:
         e.update(env)
     p = subprocess.run([sys.executable, HOOK], input=payload,
-                       capture_output=True, text=True, env=e)
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", env=e)
     return p.returncode, p.stdout or "", p.stderr or ""
 
 
@@ -96,7 +98,8 @@ def init_repo(path, separate_git_dir=None):
     if separate_git_dir:
         args.append("--separate-git-dir=" + separate_git_dir)
     args.append(path)
-    subprocess.run(args, capture_output=True, text=True, check=True)
+    subprocess.run(args, capture_output=True, text=True,
+                   encoding="utf-8", errors="replace", check=True)
     git(path, "config", "user.email", "t@example.com")
     git(path, "config", "user.name", "t")
     git(path, "config", "commit.gpgsign", "false")
