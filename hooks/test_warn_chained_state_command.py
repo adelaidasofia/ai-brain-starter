@@ -105,6 +105,55 @@ expect_silent(
     tool_name="Read",
 )
 
+# --- DETECTOR C: reading a PAGER's exit code ---------------------------------
+# The shape A and B both MISS, because both require `&&`. Observed twice in one
+# session (2026-07-29, MYC-3446): a gate and a merge, each piped to tail with
+# `$?` read after a `;`. `$?` is the LAST stage's status, tail ~always succeeds,
+# so a RED gate reported GREEN. In zsh `${PIPESTATUS[0]}` expands to EMPTY, so
+# the `${PIPESTATUS[0]:-$?}` idiom reports the pager too.
+expect_warn(
+    "11. the incident: ci-test piped to tail, $? read after ;",
+    'ci-test 2>&1 | tail -80; echo "CI_TEST_EXIT=$?"',
+)
+expect_warn(
+    "12. the incident: gh pr merge piped to tail, $? read after ;",
+    'gh pr merge 911 --squash 2>&1 | tail -8; echo "MERGE_EXIT=$?"',
+)
+expect_warn(
+    "13. cargo test piped to tail with $? read",
+    'cargo test --lib 2>&1 | tail -50; echo "EXIT=$?"',
+)
+expect_warn(
+    "14. bash ${PIPESTATUS[0]} spelling (empty in zsh, falls back to pager)",
+    'pnpm test 2>&1 | tail -20; echo "${PIPESTATUS[0]:-$?}"',
+)
+expect_warn(
+    "15. make ci piped to head with $? read",
+    "make ci 2>&1 | head -30; echo $?",
+)
+
+# Detector C must NOT fire once the read is CORRECT, or it would punish a fix.
+expect_silent(
+    "16. zsh lowercase 1-indexed pipestatus is the correct read",
+    'ci-test 2>&1 | tail -80; echo "${pipestatus[1]}"',
+)
+expect_silent(
+    "17. set -o pipefail makes $? the pipeline's real status",
+    'set -o pipefail; ci-test 2>&1 | tail -80; echo "$?"',
+)
+expect_silent(
+    "18. gate piped to tail but status never read",
+    "cargo test --lib 2>&1 | tail -50",
+)
+expect_silent(
+    "19. status read with NO pipe on the gate (the recommended form)",
+    'ci-test > /tmp/gate.log 2>&1; echo "EXIT=$?"',
+)
+expect_silent(
+    "20. non-gate command piped with $? read",
+    'ls -la | tail -5; echo "$?"',
+)
+
 # --- BYPASS ------------------------------------------------------------------
 _env = dict(os.environ, CHAINED_STATE_CMD_BYPASS="1")
 if run("git add . && git push origin br && gh pr create | tail -3", env=_env):
