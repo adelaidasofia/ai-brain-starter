@@ -25,8 +25,14 @@ FAIL = 0
 
 def run(command: str, tool_name: str = "Bash", env=None):
     payload = json.dumps({"tool_name": tool_name, "tool_input": {"command": command}})
+    # `encoding="utf-8"` pinned, not left to the locale: on a non-UTF-8 Windows
+    # console the default decode raises UnicodeDecodeError on any non-ASCII path
+    # in the child's output, which would fail this test for a reason that has
+    # nothing to do with the hook. Enforced repo-wide by
+    # scripts/check-utf8-subprocess.py.
     proc = subprocess.run([sys.executable, HOOK], input=payload,
-                          capture_output=True, text=True, env=env)
+                          capture_output=True, text=True, encoding="utf-8",
+                          env=env)
     out = (proc.stdout or "").strip()
     if not out:
         return None
