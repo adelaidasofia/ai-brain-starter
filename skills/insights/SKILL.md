@@ -24,7 +24,9 @@ Journal entries are in: `[VAULT_PATH]/Journals/`
 **DO NOT grep thousands of files.** Use the journal index instead.
 
 ### Step 0: Load the journal index
-Read `[VAULT_PATH]/⚙️ Meta/journal-index.json` (or `[VAULT_PATH]/Meta/journal-index.json` on vaults without an emoji-prefixed Meta — the same folder `build-journal-index.py` writes to). Structure: `{"total": N, "last_updated": "YYYY-MM-DD", "entries": [{file, date, floor, floor_level}, ...]}`. Access entries via `idx["entries"]`, then filter by `entry["date"]`.
+Read `[VAULT_PATH]/⚙️ Meta/journal-index.json` (or `[VAULT_PATH]/Meta/journal-index.json` on vaults without an emoji-prefixed Meta — the same folder `build-journal-index.py` writes to). Structure: `{"total": N, "last_updated": "YYYY-MM-DD", "entries": [{file, date, floor, floor_level, floor_arc}, ...]}`. Access entries via `idx["entries"]`, then filter by `entry["date"]`.
+
+`floor_arc` is present only on entries that moved, and `build-journal-index.py` already stores it as a **real list** (e.g. `["Fear", "Frustration", "Courage"]`) — read it straight from the index for the section 0e movement report instead of re-grepping frontmatter. If no entry in the period carries it, the field is genuinely absent from those entries; do not infer arcs.
 
 If the index doesn't exist or is more than 7 days old, rebuild it first:
 ```bash
@@ -82,10 +84,10 @@ If candidates show >2KB savings, surface as a compact block. If <2KB, skip silen
 
 **The reason this skill exists is to surface insight, not to summarize.** A report that says "you had 6 Courage entries" is data. A report that says "Courage was 25% in the prior three months, dropped to 3% this month" is signal. That's the lead.
 
-If the vault has `scripts/monthly-baseline.py`, run it for the target period:
+If the vault has `monthly-baseline.py`, run it for the target period. Check both `scripts/` and the Meta scripts folder — on emoji-prefixed vaults it lives at `⚙️ Meta/scripts/monthly-baseline.py`, the same place `build-journal-index.py` is invoked from above:
 
 ```bash
-VAULT_ROOT="<VAULT_PATH>" python3 "<VAULT_PATH>/scripts/monthly-baseline.py" --month YYYY-MM --pretty
+VAULT_ROOT="<VAULT_PATH>" python3 "<PATH_TO>/monthly-baseline.py" --month YYYY-MM --pretty
 ```
 
 The script outputs floor distribution shifts ≥3pp from baseline, word-frequency anomalies ≥2× or ≤0.5× baseline, numeric metric deltas ≥10%, activity deltas, top people mentions, and missing-data flags. **Use this output as the FIRST DATA SECTION** (sections 0a/0b/0c below). Don't bury it under "Month at a glance." Anomaly-led framing means the reader sees what's different before they see what's present.
