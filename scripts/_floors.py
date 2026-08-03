@@ -192,7 +192,7 @@ class Floors:
                         meta.get("floor_level"), primary, number, declared, where))
 
         arc = parse_inline_list(meta.get("floor_arc"))
-        if arc and primary and normalise_name(arc[-1]) != normalise_name(primary):
+        if self._names and arc and primary and normalise_name(arc[-1]) != normalise_name(primary):
             issues.append("floor_arc ends at '{}' but floor says '{}'{}".format(
                 arc[-1], primary, where))
 

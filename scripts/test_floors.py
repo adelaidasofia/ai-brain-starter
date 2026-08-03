@@ -198,8 +198,22 @@ def test_check():
     with tempfile.TemporaryDirectory() as tmp:
         # No vocabulary: check everything, report nothing. No guessing.
         floors = mod.Floors(Path(tmp))
-        if floors.check({"floor": "Schadenfreude", "floor_level": "high", "floor_num": "99"}):
+        if floors.check({"floor": "Schadenfreude", "floor_level": "high", "floor_num": "99",
+                         "floor_arc": "[Something, Schadenfreude]"}):
             print("FAIL: empty vault reported issues"); ok = False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Names loaded but no tiers: vocabulary present, tier guard is skipped.
+        root = Path(tmp)
+        _write(root / "floors" / "Boredom.md",
+               {"type": "floor", "floor_number": 9, "floor_name": "Boredom"})
+        floors = mod.Floors(root)
+        # Entry with a known floor and a floor_level value: no tier complaint because has_tiers is false.
+        if floors.check({"floor": "Boredom", "floor_level": "low"}):
+            print("FAIL: names-without-tiers vault complained about floor_level"); ok = False
+        # Entry with an unknown floor: off-scale check still fires because vocabulary is loaded.
+        if len(floors.check({"floor": "Schadenfreude"})) != 1:
+            print("FAIL: off-scale check did not fire with names-only vocabulary"); ok = False
 
     if ok:
         print("OK: per-entry checks catch contradictions and stay silent without vocabulary")
