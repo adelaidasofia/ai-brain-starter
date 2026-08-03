@@ -6,7 +6,7 @@ action: warn
 conditions:
   - field: command
     operator: regex_match
-    pattern: '\bgh\s+pr\s+(create|merge)\b'
+    pattern: '\bgh\s+(?:-{1,2}[\w-]+(?:[= ]\S+)?\s+)*pr\s+(?:-{1,2}[\w-]+(?:[= ]\S+)?\s+)*(create|merge)\b'
 ---
 
 **Bare `gh pr create` / `gh pr merge` outside the coordination wrapper.**

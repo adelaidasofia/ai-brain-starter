@@ -168,11 +168,20 @@ def _resolve_session(args):
 
 
 def _normalize_repo(spec):
-    """Normalize a repo spec/URL to `host/owner/name` (lowercased, no .git)."""
+    """Normalize a repo spec/URL to `host/owner/name` (lowercased, no .git).
+
+    Handles https/ssh URLs (with or without an explicit :port), scp-style
+    git@host:owner/repo, bare OWNER/REPO specs, and GitHub's ssh-over-443
+    alias host (ssh.github.com), so every spelling of one repo yields ONE
+    lock key. A numeric scp "owner" (git@host:443/x) is indistinguishable
+    from a port and collapses as one; that spelling is not worth defending.
+    """
     s = spec.strip().lower()
     s = re.sub(r"^(https?://|ssh://|git\+ssh://)", "", s)
     s = re.sub(r"^git@", "", s)
-    s = s.replace(":", "/")
+    s = re.sub(r"^([^/:]+):(\d+)/", r"\1/", s)  # URL host:port -> drop the port
+    s = s.replace(":", "/")                     # scp-style colon -> path sep
+    s = re.sub(r"^ssh\.github\.com/", "github.com/", s)
     s = re.sub(r"\.git$", "", s).strip("/")
     parts = [p for p in s.split("/") if p]
     if len(parts) == 2:
@@ -256,8 +265,50 @@ def _owner_is_stale(lockdir, owner):
     return False
 
 
+def _test_reclaim_hold():
+    """Test-only determinism knob (production never sets it): parks a
+    reclaimer between its staleness verdict and its atomic rename so the
+    suite can stage the reclaim race deterministically. Same pattern as the
+    FLOCK_BLOCKING_ENV knob in hooks/session-lock.py. Bounded: resumes after
+    10s even if the release never comes, so a broken test cannot hang gh."""
+    hold = os.environ.get("GH_SAFE_TEST_RECLAIM_HOLD")
+    if not hold:
+        return
+    try:
+        with open(hold + ".ready", "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except OSError:
+        return
+    deadline = time.time() + 10
+    while os.path.exists(hold) and time.time() < deadline:
+        time.sleep(0.05)
+
+
 def _acquire_lock(repo, branch, session, op):
-    """Returns (lockdir, None) when acquired, or (None, owner) when held."""
+    """Returns (lockdir, None) when acquired, or (None, owner) when held.
+
+    STALE RECLAIM IS ATOMIC (rename-first), because the obvious shape is
+    racy: with check-stale -> rmtree -> mkdir, a second contender can fully
+    reclaim AND re-acquire between the first one's check and its rmtree, and
+    the first's rmtree then deletes the second's FRESH lock (dual-hold). So:
+
+      1. os.rename() the stale dir aside - exactly one contender can win the
+         rename of a given dir; a loser gets FileNotFoundError and falls
+         through to the mkdir attempt.
+      2. RE-VERIFY staleness on the renamed dir: if a faster contender
+         already reclaimed and re-acquired at the same path, what we just
+         renamed is their fresh lock - rename it back and yield instead of
+         stealing it. (Directory mtimes survive a rename, so the age test
+         still reads the original clock.)
+      3. Only a dir that is stale AFTER the rename gets deleted, and it is
+         deleted at a private graveyard path no other contender touches.
+
+    Residual 3-party window: between a loser's rename-away and its
+    rename-back, a third contender can mkdir the freed path; the restore
+    then fails and both later contenders yield loudly. Even then no
+    duplicate PR is minted - read-before-write inside the winner's critical
+    section is the backstop.
+    """
     lockdir = _lock_dir(repo, branch)
     try:
         os.makedirs(_lock_root(), exist_ok=True)
@@ -269,11 +320,31 @@ def _acquire_lock(repo, branch, session, op):
         except FileExistsError:
             owner = _read_owner(lockdir)
             if attempt == 1 and _owner_is_stale(lockdir, owner):
+                _test_reclaim_hold()  # no-op outside the test suite
+                grave = "%s.reclaim.%d.%d" % (lockdir, os.getpid(), time.time_ns())
+                try:
+                    os.rename(lockdir, grave)
+                except FileNotFoundError:
+                    continue  # lost the reclaim race; the slot may be free now
+                except OSError as e:
+                    _err("cannot reclaim stale lock %s: %s" % (lockdir, e))
+                    return None, owner
+                current = _read_owner(grave)
+                if not _owner_is_stale(grave, current):
+                    # We renamed a contender's FRESH lock. Put it back, yield.
+                    try:
+                        os.rename(grave, lockdir)
+                    except OSError:
+                        _err(
+                            "could not restore a live lock after a reclaim "
+                            "race (%s); yielding" % lockdir
+                        )
+                    return None, current
                 _err(
                     "reclaiming stale lock %s (owner session=%s pid=%s)"
-                    % (lockdir, owner.get("session", "?"), owner.get("pid", "?"))
+                    % (lockdir, current.get("session", "?"), current.get("pid", "?"))
                 )
-                shutil.rmtree(lockdir, ignore_errors=True)
+                shutil.rmtree(grave, ignore_errors=True)
                 continue
             return None, owner
         except OSError as e:
