@@ -95,6 +95,24 @@ def parse_inline_list(v):
     return [s]
 
 
+def landed_floor(meta):
+    """The floor an entry landed on.
+
+    The two list-shaped fields use OPPOSITE conventions, and conflating them
+    silently corrupts every distribution built on top:
+
+      * `floor_arc: [Peace, Boredom]` — an ordered path; the LAST element is
+        where the day landed, and it equals the scalar `floor`.
+      * legacy `floor: [Boredom, Peace]` — [primary, secondary]; the FIRST
+        element is the landed floor.
+
+    `floor` is therefore always the source of truth for where the day landed;
+    `floor_arc` only describes the path taken to get there.
+    """
+    values = parse_inline_list(meta.get("floor"))
+    return values[0] if values else None
+
+
 class Floors:
     """The vault's floor vocabulary, read once from its floor notes."""
 
@@ -152,3 +170,43 @@ class Floors:
     def tier(self, number):
         """Floor number -> 'low' | 'middle' | 'high'. None when undeclared."""
         return self._tiers.get(number)
+
+    def check(self, meta, label=""):
+        """Contradictions inside ONE entry's frontmatter, as English messages.
+
+        Catches the class of error that survives human review because each
+        field looks fine alone and only the pair is wrong. Returns [] when no
+        vocabulary loaded — an unknown scale cannot judge anything.
+        """
+        issues = []
+        where = " ({})".format(label) if label else ""
+        primary = landed_floor(meta)
+        number = self.num(primary) if primary else None
+
+        if self._tiers and number is not None:
+            declared = self._tiers.get(number)
+            entry_tier = normalise_tier(meta.get("floor_level"))
+            if declared and entry_tier and entry_tier != declared:
+                issues.append(
+                    "floor_level '{}' but the vault declares {} ({}) as '{}'{}".format(
+                        meta.get("floor_level"), primary, number, declared, where))
+
+        arc = parse_inline_list(meta.get("floor_arc"))
+        if arc and primary and normalise_name(arc[-1]) != normalise_name(primary):
+            issues.append("floor_arc ends at '{}' but floor says '{}'{}".format(
+                arc[-1], primary, where))
+
+        declared_num = meta.get("floor_num")
+        if declared_num and number is not None:
+            try:
+                if int(str(declared_num).strip()) != number:
+                    issues.append("floor_num says {} but {} is {}{}".format(
+                        declared_num, primary, number, where))
+            except ValueError:
+                pass
+
+        if self._names and primary and number is None:
+            issues.append("floor '{}' is not in the vault's floor scale{}".format(
+                primary, where))
+
+        return issues

@@ -158,11 +158,60 @@ def test_tiers():
     return ok
 
 
+def test_check():
+    mod = _load_module()
+    ok = True
+    with tempfile.TemporaryDirectory() as tmp:
+        floors = mod.Floors(english_vault(Path(tmp)))
+
+        # Clean entry: floor 9 is Low, arc ends where floor says, number agrees.
+        clean = {"floor": "Boredom", "floor_level": "low", "floor_num": "9",
+                 "floor_arc": "[Peace, Boredom]"}
+        if floors.check(clean):
+            print("FAIL: clean entry reported {}".format(floors.check(clean))); ok = False
+
+        # floor_level contradicts the vault's tier for floor 9.
+        if len(floors.check({"floor": "Boredom", "floor_level": "high"})) != 1:
+            print("FAIL: tier contradiction not caught"); ok = False
+
+        # floor_arc must end where `floor` says the day landed.
+        if len(floors.check({"floor": "Boredom", "floor_arc": "[Boredom, Peace]"})) != 1:
+            print("FAIL: floor_arc mismatch not caught"); ok = False
+
+        # A declared floor_num that disagrees with the vocabulary.
+        if len(floors.check({"floor": "Boredom", "floor_num": "13"})) != 1:
+            print("FAIL: floor_num mismatch not caught"); ok = False
+
+        # A floor the vault has never heard of.
+        if len(floors.check({"floor": "Schadenfreude"})) != 1:
+            print("FAIL: off-scale floor not caught"); ok = False
+
+        # Legacy list form: [primary, secondary] — the FIRST element landed.
+        if floors.check({"floor": "[Boredom, Peace]", "floor_level": "low"}):
+            print("FAIL: legacy list form misread"); ok = False
+
+        # Messages carry the label when given.
+        msgs = floors.check({"floor": "Schadenfreude"}, label="2026-01-02.md")
+        if not msgs or "2026-01-02.md" not in msgs[0]:
+            print("FAIL: label missing from message: {}".format(msgs)); ok = False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # No vocabulary: check everything, report nothing. No guessing.
+        floors = mod.Floors(Path(tmp))
+        if floors.check({"floor": "Schadenfreude", "floor_level": "high", "floor_num": "99"}):
+            print("FAIL: empty vault reported issues"); ok = False
+
+    if ok:
+        print("OK: per-entry checks catch contradictions and stay silent without vocabulary")
+    return ok
+
+
 def main() -> int:
     ok = test_english_names()
     ok = test_spanish_names() and ok
     ok = test_empty_vault() and ok
     ok = test_tiers() and ok
+    ok = test_check() and ok
     return 0 if ok else 1
 
 
