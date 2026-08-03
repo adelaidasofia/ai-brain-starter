@@ -199,7 +199,7 @@ def test_check():
         # No vocabulary: check everything, report nothing. No guessing.
         floors = mod.Floors(Path(tmp))
         if floors.check({"floor": "Schadenfreude", "floor_level": "high", "floor_num": "99",
-                         "floor_arc": "[Something, Schadenfreude]"}):
+                         "floor_arc": "[Something, Different]"}):
             print("FAIL: empty vault reported issues"); ok = False
 
     with tempfile.TemporaryDirectory() as tmp:
