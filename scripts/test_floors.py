@@ -239,14 +239,15 @@ def test_index_integration():
             [sys.executable, str(builder), "--vault-root", str(root),
              "--journal-dir", "Journals", "--meta-dir", "Meta"],
             capture_output=True, text=True)
-        out = proc.stdout + proc.stderr
-        if "2026-01-02.md" not in out:
-            print("FAIL: contradiction not reported. Output:\n{}".format(out)); ok = False
-        if "2026-01-01.md" in out:
+        if "2026-01-02.md" not in proc.stderr:
+            print("FAIL: contradiction not reported. Output:\n{}".format(proc.stderr)); ok = False
+        if "2026-01-01.md" in proc.stderr:
             print("FAIL: clean entry reported as a problem"); ok = False
+        if "2026-01-02.md" in proc.stdout:
+            print("FAIL: contradiction leaked to stdout"); ok = False
 
     with tempfile.TemporaryDirectory() as tmp:
-        # No floor notes: the skip must be announced, not silent.
+        # No floor notes at all: the skip must be announced, not silent.
         root = Path(tmp)
         (root / "Meta").mkdir(parents=True, exist_ok=True)
         _write(root / "Journals" / "2026-01-01.md",
@@ -255,9 +256,31 @@ def test_index_integration():
             [sys.executable, str(builder), "--vault-root", str(root),
              "--journal-dir", "Journals", "--meta-dir", "Meta"],
             capture_output=True, text=True)
-        out = (proc.stdout + proc.stderr).lower()
-        if "floor" not in out or "skip" not in out:
-            print("FAIL: skipped check was not announced. Output:\n{}".format(out)); ok = False
+        if "no floor notes found" not in proc.stderr:
+            print("FAIL: no-floor-notes skip was not announced. Output:\n{}".format(proc.stderr)); ok = False
+        if "no floor notes found" in proc.stdout:
+            print("FAIL: no-floor-notes notice leaked to stdout"); ok = False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Names load but no tiers: the TIER skip must fire (the `elif`), not
+        # the no-floor-notes skip above (the `if`) — the two notices must be
+        # told apart, not just "something got announced".
+        root = Path(tmp)
+        _write(root / "floors" / "Boredom.md",
+               {"type": "floor", "floor_number": 9, "floor_name": "Boredom"})
+        (root / "Meta").mkdir(parents=True, exist_ok=True)
+        _write(root / "Journals" / "2026-01-01.md",
+               {"creationDate": "2026-01-01", "floor": "Boredom", "floor_level": "low"})
+        proc = subprocess.run(
+            [sys.executable, str(builder), "--vault-root", str(root),
+             "--journal-dir", "Journals", "--meta-dir", "Meta"],
+            capture_output=True, text=True)
+        if "floor notes declare no tiers" not in proc.stderr:
+            print("FAIL: tiers-only skip was not announced. Output:\n{}".format(proc.stderr)); ok = False
+        if "no floor notes found" in proc.stderr:
+            print("FAIL: no-floor-notes notice fired instead of the tiers-only notice"); ok = False
+        if "floor notes declare no tiers" in proc.stdout:
+            print("FAIL: tiers-only notice leaked to stdout"); ok = False
 
     if ok:
         print("OK: index builder reports contradictions and announces skips")
