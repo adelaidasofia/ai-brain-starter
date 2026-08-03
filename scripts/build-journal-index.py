@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 from _meta_resolver import find_meta_dir  # noqa: E402
 from _lib.safe_read import safe_read_text  # noqa: E402
+from _floors import Floors  # noqa: E402
 
 # Read bounds for the shared safe_read primitive. Journal frontmatter sits in
 # the first lines; safe_read hands back the whole (size-capped) file. 1 MB is
@@ -116,6 +117,12 @@ def main():
     entries = []
     skipped = []
 
+    # Floor vocabulary comes from the vault's own floor notes. When there are
+    # none there is nothing to check against, and the skip is announced below
+    # rather than passing silently.
+    floors = Floors(vault)
+    inconsistencies = []
+
     # Recursive walk: indexes journals nested under year-month subfolders
     # (e.g. Journals/2026-04/2026-04-15.md), not just top-level files.
     for root, _dirs, files in os.walk(journal_dir):
@@ -160,6 +167,8 @@ def main():
                 if "floor_arc" in meta:
                     entry["floor_arc"] = _parse_inline_list(meta["floor_arc"])
                 entries.append(entry)
+                inconsistencies.extend(
+                    floors.check(meta, label=os.path.relpath(fpath, journal_dir)))
 
     if skipped:
         preview = ", ".join(f"{f} [{s}]" for f, s in skipped[:5])
@@ -178,6 +187,18 @@ def main():
     print(f"Indexed {len(entries)} entries → {output_path}")
     if entries:
         print(f"  date range: {entries[0]['date']} → {entries[-1]['date']}")
+
+    if not floors:
+        print("  note: no floor notes found — frontmatter consistency check skipped",
+              file=sys.stderr)
+    elif not floors.has_tiers:
+        print("  note: floor notes declare no tiers — tier consistency check skipped",
+              file=sys.stderr)
+    if inconsistencies:
+        print("  {} frontmatter inconsistency(ies):".format(len(inconsistencies)),
+              file=sys.stderr)
+        for issue in inconsistencies:
+            print("    - {}".format(issue), file=sys.stderr)
 
 
 if __name__ == "__main__":

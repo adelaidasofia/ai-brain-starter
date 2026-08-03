@@ -220,12 +220,57 @@ def test_check():
     return ok
 
 
+def test_index_integration():
+    """The index builder runs the check and never skips it silently."""
+    import subprocess
+
+    ok = True
+    builder = ROOT / "scripts" / "build-journal-index.py"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        english_vault(root)
+        (root / "Meta").mkdir(parents=True, exist_ok=True)
+        # One clean entry, one that contradicts itself.
+        _write(root / "Journals" / "2026-01-01.md",
+               {"creationDate": "2026-01-01", "floor": "Boredom", "floor_level": "low"})
+        _write(root / "Journals" / "2026-01-02.md",
+               {"creationDate": "2026-01-02", "floor": "Boredom", "floor_level": "high"})
+        proc = subprocess.run(
+            [sys.executable, str(builder), "--vault-root", str(root),
+             "--journal-dir", "Journals", "--meta-dir", "Meta"],
+            capture_output=True, text=True)
+        out = proc.stdout + proc.stderr
+        if "2026-01-02.md" not in out:
+            print("FAIL: contradiction not reported. Output:\n{}".format(out)); ok = False
+        if "2026-01-01.md" in out:
+            print("FAIL: clean entry reported as a problem"); ok = False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # No floor notes: the skip must be announced, not silent.
+        root = Path(tmp)
+        (root / "Meta").mkdir(parents=True, exist_ok=True)
+        _write(root / "Journals" / "2026-01-01.md",
+               {"creationDate": "2026-01-01", "floor": "Boredom", "floor_level": "low"})
+        proc = subprocess.run(
+            [sys.executable, str(builder), "--vault-root", str(root),
+             "--journal-dir", "Journals", "--meta-dir", "Meta"],
+            capture_output=True, text=True)
+        out = (proc.stdout + proc.stderr).lower()
+        if "floor" not in out or "skip" not in out:
+            print("FAIL: skipped check was not announced. Output:\n{}".format(out)); ok = False
+
+    if ok:
+        print("OK: index builder reports contradictions and announces skips")
+    return ok
+
+
 def main() -> int:
     ok = test_english_names()
     ok = test_spanish_names() and ok
     ok = test_empty_vault() and ok
     ok = test_tiers() and ok
     ok = test_check() and ok
+    ok = test_index_integration() and ok
     return 0 if ok else 1
 
 
