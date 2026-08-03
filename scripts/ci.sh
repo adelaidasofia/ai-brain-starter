@@ -182,6 +182,7 @@ INTEGRATION_TESTS=(
   test_stranded_session_artifacts_watchdog
   test_offmain_strand_guard
   test_session_coordination_guards
+  test_gh_safe_session_coordination
   test_cd_worktree_guard_wiring
   test_trust_prompt_preframing
   test_onboarding_wrong_surface_and_nudge

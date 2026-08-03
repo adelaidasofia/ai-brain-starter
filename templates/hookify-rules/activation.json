@@ -11,6 +11,7 @@
     "hookify.public-repo-firewall.local.md",
     "hookify.voice-no-em-dash.local.md",
     "hookify.voice-no-exclamation.local.md",
+    "hookify.warn-bare-gh-pr-mutation.local.md",
     "hookify.warn-claude-call-without-cache.local.md",
     "hookify.warn-filesystem-walk-without-bounded-read.local.md",
     "hookify.warn-rotation-push-on-local-only-leak.local.md"
