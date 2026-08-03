@@ -122,10 +122,47 @@ def test_empty_vault():
         return ok
 
 
+def test_tiers():
+    mod = _load_module()
+    ok = True
+    with tempfile.TemporaryDirectory() as tmp:
+        # English notes declare the tier as `floor_level: Low`.
+        floors = mod.Floors(english_vault(Path(tmp)))
+        if not floors.has_tiers:
+            print("FAIL: english vault loaded no tiers"); ok = False
+        if floors.tier(9) != "low":
+            print("FAIL: english tier(9) -> {}, want 'low'".format(floors.tier(9))); ok = False
+        if floors.tier(34) != "high":
+            print("FAIL: english tier(34) -> {}, want 'high'".format(floors.tier(34))); ok = False
+    with tempfile.TemporaryDirectory() as tmp:
+        # Spanish notes declare it as `floor_tier: bajo`. Same canonical answer.
+        floors = mod.Floors(spanish_vault(Path(tmp)))
+        if floors.tier(9) != "low":
+            print("FAIL: spanish tier(9) -> {}, want 'low'".format(floors.tier(9))); ok = False
+        if floors.tier(34) != "high":
+            print("FAIL: spanish tier(34) -> {}, want 'high'".format(floors.tier(34))); ok = False
+    with tempfile.TemporaryDirectory() as tmp:
+        # Names without tiers: vocabulary loads, tiers do not. Independent.
+        root = Path(tmp)
+        _write(root / "floors" / "Boredom.md",
+               {"type": "floor", "floor_number": 9, "floor_name": "Boredom"})
+        floors = mod.Floors(root)
+        if not floors:
+            print("FAIL: names should load without tiers"); ok = False
+        if floors.has_tiers:
+            print("FAIL: has_tiers true with no tier fields"); ok = False
+        if floors.tier(9) is not None:
+            print("FAIL: tier(9) -> {}, want None".format(floors.tier(9))); ok = False
+    if ok:
+        print("OK: tiers read from either field name, normalised across languages")
+    return ok
+
+
 def main() -> int:
     ok = test_english_names()
     ok = test_spanish_names() and ok
     ok = test_empty_vault() and ok
+    ok = test_tiers() and ok
     return 0 if ok else 1
 
 

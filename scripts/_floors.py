@@ -130,6 +130,9 @@ class Floors:
             key = normalise_name(name)
             if key and not _POSITIONAL_ALIAS.match(key):
                 self._names.setdefault(key, number)
+        tier = normalise_tier(meta.get("floor_level") or meta.get("floor_tier"))
+        if tier:
+            self._tiers.setdefault(number, tier)
 
     def __bool__(self):
         """True when at least one floor NAME loaded. Tiers are separate."""
@@ -140,3 +143,12 @@ class Floors:
         if not name:
             return None
         return self._names.get(normalise_name(name))
+
+    @property
+    def has_tiers(self):
+        """Tiers load independently of names — a vault may have one and not the other."""
+        return bool(self._tiers)
+
+    def tier(self, number):
+        """Floor number -> 'low' | 'middle' | 'high'. None when undeclared."""
+        return self._tiers.get(number)
