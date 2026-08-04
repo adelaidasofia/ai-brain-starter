@@ -90,6 +90,7 @@ done
 VAULT_SCRIPTS=(
   "_meta_resolver.py"          # shared meta-folder resolver (deterministic keystone)
   "_project_key.py"            # shared project-key resolver (dep of check-rule-conflicts.py)
+  "_floors.py"                 # shared floor vocabulary (dep of build-journal-index.py)
   "aggregate-sessions.py"      # session-close: Last Session.md index
   "aggregate-decisions.py"     # session-close: Decision Log index
   "session-close-runner.sh"    # session-close: deterministic aggregation runner (#173)
