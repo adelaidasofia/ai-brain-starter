@@ -76,7 +76,11 @@ def _git(args: list[str], cwd: str) -> str | None:
         r = subprocess.run(
             ["git", *args], cwd=cwd,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            text=True, timeout=30,
+            # Pin UTF-8 rather than inheriting the locale: git echoes vault paths,
+            # and a vault path routinely carries non-ASCII (emoji folder names).
+            # On a non-UTF-8 Windows console the locale decode raises
+            # UnicodeDecodeError and this helper dies mid-backup.
+            encoding="utf-8", errors="replace", timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -174,6 +178,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # This CLI prints vault paths, which routinely carry non-ASCII (emoji folder
+    # names). Without this, a non-UTF-8 Windows console raises UnicodeEncodeError
+    # on the very paths the operator needs to see.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     try:
         sys.exit(main())
     except Exception as e:   # fail-open: never break a backup
