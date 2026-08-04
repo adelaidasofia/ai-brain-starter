@@ -9,6 +9,18 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-04: tool calls no longer freeze for 10 minutes each on Windows when a hook payload mentions your emoji folders
+
+**Who this affects:** everyone on Windows. The trigger is any tool call whose input mentions a path with a character outside the console's legacy character set — which includes `⚙️ Meta` and `💼 Work`, the folders every session close writes to. Mac and Linux are unaffected.
+
+Every hook on Windows runs through one wrapper, `scripts/hook_runner.py`, and that wrapper passed the hook payload through Windows' legacy character set (cp1252) instead of UTF-8. When the payload contained a character cp1252 cannot represent — the ⚙️ in `⚙️ Meta`, the 💼 in `💼 Work`, a stray byte-order mark — the handoff to the hook crashed mid-write, the pipe never closed, and the hook sat waiting forever for input that would never end. Claude Code gave up on it only at its default 10-minute limit. Per tool call.
+
+Day-to-day work looked fine, because most tool calls mention only plain-ASCII paths. Then you'd say "close the session" — the one workflow where nearly every step reads or writes under `⚙️ Meta` — and each step froze for exactly 10 minutes. One measured close took 59 minutes, about 40 of them frozen. People killed the stuck session and got an empty session stub instead of their captured work; the stubs then piled up because the close that cleans them never finished either.
+
+The wrapper now passes the payload through as raw bytes (nothing to mis-translate), tells the hook's Python to speak UTF-8 (`PYTHONUTF8=1`, which also defuses the cp1252 print-crash class tracked in #314), and gives each hook a hard 45-second budget — so even a hook that hangs for an unrelated reason can never again stall a tool call to the 10-minute ceiling. Exit-code semantics are unchanged: 0 forwards output, 2 still blocks with its reason, everything else falls back to the neutral "continue".
+
+---
+
 ## 2026-07-31: five Windows install bugs, all of them silent
 
 **Who this affects:** everyone on Windows. Two of the five also affect Mac and Linux. All of them were reported by people who ran the installer, were told it succeeded, and found out later that it hadn't.

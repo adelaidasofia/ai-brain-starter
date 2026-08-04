@@ -72,31 +72,49 @@ def main(argv: list[str]) -> int:
         print(fallback)
         return 0
 
+    # BINARY passthrough + hard timeout (fix 2026-08-03, Windows hang class).
+    # The previous text-mode pipes (`text=True`) decoded/encoded the payload
+    # with the locale codepage (cp1252). Any payload byte/char outside cp1252
+    # (emoji vault folders like "⚙️ Meta" / "💼 Work", a UTF-8 BOM) crashed
+    # subprocess's writer thread with UnicodeEncodeError, the child's stdin
+    # pipe never closed, the child blocked forever on read() and Claude Code
+    # killed the hook only at its 600s default timeout — once per tool call,
+    # which turned every session-close cascade into a 30-60 min crawl.
+    # Reading/forwarding raw bytes removes the transcoding entirely, and
+    # PYTHONUTF8=1 in the child env makes every text-mode hook script decode
+    # the UTF-8 payload correctly on Windows. The 45s timeout guarantees a
+    # hung hook can never again stall a tool call to the harness limit.
     try:
-        payload = sys.stdin.read()
+        payload = sys.stdin.buffer.read()
     except Exception:
-        payload = ""
+        payload = b""
+
+    child_env = dict(os.environ)
+    child_env.setdefault("PYTHONUTF8", "1")
 
     try:
         proc = subprocess.run(
             [sys.executable, script, *extra],
-            input=payload, capture_output=True, text=True,
+            input=payload, capture_output=True, env=child_env, timeout=45,
         )
-    except Exception:
+    except Exception:  # includes subprocess.TimeoutExpired (child is killed)
         print(fallback)
         return 0
 
     if proc.returncode == 0:
         # Forward exactly — an empty stdout is a valid no-op for Claude Code.
         if proc.stdout:
-            sys.stdout.write(proc.stdout)
+            sys.stdout.buffer.write(proc.stdout)
+            sys.stdout.buffer.flush()
         return 0
     if proc.returncode == 2:
         # Intentional block: stderr carries the reason; must propagate.
         if proc.stderr:
-            sys.stderr.write(proc.stderr)
+            sys.stderr.buffer.write(proc.stderr)
+            sys.stderr.buffer.flush()
         if proc.stdout:
-            sys.stdout.write(proc.stdout)
+            sys.stdout.buffer.write(proc.stdout)
+            sys.stdout.buffer.flush()
         return 2
     print(fallback)
     return 0
