@@ -34,6 +34,11 @@
 #           stay hermetic and not depend on ~/.claude existing. Defaults to ~/.claude.
 set -uo pipefail
 
+# Resolve this script's own directory so sibling helpers (vault-nested-repos.py)
+# are found no matter where the script is invoked from. No hardcoded install
+# path: the repo may live anywhere on a client's machine.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 CONF="${VAULT_BACKUP_CONF:-$HOME/.claude/.vault-backup.conf}"
 MARKER="${VAULT_BACKUP_MARKER:-$HOME/.claude/.vault-backup-last}"
 KEYCHAIN_SERVICE="ai-brain-starter-vault-backup"
@@ -166,6 +171,33 @@ make_archive() { # <vault> <out-base-no-ext> <encrypt 0|1> <slug> <store-kind> -
   for e in "${EXCLUDES[@]}"; do excl+=("--exclude=$e"); done
   # Always exclude any prior archives that happen to live under the vault.
   excl+=("--exclude=./*.tar.gz" "--exclude=./*.tar.gz.gpg" "--exclude=./*.tar.gz.enc")
+
+  # FOREIGN CHECKOUTS NESTED IN THE VAULT — excluded by PROPERTY, not by name.
+  #
+  # `EXCLUDES` above is a denylist against an open set: it names
+  # `./.claude/worktrees`, so it covers the Desktop app's worktrees and nothing
+  # else. Measured on a real install: a second agent CLI used a directory the
+  # list did not name, parked eleven checkouts of three unrelated repos in the
+  # vault, and added 37 GB to the backup source — which pushed the offsite
+  # provider past its storage cap and left the offsite copy stale for 50+ days.
+  # Adding one more name fixes one tool and loses to the next.
+  #
+  # The scanner excludes only checkouts recoverable from a git remote; a nested
+  # repo with NO remote is kept and reported, because the vault may be its only
+  # copy. FAIL-OPEN: if the scan cannot run we back up MORE, never less.
+  local nested; nested="$(mktemp)"
+  if command -v python3 >/dev/null 2>&1 \
+     && python3 "$SCRIPT_DIR/vault-nested-repos.py" --vault-root "$vault" \
+          --relative --exclude-file "$nested" >/dev/null; then
+    while IFS= read -r line; do
+      case "$line" in ''|'#'*) continue;; esac
+      excl+=("--exclude=$line")
+    done < "$nested"
+  else
+    warn "nested-checkout scan unavailable — a foreign git checkout under a new"
+    warn "directory name would be included in this archive."
+  fi
+  rm -f "$nested"
 
   # Capture the encryption tool's stderr to a temp file so a failure surfaces the
   # REAL error (gpg/openssl/tar) instead of dying with a bare "encryption failed".
