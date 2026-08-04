@@ -238,7 +238,8 @@ def test_index_integration():
         proc = subprocess.run(
             [sys.executable, str(builder), "--vault-root", str(root),
              "--journal-dir", "Journals", "--meta-dir", "Meta"],
-            capture_output=True, text=True)
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace")
         if "2026-01-02.md" not in proc.stderr:
             print("FAIL: contradiction not reported. Output:\n{}".format(proc.stderr)); ok = False
         if "2026-01-01.md" in proc.stderr:
@@ -255,7 +256,8 @@ def test_index_integration():
         proc = subprocess.run(
             [sys.executable, str(builder), "--vault-root", str(root),
              "--journal-dir", "Journals", "--meta-dir", "Meta"],
-            capture_output=True, text=True)
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace")
         if "no floor notes found" not in proc.stderr:
             print("FAIL: no-floor-notes skip was not announced. Output:\n{}".format(proc.stderr)); ok = False
         if "no floor notes found" in proc.stdout:
@@ -274,7 +276,8 @@ def test_index_integration():
         proc = subprocess.run(
             [sys.executable, str(builder), "--vault-root", str(root),
              "--journal-dir", "Journals", "--meta-dir", "Meta"],
-            capture_output=True, text=True)
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace")
         if "floor notes declare no tiers" not in proc.stderr:
             print("FAIL: tiers-only skip was not announced. Output:\n{}".format(proc.stderr)); ok = False
         if "no floor notes found" in proc.stderr:
