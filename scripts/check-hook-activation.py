@@ -92,8 +92,6 @@ UNCLASSIFIED_BASELINE: Set[str] = {
     "agent-briefing-check.py",
     "auto-capture-public-ships.py",
     "block-branch-switch-with-untracked-build.py",
-    "block-claude-mcp-inline-secret.py",
-    "block-mcp-config-inline-secret.py",
     "block-worktree-shared-edit.py",
     "build-runbook-check.py",
     "check-cron-paths.sh",
