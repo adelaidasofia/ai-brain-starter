@@ -628,6 +628,13 @@ floor_level: Low | Middle | High
 # floor_arc: [FloorA, FloorB, Primary]   # OPTIONAL — ordered path through the day, last element = floor. Add ONLY when the day moved; omit on a still day.
 entry_status: captured | enriched   # captured = saved at first touch (Step 1.5); enriched = the interview/panel ran
 context_sources: [messages, rescuetime, session_captures, todays_activity, calendar, body_health]   # REQUIRED — every Step-0 source actually folded into this entry (drop any that were off/unavailable, but name what you pulled). Absent => warn-journal-saved-without-context.py fires.
+people: ["[[Full Name]]", "[[Other Name]]"]   # people who showed up today. EVERY wikilink MUST be inside double quotes.
+# ^ YAML HARD RULE: `people: [[A]], [[B]]` is INVALID YAML — the parser reads `[[A]]`
+#   as a nested flow sequence and dies on the comma. A file whose frontmatter fails to
+#   parse is INVISIBLE to Dataview, to /second-brain-mapping, and to the insight engine
+#   — silently, with no error. On 2026-07-26 this had broken 10 of 14 journals in one
+#   production vault and every insight section had been rendering empty for weeks.
+#   Same rule for ANY key holding wikilinks (`related:`, `projects:`): quote each one.
 # Morning pairing fields — ONLY include if a /rise entry was found in Step 0h:
 # floor_morning: <Floor at sunrise from /rise frontmatter>
 # floor_morning_level: Low | Middle | High
