@@ -422,7 +422,7 @@ def main():
     lines.append("")
     lines.append("## Top God Nodes")
     for i, n in enumerate(gn, 1):
-        lines.append(f"{i}. `{n['label']}` ({n['edges']} edges)")
+        lines.append(f"{i}. `{n['label']}` ({n.get('degree', n.get('edges', 0))} edges)")
     lines.append("")
     lines.append("## Surprising Connections")
     for s in sc[:10]:
@@ -610,7 +610,7 @@ def main():
         cutoff = time.time() - 3600  # last hour
         upgraded = 0
         recent = 0
-        for c in cache_dir.glob("*.json"):
+        for c in cache_dir.rglob("*.json"):
             if c.stat().st_mtime < cutoff:
                 continue
             recent += 1
@@ -632,7 +632,7 @@ def main():
     print(f"TOP 15 GOD NODES (post-{args.stage_name})")
     print("=" * 60)
     for i, n in enumerate(gn[:15], 1):
-        print(f"  {i:2d}. {n['label']} ({n['edges']})")
+        print(f"  {i:2d}. {n['label']} ({n.get('degree', n.get('edges', 0))})")
 
     print()
     print(f"{args.stage_name.upper()} FINISH COMPLETE")
