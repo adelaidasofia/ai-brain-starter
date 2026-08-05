@@ -497,25 +497,166 @@ fi
 
 # --------------------------------------------------------------------------
 # 8. surface-stale-automation-failures.py -- reads the OTHER vault's runner log
+#
+# TWO DEFECTS LIVED IN THIS CASE, and both made it assert something other than
+# what it claimed:
+#
+#  (a) SUBSTRING COLLISION. It grepped the bare string "auto-snapshot". The
+#      hook's message ends in a FIXED footer -- "...auto-snapshot.sh failed
+#      every hour for 48+ hours unnoticed" -- so that string is present in
+#      output emitted for ANY reason at all, by any pass. The negative half
+#      therefore declared a cross-vault leak whenever the hook printed
+#      anything whatsoever, and the positive half could be satisfied by that
+#      prose alone even if resolution had regressed to the decoy. Both halves
+#      now decode the JSON and assert on the STRUCTURE of a finding: its label,
+#      and the vault its `log:` line names. A finding is a fact; the footer is
+#      narration, and only the fact may satisfy an assertion.
+#
+#  (b) NON-HERMETIC. launchd_failures() shells out to the host's real
+#      `launchctl list` and reports every failing com.adelaida.* job. Those are
+#      machine-global BY DESIGN (pinned in 8d) and belong to no vault, but the
+#      fixture fakes HOME, USERPROFILE and VAULT_ROOT and cannot fake the
+#      launchd domain. So this case ran green on Linux CI (no launchctl ->
+#      FileNotFoundError -> no findings) and on a healthy Mac, and red on a Mac
+#      that happened to have a failing job -- decided by ambient machine state
+#      rather than by the code under test, which is not a test result at all.
+#      `launchctl` is now stubbed on PATH: the last host surface the fixture
+#      had left open.
+#
+# The hook itself needed no change. It already resolves through the sanctioned
+# per-target resolver, and 8a/8b/8c below prove that positively, negatively,
+# and non-vacuously.
 # --------------------------------------------------------------------------
+STUB_QUIET="$TMP/launchd-quiet"
+STUB_FAILING="$TMP/launchd-failing"
+LAUNCHCTL_STUBBABLE="$(python3 - "$STUB_QUIET" "$STUB_FAILING" <<'PY'
+import shutil, stat, sys
+from pathlib import Path
+
+# `launchctl list` prints a tab-separated PID/Status/Label table whose second
+# column is the last exit status. The quiet stub prints an empty table (a
+# machine with nothing failing); the failing stub prints one job that exited
+# non-zero, which is exactly what launchd_failures() reports on.
+for path, rows in ((Path(sys.argv[1]), []),
+                   (Path(sys.argv[2]), [("-", "3", "com.adelaida.fixture-probe")])):
+    path.mkdir(parents=True, exist_ok=True)
+    body = "".join("\t".join(r) + "\n" for r in rows)
+    stub = path / "launchctl"
+    stub.write_text("#!/bin/sh\ncat <<'ROWS'\n%sROWS\n" % body, encoding="utf-8")
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+# Resolve the way the hook's own subprocess call will, so 8d's positive control
+# can never be silently vacuous: where an extensionless shell stub is not
+# executable (Git Bash on Windows resolves through PATHEXT), say so out loud
+# rather than let an assertion quietly stop asserting.
+print("yes" if shutil.which("launchctl", path=sys.argv[2]) else "no")
+PY
+)"
+
+# Decode the hook's JSON systemMessage into a compact, greppable verdict:
+#   EMPTY                     -- the hook printed nothing at all
+#   labels=<a,b> logs=<p;q>   -- one entry per finding line and per `log:` line
+# Every assertion below compares against THIS, never against the raw message,
+# so no amount of fixed narration can satisfy one.
+stale_verdict() {  # <out-file>
+  python3 - "$1" <<'PY'
+import json, sys
+from pathlib import Path
+
+raw = Path(sys.argv[1]).read_text(encoding="utf-8").strip()
+if not raw:
+    print("EMPTY"); raise SystemExit(0)
+try:
+    msg = json.loads(raw)["systemMessage"]
+except Exception as exc:
+    print("UNPARSEABLE(%s)" % exc); raise SystemExit(0)
+
+labels, logs = [], []
+for line in msg.splitlines():
+    s = line.strip()
+    if s.startswith("- ") and ":" in s:
+        labels.append(s[2:].split(":", 1)[0])
+    elif s.startswith("log: "):
+        logs.append(s[5:].replace("\\", "/"))
+print("labels=%s logs=%s" % (",".join(labels) or "-", ";".join(logs) or "-"))
+PY
+}
+
+# 8a. POSITIVE: a session in the OTHER vault surfaces THAT vault's failing
+#     runner -- named as a finding, with a log path inside that vault.
 run_hook "$HOOKS/surface-stale-automation-failures.py" \
   "$(python3 -c 'import json,sys; print(json.dumps({"cwd":sys.argv[1]}))' "$OTHER")" \
-  "VAULT_ROOT=$DECOY" "HOME=$FAKEHOME" "USERPROFILE=$FAKEHOME"
-if grep -q "auto-snapshot" "$OUT"; then
+  "VAULT_ROOT=$DECOY" "HOME=$FAKEHOME" "USERPROFILE=$FAKEHOME" "PATH=$STUB_QUIET:$PATH"
+verdict_other="$(stale_verdict "$OUT")"
+if printf '%s' "$verdict_other" | grep -q '^labels=auto-snapshot logs=' \
+   && printf '%s' "$verdict_other" | grep -qF "$OTHER/"; then
   pass "surface-stale-automation-failures surfaces a non-\$VAULT_ROOT vault's silent failures (rc=$RC)"
 else
-  fail "surface-stale-automation-failures reported nothing while the OTHER vault was failing hourly (rc=$RC)"
+  fail "surface-stale-automation-failures did not report the OTHER vault's failing runner as a finding (rc=$RC): $verdict_other"
   show_streams
 fi
 
+# 8b. NEGATIVE: the same hook, for a session in the decoy vault, reports
+#     NOTHING. The decoy has no runner log, every machine-global surface is
+#     faked, and launchd is stubbed quiet -- so anything at all in stdout here
+#     is a finding that came from somewhere this session does not own.
 run_hook "$HOOKS/surface-stale-automation-failures.py" \
   "$(python3 -c 'import json,sys; print(json.dumps({"cwd":sys.argv[1]}))' "$DECOY")" \
-  "VAULT_ROOT=$DECOY" "HOME=$FAKEHOME" "USERPROFILE=$FAKEHOME"
-if grep -q "auto-snapshot" "$OUT"; then
-  fail "surface-stale-automation-failures reported the OTHER vault's failures for a session in the decoy vault"
-  show_streams
-else
+  "VAULT_ROOT=$DECOY" "HOME=$FAKEHOME" "USERPROFILE=$FAKEHOME" "PATH=$STUB_QUIET:$PATH"
+verdict_decoy="$(stale_verdict "$OUT")"
+if [ "$verdict_decoy" = "EMPTY" ]; then
   pass "surface-stale-automation-failures does not leak one vault's failures into another's session (rc=$RC)"
+else
+  fail "surface-stale-automation-failures reported findings for a session in the decoy vault (rc=$RC): $verdict_decoy"
+  show_streams
+fi
+
+# 8c. The negative control 8b needs to mean anything: prove this probe CAN see
+#     a cross-vault finding when one genuinely exists. From a cwd in no vault
+#     at all, detection finds nothing and $VAULT_ROOT is reached as the
+#     FALLBACK it is supposed to be -- so the OTHER vault's runner shows up.
+#     Without this, "EMPTY" above could just as well mean the probe is blind.
+run_hook "$HOOKS/surface-stale-automation-failures.py" \
+  "$(python3 -c 'import json,sys; print(json.dumps({"cwd":sys.argv[1]}))' "$CODEREPO")" \
+  "VAULT_ROOT=$OTHER" "HOME=$FAKEHOME" "USERPROFILE=$FAKEHOME" "PATH=$STUB_QUIET:$PATH"
+verdict_fallback="$(stale_verdict "$OUT")"
+if printf '%s' "$verdict_fallback" | grep -q '^labels=auto-snapshot logs=' \
+   && printf '%s' "$verdict_fallback" | grep -qF "$OTHER/"; then
+  pass "the leak probe is not vacuous: it does surface a cross-vault runner when \$VAULT_ROOT is the only signal (rc=$RC)"
+else
+  fail "the leak probe never surfaces a cross-vault runner, so 8b's EMPTY proves nothing (rc=$RC): $verdict_fallback"
+  show_streams
+fi
+
+# 8d. The launchd pass is MACHINE-GLOBAL by design, and its output is not a
+#     vault leak. A launchd label has no vault field; scoping this pass per
+#     vault would reinstate exactly the blind spot it was added to close
+#     (routing-health-check and receipts-reconcile failing unnoticed). Pin it,
+#     because a reader who meets a com.adelaida.* line while chasing a
+#     vault-isolation bug will otherwise "fix" it -- which is how this case
+#     came to be read as a leak in the first place.
+launchd_verdict() {  # <cwd> -> that session's verdict, with a job failing
+  run_hook "$HOOKS/surface-stale-automation-failures.py" \
+    "$(python3 -c 'import json,sys; print(json.dumps({"cwd":sys.argv[1]}))' "$1")" \
+    "VAULT_ROOT=$DECOY" "HOME=$FAKEHOME" "USERPROFILE=$FAKEHOME" "PATH=$STUB_FAILING:$PATH"
+  stale_verdict "$OUT"
+}
+probe='com.adelaida.fixture-probe'
+launchd_decoy="$(launchd_verdict "$DECOY")"
+launchd_other="$(launchd_verdict "$OTHER")"
+in_decoy=no; in_other=no
+printf '%s' "$launchd_decoy" | grep -qF "$probe" && in_decoy=yes
+printf '%s' "$launchd_other" | grep -qF "$probe" && in_other=yes
+if [ "$in_decoy" != "$in_other" ]; then
+  fail "the launchd pass is vault-scoped (decoy=$in_decoy other=$in_other) -- it is machine-global by design and must report identically in every session"
+  echo "  decoy=[$launchd_decoy]" >&2
+  echo "  other=[$launchd_other]" >&2
+elif [ "$LAUNCHCTL_STUBBABLE" = "yes" ] && [ "$in_decoy" = "no" ]; then
+  fail "the launchd pass reported nothing while a com.adelaida.* job was failing -- the stub is reachable, so this is the pass going silent"
+  echo "  decoy=[$launchd_decoy]" >&2
+else
+  pass "launchd findings are machine-global, reported identically in both vaults (present=$in_decoy)"
+  [ "$LAUNCHCTL_STUBBABLE" = "yes" ] || echo "  NOTE: launchctl is not stubbable on this platform (PATHEXT resolution); 8d asserted vault-independence only, not the launchd pass firing."
 fi
 
 # --------------------------------------------------------------------------
