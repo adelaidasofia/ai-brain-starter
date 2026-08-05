@@ -321,10 +321,17 @@ cmd_setup() {
   say "${B}Taking the first snapshot...${N}"
   cmd_run --vault "$vault" || die "first snapshot failed"
 
-  # Schedule the daily run.
+  # Schedule the daily run. install_schedule returns 0 ONLY when the OS scheduler
+  # actually holds the job, so this success line is now a claim about launchd/cron
+  # reality rather than about a file having been written. It also prints WHY it
+  # could not schedule (never a bare "could not"), so a real user can act on it.
   if [ "$schedule" = "daily" ]; then
-    install_schedule "$vault" "$slug" && ok "Daily backup scheduled (03:00 local)." \
-      || warn "Could not install an automatic schedule; run \`vault-backup.sh run\` yourself or add a cron job."
+    if install_schedule "$vault" "$slug"; then
+      ok "Daily backup scheduled (03:00 local), verified with the OS scheduler."
+    else
+      warn "No automatic schedule installed (reason above). Until that is fixed, run"
+      warn "this yourself:  bash $0 run --vault \"$vault\""
+    fi
   else
     say "No schedule installed (--schedule none). Run \`vault-backup.sh run\` when you want a snapshot."
   fi
@@ -432,52 +439,222 @@ cmd_status() {
 }
 
 # ---------- scheduling ----------
-install_schedule() { # <vault> <slug>  -> 0 on success
+#
+# THE CLASS THIS GUARDS AGAINST: "registered but dead" — every layer reports
+# success over a schedule that can never fire. It shipped once on the Windows
+# side (a task registered with `-File ""`; 25 days, zero snapshots, while setup
+# printed "Backup is live"), was fixed there in #410/#453, and the SAME class had
+# a live instance on both branches below. A schedule is only installed when the
+# OS's scheduler actually holds it — writing the file is not installing it.
+# (MYC-3528)
+
+# XML-escape a value bound for a plist <string>. The vault path is USER DATA: an
+# `&`, `<` or `>` anywhere in it (a vault at "R & D Vault") emitted a plist that
+# is not well-formed XML, so launchd refused to load it — while the FILE still
+# existed, which was all the old success check looked at. Measured: `plutil
+# -lint` exits 1 ("unknown ampersand-escape sequence") and python3's plistlib
+# raises ExpatError on exactly that plist.
+xml_escape() { # <value> -> XML-escaped on stdout
+  local s="$1"
+  s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"   # & FIRST, or the others double-escape
+  printf '%s' "$s"
+}
+
+# Read a written plist BACK and report what is wrong with it, one problem per
+# line; empty output means healthy. Parses the file only — no launchctl — so it
+# is portable and unit-testable on any platform (CI is ubuntu, where `plutil`
+# does not exist; plistlib ships with the python3 this repo already requires).
+plist_problems() { # <plist> <label> <self> <vault> -> problem lines on stdout
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
+import os, plistlib, sys
+path, label, self_path, vault = sys.argv[1:5]
+if not os.path.isfile(path):
+    print("no launchd job file at %s" % path); raise SystemExit(0)
+try:
+    with open(path, "rb") as fh:
+        d = plistlib.load(fh)
+except Exception as e:
+    # The reproducible case: an unescaped & / < / > from the vault path.
+    print("not a readable plist (%s: %s)" % (type(e).__name__, e)); raise SystemExit(0)
+if d.get("Label") != label:
+    print("Label is %r, expected %r" % (d.get("Label"), label))
+args = d.get("ProgramArguments") or []
+if len(args) < 5:
+    print("ProgramArguments is not a backup run: %r" % (args,))
+    raise SystemExit(0)
+if not args[1] or not os.path.isfile(args[1]):
+    # A relocated repo leaves a job pointing at a script that is gone. launchd
+    # keeps the job loaded and fails it nightly.
+    print("the script it would run is missing: %r" % (args[1],))
+elif os.path.realpath(args[1]) != os.path.realpath(self_path):
+    print("points at a different script: %r (this one is %r)" % (args[1], self_path))
+if args[-1] != vault:
+    print("points at a different vault: %r (expected %r)" % (args[-1], vault))
+PY
+}
+
+# Does launchd ACTUALLY hold this job? The check the old code never made.
+# Measured on macOS (Darwin 25.5): `launchctl print gui/<uid>/<label>` exits 0
+# when the service is loaded and 113 ("Could not find service ... in domain")
+# when it is not. `launchctl list <label>` behaves identically and covers the
+# older `launchctl load` path, so try both before concluding it is absent.
+launchd_job_loaded() { # <label> -> 0 if launchd holds it
+  local label="$1" uid; uid="$(id -u)"
+  launchctl print "gui/$uid/$label" >/dev/null 2>&1 && return 0
+  launchctl list "$label" >/dev/null 2>&1
+}
+
+# Decide the crontab this vault should have, given the one it currently has.
+# stdout + exit 0 = install this crontab. Exit 3 = already exactly right, no-op.
+# Any line for THIS vault that is not byte-identical to the wanted line is
+# REPLACED, not kept: the old code returned success on the mere PRESENCE of the
+# vault path, so a relocated repo left a line invoking a script that no longer
+# exists — cron ran it nightly, it failed nightly, and setup called that "live".
+cron_plan() { # <current-crontab> <wanted-line> <vault> -> new crontab on stdout
+  python3 - "$1" "$2" "$3" <<'PY'
+import sys
+cur, want, vault = sys.argv[1], sys.argv[2], sys.argv[3]
+# Identify lines belonging to THIS vault by its exact --vault argument, so a
+# second vault's schedule is never disturbed. Deliberately NOT the whole tail of
+# the wanted line: a hand-edited entry with a different log redirect would then
+# fail to match, and we would APPEND a second nightly job for the same vault
+# instead of replacing the one that is already there.
+marker = "--vault '%s'" % vault
+kept, already = [], False
+for ln in cur.splitlines():
+    if marker in ln:
+        if ln.strip() == want.strip():
+            already = True
+            kept.append(ln)
+        continue          # stale form / dead path: drop, the fresh line replaces it
+    kept.append(ln)
+if already:
+    raise SystemExit(3)
+kept = [l for l in kept if l.strip()]
+kept.append(want)
+sys.stdout.write("\n".join(kept) + "\n")
+PY
+}
+
+install_schedule() { # <vault> <slug>  -> 0 ONLY when the OS scheduler holds the job
   local vault="$1" slug="$2" self
   self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
   case "$(uname)" in
     Darwin)
       local label="com.ai-brain-starter.vault-backup.$slug"
       local plist="$HOME/Library/LaunchAgents/$label.plist"
-      mkdir -p "$HOME/Library/LaunchAgents"
+      local uid; uid="$(id -u)"
+      local problems
+
+      # SELF-HEAL, parallel to the Windows task fix (#453). An install that ran
+      # setup before this fix may carry a plist launchd never loaded, and nothing
+      # in the product ever looked at it again. Healthy AND loaded -> leave it
+      # alone. Otherwise rewrite and re-bootstrap in place: idempotent, no
+      # prompt, because the user already consented to a daily backup.
+      problems="$(plist_problems "$plist" "$label" "$self" "$vault")"
+      if [ -z "$problems" ] && launchd_job_loaded "$label"; then
+        return 0
+      fi
+      if [ -f "$plist" ]; then
+        warn "Existing daily-backup job needs repair:"
+        if [ -n "$problems" ]; then
+          printf '%s\n' "$problems" | while IFS= read -r p; do warn "  $p"; done
+        else
+          warn "  the job file is fine but launchd is not running it"
+        fi
+      fi
+
+      mkdir -p "$HOME/Library/LaunchAgents" 2>/dev/null \
+        || { warn "could not create $HOME/Library/LaunchAgents"; return 1; }
       cat > "$plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>Label</key><string>$label</string>
+  <key>Label</key><string>$(xml_escape "$label")</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/bash</string><string>$self</string>
-    <string>run</string><string>--vault</string><string>$vault</string>
+    <string>/bin/bash</string><string>$(xml_escape "$self")</string>
+    <string>run</string><string>--vault</string><string>$(xml_escape "$vault")</string>
   </array>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>0</integer></dict>
-  <key>StandardErrorPath</key><string>$HOME/.claude/.vault-backup.log</string>
-  <key>StandardOutPath</key><string>$HOME/.claude/.vault-backup.log</string>
+  <key>StandardErrorPath</key><string>$(xml_escape "$HOME/.claude/.vault-backup.log")</string>
+  <key>StandardOutPath</key><string>$(xml_escape "$HOME/.claude/.vault-backup.log")</string>
 </dict></plist>
 EOF
-      launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1 \
-        || launchctl load "$plist" >/dev/null 2>&1 || true
-      [ -f "$plist" ]
+      # Prove what we just wrote is loadable BEFORE asking launchd for it, so the
+      # failure names the real cause instead of launchctl's generic refusal.
+      problems="$(plist_problems "$plist" "$label" "$self" "$vault")"
+      if [ -n "$problems" ]; then
+        warn "the daily-backup job file this wrote is not usable:"
+        printf '%s\n' "$problems" | while IFS= read -r p; do warn "  $p"; done
+        return 1
+      fi
+
+      # Unload any prior registration first: bootstrap refuses a label it
+      # already holds, and that refusal is how a BROKEN job survived a repair.
+      launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || true
+      local errf; errf="$(mktemp)"
+      launchctl bootstrap "gui/$uid" "$plist" 2>"$errf" \
+        || launchctl load "$plist" 2>>"$errf" || true
+
+      # THE check: launchd's own answer, not the filesystem's.
+      if ! launchd_job_loaded "$label"; then
+        warn "launchd did not load the daily-backup job ($label):"
+        warn "  $(tr '\n' ' ' < "$errf" 2>/dev/null | sed 's/  */ /g; s/^ *//; s/ *$//')"
+        warn "  the job file is at $plist"
+        rm -f "$errf"
+        return 1
+      fi
+      rm -f "$errf"
       ;;
     Linux)
-      command -v crontab >/dev/null 2>&1 || return 1
+      command -v crontab >/dev/null 2>&1 \
+        || { warn "no crontab command found; cannot install a daily schedule"; return 1; }
       local line="0 3 * * * /bin/bash $self run --vault '$vault' >> \$HOME/.claude/.vault-backup.log 2>&1"
-      local cur; cur="$(crontab -l 2>/dev/null)"
-      printf '%s' "$cur" | grep -Fq "vault-backup.sh run --vault '$vault'" && return 0
-      { printf '%s\n' "$cur"; printf '%s\n' "$line"; } | crontab - 2>/dev/null
+      local cur newtab rc
+      cur="$(crontab -l 2>/dev/null)"
+      newtab="$(cron_plan "$cur" "$line" "$vault")"; rc=$?
+      [ "$rc" = 3 ] && return 0
+      [ "$rc" = 0 ] || { warn "could not work out the crontab update for this vault"; return 1; }
+
+      local errf; errf="$(mktemp)"
+      if ! printf '%s' "$newtab" | crontab - 2>"$errf"; then
+        warn "crontab refused the daily-backup entry:"
+        warn "  $(tr '\n' ' ' < "$errf" 2>/dev/null | sed 's/  */ /g; s/^ *//; s/ *$//')"
+        rm -f "$errf"
+        return 1
+      fi
+      rm -f "$errf"
+      # Read it back. A write that returned 0 without landing is this same class.
+      # Matched on the invocation rather than the whole line: some cron
+      # implementations prepend a header or normalise whitespace, and an exact
+      # whole-line match would then report failure over a schedule that is fine.
+      # (Whether the cron DAEMON is running is a separate, inherent-to-cron
+      # caveat — true of every cron consumer — and deliberately not asserted.)
+      if ! crontab -l 2>/dev/null | grep -Fq -- "$self run --vault '$vault'"; then
+        warn "the crontab entry did not land; cron did not keep it"
+        return 1
+      fi
       ;;
-    *) return 1;;
+    *) warn "no supported scheduler on $(uname); install a daily job yourself"; return 1;;
   esac
 }
 
 # ============================ dispatch ============================
-CMD="${1:-status}"; shift 2>/dev/null || true
-case "$CMD" in
-  setup)  cmd_setup "$@";;
-  run)    cmd_run "$@";;
-  verify) cmd_verify "$@";;
-  status) cmd_status "$@";;
-  -h|--help|help)
-    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown command: $CMD (use setup|run|verify|status)";;
-esac
+# Only dispatch when RUN, not when SOURCED. Sourcing exposes the schedule
+# validators (plist_problems, cron_plan, xml_escape) to the self-test on ANY
+# platform — which is the only way the Darwin branch's logic gets covered on the
+# ubuntu CI runner, and the Linux branch's on a Mac. When executed normally,
+# $0 and ${BASH_SOURCE[0]} are the same string, so behaviour is unchanged.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  CMD="${1:-status}"; shift 2>/dev/null || true
+  case "$CMD" in
+    setup)  cmd_setup "$@";;
+    run)    cmd_run "$@";;
+    verify) cmd_verify "$@";;
+    status) cmd_status "$@";;
+    -h|--help|help)
+      sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) die "unknown command: $CMD (use setup|run|verify|status)";;
+  esac
+fi

@@ -117,6 +117,14 @@ You do not have to remember any of this. Two surfaces keep it visible:
   the existing task back, checks the script path, the interpreter, and the
   battery-power setting, and re-registers it automatically if any of them is
   wrong — no prompt, and a healthy task is left untouched.
+- **On macOS and Linux**, re-running `setup` does the same for the launchd agent /
+  cron entry. `setup` now reports the daily schedule as installed only when
+  launchd or cron actually holds the job, verified by reading it back
+  (`launchctl print gui/<uid>/<label>`, `crontab -l`) — not because a job file was
+  written. It repairs a job whose file is unparseable, whose script path no longer
+  exists (a moved repo), or that launchd is simply not running; a healthy, loaded
+  job is left untouched. If it cannot install one, it prints the scheduler's own
+  error instead of claiming success.
 
 The single source of truth for all of these is
 `scripts/check-vault-backup.py` — run it directly any time:

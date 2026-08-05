@@ -9,6 +9,20 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-05: on Mac and Linux, "daily backup scheduled" now means it really is
+
+**Who this affects:** anyone on macOS or Linux who set up the daily vault backup.
+
+Setup said "Daily backup scheduled (03:00 local)" as long as it managed to write the small job file that describes the schedule. Whether the operating system's scheduler ever *accepted* that job was never checked, and any error it gave back was thrown away. So that message really only reported "I wrote a file", while the thing meant to take your nightly snapshot might never have been running at all.
+
+There is a concrete way this happened. The job file is XML, and your vault's own path gets written into it. A vault in a folder with an `&` in the name (say, "R & D Vault") produced a file that is not valid XML, which macOS refuses to load. The file still existed, so setup still called it scheduled. Two other versions of the same problem: a vault or starter folder you later moved, leaving the job pointing at a script that is no longer there (it runs every night and fails every night), and a job that is simply not loaded any more.
+
+Now setup writes your vault path into the job file correctly whatever characters it contains, then asks the scheduler itself whether it holds the job, and only says "scheduled" if the answer is yes. Re-running setup reads the existing schedule back and repairs it when it is broken, automatically and with no prompt, the same way the Windows fix below does. A healthy schedule is left completely alone. When it cannot install one, you get the scheduler's own error and the command to take a snapshot by hand, instead of a bare "could not".
+
+**What you should do:** run backup setup again once (`bash scripts/vault-backup.sh setup`, or ask Claude to do it), then check `status` and confirm a snapshot has actually landed in the last day or two. Worth doing now in particular if your vault folder has an `&`, `<` or `>` in its name, or if you have moved your vault or the starter since you set backups up.
+
+---
+
 ## 2026-08-05: on Windows, a backup that never actually ran now fixes itself
 
 **Who this affects:** anyone who set up the daily vault backup on Windows before 2026-07-31.
