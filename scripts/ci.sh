@@ -320,6 +320,14 @@ INTEGRATION_TESTS=(
   # while allowing one in a clean repo. Registration is the assertion — a guard
   # present on disk and absent from settings.json protects nobody.
   test_installer_registers_inflight_guard
+  # MCP secret-leak guards (MYC-3560): block-claude-mcp-inline-secret.py and
+  # block-mcp-config-inline-secret.py were written after three real GitHub PAT
+  # leaks and shipped as working files, referenced nowhere — never wired, so
+  # never once fired on any install. Same registration-is-the-assertion proof
+  # as the guard above, for both hooks: wired in the block-preserving form,
+  # and the shipped command actually BLOCKS a seeded secret while passing a
+  # clean payload.
+  test_installer_registers_mcp_secret_guards
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new
