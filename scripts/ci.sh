@@ -207,6 +207,7 @@ INTEGRATION_TESTS=(
   test_vault_backup_conf_bom
   test_backup_staleness_surfaces
   test_scheduled_task_registration
+  test_vault_backup_task_healing
   test_resource_aware_session_close
   test_cloud_sync_guard
   test_cloud_safe_file_walkers
