@@ -113,6 +113,10 @@ You do not have to remember any of this. Two surfaces keep it visible:
 - **`/diagnose`** (section 12) reports the same verdict in the health check, and
   the onboarding interview (`phases/phase-01-welcome.md`, step 8.6) establishes a
   backup — or makes you decline it on purpose — before setup is called done.
+- **On Windows**, re-running `setup` self-heals the daily scheduled task: it reads
+  the existing task back, checks the script path, the interpreter, and the
+  battery-power setting, and re-registers it automatically if any of them is
+  wrong — no prompt, and a healthy task is left untouched.
 
 The single source of truth for all of these is
 `scripts/check-vault-backup.py` — run it directly any time:

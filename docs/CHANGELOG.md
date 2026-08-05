@@ -9,6 +9,18 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-05: on Windows, a backup that never actually ran now fixes itself
+
+**Who this affects:** anyone who set up the daily vault backup on Windows before 2026-07-31.
+
+A previous fix stopped the daily backup's Windows scheduled task from being registered broken in the first place. What it could not do was reach back and fix a task that was ALREADY broken on a machine that had run setup before that fix landed — and nothing else in the product ever looked at that task again. Measured on a real install: 25 days with zero snapshots, while setup had printed "Backup is live" and the health check reported the vault backed up. Three separate things could each cause this on their own: the script path the task points at being empty, the task pointing at a PowerShell version that is not on a stock Windows machine, or Windows Task Scheduler's own default of refusing to run on battery power.
+
+Now, every time you run backup setup again, it reads your existing scheduled task back, checks all three things, and — if any of them is wrong — re-registers it correctly, automatically, with no prompt. A healthy task is left alone. If it truly cannot fix it (for example, no PowerShell interpreter can be found at all), it says so loudly instead of pretending it worked.
+
+**What you should do:** run backup setup again once (`vault-backup.ps1 setup`, or ask Claude to do it) if you set up backups on Windows before 2026-07-31. Then check status and confirm a snapshot has actually landed recently.
+
+---
+
 ## 2026-07-31: five Windows install bugs, all of them silent
 
 **Who this affects:** everyone on Windows. Two of the five also affect Mac and Linux. All of them were reported by people who ran the installer, were told it succeeded, and found out later that it hadn't.
