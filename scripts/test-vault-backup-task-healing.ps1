@@ -4,8 +4,8 @@
   vault-backup.ps1, the validator that decides whether an EXISTING Windows
   scheduled task is "registered but dead" and needs repair.
 
-  Runs under pwsh on any OS. Get-ScheduledTask / Register-ScheduledTask are
-  Windows-only and cannot run here, so this does not exercise the real
+  Runs under pwsh on any OS. The real ScheduledTask cmdlets (Get-, Register-)
+  are Windows-only and cannot run here, so this does not exercise the real
   registration call - it proves the DECISION logic that drives it: three
   fixtures broken in each of the three independently-fatal ways decide
   "repair", and a healthy fixture decides "leave it alone". That decision

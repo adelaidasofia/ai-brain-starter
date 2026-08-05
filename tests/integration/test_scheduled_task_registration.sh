@@ -96,10 +96,19 @@ done < <(ps1_files)
 heals=0
 while IFS= read -r f; do
   [ -z "$f" ] && continue
-  grep -qF 'Get-ScheduledTask' "$REPO/$f" || continue
-  grep -qE 'Get-BackupTaskProblems|Test-BackupTaskProblems|Test-BackupTaskHealthy' "$REPO/$f" >/dev/null 2>&1 || continue
+  # code_hits (not a raw grep): a file that only EXPLAINS why it calls
+  # Get-ScheduledTask - like this guard's own file, and like
+  # test-vault-backup-task-healing.ps1's docstring, which says in prose that
+  # Get-ScheduledTask "cannot run here" - is not a registrar. Caught by hand:
+  # a raw `grep -qF` version flagged that test file on its own comment.
+  [ -n "$(code_hits "$f" 'Get-ScheduledTask')" ] || continue
+  validates=0
+  for sym in 'Get-BackupTaskProblems' 'Test-BackupTaskProblems' 'Test-BackupTaskHealthy'; do
+    [ -n "$(code_hits "$f" "$sym")" ] && validates=1
+  done
+  [ "$validates" -eq 1 ] || continue
   heals=$((heals + 1))
-  decision_line="$(grep -nE '\.Count -eq 0' "$REPO/$f" | head -1 | cut -d: -f1)"
+  decision_line="$(grep -nE '\.Count -eq 0' "$REPO/$f" | grep -vE '^[0-9]+:[[:space:]]*#' | head -1 | cut -d: -f1)"
   if [ -z "$decision_line" ]; then
     echo "FAIL  validates an existing task's health but the healthy/broken branch point"
     echo "        (a '.Count -eq 0' check) is not where this guard expects it:"
