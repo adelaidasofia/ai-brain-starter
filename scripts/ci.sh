@@ -407,9 +407,57 @@ WATCH_TREES = [
     claude / "skills" / "ai-brain-starter" / "hooks",
     claude / "skills" / "ai-brain-starter" / "scripts",
     claude / "hooks",
-    claude / "state",
 ]
-WATCH_GLOBS = [str(claude / "hookify.*.md"), str(claude / "settings.local.json")]
+WATCH_GLOBS = [
+    str(claude / "hookify.*.md"),
+    str(claude / "settings.local.json"),
+    # state/ as a TREE is gone (see below); this is the one durable artifact in
+    # it worth protecting -- the SessionStart snapshot the paragraph above meant.
+    str(claude / "state" / "sessionstart-hooks-snapshot.json"),
+]
+
+# WHAT THIS WATCHES, AND WHAT IT DELIBERATELY NO LONGER DOES (2026-08-05)
+#
+# The paragraph above names projects/, logs/, todos/, shell-snapshots/ and
+# statsig/ as the churn to stay out of -- but that is a list of DIRECTORIES,
+# and the churn was never confined to them. Two places leaked:
+#
+#   ~/.claude/hooks/  holds append-only logs (cwd-changed.log,
+#       sync-my-skills.log, secret-detection-log.jsonl) and runtime lock dirs
+#       (sync.*.lock/pid) sitting right beside the deployed hook CODE this
+#       tripwire exists to protect.
+#   ~/.claude/state/  is not "the SessionStart snapshot". Measured: 93 files,
+#       78 of them per-session scratch keyed by session UUID
+#       (branch-ticket-warn-<uuid>, linear-ids-seen-<uuid>), the rest last-run
+#       stamps and append-only integrity streams. It is a scratch directory,
+#       the same category as the five already excluded above.
+#
+# Measured at rest with no test running: hooks/cwd-changed.log,
+# hooks/sync-my-skills.log, two sync.*.lock/pid files and
+# state/settings-hook-integrity.jsonl all moved inside 30 seconds; a full
+# instrumented run additionally caught state/linear-ids-seen-<uuid>.txt. The
+# gate therefore failed on a DIFFERENT test every run, naming whichever test
+# happened to be executing when a background job appended a line -- a pristine
+# origin/main checkout failed identically. That is exactly the outcome the
+# paragraph above warns against: "watching those would make the gate flaky and
+# get it disabled, which is worse than not having it."
+#
+# state/ is excluded as a TREE rather than by picking off file kinds. Its
+# churn set is open-ended -- every new hook that drops a dedup marker there
+# would redden this gate again -- and a denylist against an open set always
+# loses. The one durable artifact in it is allow-listed in WATCH_GLOBS above.
+#
+# COVERAGE IS UNCHANGED for every corruption class this gate was built for,
+# each verified against a fake home so the real one is never touched:
+#   trips    settings.json rewritten (the catastrophic 2026-07-30 class,
+#            still compared by FULL CONTENT hash)
+#   trips    hook script copied into the live install (.py)
+#   trips    deployed .sh hook modified
+#   trips    installer backup left behind (.bak-*)
+#   trips    the SessionStart snapshot rewritten
+#   ignores  append-only .log / .jsonl grows, lock dir churns, per-session
+#            scratch appears
+CHURN_SUFFIXES = (".log", ".jsonl")
 
 seen = []
 for tree in WATCH_TREES:
@@ -417,9 +465,13 @@ for tree in WATCH_TREES:
         seen.append(f"{tree.name}:ABSENT")
         continue
     for root, dirs, files in os.walk(tree):
-        dirs.sort()
+        # Prune runtime lock dirs from the walk (sync.*.lock/pid is rewritten
+        # per run), and keep the traversal order deterministic.
+        dirs[:] = sorted(d for d in dirs if not d.endswith(".lock"))
         for name in sorted(files):
             fp = Path(root) / name
+            if fp.suffix in CHURN_SUFFIXES:
+                continue
             try:
                 st = fp.stat()
             except OSError:
