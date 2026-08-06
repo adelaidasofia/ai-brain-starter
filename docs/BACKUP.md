@@ -125,6 +125,19 @@ You do not have to remember any of this. Two surfaces keep it visible:
   exists (a moved repo), or that launchd is simply not running; a healthy, loaded
   job is left untouched. If it cannot install one, it prints the scheduler's own
   error instead of claiming success.
+- **`vault-backup.sh schedule`** is the reachable repair path for that, and the
+  one to reach for when snapshots have gone stale. It checks the daily schedule
+  is really held by the OS scheduler and repairs it if not — non-interactive, no
+  prompts, and it takes no snapshot, so it is cheap to run often. It exits
+  non-zero when the schedule is not installed and could not be repaired, so a
+  script can branch on the status rather than read prose:
+
+  ```bash
+  bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh schedule
+  ```
+
+  This exists because a self-heal that only fires inside `setup` misses exactly
+  the population that has a dead schedule — those installs never re-run setup.
 
 The single source of truth for all of these is
 `scripts/check-vault-backup.py` — run it directly any time:

@@ -197,6 +197,12 @@ run_setup() { # -> combined output; env decides how the stubs behave
     bash "$BACKUP" setup --vault "$V" --dest "$D" --schedule daily 2>&1
 }
 
+run_schedule() { # -> combined output; exit status is the subcommand's own
+  HOME="$HOMEDIR" PATH="$STUB:$PATH" \
+  VAULT_BACKUP_CONF="$ROOT/conf.json" VAULT_BACKUP_MARKER="$ROOT/marker" \
+    bash "$BACKUP" schedule --vault "$V" 2>&1
+}
+
 case "$(uname)" in
   Darwin)
     echo "== B. end-to-end on Darwin: launchctl stubbed =="
@@ -314,6 +320,34 @@ PY
       grep -q "bootstrap gui/" "$ROOT/lc-noop.log" 2>/dev/null \
         && fail "B4: re-bootstrapped a job launchd already holds" \
         || pass "B4: no needless re-registration of a healthy job"
+
+      # --- B5. the REACHABLE repair path -------------------------------------
+      # The self-heal is worthless to the affected population if `setup` is its
+      # only caller: an install carrying a dead schedule is exactly the one that
+      # never re-runs setup. `schedule` must repair without prompting, without
+      # taking a snapshot, and must EXIT NON-ZERO when it cannot, so a hook can
+      # branch on the status instead of parsing prose.
+      before_archives="$(ls -1 "$D"/vault-backup-* 2>/dev/null | wc -l | tr -d ' ')"
+      printf 'not even xml again\n' > "$plist"
+      out="$(STUB_LOG="$ROOT/lc-sched.log" STUB_MODE=ok run_schedule)"; rc=$?
+      [ "$rc" = 0 ] && pass "B5: \`schedule\` exits 0 when the job ends up loaded" \
+        || fail "B5: \`schedule\` exited $rc on a repairable job: $out"
+      python3 -c "import plistlib,sys; plistlib.load(open(sys.argv[1],'rb'))" "$plist" 2>/dev/null \
+        && pass "B5: \`schedule\` repaired the broken job without re-running setup" \
+        || fail "B5: \`schedule\` did not rewrite the broken plist"
+      after_archives="$(ls -1 "$D"/vault-backup-* 2>/dev/null | wc -l | tr -d ' ')"
+      [ "$before_archives" = "$after_archives" ] \
+        && pass "B5: \`schedule\` took no snapshot (cheap enough to run often)" \
+        || fail "B5: \`schedule\` wrote an archive ($before_archives -> $after_archives)"
+
+      # NEGATIVE CONTROL for the exit status: launchd refuses -> non-zero.
+      out="$(STUB_LOG="$ROOT/lc-sched-fail.log" STUB_MODE=fail run_schedule)"; rc=$?
+      [ "$rc" != 0 ] \
+        && pass "B5: \`schedule\` exits non-zero when the OS will not hold the job" \
+        || fail "B5: \`schedule\` exited 0 while launchd refused the job — a caller cannot branch on that"
+      printf '%s\n' "$out" | grep -q "is NOT installed" \
+        && pass "B5: and it says so in words, naming the manual fallback" \
+        || fail "B5: the failure was not stated: $out"
     fi
     ;;
 
@@ -375,6 +409,40 @@ STUBEOF
     grep -Fq '@reboot /usr/bin/true' "$ROOT/crontab.txt" \
       && pass "B3: the unrelated cron line was left alone" \
       || fail "B3: an unrelated cron line was destroyed"
+
+    # --- B5. the REACHABLE repair path (mirrors the Darwin leg) --------------
+    # cmd_schedule itself is platform-independent, but CI is ubuntu — so without
+    # this leg the new subcommand would ship with zero coverage on the only
+    # runner that gates it. That is the same "untested path" shape this whole
+    # suite exists to close.
+    before_archives="$(ls -1 "$D"/vault-backup-* 2>/dev/null | wc -l | tr -d ' ')"
+    : > "$ROOT/crontab.txt"
+    out="$(STUB_CRONTAB="$ROOT/crontab.txt" STUB_MODE=ok run_schedule)"; rc=$?
+    [ "$rc" = 0 ] && pass "B5: \`schedule\` exits 0 when the entry lands" \
+      || fail "B5: \`schedule\` exited $rc on a repairable schedule: $out"
+    grep -Fq "run --vault '$VR'" "$ROOT/crontab.txt" \
+      && pass "B5: \`schedule\` installed the entry without re-running setup" \
+      || fail "B5: no crontab entry after \`schedule\`: $(cat "$ROOT/crontab.txt")"
+    after_archives="$(ls -1 "$D"/vault-backup-* 2>/dev/null | wc -l | tr -d ' ')"
+    [ "$before_archives" = "$after_archives" ] \
+      && pass "B5: \`schedule\` took no snapshot (cheap enough to run often)" \
+      || fail "B5: \`schedule\` wrote an archive ($before_archives -> $after_archives)"
+
+    # NEGATIVE CONTROL for the exit status: crontab refuses -> non-zero.
+    # A WRITE has to be necessary for a refusing crontab to be reached at all:
+    # the correct entry from the leg above makes cron_plan a legitimate no-op
+    # (an entry present in the crontab IS an installed schedule, and returning 0
+    # there is right). Seed a STALE entry so a rewrite is required. Caught by
+    # this control itself reporting a pass it had not earned.
+    printf '%s\n' "0 3 * * * /bin/bash /old/gone/vault-backup.sh run --vault '$VR' >> \$HOME/.claude/.vault-backup.log 2>&1" \
+      > "$ROOT/crontab.txt"
+    out="$(STUB_CRONTAB="$ROOT/crontab.txt" STUB_MODE=fail run_schedule)"; rc=$?
+    [ "$rc" != 0 ] \
+      && pass "B5: \`schedule\` exits non-zero when the entry cannot be installed" \
+      || fail "B5: \`schedule\` exited 0 while crontab refused — a caller cannot branch on that"
+    printf '%s\n' "$out" | grep -q "is NOT installed" \
+      && pass "B5: and it says so in words, naming the manual fallback" \
+      || fail "B5: the failure was not stated: $out"
     ;;
 
   *)

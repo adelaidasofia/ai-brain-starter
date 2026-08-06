@@ -19,7 +19,15 @@ There is a concrete way this happened. The job file is XML, and your vault's own
 
 Now setup writes your vault path into the job file correctly whatever characters it contains, then asks the scheduler itself whether it holds the job, and only says "scheduled" if the answer is yes. Re-running setup reads the existing schedule back and repairs it when it is broken, automatically and with no prompt, the same way the Windows fix below does. A healthy schedule is left completely alone. When it cannot install one, you get the scheduler's own error and the command to take a snapshot by hand, instead of a bare "could not".
 
-**What you should do:** run backup setup again once (`bash scripts/vault-backup.sh setup`, or ask Claude to do it), then check `status` and confirm a snapshot has actually landed in the last day or two. Worth doing now in particular if your vault folder has an `&`, `<` or `>` in its name, or if you have moved your vault or the starter since you set backups up.
+There is also a new, faster way to check and fix just the schedule, without re-running the whole setup:
+
+```
+bash scripts/vault-backup.sh schedule
+```
+
+It asks the operating system whether it really holds your daily backup job, repairs it if not, and takes no snapshot, so it is safe to run any time. If it cannot fix it, it tells you why and gives you the command to take a snapshot by hand. This matters because a repair that only happens when you re-run setup would miss exactly the people whose schedule is dead, since those are the people who never re-run setup.
+
+**What you should do:** run `bash scripts/vault-backup.sh schedule` once (or ask Claude to), then check `status` and confirm a snapshot has actually landed in the last day or two. Worth doing now in particular if your vault folder has an `&`, `<` or `>` in its name, or if you have moved your vault or the starter since you set backups up.
 
 ---
 

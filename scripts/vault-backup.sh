@@ -15,6 +15,11 @@
 #   verify  restore the newest snapshot to a temp dir and confirm it actually
 #           extracts — a backup you have never restored is a hope, not a backup.
 #   status  show where backups go, how fresh they are, and the canonical verdict.
+#   schedule  check the daily schedule is REALLY installed with the OS scheduler
+#           and repair it if not (non-interactive, no snapshot). This is the
+#           reachable repair path: the self-heal must not live only inside
+#           `setup`, because an install carrying a dead schedule is exactly the
+#           one that never re-runs setup. (MYC-3528)
 #
 # Provider-agnostic: the destination is any folder path you give it. Encryption
 # (--encrypt) is optional and uses gpg (or openssl) with the passphrase stored
@@ -26,6 +31,7 @@
 #   bash vault-backup.sh run    [--vault PATH]
 #   bash vault-backup.sh verify [--vault PATH]
 #   bash vault-backup.sh status [--vault PATH]
+#   bash vault-backup.sh schedule [--vault PATH]
 #
 # Config:  ~/.claude/.vault-backup.conf  (JSON, keyed by resolved vault path)
 # Marker:  ~/.claude/.vault-backup-last  (ISO8601 of the last successful run)
@@ -414,6 +420,36 @@ cmd_verify() {
   ok "Restore verified: extracted $count file(s)${sentinel:+, $sentinel present}. Your backup actually restores."
 }
 
+# The REACHABLE repair path for the daily schedule.
+#
+# `install_schedule` self-heals, but for most of this fix's life it had exactly
+# ONE caller: `cmd_setup`. That means the repair only ever fired for someone who
+# chose to re-run setup — while the population carrying a dead schedule is
+# precisely the population that never does. A capability with no production
+# caller that the affected user actually reaches is not shipped. (MYC-3528 work
+# item 2.)
+#
+# Non-interactive and cheap on purpose: no prompts, no snapshot, no config
+# rewrite — so a hook, a cron line, or a human can run it safely and often.
+# Exits non-zero when the schedule is NOT installed and could not be repaired,
+# so a caller can branch on it instead of parsing prose.
+cmd_schedule() {
+  local vault=""
+  while [ $# -gt 0 ]; do case "$1" in --vault) vault="$2"; shift 2;; *) shift;; esac; done
+  vault="$(resolve_vault "$vault")"
+  local dest; dest="$(conf_get "$vault" dest)"
+  [ -n "$dest" ] || die "vault not configured for backup. Run: bash $0 setup --vault \"$vault\""
+  local slug; slug="$(conf_get "$vault" keychain_account)"; [ -n "$slug" ] || slug="$(slug_for "$vault")"
+
+  if install_schedule "$vault" "$slug"; then
+    ok "Daily backup schedule is installed and held by the OS scheduler (03:00 local)."
+  else
+    warn "The daily backup schedule is NOT installed (reason above)."
+    warn "Snapshots will only happen when you run:  bash $0 run --vault \"$vault\""
+    return 1
+  fi
+}
+
 cmd_status() {
   local vault=""
   while [ $# -gt 0 ]; do case "$1" in --vault) vault="$2"; shift 2;; *) shift;; esac; done
@@ -649,12 +685,13 @@ EOF
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   CMD="${1:-status}"; shift 2>/dev/null || true
   case "$CMD" in
-    setup)  cmd_setup "$@";;
-    run)    cmd_run "$@";;
-    verify) cmd_verify "$@";;
-    status) cmd_status "$@";;
+    setup)    cmd_setup "$@";;
+    run)      cmd_run "$@";;
+    verify)   cmd_verify "$@";;
+    status)   cmd_status "$@";;
+    schedule) cmd_schedule "$@";;
     -h|--help|help)
-      sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//' ;;
-    *) die "unknown command: $CMD (use setup|run|verify|status)";;
+      sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) die "unknown command: $CMD (use setup|run|verify|status|schedule)";;
   esac
 fi
