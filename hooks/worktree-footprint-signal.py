@@ -168,6 +168,12 @@ def _candidate_vaults(main_repo: Path | None) -> list[Path]:
     if cwd_root is not None:
         cands.append(cwd_root)
     cands.extend(obsidian_vault_paths())
+    # vault-root-ok: enumerates CANDIDATE vaults, never resolves "the" root. This
+    # signal must observe every vault on the machine (the cloud-sync check has to
+    # see a vault cwd is not in), so vault_root_for(target) answers the wrong
+    # question here — it picks one governing root for one target. VAULT_ROOT joins
+    # project-dir / cwd-git-root / the Obsidian registry as one more candidate, and
+    # a wrong value adds a path that simply fails its own is_dir/stat checks below.
     vr = os.environ.get("VAULT_ROOT")
     if vr:
         cands.append(Path(vr).expanduser())

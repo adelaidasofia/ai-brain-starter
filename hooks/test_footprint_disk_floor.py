@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -101,16 +102,26 @@ def main() -> int:
     GIB = 1024 ** 3
 
     def emit_with_volume(free_gb: float, total_gb: float) -> str:
-        """Run the hook's real disk branch against a faked volume."""
-        real = shutil.disk_usage
+        """Run the hook's real disk branch against a faked volume.
+
+        find_main_repo() is pinned to a temp dir as well as disk_usage being
+        faked: the hook discovers its repo from the ambient cwd, so without the
+        pin these controls pass or fail depending on where the suite is invoked
+        from — green in a vault, red from the repo root, which is exactly the
+        cwd-dependent flake CI would hit.
+        """
+        real_usage, real_find = shutil.disk_usage, mod.find_main_repo
         shutil.disk_usage = lambda _p: SimpleNamespace(  # type: ignore[assignment]
             total=int(total_gb * GIB), used=int((total_gb - free_gb) * GIB),
             free=int(free_gb * GIB),
         )
-        try:
-            out = mod.main_text() if hasattr(mod, "main_text") else _emit_via_main(mod)
-        finally:
-            shutil.disk_usage = real  # type: ignore[assignment]
+        with tempfile.TemporaryDirectory() as td:
+            mod.find_main_repo = lambda: Path(td)  # type: ignore[assignment]
+            try:
+                out = _emit_via_main(mod)
+            finally:
+                shutil.disk_usage = real_usage    # type: ignore[assignment]
+                mod.find_main_repo = real_find    # type: ignore[assignment]
         return out or ""
 
     def _emit_via_main(m):
