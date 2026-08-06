@@ -140,16 +140,13 @@ ab96a2f6b21c756727282b058c6bd99b417badf6db40c42f88a58de1998d7fbe SEV-4-json-enco
 f80eabd72629d45963442fc83dcc504c0156648e181893c487c964115a4b0a48 SEV-4-json-encoded hooks/surface-backup-status.py
 58eaf3668330264cdb9095dda2c7a425e3f69009c5ecbb1d764a6f40340f7ca8 SEV-4-json-encoded hooks/surface-connector-liveness.py
 64eae7b79237dab8b0b8b666b5a7d8b0a26b7c38bafd18313556c790ddf622bc SEV-4-json-encoded hooks/surface-dependabot-backlog.py
-6ddf4fcbadbf4d1ee9696a5b16bb0da60a018dbc9415041b2b3cf9d2ae31ff13 SEV-4-json-encoded hooks/surface-deployed-hooks-behind.py
 6a55aed5c658a5361501e1144b26c501d95fd1f359383af4499e8894be76ff93 SEV-4-json-encoded hooks/surface-orphan-claude-branches.py
 26f8cab57abf95bbe0b1b3e81d5310946823b7b93ef814285ffe8d91dcdce672 SEV-4-json-encoded hooks/surface-orphan-worktree-snapshots.py
-3beb198ac196050ff050b3448b181f1914d2b161e0f8bf41ff6890d78af74cad SEV-4-json-encoded hooks/surface-stale-automation-failures.py
 ef44e1e697864634bd4f41c5041e9d3c445aa429c37d35bb7dbdb613c76c3592 SEV-4-json-encoded hooks/surface-stranded-session-artifacts.py
 bde2c3d7a3b64f2828d4b6a7be9e33381c7496877cf11eea0fdbb6068382b4e1 SEV-4-json-encoded hooks/vault-context.py
 381d8c9eec790997f7736fc89e088fdb12f7dd1606b4be8e753ba0bf0d43e497 SEV-4-json-encoded hooks/warn-learning-to-tool-private-memory.py
 6141c3d8cc8a60cf6ae1c9a3d8fcde728808188e2bbe4cfedd581276076bf1c3 SEV-4-json-encoded hooks/warn-recreate-deleted-file.py
 a201c72df70798c65e0a3db62587a38eec99b1989b83b808826604dcf2f42fd2 SEV-4-json-encoded hooks/warn-stale-dev-checkout.py
 effe9f0dc7226a8ea9456ec6be5112ea357ef8795adde5375499f19c6db000fc SEV-4-json-encoded hooks/warn-uncommitted-builds-on-stop.py
-5131640e37d7b6340633ad939a742c6e585dfae4b787a3311b7838bb7dc77a84 SEV-4-json-encoded hooks/warn-vault-session-in-worktree.py
 dfba549e5cd609ddde59d63aac175d884d0224a6703265e0b04c1a0eac315b20 SEV-4-json-encoded hooks/whatsapp-mcp-auto-export.py
 fe6732085fc9a60ca52539a9d4ca30307b5d37d214a00eec58c86353d69cb56f SEV-4-json-encoded hooks/worktree-footprint-signal.py
