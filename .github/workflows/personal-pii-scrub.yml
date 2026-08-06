@@ -63,8 +63,8 @@ jobs:
           # list, so they cannot drift). NOT case-insensitive: 'wOnder'
           # contains 'Onde' but \bOnde\b skips it (CLAUDE.md false-positive trap).
           PATTERNS=(
-            '\bAdelaida\b'
-            '\bDiaz-Roa\b'
+            '\b[Aa]delaida\b'
+            '\b[Dd]iaz-[Rr]oa\b'
             '\bSergio\b'
             '\bSneider\b'
             '\bAlfonso\b'
@@ -118,8 +118,8 @@ jobs:
           # (both arrays are injected from one placeholder, so they cannot
           # drift).
           PATTERNS=(
-            '\bAdelaida\b'
-            '\bDiaz-Roa\b'
+            '\b[Aa]delaida\b'
+            '\b[Dd]iaz-[Rr]oa\b'
             '\bSergio\b'
             '\bSneider\b'
             '\bAlfonso\b'

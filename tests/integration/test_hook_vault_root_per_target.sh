@@ -513,7 +513,7 @@ fi
 #      narration, and only the fact may satisfy an assertion.
 #
 #  (b) NON-HERMETIC. launchd_failures() shells out to the host's real
-#      `launchctl list` and reports every failing com.adelaida.* job. Those are
+#      `launchctl list` and reports every failing user-installed job. Those are
 #      machine-global BY DESIGN (pinned in 8d) and belong to no vault, but the
 #      fixture fakes HOME, USERPROFILE and VAULT_ROOT and cannot fake the
 #      launchd domain. So this case ran green on Linux CI (no launchctl ->
@@ -529,7 +529,7 @@ fi
 # --------------------------------------------------------------------------
 STUB_QUIET="$TMP/launchd-quiet"
 STUB_FAILING="$TMP/launchd-failing"
-LAUNCHCTL_STUBBABLE="$(python3 - "$STUB_QUIET" "$STUB_FAILING" <<'PY'
+LAUNCHCTL_STUBBABLE="$(python3 - "$STUB_QUIET" "$STUB_FAILING" "$FAKEHOME" <<'PY'
 import shutil, stat, sys
 from pathlib import Path
 
@@ -538,12 +538,20 @@ from pathlib import Path
 # machine with nothing failing); the failing stub prints one job that exited
 # non-zero, which is exactly what launchd_failures() reports on.
 for path, rows in ((Path(sys.argv[1]), []),
-                   (Path(sys.argv[2]), [("-", "3", "com.adelaida.fixture-probe")])):
+                   (Path(sys.argv[2]), [("-", "3", "com.example.fixture-probe")])):
     path.mkdir(parents=True, exist_ok=True)
     body = "".join("\t".join(r) + "\n" for r in rows)
     stub = path / "launchctl"
     stub.write_text("#!/bin/sh\ncat <<'ROWS'\n%sROWS\n" % body, encoding="utf-8")
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+# launchd_failures() reports only labels the user actually installed, read from
+# their own LaunchAgents dir. Give the fake HOME a matching plist so the probe
+# job counts as user-installed -- which also makes this case fully hermetic: it
+# no longer depends on what the real machine happens to have installed.
+agents = Path(sys.argv[3]) / "Library" / "LaunchAgents"
+agents.mkdir(parents=True, exist_ok=True)
+(agents / "com.example.fixture-probe.plist").write_text("<plist/>\n", encoding="utf-8")
 
 # Resolve the way the hook's own subprocess call will, so 8d's positive control
 # can never be silently vacuous: where an extensionless shell stub is not
@@ -632,7 +640,7 @@ fi
 #     vault leak. A launchd label has no vault field; scoping this pass per
 #     vault would reinstate exactly the blind spot it was added to close
 #     (routing-health-check and receipts-reconcile failing unnoticed). Pin it,
-#     because a reader who meets a com.adelaida.* line while chasing a
+#     because a reader who meets a launchd label line while chasing a
 #     vault-isolation bug will otherwise "fix" it -- which is how this case
 #     came to be read as a leak in the first place.
 launchd_verdict() {  # <cwd> -> that session's verdict, with a job failing
@@ -641,7 +649,7 @@ launchd_verdict() {  # <cwd> -> that session's verdict, with a job failing
     "VAULT_ROOT=$DECOY" "HOME=$FAKEHOME" "USERPROFILE=$FAKEHOME" "PATH=$STUB_FAILING:$PATH"
   stale_verdict "$OUT"
 }
-probe='com.adelaida.fixture-probe'
+probe='com.example.fixture-probe'
 launchd_decoy="$(launchd_verdict "$DECOY")"
 launchd_other="$(launchd_verdict "$OTHER")"
 in_decoy=no; in_other=no
@@ -652,7 +660,7 @@ if [ "$in_decoy" != "$in_other" ]; then
   echo "  decoy=[$launchd_decoy]" >&2
   echo "  other=[$launchd_other]" >&2
 elif [ "$LAUNCHCTL_STUBBABLE" = "yes" ] && [ "$in_decoy" = "no" ]; then
-  fail "the launchd pass reported nothing while a com.adelaida.* job was failing -- the stub is reachable, so this is the pass going silent"
+  fail "the launchd pass reported nothing while a user-installed job was failing -- the stub is reachable, so this is the pass going silent"
   echo "  decoy=[$launchd_decoy]" >&2
 else
   pass "launchd findings are machine-global, reported identically in both vaults (present=$in_decoy)"
