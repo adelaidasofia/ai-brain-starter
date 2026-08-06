@@ -142,4 +142,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313): force UTF-8 so the non-ASCII control
+    # names can't crash this test on a Windows console.
+    import sys as _sys
+    for _stream in (_sys.stdout, _sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     raise SystemExit(main())
