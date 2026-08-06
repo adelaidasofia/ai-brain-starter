@@ -88,7 +88,7 @@ jobs:
           # docs/), vendored deps, lock files, and the workflows themselves
           # (this file MENTIONS the patterns by definition).
           for p in "${PATTERNS[@]}"; do
-            matches=$(git grep -nE "$p"               -- ':!README*' ':!CHANGELOG*' ':!docs/' ':!*.md'               ':!LICENSE*' ':!COPYING*' ':!NOTICE*'               ':!AUTHORS*' ':!MAINTAINERS*'               ':!*pyproject.toml' ':!*setup.py' ':!*setup.cfg'               ':!*package.json' ':!*Cargo.toml' ':!*manifest.json'               ':!.claude-plugin/'               ':!.env.example' ':!*.env.example'               ':!tests/integration/test_smoke.py'               ':!vendor/' ':!node_modules/' ':!*.lock'               ':!package-lock.json' ':!pnpm-lock.yaml'               ':!.github/workflows/personal-pii-scrub.yml' 2>/dev/null || true)
+            matches=$(git grep -nE "$p"               -- ':!README*' ':!CHANGELOG*' ':!docs/' ':!*.md'               ':!LICENSE*' ':!COPYING*' ':!NOTICE*'               ':!AUTHORS*' ':!MAINTAINERS*'               ':!*pyproject.toml' ':!*setup.py' ':!*setup.cfg'               ':!*package.json' ':!*Cargo.toml' ':!*manifest.json' ':!*server.json'               ':!.claude-plugin/'               ':!.env.example' ':!*.env.example'               ':!tests/integration/test_smoke.py'               ':!vendor/' ':!node_modules/' ':!*.lock'               ':!package-lock.json' ':!pnpm-lock.yaml'               ':!.github/workflows/personal-pii-scrub.yml' 2>/dev/null || true)
             if [ -n "$matches" ]; then
               echo "::error::personal-data pattern leaked into source: $p"
               echo "$matches"
