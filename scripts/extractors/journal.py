@@ -6,11 +6,12 @@ Type: `journal`
 Emits: smart_excerpt, concepts_extracted, people_mentioned, word_count,
        floor_num, date_iso.
 """
+import glob
 import os
 import re
 
 from _base import (
-    extract_first_prose_sentence, extract_section, match_people,
+    VAULT, extract_first_prose_sentence, extract_section, match_people,
     count_words, iso_date_from, wikilinks_in, ExtractionResult,
 )
 
@@ -34,12 +35,45 @@ SKIP_FILENAME_PATTERNS = (
 )
 
 
+_FLOOR_INDEX = None
+
+
+def _load_floor_index():
+    """Map floor name/alias (lowercased) -> floor_number, read from the vault's own
+    Floors notes. Vaults define their own scale and vocabulary; FLOOR_MAP below is
+    only a fallback for vaults that ship no Floors folder."""
+    index = {}
+    for fp in glob.glob(os.path.join(VAULT, "**", "Floors", "*.md"), recursive=True):
+        try:
+            content = open(fp, encoding="utf-8", errors="ignore").read()
+        except OSError:
+            continue
+        num = re.search(r"^floor_number:\s*(\d+)", content, re.MULTILINE)
+        if not num:
+            continue
+        num = int(num.group(1))
+        index[os.path.splitext(os.path.basename(fp))[0].lower()] = num
+        aliases = re.search(r"^aliases:\s*\[([^\]]*)\]", content, re.MULTILINE)
+        if aliases:
+            for a in aliases.group(1).split(","):
+                a = a.strip().strip("\"'").lower()
+                if a:
+                    index.setdefault(a, num)
+    return index
+
+
 def _floor_num(fm):
+    global _FLOOR_INDEX
     raw = fm.get("floor")
     if not raw:
         return None
+    if _FLOOR_INDEX is None:
+        _FLOOR_INDEX = _load_floor_index()
     vals = raw if isinstance(raw, list) else [raw]
-    nums = [FLOOR_MAP[str(v)] for v in vals if str(v) in FLOOR_MAP]
+    nums = [_FLOOR_INDEX[str(v).strip().lower()]
+            for v in vals if str(v).strip().lower() in _FLOOR_INDEX]
+    if not nums:
+        nums = [FLOOR_MAP[str(v)] for v in vals if str(v) in FLOOR_MAP]
     return min(nums) if nums else None
 
 
