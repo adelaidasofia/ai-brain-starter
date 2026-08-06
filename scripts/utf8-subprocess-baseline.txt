@@ -2,7 +2,6 @@
 # LOCALE encoding instead of an explicit one. Editing a pinned file, or
 # adding a new offender, fails scripts/check-utf8-subprocess.py.
 # Fix by adding: encoding="utf-8", errors="replace"
-1d0f500d2294ca21926ff1a7b146b72853613bec6fc7bfa10c6f8f1d72beb0db hooks/_lib/dev_repo_scan.py
 e2f343536da6ef508c45d335a9d2fbe9977f40aaa152f5c86913ddeb82f9c531 hooks/_lib/git_locks.py
 987aca2ae82229a42d29a8c89fed690e9de7e6fad4182dea564bc92557a81922 hooks/auto-capture-public-ships.py
 03d0966a13e6d14e1257d2b115894ac52bc350d3b955ec2ca1c7c9266107de51 hooks/block-raw-vault-git.py
@@ -46,7 +45,6 @@ c380a6d7d5cb52c1076962540c9eb7707baee5c9080a205de97d89d40f647c9b scripts/check-w
 715275131b0929513373df32ee4224ada0a0a66a8077b1ffa1a175e20c25e9b8 scripts/closed-loop-week-report.py
 c608cc6897ce3366e45301acd6c6bfe46eac6c4bfa2a1d066b1fa931eef97e6e scripts/context-audit.py
 4db3441131d4ca0e0a7e81f6933bfc963bd3d64503369e92da96e567c30c3200 scripts/dev-repo-reaper.py
-3cb4935d56eea6f9cd44723e80c8ea591a67ea356fa3184f8b318deb37d3373e scripts/dev-worktree-prune.py
 926b37dcb6f6b689dab5c69b74f169a74e911887f20e7ed6aeb3c1b51e507b58 scripts/drift-detection.py
 9c2b94c22cb78ad78aa2a3e9b464518a1f5912642ed26575b7007957e31eda43 scripts/graphify_minimax_preprocess.py
 c41c1955f5ecc763a067cff06cd3c6cbe0a8aa47ad20625dd8eb7e779f8fd20d scripts/hallucination-sample-audit.py
