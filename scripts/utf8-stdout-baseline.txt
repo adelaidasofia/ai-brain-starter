@@ -148,4 +148,3 @@ bde2c3d7a3b64f2828d4b6a7be9e33381c7496877cf11eea0fdbb6068382b4e1 SEV-4-json-enco
 a201c72df70798c65e0a3db62587a38eec99b1989b83b808826604dcf2f42fd2 SEV-4-json-encoded hooks/warn-stale-dev-checkout.py
 effe9f0dc7226a8ea9456ec6be5112ea357ef8795adde5375499f19c6db000fc SEV-4-json-encoded hooks/warn-uncommitted-builds-on-stop.py
 dfba549e5cd609ddde59d63aac175d884d0224a6703265e0b04c1a0eac315b20 SEV-4-json-encoded hooks/whatsapp-mcp-auto-export.py
-fe6732085fc9a60ca52539a9d4ca30307b5d37d214a00eec58c86353d69cb56f SEV-4-json-encoded hooks/worktree-footprint-signal.py
