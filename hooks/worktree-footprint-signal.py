@@ -66,7 +66,17 @@ from _lib.worktree_safety import (  # noqa: E402
 )
 
 DEFAULT_WARN = 8
+
+# Absolute floor: below this, any machine is in trouble.
 DEFAULT_FREE_GB = 5.0
+# Proportional floor, because an absolute number does not scale with the disk.
+# A flat 5 GB on a 1 TB volume is not an early warning, it is a post-mortem: by
+# then builds already fail and sync daemons already stall. Measured 2026-08-05 on
+# a 926 GB machine — build artifacts filled it to 2.3 GB free and this hook stayed
+# silent the whole way down, because 5 GB is the only line it had. 5% (≈46 GB
+# there, ≈13 GB on a 256 GB laptop) fires while the fix is still cheap.
+# The effective floor is max(absolute, proportional); WORKTREE_FREE_GB pins it.
+DEFAULT_FREE_PCT = 0.05
 
 # ── aggregate bloat-dir footprint (MYC-577) ──────────────────────────────────
 # Default warn at 80K files across the bloat-prone dirs — a deliberate fraction
@@ -694,10 +704,12 @@ def main() -> int:
             warn_at = max(1, int(os.environ.get("WORKTREE_WARN", DEFAULT_WARN)))
         except ValueError:
             warn_at = DEFAULT_WARN
+        # None => derive from the volume; an explicit WORKTREE_FREE_GB pins it.
         try:
-            free_floor = float(os.environ.get("WORKTREE_FREE_GB", DEFAULT_FREE_GB))
+            pinned_floor = os.environ.get("WORKTREE_FREE_GB")
+            free_floor = float(pinned_floor) if pinned_floor else None
         except ValueError:
-            free_floor = DEFAULT_FREE_GB
+            free_floor = None
 
         # Count only scratch worktrees for the cap warning; deliberate sibling
         # worktrees (~/dev/<repo>-<slug>) are not part of the pileup problem.
@@ -726,11 +738,22 @@ def main() -> int:
 
         free_gb = None
         try:
-            free_gb = shutil.disk_usage(main_repo).free / 1024 ** 3
+            usage = shutil.disk_usage(main_repo)
+            free_gb = usage.free / 1024 ** 3
+            if free_floor is None:
+                free_floor = max(
+                    DEFAULT_FREE_GB, (usage.total / 1024 ** 3) * DEFAULT_FREE_PCT
+                )
         except OSError:
             pass
-        if free_gb is not None and free_gb < free_floor:
-            lines.append(f"⚠️  [footprint] Low free disk: {free_gb:.1f} GB on the vault volume.")
+        if free_gb is not None and free_floor is not None and free_gb < free_floor:
+            pct = free_gb / (usage.total / 1024 ** 3) * 100
+            lines.append(
+                f"⚠️  [footprint] Low free disk: {free_gb:.1f} GB free "
+                f"({pct:.0f}% of the volume) — warns below {free_floor:.0f} GB. "
+                f"Biggest reclaimable win is usually regenerable build output "
+                f"(node_modules / target / .venv / .next) in idle worktrees."
+            )
 
     return _emit("\n".join(lines) if lines else None)
 
