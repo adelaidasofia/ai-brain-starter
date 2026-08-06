@@ -490,10 +490,82 @@ parts.append("files=%d" % len(seen))
 print(" ".join(parts))
 PY
 }
+
+# ---- QUIET control for the tripwire ----------------------------------------
+# A guard needs TWO controls, and this repo had only ever written the first:
+#
+#   BITE   does it FIRE on the real thing?   (six such steps in lint.yml)
+#   QUIET  does it stay SILENT at rest?      (this)
+#
+# Both of the 2026-08-05 defects lived in the missing one. The tripwire watched
+# append-only logs and per-session scratch, so it reddened the gate on a
+# DIFFERENT test every run while its bite control passed the whole time; a
+# pristine origin/main checkout failed identically, which is what proved the
+# noise was ambient rather than the diff. A guard that cries wolf gets bypassed,
+# and the bypass becomes the habit -- so a noisy guard is a security problem,
+# not a nuisance.
+#
+# Asserted STRUCTURALLY, not by timing. "Sample twice and compare" would be a
+# sleep-dependent test that is itself flaky, and flaky is the disease. Instead:
+# the watched set must contain nothing whose whole purpose is to be rewritten
+# while the machine runs. That is deterministic, costs milliseconds, and goes
+# red the moment someone re-adds a churning tree.
+real_home_quiet_control() {
+  # Resolved from THIS script's own location, never cwd: a control that
+  # inspects the wrong file, or no file, must not be able to pass.
+  CI_SH_PATH="${CI_SH_PATH:-$SCRIPT_DIR/ci.sh}" python3 <<'PY'
+import os, re, sys
+from pathlib import Path
+
+# STRUCTURAL, not behavioural. The churn files legitimately EXIST in
+# ~/.claude/hooks/ — that is normal and is not the bug. The bug is the
+# fingerprint COLLECTING them. So assert the three exclusions that actually
+# regressed, against this script's own source, which is where a regression
+# lands. A behavioural walk here would either restate the exclusion (a
+# tautology) or flag reality (a false alarm).
+ci_sh = Path(os.environ.get("CI_SH_PATH", "scripts/ci.sh"))
+if not ci_sh.is_file():
+    print("::error::tripwire quiet-control cannot read %s — it would pass "
+          "vacuously. A control that inspects nothing is worse than no "
+          "control." % ci_sh)
+    sys.exit(1)
+
+body = ci_sh.read_text(encoding="utf-8", errors="replace")
+fn = re.search(r"real_home_fingerprint\(\) \{(.*?)\n\}", body, re.S)
+bad = []
+
+if not fn:
+    bad.append("real_home_fingerprint() not found — this control is looking at "
+               "the wrong file and would pass vacuously")
+else:
+    src = fn.group(1)
+    trees = re.search(r"WATCH_TREES = \[(.*?)\]", src, re.S)
+    if trees and re.search(r'claude\s*/\s*"state"\s*,', trees.group(1)):
+        bad.append('state/ is back in WATCH_TREES — ~78 of its ~93 files are '
+                   'per-session scratch keyed by session UUID, so no suffix '
+                   'rule can tame it; allow-list the one durable artifact')
+    if "CHURN_SUFFIXES" not in src or "fp.suffix in CHURN_SUFFIXES" not in src:
+        bad.append("the append-only (.log/.jsonl) exclusion is gone from the "
+                   "fingerprint walk")
+    if 'endswith(".lock")' not in src:
+        bad.append("the runtime lock-dir pruning is gone from the walk")
+
+if bad:
+    print("::error::real-home tripwire quiet-control FAILED — the watched set "
+          "is picking up churn again. It will redden this gate on an unrelated "
+          "test and train a bypass. Exclude the CLASS, never pin the file:")
+    for b in bad:
+        print("::error::  - " + b)
+    sys.exit(1)
+print("    tripwire quiet-control: fingerprint still excludes append-only "
+      "logs, lock dirs and per-session scratch")
+PY
+}
 _home_before_suite="$(real_home_fingerprint)"
 
 echo "==> (b) Shell integration: ${#INTEGRATION_TESTS[@]} tests"
-echo "    real-home tripwire watching: $(dirname "$REAL_SETTINGS") (settings.json, installed skill, deployed hooks, rules, state)"
+echo "    real-home tripwire watching: $(dirname "$REAL_SETTINGS") (settings.json, installed skill, deployed hooks; state/ only its SessionStart snapshot)"
+real_home_quiet_control || exit 1
 for t in "${INTEGRATION_TESTS[@]}"; do
   script="tests/integration/$t.sh"
   if [ ! -f "$script" ]; then
