@@ -758,6 +758,11 @@ PY_DIRECT=(
   hooks/test_unpushed_drift_surface.py
   hooks/test_claim_surface_honesty.py
   hooks/test_narrow_refspec_falsealarm.py
+  # The frontmatter gate's own delimiter pattern stayed LF-only after #409/#431
+  # fixed the validator behind it, so CRLF content was still denied one layer
+  # out. The hook is fail-open, so an allow-only suite would pass against a
+  # completely inert hook: every ALLOW leg here is paired with a DENY leg.
+  hooks/test_lint_frontmatter_crlf.py
   # auto-capture-public-ships shipped `ZoneInfo("America/user-local-tz")`, an
   # unsubstituted placeholder that raised at IMPORT, so the SessionEnd hook
   # exited 1 on every machine and captured nothing for its entire life. Nothing
