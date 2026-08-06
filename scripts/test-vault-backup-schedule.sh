@@ -48,23 +48,48 @@ fail() { checks=$((checks+1)); fails=$((fails+1)); echo "FAIL  $1"; }
 # ===========================================================================
 echo "== A. schedule validators (portable) =="
 
-# ---- A1. xml_escape: the vault path is user data bound for XML -------------
-got="$(xml_escape 'R & D Vault')"
-[ "$got" = 'R &amp; D Vault' ] && pass "xml_escape escapes &" || fail "xml_escape &: got '$got'"
-got="$(xml_escape '<a>&b')"
-# & must be escaped FIRST or the < and > substitutions double-escape its entity.
-[ "$got" = '&lt;a&gt;&amp;b' ] && pass "xml_escape handles < > & with no double-escaping" \
-  || fail "xml_escape < > &: got '$got'"
-got="$(xml_escape '/Users/x/Brain')"
-[ "$got" = '/Users/x/Brain' ] && pass "xml_escape leaves an ordinary path alone" \
-  || fail "xml_escape plain: got '$got'"
-
-# ---- A2. plist_problems fixtures ------------------------------------------
+# ---- shared fixtures (defined before the first section that uses them) ------
 FIX="$ROOT/fixtures"; mkdir -p "$FIX"
 SELF="$FIX/vault-backup.sh"; : > "$SELF"          # a script that exists
 LABEL="com.ai-brain-starter.vault-backup.test-1234abcd"
 VAULT="$FIX/Brain"; mkdir -p "$VAULT"
 
+# ---- A1. write_backup_plist: the vault path is USER DATA bound for XML ------
+# Asserted on the OUTCOME (does the value survive a write/read round-trip?), not
+# on an escaping helper's return string. The first version of this suite tested
+# the helper, and that is exactly why a real defect shipped past it: the shell
+# escaper was correct on macOS bash 3.2 and WRONG on bash 5.2, where a bare `&`
+# in the replacement half of ${var//pat/repl} expands to the matched text. A
+# mechanism assertion can only be as portable as the mechanism; a round-trip
+# assertion catches it on whichever bash the runner happens to have.
+RT="$ROOT/roundtrip"; mkdir -p "$RT"
+roundtrip_vault() { # <vault-string> -> the vault arg read back out of the plist
+  write_backup_plist "$RT/rt.plist" "com.rt.test" "$SELF" "$1" "$RT/rt.log" || return 1
+  python3 -c "
+import plistlib,sys
+with open(sys.argv[1],'rb') as fh: d = plistlib.load(fh)
+print(d['ProgramArguments'][-1])" "$RT/rt.plist"
+}
+for probe in 'R & D Vault' '<a>&b' '/Users/x/Brain' 'a"b'"'"'c' 'Ünïcodé Brain'; do
+  got="$(roundtrip_vault "$probe")"
+  if [ "$got" = "$probe" ]; then
+    pass "plist round-trips a vault path containing: $probe"
+  else
+    fail "plist mangled '$probe' -> '$got'"
+  fi
+done
+# And the file it produced must be a valid plist by the OS's own linter.
+if command -v plutil >/dev/null 2>&1; then
+  plutil -lint "$RT/rt.plist" >/dev/null 2>&1 \
+    && pass "plutil -lint accepts a plist written from a hostile vault name" \
+    || fail "plutil -lint rejects the plist written from a hostile vault name"
+fi
+
+# ---- A2. plist_problems fixtures ------------------------------------------
+# NOTE: these fixtures insert values RAW on purpose, so the validator can be
+# shown catching a malformed plist. The PRODUCT no longer writes plists this way
+# (see write_backup_plist / plistlib); this heredoc exists only to manufacture
+# the broken input a pre-fix install would be carrying on disk.
 write_plist() { # <out> <label> <arg-self> <arg-vault>   (values inserted RAW)
   cat > "$1" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -455,13 +480,18 @@ esac
 # the platform switch, including the unsupported one, increments it), so assert a
 # floor on the assertions that actually executed.
 #
-# Measured: section A = 16 on both platforms; section B = 14 on Darwin, 8 on
-# Linux, so the totals are 30 and 24. The floor has to sit ABOVE the largest
-# single section (16) to catch the other one vanishing, and far enough BELOW the
-# smaller total (24) that trimming an assertion or two cannot false-trip it - an
-# over-strict gate just teaches people to bypass it. 18 satisfies both: A alone
-# (16) and B alone (8 or 14) each trip it, with 6 to spare on Linux.
-if [ "$checks" -lt 18 ]; then
+# Measured: section A = 19 on both platforms; section B = 19 on Darwin, 13 on
+# Linux, so the totals are 38 and 32. The floor has to sit ABOVE the largest
+# single section (19) to catch the other one vanishing, and far enough BELOW the
+# smaller total (32) that trimming an assertion or two cannot false-trip it - an
+# over-strict gate just teaches people to bypass it. 24 satisfies both: A alone
+# (19) and B alone (13 or 19) each trip it, with 8 to spare on Linux.
+#
+# RE-MEASURE THIS when adding or removing assertions. It was 18 against A=16
+# until the shell escaper was replaced by plistlib and section A grew to 19 - at
+# which point 18 no longer caught a skipped section B on Linux, and the guard
+# would have gone quietly useless while still reading like it worked.
+if [ "$checks" -lt 24 ]; then
   echo "FAIL  only $checks assertion(s) ran — a section was skipped, this is a false green"
   fails=$((fails+1))
 fi

@@ -484,16 +484,40 @@ cmd_status() {
 # OS's scheduler actually holds it — writing the file is not installing it.
 # (MYC-3528)
 
-# XML-escape a value bound for a plist <string>. The vault path is USER DATA: an
-# `&`, `<` or `>` anywhere in it (a vault at "R & D Vault") emitted a plist that
-# is not well-formed XML, so launchd refused to load it — while the FILE still
-# existed, which was all the old success check looked at. Measured: `plutil
-# -lint` exits 1 ("unknown ampersand-escape sequence") and python3's plistlib
-# raises ExpatError on exactly that plist.
-xml_escape() { # <value> -> XML-escaped on stdout
-  local s="$1"
-  s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"   # & FIRST, or the others double-escape
-  printf '%s' "$s"
+# WRITE the launchd job file. Built by python3's plistlib, NOT by a heredoc.
+#
+# The vault path is USER DATA: an `&`, `<` or `>` anywhere in it (a vault at
+# "R & D Vault") made the old heredoc emit a plist that is not well-formed XML,
+# so launchd refused to load it — while the FILE still existed, which was all
+# the old success check looked at. Measured: `plutil -lint` exits 1 ("unknown
+# ampersand-escape sequence") and plistlib raises ExpatError on that plist.
+#
+# The first fix here escaped the three characters in shell with `${s//&/&amp;}`.
+# That was WRONG on a modern bash and nobody local could see it: since bash 5.2,
+# a bare `&` in the REPLACEMENT half of `${var//pat/repl}` expands to the text
+# that matched (ksh93 behaviour), so `${s//</&lt;}` yields `<lt;`. macOS ships
+# bash 3.2, which has no such rule, so it passed on every local run and failed
+# only on CI's ubuntu bash 5.2. The `&`→`&amp;` line survived by pure accident,
+# because there the matched text IS `&`.
+#
+# So: do not hand-write XML from the shell at all. plistlib serialises a dict and
+# cannot get escaping wrong, in any bash, on any platform. The read-back
+# validator below already uses plistlib, so writer and reader now share one
+# implementation of the format. (MYC-3528)
+write_backup_plist() { # <plist> <label> <self> <vault> <logfile> -> 0 on success
+  python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
+import plistlib, sys
+path, label, self_path, vault, logfile = sys.argv[1:6]
+job = {
+    "Label": label,
+    "ProgramArguments": ["/bin/bash", self_path, "run", "--vault", vault],
+    "StartCalendarInterval": {"Hour": 3, "Minute": 0},
+    "StandardErrorPath": logfile,
+    "StandardOutPath": logfile,
+}
+with open(path, "wb") as fh:
+    plistlib.dump(job, fh)
+PY
 }
 
 # Read a written plist BACK and report what is wrong with it, one problem per
@@ -602,21 +626,10 @@ install_schedule() { # <vault> <slug>  -> 0 ONLY when the OS scheduler holds the
 
       mkdir -p "$HOME/Library/LaunchAgents" 2>/dev/null \
         || { warn "could not create $HOME/Library/LaunchAgents"; return 1; }
-      cat > "$plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>$(xml_escape "$label")</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/bin/bash</string><string>$(xml_escape "$self")</string>
-    <string>run</string><string>--vault</string><string>$(xml_escape "$vault")</string>
-  </array>
-  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>0</integer></dict>
-  <key>StandardErrorPath</key><string>$(xml_escape "$HOME/.claude/.vault-backup.log")</string>
-  <key>StandardOutPath</key><string>$(xml_escape "$HOME/.claude/.vault-backup.log")</string>
-</dict></plist>
-EOF
+      write_backup_plist "$plist" "$label" "$self" "$vault" \
+        "$HOME/.claude/.vault-backup.log" \
+        || { warn "could not write the daily-backup job file at $plist"; return 1; }
+
       # Prove what we just wrote is loadable BEFORE asking launchd for it, so the
       # failure names the real cause instead of launchctl's generic refusal.
       problems="$(plist_problems "$plist" "$label" "$self" "$vault")"
@@ -678,7 +691,7 @@ EOF
 
 # ============================ dispatch ============================
 # Only dispatch when RUN, not when SOURCED. Sourcing exposes the schedule
-# validators (plist_problems, cron_plan, xml_escape) to the self-test on ANY
+# validators (plist_problems, cron_plan, write_backup_plist) to the self-test on ANY
 # platform — which is the only way the Darwin branch's logic gets covered on the
 # ubuntu CI runner, and the Linux branch's on a Mac. When executed normally,
 # $0 and ${BASH_SOURCE[0]} are the same string, so behaviour is unchanged.

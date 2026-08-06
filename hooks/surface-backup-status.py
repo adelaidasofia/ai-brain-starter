@@ -94,7 +94,13 @@ def _porcelain(repo: Path) -> str | None:
     try:
         out = subprocess.run(
             [sys.executable, str(DETECTOR), "--porcelain", str(repo)],
-            capture_output=True, text=True, timeout=30,
+            # encoding pinned, NOT text=True: the detector echoes the vault path,
+            # and a vault under a gear-emoji Meta folder decoded with a non-UTF-8
+            # locale raises UnicodeDecodeError here — the #313 cp1252 class, on
+            # the input side. This file was a pinned legacy row in
+            # scripts/utf8-subprocess-baseline.txt; the call is fixed rather than
+            # re-pinned, per that baseline's own instruction.
+            capture_output=True, encoding="utf-8", errors="replace", timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
