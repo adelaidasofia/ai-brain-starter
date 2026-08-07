@@ -65,8 +65,24 @@ VENDOR_DIR = ROOT / "vendor" / "high-rise"
 PIN_FILE = VENDOR_DIR / "PIN.json"
 
 
-def _sha256(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+def _normalize(data: bytes) -> bytes:
+    """CRLF/CR -> LF."""
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
+def _content_sha256(data: bytes) -> str:
+    """Hash the vendored CONTENT, not the checkout.
+
+    This repo has no per-file eol pin its clones are guaranteed to honor, so a
+    Windows clone with core.autocrlf=true has CRLF on disk while PIN.json was
+    recorded from LF.  Hashing raw bytes then reports every vendored file as
+    "edited locally" when nothing was touched.  Worse, the advertised remedy is
+    to re-sync -- which would write CRLF hashes into PIN.json and invert the
+    breakage onto every other platform.  Same defect class as the cloud-safe
+    walker ratchet (#411); the pin must describe content or it describes the
+    machine that last ran the sync.
+    """
+    return hashlib.sha256(_normalize(data)).hexdigest()
 
 
 def _load_pin() -> dict:
@@ -110,7 +126,7 @@ def check() -> int:
         if not dest.exists():
             problems.append(f"{rel}: vendored file missing at {dest.relative_to(ROOT)}")
             continue
-        got = _sha256(dest.read_bytes())
+        got = _content_sha256(dest.read_bytes())
         if got != want:
             problems.append(
                 f"{rel}: sha256 drift - vendored file was edited locally "
@@ -184,10 +200,13 @@ def refresh(tag: str, *, dry_run: bool) -> int:
         changes = []
         for rel in VENDORED_FILES:
             data = (src / rel).read_bytes()
-            new_hashes[rel] = _sha256(data)
+            new_hashes[rel] = _content_sha256(data)
             dest = VENDOR_DIR / rel
             old = dest.read_bytes() if dest.exists() else None
-            if old != data:
+            # Compare content, for the same reason the pin hashes content: on a
+            # CRLF checkout a raw compare reports every file as changed even
+            # when upstream shipped nothing new.
+            if old is None or _normalize(old) != _normalize(data):
                 changes.append(("update" if old is not None else "add", rel))
             if not dry_run:
                 dest.parent.mkdir(parents=True, exist_ok=True)

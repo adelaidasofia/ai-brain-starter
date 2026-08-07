@@ -13,6 +13,18 @@
 # (a dest that DIFFERS is backed up to <file>.bak-YYYY-MM-DD-HHMM before overwrite);
 # source-absent is non-fatal; no vault resolvable = non-fatal no-op (exit 0).
 #
+# THE SOURCE MUST BE TRUSTWORTHY ($env:ABS_CLONE_PATCHES_STASHED)
+# This script assumes the repo holds what the user expects it to hold. bootstrap
+# auto-stashes local uncommitted changes before its git pull, and in that window
+# the checkout is pristine upstream with the user's patches REMOVED, so running
+# here copies the UNPATCHED file over the patched one in the vault. Reported on
+# Windows 11: session-close-runner.sh and vault-safe-commit.sh under
+# "<gear> Meta/scripts" were both reverted this way. The .bak is written and
+# holds the good version, which is exactly why it goes unnoticed: the run prints
+# "Updated: 2" like any healthy sync. bootstrap.ps1 sets this variable around
+# the pull and we refuse to propagate while it is set. Stale-but-working beats
+# silently-regressed.
+#
 # VAULT RESOLUTION (zero-arg friendly, for the update flow):
 #   1. -Vault PATH   2. $env:VAULT_ROOT   3. parse ~/.claude/settings.json hooks.
 #
@@ -29,10 +41,26 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Stamp = Get-Date -Format "yyyy-MM-dd-HHmm"
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptDir = Split-Path -Parent $PSCommandPath
 $StarterDir = if ($env:STARTER_DIR) { $env:STARTER_DIR } else { Split-Path -Parent $ScriptDir }
 
 function Note($m) { if (-not $Quiet) { Write-Output $m } }
+
+# --- REFUSE to propagate from a knowingly-degraded checkout -------------------
+# See "THE SOURCE MUST BE TRUSTWORTHY" in the header. Written with Write-Output,
+# NOT Note: this must print even under -Quiet, because bootstrap calls it with
+# -Quiet and the entire failure mode is that the step looks routine.
+if ($env:ABS_CLONE_PATCHES_STASHED) {
+    Write-Output "sync-vault-scripts: SKIPPED - not propagating to the vault."
+    Write-Output "  This bootstrap run stashed your local changes to $StarterDir before"
+    Write-Output "  pulling, so the scripts here are currently the UNPATCHED upstream copies."
+    Write-Output "  Copying them into the vault would overwrite your patched vault scripts"
+    Write-Output "  with the versions you patched them to fix. Your vault is untouched."
+    Write-Output "  Your changes are in: git stash -> $($env:ABS_CLONE_PATCHES_STASHED)"
+    Write-Output "  To restore them and then sync the vault:"
+    Write-Output "    cd `"$StarterDir`"; git stash pop; pwsh scripts/sync-vault-scripts.ps1"
+    exit 0
+}
 
 # --- pick a REAL python interpreter (for the shared meta resolver) ------------
 # 'py' first: the Windows launcher is always a real Python. A bare 'python3' on

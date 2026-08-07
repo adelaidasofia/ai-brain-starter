@@ -28,6 +28,9 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# HOME alone does not sandbox ~ on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$REPO_ROOT/tests/integration/lib/sandbox_home.sh"
 RULE="$REPO_ROOT/templates/hookify-rules/hookify.warn-delegated-task-needs-source.local.md"
 INSTALLER="$REPO_ROOT/scripts/install-hooks-user-level.py"
 HOOKS_JSON="$REPO_ROOT/hooks.json"
@@ -164,7 +167,7 @@ else bad "manifest completeness" "see stderr above"; fi
 # B2: the REAL installer copies the default rule into a throwaway ~/.claude and
 # leaves the opt-in templates alone.
 H1="$TMP/home1"; mkdir -p "$H1/.claude"
-HOME="$H1" python3 "$INSTALLER" --hooks-source "$HOOKS_JSON" \
+run_sandboxed "$H1" python3 "$INSTALLER" --hooks-source "$HOOKS_JSON" \
   --settings "$H1/.claude/settings.json" --quiet >/dev/null 2>&1
 if [ -f "$H1/.claude/$DEFAULT_RULE" ]; then
   ok "installer activated the default rule into ~/.claude"
@@ -180,7 +183,7 @@ fi
 # B3: copy-if-absent - a user's customized copy is never overwritten on re-install.
 H2="$TMP/home2"; mkdir -p "$H2/.claude"
 printf '%s\n' "CUSTOMIZED BY USER - do not clobber" > "$H2/.claude/$DEFAULT_RULE"
-HOME="$H2" python3 "$INSTALLER" --hooks-source "$HOOKS_JSON" \
+run_sandboxed "$H2" python3 "$INSTALLER" --hooks-source "$HOOKS_JSON" \
   --settings "$H2/.claude/settings.json" --quiet >/dev/null 2>&1
 if grep -q "CUSTOMIZED BY USER" "$H2/.claude/$DEFAULT_RULE"; then
   ok "copy-if-absent: a user's customized rule survives re-install"
@@ -189,7 +192,7 @@ else
 fi
 
 # B4: idempotent - a second install into the same home exits 0 and keeps one copy.
-HOME="$H1" python3 "$INSTALLER" --hooks-source "$HOOKS_JSON" \
+run_sandboxed "$H1" python3 "$INSTALLER" --hooks-source "$HOOKS_JSON" \
   --settings "$H1/.claude/settings.json" --quiet >/dev/null 2>&1
 rc_second=$?
 count_default=$(find "$H1/.claude" -maxdepth 1 -name "$DEFAULT_RULE" | wc -l | tr -d ' ')
@@ -209,7 +212,7 @@ cat > "$FAKE/templates/hookify-rules/activation.json" <<'JSON'
 JSON
 H3="$TMP/home3"; mkdir -p "$H3/.claude"
 ERR3="$TMP/err3.log"
-HOME="$H3" python3 "$INSTALLER" --hooks-source "$FAKE/hooks.json" \
+run_sandboxed "$H3" python3 "$INSTALLER" --hooks-source "$FAKE/hooks.json" \
   --settings "$H3/.claude/settings.json" --fail-on-missing --quiet >/dev/null 2>"$ERR3"
 rc_missing=$?
 if [ "$rc_missing" -ne 0 ] && grep -qi "activation manifest names default template" "$ERR3"; then

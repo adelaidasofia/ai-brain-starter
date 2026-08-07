@@ -209,6 +209,20 @@ fi
 RULECONF="$SCRIPT_DIR/check-rule-conflicts.py"
 [ -f "$RULECONF" ] && VAULT_ROOT="$VAULT" run "check-rule-conflicts" /usr/bin/env python3 "$RULECONF" --scan-all
 
+# Session-close phase contract: this install's session-close rule vs the numbered
+# cascade detect-closing-signal.py injects at close. Both reach the model, so a
+# number that means different things in the two is worse than no number — and the
+# drift is silent, because each file reads fine on its own. STRUCTURAL tier only
+# (duplicate numbers, orphan sub-phases): an installed rule is customised prose,
+# and pinning its wording would fail on legitimate edits, which is how a check
+# earns itself an --ignore. Skips cleanly when either file is absent.
+PHASECHECK="$SCRIPT_DIR/check-close-phase-contract.py"
+CLOSE_RULE="$META_DIR/rules/session-close.md"
+CLOSE_CASCADE="$SCRIPT_DIR/../hooks/detect-closing-signal.py"
+[ -f "$PHASECHECK" ] && [ -f "$CLOSE_RULE" ] && [ -f "$CLOSE_CASCADE" ] && \
+  run "close-phase-contract" /usr/bin/env python3 "$PHASECHECK" \
+    --rule "$CLOSE_RULE" --cascade "$CLOSE_CASCADE"
+
 # Passive capture of the day's content (full-tree scan of today's transcripts).
 PASSIVE="$SCRIPT_DIR/passive-capture.py"
 [ -f "$PASSIVE" ] && VAULT_ROOT="$VAULT" run "passive-capture" /usr/bin/env python3 "$PASSIVE" --scan-today
@@ -278,10 +292,22 @@ else
   WTREAP="$SCRIPT_DIR/dev-worktree-prune.py"
   [ -f "$WTREAP" ] && run "dev-worktree-prune" /usr/bin/env python3 "$WTREAP" $DESTRUCTIVE_MODE
 
-  # 5. Bare ~/dev hub freshness — fast-forward the clean ones so a recon read is
+  # 5. Regenerable BUILD OUTPUT inside worktrees that STAY (MYC-3727). Legs 1-4
+  #    free build artifacts only as a side effect of deleting a whole worktree,
+  #    and the reaper removes one only when its branch is provably merged — so an
+  #    unmerged, in-flight, long-lived worktree keeps its multi-GB target/ and
+  #    node_modules forever, which is the majority case. Measured 2026-08-05:
+  #    ~130 worktrees holding 438 GB while every leg above ran green daily and
+  #    the volume fell to 2.3 GB free. No-ops on a healthy disk (the pressure
+  #    ladder); never touches a worktree whose SOURCE is recent, whose session
+  #    lock is live, or whose source is too large to measure.
+  BUILDRECLAIM="$SCRIPT_DIR/dev-build-reclaim.py"
+  [ -f "$BUILDRECLAIM" ] && run "dev-build-reclaim" /usr/bin/env python3 "$BUILDRECLAIM" $DESTRUCTIVE_MODE
+
+  # 6. Bare ~/dev hub freshness — fast-forward the clean ones so a recon read is
   #    never weeks stale (MYC-677 STALE-BARE-CHECKOUT-READ). Dirty / diverged
   #    hubs are surfaced by the SessionStart hook, never force-moved here.
-  # 6. Un-backed-up drift report -> state file. The EXPENSIVE leg (fleet-wide
+  # 7. Un-backed-up drift report -> state file. The EXPENSIVE leg (fleet-wide
   #    git I/O) lives here so the SessionStart surface can render it for free
   #    instead of paying ~15s and a process on every interactive start.
   DRIFT="$SCRIPT_DIR/dev-drift-report.py"

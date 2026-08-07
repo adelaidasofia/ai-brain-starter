@@ -115,7 +115,11 @@ jobs:
           done < <(find . -name '*.ps1' -not -path './.git/*')
           exit $fail
 
-      - name: bash syntax (.sh)
+      # NOTE: ubuntu-latest ships bash 5.x, so this proves MODERN-bash syntax
+      # only. It is structurally blind to constructs that parse on 5.x and fail
+      # on bash 3.2 -- see the `bash32-syntax` job below, which is the half of
+      # this gate that runs on the bash every stock Mac actually has.
+      - name: bash syntax (.sh, modern bash)
         run: |
           set -e
           fail=0
@@ -137,6 +141,61 @@ jobs:
       # (ai-brain-starter#176). This guard fails a PR that reintroduces it.
       - name: no naive Meta glob (resolve via _meta_resolver)
         run: bash scripts/check-meta-resolution.sh
+
+      # The twin of the check above, for the OTHER globally-exported handle that
+      # silently redirects vault code. VAULT_ROOT names exactly ONE vault, so a
+      # naive read fails two ways and both are silent: UNSET it defaults to
+      # ~/vault, so a guard is inert on every vault not literally named "vault";
+      # SET it overrides the vault the caller actually meant, so a hook checks
+      # the wrong vault and skips the file it exists for. Shipped that way in
+      # hooks/validate-handoff-frontmatter.py and was inert on every install
+      # (#375/#404) - two unrelated users had already hand-patched it identically.
+      # Self-test first (cheap, and proves the guard still bites), then the tree.
+      - name: naive VAULT_ROOT read negative controls (the guard must still bite)
+        run: python3 scripts/check-vault-root-reads.py --self-test
+
+      - name: no naive VAULT_ROOT reads (resolve via _resolve_vault_root)
+        run: python3 scripts/check-vault-root-reads.py
+
+      # Same SILENT-NO-OP family: hooks.json wires several hooks by their
+      # ~/.claude/hooks/ path behind a `[ -f <path> ] &&` guard. The guard is
+      # correct at runtime (a deleted optional hook should be silent) and lethal
+      # at install time - a hook nobody ever COPIED there looks exactly like one
+      # the user turned off. pre-write-settings-lint.py, lint-claude-settings.py
+      # and check-claude-code-version.sh shipped that way: wired in 11 places on
+      # a real settings.json, on disk 0 times, and reported OK by the installer's
+      # own verification (it only inspects ABS-owned commands, and they were not
+      # owned). This asserts every such reference has exactly one deploy route.
+      - name: every ~/.claude/hooks reference has a deploy route
+        run: python3 scripts/check-home-hook-deploy.py
+
+      # The mirror image of the check above: that one starts from a wired
+      # reference and asks whether anything deploys it; this starts from a
+      # shipped hooks/*.py and asks whether anything WIRES it. A hook wired in
+      # no activation channel is dormant on every install while the docs call it
+      # active - MYC-1017, MYC-1031, and MYC-782 / #371 all shipped that way.
+      # Also asserts every hook we wire is installer-OWNED, without which a
+      # re-install duplicates a hand-wired copy instead of replacing it.
+      - name: hook-activation negative controls (a dormant guard must go RED)
+        run: python3 scripts/check-hook-activation.py --selftest
+
+      - name: every shipped hook is wired, and every wired hook is owned
+        run: python3 scripts/check-hook-activation.py
+
+      # The READ half of the UTF-8 console guard below. That one fails a CLI that
+      # PRINTS non-ASCII without reconfiguring stdout; this fails one that READS a
+      # child's output with text=True and no encoding=, so the decode uses the
+      # console code page. Every child here prints a vault path, every vault path
+      # carries the gear emoji, and its 0x8F byte is unmapped in cp1252 -- so
+      # subprocess.run() raises before the caller sees a byte. Shipped twice:
+      # #313 (write side) and #430 (read side: the installer reported "could NOT
+      # link Claude Code memory into the vault" on machines where it was fine).
+      # Self-test first (cheap, proves the guard still bites), then the tree.
+      - name: subprocess decode negative controls (the guard must still bite)
+        run: python3 scripts/check-utf8-subprocess.py --self-test
+
+      - name: no locale-decoded subprocess output (pin encoding="utf-8")
+        run: python3 scripts/check-utf8-subprocess.py
 
       # Phase docs distinguish between two kinds of `scripts/foo.sh` references:
       #
@@ -192,9 +251,12 @@ jobs:
       # Windows cp1252 console with UnicodeEncodeError; the caller captures the empty
       # output and misreads it as failure (ai-brain-starter#313: sync-vault-scripts.ps1
       # read it as "no Meta folder" and fell back to a manual copy). PR #313 fixed the
-      # two files that had already broken; scripts/check-utf8-stdout.py fails ANY
-      # runnable vault CLI that writes non-ASCII to the console without the 5-line
-      # stdout/stderr UTF-8 reconfigure guard, so the class cannot recur.
+      # two files that had already broken; scripts/check-utf8-stdout.py fails a
+      # runnable scripts/*.py or hooks/*.py CLI that writes non-ASCII to the console
+      # without the 5-line stdout/stderr UTF-8 reconfigure guard, so the class cannot
+      # recur. (This comment used to say "ANY runnable vault CLI"; that was false -
+      # hooks/ was outside the scan entirely until MYC-3530, which widened the scope
+      # and content-pinned the 78 pre-existing violations it exposed.)
       # scripts/ci.sh runs the SAME checker locally (the `ci-test` pre-push gate),
       # so CI and the laptop gate cannot drift.
       - name: UTF-8 console guard (no cp1252 print crash)
@@ -360,6 +422,64 @@ jobs:
 
       - name: phase-doc Python (no undefined names / F821)
         run: python3 scripts/check-phase-python.py
+
+  bash32-syntax:
+    name: bash 3.2 syntax (macOS /bin/bash)
+    runs-on: macos-latest
+    # macOS ships bash 3.2.57 at /bin/bash -- the last GPLv2 release -- and that
+    # is the ONLY bash on an unmodified Mac. This repo's install path is a
+    # supported dev environment there, so every .sh here has to PARSE under it.
+    #
+    # Why this cannot be a step in the `lint` job: that job runs on
+    # ubuntu-latest, whose bash is 5.x. Bash 5 parses constructs 3.2 rejects, so
+    # the existing `bash syntax` step is green by construction on exactly the
+    # class of bug this job exists to catch, and shellcheck does not flag it
+    # either (verified: clean at -S warning on the file that was broken).
+    #
+    # The class, concretely: bash 3.2 parses a heredoc BODY as shell text while
+    # scanning for the closing paren of an enclosing "$(...)", ignoring the
+    # <<'EOF' quoting that makes the body literal everywhere else. An odd number
+    # of ' characters in that body -- ordinary in Python, e.g. a `["\']`
+    # character class -- opens a quote that never closes, and the WHOLE FILE
+    # dies with "unexpected EOF while looking for matching `)'". Not the one
+    # line: every assertion in it. tests/integration/test_rm_rf_vault_target.sh
+    # was unrunnable on any stock Mac this way while CI stayed green.
+    #
+    # Fix when this fails: write the heredoc to a file first, then run the file,
+    # so the heredoc is not nested inside a command substitution.
+    #
+    # Syntax-only (`-n`). Running the suite on macOS is a separate, larger
+    # question; parsing is the cheap floor, and it is the floor that broke.
+    # No untrusted user input is referenced in any run: command.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: confirm this runner really is bash 3.2
+        # A positive control on the GATE itself. If GitHub ever ships a modern
+        # /bin/bash on macos-latest, this job would keep passing while proving
+        # nothing -- the exact silent-no-op shape the repo bans. Fail loudly
+        # instead, so the gate cannot quietly stop being a gate.
+        run: |
+          set -e
+          ver="$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}"')"
+          /bin/bash --version | head -1
+          if [ "$ver" != "3" ]; then
+            echo "::error::/bin/bash on this runner is major version $ver, not 3."
+            echo "::error::This job exists to prove bash 3.2 compatibility and can no longer do so."
+            echo "::error::Re-point it at a real 3.2 (or retire it deliberately) - do not leave it green and vacuous."
+            exit 1
+          fi
+      - name: bash 3.2 syntax (.sh)
+        run: |
+          set -e
+          fail=0
+          while IFS= read -r f; do
+            if ! /bin/bash -n "$f" 2>err; then
+              echo "::error file=$f::/bin/bash -n (3.2) failed - parses on bash 5, not on macOS's stock bash"
+              sed "s|^|  |" err
+              fail=1
+            fi
+          done < <(find . -name '*.sh' -not -path './.git/*' -not -path './node_modules/*')
+          exit $fail
 
   ci:
     name: ci gate (py_compile + unit + integration tests)

@@ -56,10 +56,23 @@ PREFLIGHT_BASENAME = "journal-preflight.py"
 # always the matchers hooks.json actually registers the guard under.
 FALLBACK_MATCHERS = ("Bash", "Write|Edit|MultiEdit")
 HEAL_COOLDOWN_SECONDS = 6 * 3600
-# A guard command names its script as a quoted or bare ~/ or / path ending in the guard
-# basename. Tolerates the `python3 <path> 2>/dev/null || echo ...` fallback-chain form.
+# A guard command names its script as a quoted or bare path ending in the guard basename.
+# Tolerates the `python3 <path> 2>/dev/null || echo ...` fallback-chain form.
+#
+# THREE path forms have to parse, because the Windows leg of the installer rewrites the
+# command (install-hooks-user-level.py: `~` -> str(Path.home()), then str(Path(...))) and
+# wraps the target in double quotes:
+#   POSIX bare      ~/.claude/.../<guard>   or   /Users/d/.claude/.../<guard>
+#   Windows bare    C:\Users\dev\.claude\...\<guard>
+#   Windows quoted  "C:\Users\dev user\.claude\...\<guard>"   <- home MAY contain a space
+# Matching only `~`-or-`/` made every Windows install look UNREGISTERED, so the healer
+# nagged "Step-0 guard incomplete" on every session start, forever (issue #375).
+# The quoted alternatives come first and allow spaces; the bare one cannot (an unquoted
+# path ends at whitespace). Over-matching is harmless: the caller still stats the path.
 _GUARD_PATH_RE = re.compile(
-    r"['\"]?((?:~|/)[^\s'\"|&;]*" + re.escape(GUARD_BASENAME) + r")['\"]?"
+    r"\"([^\"\n]*" + re.escape(GUARD_BASENAME) + r")\""
+    r"|'([^'\n]*" + re.escape(GUARD_BASENAME) + r")'"
+    r"|((?:~|/|[A-Za-z]:[\\/])[^\s'\"|&;]*" + re.escape(GUARD_BASENAME) + r")"
 )
 # The installed vault hooks embed the absolute vault path right before the meta folder;
 # same regex sync-vault-scripts.sh uses, so both resolve the identical root.
@@ -120,12 +133,20 @@ def wanted_matchers(clone: Path) -> "set":
     return matchers or set(FALLBACK_MATCHERS)
 
 
-def _guard_script_exists(cmd: str) -> bool:
-    """True if the guard script named in this command resolves to a real file on disk."""
+def guard_path_in(cmd: str) -> str | None:
+    """The guard script path named in this command, or None. Quoted or bare, any platform."""
     m = _GUARD_PATH_RE.search(cmd)
     if not m:
+        return None
+    return next((g for g in m.groups() if g), None)
+
+
+def _guard_script_exists(cmd: str) -> bool:
+    """True if the guard script named in this command resolves to a real file on disk."""
+    path = guard_path_in(cmd)
+    if not path:
         return False
-    return Path(os.path.expanduser(m.group(1))).is_file()
+    return Path(os.path.expanduser(path)).is_file()
 
 
 def healthy_matchers(settings: dict) -> "set":
@@ -523,6 +544,27 @@ def self_test() -> int:
               corrupt_path.read_text(encoding="utf-8") == corrupt_raw)
         # ...while a genuinely ABSENT file is NOT treated as corrupt (repair must still run).
         check("absent-not-corrupt", not _settings_unreadable(root / "no-such-settings.json"))
+
+        # PATH-FORM controls (issue #375). The Windows installer leg emits a QUOTED
+        # drive-letter path; a `~`-or-`/`-only regex never matched it, so every Windows
+        # install read as unregistered and nagged forever. The two win-* cases below FAIL
+        # on the pre-fix regex -- they are the negative control for that bug.
+        posix_t = f"python3 ~/.claude/skills/ai-brain-starter/hooks/{GUARD_BASENAME} 2>/dev/null"
+        posix_a = f"/usr/bin/python3 /Users/d/.claude/skills/abs/hooks/{GUARD_BASENAME}"
+        win_p = f"C:\\Users\\dev\\.claude\\skills\\ai-brain-starter\\hooks\\{GUARD_BASENAME}"
+        win_s = f"C:\\Users\\dev user\\.claude\\skills\\ai-brain-starter\\hooks\\{GUARD_BASENAME}"
+        runner = "C:\\Users\\dev\\.claude\\scripts\\hook_runner.py"
+        check("path-posix-tilde", guard_path_in(posix_t) == posix_t.split()[1])
+        check("path-posix-abs", guard_path_in(posix_a) == posix_a.split()[1])
+        check("path-win-bare", guard_path_in(win_p) == win_p)
+        check("path-win-quoted", guard_path_in(f'py "{win_p}"') == win_p)
+        # Full installed Windows form: launcher + quoted runner + quoted target. The
+        # runner is also a .py, so this proves we pick the GUARD, not the first path.
+        check("path-win-full-command",
+              guard_path_in(f'py "{runner}" --fallback allow "{win_p}"') == win_p)
+        check("path-win-space-in-home",
+              guard_path_in(f'py "{runner}" --fallback allow "{win_s}"') == win_s)
+        check("path-absent-is-none", guard_path_in("python3 /some/other-hook.py") is None)
 
         # PREFLIGHT diagnose: no vault -> 'no-vault'; vault with the file -> 'ok'; without
         # -> 'missing'. (The subprocess repair is exercised end-to-end in the .sh test.)

@@ -24,6 +24,9 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# HOME alone does not sandbox ~ on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$REPO_ROOT/tests/integration/lib/sandbox_home.sh"
 INSTALLER="$REPO_ROOT/scripts/install-hooks-user-level.py"
 
 PASS=0; FAIL=0
@@ -88,7 +91,7 @@ else
 fi
 
 # Run the REAL installer against the sandboxed HOME.
-env -u CLAUDECODE HOME="$TMP" "$PY" "$INSTALLER" \
+run_sandboxed "$TMP" env -u CLAUDECODE "$PY" "$INSTALLER" \
   --hooks-source "$REPO_ROOT/hooks.json" --settings "$SETTINGS" --quiet >/dev/null 2>&1
 
 echo "=== 1-3. each guard registered on its event ==="
@@ -153,7 +156,7 @@ else
     "All 16 fixes are committed and pushed to origin. PR #144 contains every one of them." \
     "git add . && git commit -m fix && git push origin br && gh pr create | tail -3"
   out="$(echo "{\"transcript_path\":\"$TMP/incident.jsonl\"}" \
-        | env -u CLAUDECODE HOME="$TMP" bash -c "$STOP_CMD" 2>/dev/null)"
+        | run_sandboxed "$TMP" env -u CLAUDECODE bash -c "$STOP_CMD" 2>/dev/null)"
   if echo "$out" | grep -q '"decision"[[:space:]]*:[[:space:]]*"block"'; then
     ok "shipped wiring blocks a 'pushed / PR contains' claim with no remote read"
   else
@@ -167,7 +170,7 @@ if [ -n "$STOP_CMD" ]; then
     "Refactored the parser and added two tests. Both pass locally." \
     "pytest -q"
   out="$(echo "{\"transcript_path\":\"$TMP/honest.jsonl\"}" \
-        | env -u CLAUDECODE HOME="$TMP" bash -c "$STOP_CMD" 2>/dev/null)"
+        | run_sandboxed "$TMP" env -u CLAUDECODE bash -c "$STOP_CMD" 2>/dev/null)"
   if echo "$out" | grep -q '"decision"[[:space:]]*:[[:space:]]*"block"'; then
     bad "honest close passes" "shipped wiring false-positived: ${out:0:200}"
   else
@@ -176,7 +179,7 @@ if [ -n "$STOP_CMD" ]; then
 fi
 
 echo "=== 7. idempotent: a second install does not duplicate ==="
-env -u CLAUDECODE HOME="$TMP" "$PY" "$INSTALLER" \
+run_sandboxed "$TMP" env -u CLAUDECODE "$PY" "$INSTALLER" \
   --hooks-source "$REPO_ROOT/hooks.json" --settings "$SETTINGS" --quiet >/dev/null 2>&1
 dupes=""
 for g in "${GUARDS[@]}"; do

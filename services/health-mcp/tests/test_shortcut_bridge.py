@@ -201,8 +201,12 @@ def test_health_import_shortcut_e2e(tmp_path, monkeypatch):
     """Write a payload, call health_import_shortcut, verify rows in DB."""
     # Isolate DB to a tmp path so the test doesn't touch the real ~/.claude/health-mcp/
     monkeypatch.setenv("HOME", str(tmp_path))
-    # db.db_path() reads from Path.home() / ".claude" / "health-mcp" / "health.duckdb"
-    # so HOME monkeypatch should redirect it. db.connect() creates the dir on first use.
+    # USERPROFILE as well, or this isolation is a no-op on Windows: db.db_path()
+    # reads Path.home(), and ntpath.expanduser resolves that from USERPROFILE and
+    # ignores HOME entirely — so HOME alone pointed this test at the developer's
+    # REAL health.duckdb and wrote fixture rows into it (MYC-3536).
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    # db.connect() creates the dir on first use.
 
     # Re-import db with the new HOME so the path is recomputed.
     if "db" in sys.modules:
@@ -234,6 +238,7 @@ def test_health_import_shortcut_e2e(tmp_path, monkeypatch):
 
 def test_health_sweep_inbox_processes_and_archives(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Windows reads "~" from this (MYC-3536)
     if "db" in sys.modules:
         del sys.modules["db"]
     if "main" in sys.modules:
