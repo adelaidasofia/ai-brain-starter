@@ -13,8 +13,8 @@ cycle finds HEAD == origin/main, so it no-ops (no pull, no re-deploy) and the
 warning is gone forever. Result: the checkout is current but ~/.claude/settings.json
 is STALE — deployed hooks != committed hooks.json — the exact silent-drift class
 MYC-720 fought, moved one level up. update-check.sh only checks CHECKOUT-behind
-(HEAD..origin), never deployed==committed; the maintainer detector is adelaida-
-skills-only. So a paying client whose deploy silently failed has ZERO signal.
+(HEAD..origin), never deployed==committed; the maintainer detector covers only
+the maintainer's own private skills repo. So a paying client whose deploy silently failed has ZERO signal.
 
 WHAT IT CHECKS (cheap, LOCAL only — no git, no network):
   committed = the ABS-owned hooks in this checkout's hooks.json
@@ -74,6 +74,7 @@ import importlib.util
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 MAX_LISTED = 12
@@ -361,19 +362,72 @@ def _drift_message() -> str | None:
     return _build_message(missing, retired)
 
 
+def _stale_pull_message() -> "str | None":
+    """MYC-3175: surface a clone that has not SUCCESSFULLY pulled in a long time.
+
+    The third instance of this file's class, one artifact further out. The
+    updater stamps `.ai-brain-starter-last-successful-pull` only when it has
+    confirmed the clone current with origin. `.ai-brain-starter-last-update`
+    keeps moving on every ATTEMPT, so a permanently-blocked clone looks busy;
+    only the gap between the two reveals it.
+
+    Why not "behind origin": a clone that cannot fetch cannot learn it is
+    behind, so the obvious signal is exactly the one the failure suppresses.
+    Elapsed-time-since-success needs no network and cannot be under-reported.
+
+    Silent unless the stamp EXISTS and is older than ABS_STALE_PULL_DAYS
+    (default 21 — three update intervals, so one or two missed cycles never
+    nag). A missing stamp is a pre-seed install, not a freeze. A pinned install
+    opted out. Any error -> None (fail open)."""
+    state = Path(
+        os.environ.get("ABS_UPDATE_STATE_DIR")
+        or (Path(os.environ.get("ABS_SETTINGS_JSON")).parent
+            if os.environ.get("ABS_SETTINGS_JSON")
+            else Path.home() / ".claude")
+    )
+    try:
+        if (state / ".ai-brain-starter-pinned").exists():
+            return None
+        stamp = state / ".ai-brain-starter-last-successful-pull"
+        if not stamp.is_file():
+            return None  # never seeded yet; not evidence of a freeze
+        days = float(os.environ.get("ABS_STALE_PULL_DAYS", "21"))
+        age_days = (time.time() - stamp.stat().st_mtime) / 86400.0
+        if age_days <= days:
+            return None
+        return (
+            f"[ai-brain-starter] This copy has not successfully updated in "
+            f"{int(age_days)} days. It still CHECKS for updates, so nothing looks "
+            "broken — but every attempt has been failing, which means new fixes "
+            "(including guard and security fixes) are not reaching this machine. "
+            "Most often a crashed git left a lock behind, or the checkout has "
+            "local edits blocking a fast-forward. Diagnose with: "
+            "cd ~/.claude/skills/ai-brain-starter && git status && git pull --ff-only"
+        )
+    except Exception:
+        return None
+
+
 def main() -> None:
     try:
         json.load(sys.stdin)
     except Exception:
         pass
-    # Two fail-open checks under one "update check" surface: deployed hooks behind
-    # (this file's original job) + skill content behind (MYC-3076). Emit whichever
-    # fired; both, separated, if both; silent if neither.
-    parts = [m for m in (_drift_message(), _skill_drift_message()) if m]
+    # Three fail-open checks under one "update check" surface: deployed hooks
+    # behind (this file's original job) + skill content behind (MYC-3076) + the
+    # clone itself no longer pulling (MYC-3175). Emit whichever fired, separated;
+    # silent if none. Same hook, so SessionStart fan-out stays flat (MYC-2348).
+    parts = [m for m in (_drift_message(), _skill_drift_message(),
+                         _stale_pull_message()) if m]
     _emit("\n\n".join(parts) if parts else None)
 
 
 if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     try:
         main()
     except Exception:

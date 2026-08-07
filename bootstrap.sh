@@ -1270,7 +1270,24 @@ if [[ -d "$SKILL_DIR/.git" ]]; then
       STASH_MSG="bootstrap auto-stash $(date +%Y-%m-%d-%H%M)"
       log "Detected local uncommitted changes — stashing as: $STASH_MSG"
       log "Recover later with: cd $SKILL_DIR && git stash list && git stash pop"
-      do_cmd "git stash push -u -m '$STASH_MSG'" git stash push -u -m "$STASH_MSG" >/dev/null 2>&1 || warn "stash failed"
+      if [[ $DRY_RUN -eq 1 ]]; then
+        dry "git stash push -u -m '$STASH_MSG'"
+      elif git stash push -u -m "$STASH_MSG" >/dev/null 2>&1; then
+        # The checkout is now pristine upstream with the user's patches removed.
+        # sync-vault-scripts.sh refuses to run while this is set, so the vault
+        # does not get the UNPATCHED copies written over its patched ones. It
+        # reaches that script through sync-skills.sh -> sync-skills.py, which is
+        # why this is an exported env var and not an argument. Scoped to this
+        # bootstrap process: it dies with the run, so the user's next manual
+        # sync (after `git stash pop`) is unaffected.
+        export ABS_CLONE_PATCHES_STASHED="$STASH_MSG"
+        warn "Your vault's <meta>/scripts/ will NOT be refreshed this run — this"
+        warn "  clone no longer holds your patches, and syncing would overwrite the"
+        warn "  patched copies in your vault. Restore and sync when ready:"
+        warn "    cd $SKILL_DIR && git stash pop && bash scripts/sync-vault-scripts.sh"
+      else
+        warn "stash failed"
+      fi
     fi
     do_cmd "git pull --quiet (fast-forward $BEHIND commit(s))" git pull --quiet 2>/dev/null || warn "git pull failed"
     UPDATED+=("ai-brain-starter clone (pulled $BEHIND commit(s))")
@@ -1301,7 +1318,7 @@ SKILL_FORKS=()
 SKILL_SYMLINKS=()
 SKILLS_TO_SYNC=()
 
-for sub in graphify meeting-todos patterns insights deconstruct daily-journal rise repurpose-talk nano-banana second-brain-mapping setup-vault-types diagnose note-todos sunday-review coach coaching backfill-journal-body-context longitudinal resolver-query for-my-team health-context health-doctor health-setup ingest-github ingest-health ingest-youtube evolve instinct-export instinct-import interview-me longitudinal doubt-driven-development secret-warn; do
+for sub in graphify cierre-de-llamada meeting-todos patterns insights deconstruct daily-journal rise repurpose-talk nano-banana second-brain-mapping setup-vault-types diagnose note-todos sunday-review coach coaching backfill-journal-body-context longitudinal resolver-query for-my-team health-context health-doctor health-setup ingest-github ingest-health ingest-youtube evolve instinct-export instinct-import interview-me longitudinal doubt-driven-development secret-warn; do
   dst="$HOME/.claude/skills/$sub"
 
   if [[ -L "$dst" ]]; then
@@ -1808,7 +1825,7 @@ for check in "${CHECKS[@]}"; do
   fi
 done
 # Skill folders (full bundled set + humanizer + ai-brain-starter itself)
-for sub in graphify meeting-todos patterns insights deconstruct daily-journal rise repurpose-talk nano-banana humanizer ai-brain-starter diagnose second-brain-mapping setup-vault-types note-todos sunday-review coach coaching backfill-journal-body-context longitudinal resolver-query for-my-team health-context health-doctor health-setup ingest-github ingest-health ingest-youtube evolve instinct-export instinct-import interview-me doubt-driven-development secret-warn; do
+for sub in graphify cierre-de-llamada meeting-todos patterns insights deconstruct daily-journal rise repurpose-talk nano-banana humanizer ai-brain-starter diagnose second-brain-mapping setup-vault-types note-todos sunday-review coach coaching backfill-journal-body-context longitudinal resolver-query for-my-team health-context health-doctor health-setup ingest-github ingest-health ingest-youtube evolve instinct-export instinct-import interview-me doubt-driven-development secret-warn; do
   if [[ -d "$HOME/.claude/skills/$sub" ]]; then
     ok "skill: $sub"
   else

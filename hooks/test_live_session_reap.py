@@ -28,6 +28,11 @@ from pathlib import Path
 
 HOOK_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOK_DIR))
+# Reaper artifacts now resolve to the REAL vault (see _lib.worktree_safety.artifact_base),
+# so redirect them at import time — otherwise this suite writes its fixtures into the
+# user's actual vault. Set before importing anything that resolves a snapshot path.
+os.environ.setdefault("WORKTREE_ARTIFACT_ROOT", tempfile.mkdtemp(prefix="wt-artifacts-"))
+
 from _lib.worktree_safety import live_session_cwds, snapshot_dir_for  # noqa: E402
 
 # Load the hyphenated hook module by path to test its _per_session_backstop().
@@ -39,7 +44,13 @@ DEAD_PID = 2 ** 31 - 1  # almost certainly not a running process
 
 
 def sh(repo, *args):
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=False, text=True)
+    # encoding pinned: bare text=True decodes with the locale encoding, which raises
+    # UnicodeDecodeError on a non-UTF-8 Windows console the moment git echoes a path
+    # carrying the vault's non-ASCII directory names.
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True, check=False, text=True, encoding="utf-8",
+    )
 
 
 def make_main():
@@ -177,4 +188,9 @@ def main():
 
 
 if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())

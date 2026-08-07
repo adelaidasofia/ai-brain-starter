@@ -85,18 +85,23 @@ DEV_ROOT = Path.home() / "dev"
 # payload. main() calls _resolve_vault_context(cwd) right after confirming
 # there's a closing claim worth acting on, rebinding these to the SAME
 # repo-aware vault detect-closing-signal.py resolved for this session.
-VAULT_ROOT = Path(os.environ.get("VAULT_ROOT", str(Path.home() / "vault")))
-MEMORY_ROOT = VAULT_ROOT / "⚙️ Meta" / "Agent Memory"
-# Test seam: DISCOVERABILITY_VERIFIER_PATH overrides the verifier the hook
-# shells out to, so tests can inject a deterministic stub verifier and stay
-# independent of the live (concurrent-session) Agent Memory state. Unset in
-# production → the canonical vault verifier is used (no behavior change).
-VERIFIER = Path(
-    os.environ.get(
-        "DISCOVERABILITY_VERIFIER_PATH",
-        str(VAULT_ROOT / "⚙️ Meta" / "scripts" / "discoverability-verifier.py"),
-    )
-)
+#
+# MYC-3529: these used to be seeded from a naive
+# `os.environ.get("VAULT_ROOT", str(Path.home() / "vault"))`. The seed was
+# always overwritten before use, but it is the exact #375/#404 shape and it
+# made the module's import-time answer wrong for every vault not literally
+# named "vault" — including for anything that imports this module without
+# calling main(). They are now seeded through the SAME sanctioned resolver
+# the rebind uses, so the import-time answer and the per-invocation answer
+# can never disagree by construction.
+#
+# Test seam, preserved: DISCOVERABILITY_VERIFIER_PATH overrides the verifier
+# the hook shells out to, so tests can inject a deterministic stub verifier and
+# stay independent of the live (concurrent-session) Agent Memory state. Unset
+# in production → the canonical vault verifier is used (no behavior change).
+VAULT_ROOT: Path
+MEMORY_ROOT: Path
+VERIFIER: Path
 
 
 def _resolve_vault_context(cwd: str) -> None:
@@ -115,6 +120,12 @@ def _resolve_vault_context(cwd: str) -> None:
             str(VAULT_ROOT / "⚙️ Meta" / "scripts" / "discoverability-verifier.py"),
         )
     )
+
+
+# Seed the module globals declared above. Going through _resolve_vault_context
+# rather than repeating the expression is the point: one resolution path, so an
+# import-time read can never drift from the per-invocation rebind.
+_resolve_vault_context("")
 
 # Tool calls that author/modify a file by an explicit file_path argument.
 # These are the primary "this session wrote X" signal.

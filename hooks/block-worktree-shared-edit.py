@@ -43,12 +43,53 @@ from pathlib import Path
 import re
 import sys
 
-VAULT_ROOT = os.environ.get("VAULT_ROOT", str(Path.home() / "vault"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from _lib.vault_root import vault_root_for  # noqa: E402
+except Exception:  # fail-open: a write guard must never block on its own bug
+    def vault_root_for(target: Path):  # type: ignore
+        return None
 
-# Match worktree paths: <vault>/.claude/worktrees/<slug>/<rest>
+# Match worktree paths: <vault>/.claude/worktrees/<slug>/<rest>.
+#
+# MYC-3529 — the vault segment is CAPTURED from the target path, not baked in
+# from `os.environ.get("VAULT_ROOT", str(Path.home() / "vault"))`. Baking it in
+# is the #375/#404 defect and it bit hardest here: this is a PreToolUse guard on
+# Write/Edit/MultiEdit, so an unmatched path is an ALLOWED write. UNSET, the
+# pattern anchored on `~/vault/.claude/worktrees/`, matched nothing on any vault
+# not named "vault", and the guard allowed every stranding edit it exists to
+# block — silently OPEN, on every install. SET, it protected exactly one vault
+# and let worktree edits in every other vault strand on the throwaway branch.
+#
+# is_vault_root() below re-imposes the scoping the baked-in prefix used to
+# provide: a `.claude/worktrees/` path under a plain code repo is NOT a vault
+# worktree, and must stay allowed (SHARED_PATTERNS includes bare `CLAUDE.md`
+# and `.mcp.json`, which every code repo has).
 WORKTREE_RE = re.compile(
-    r"^" + re.escape(VAULT_ROOT) + r"/\.claude/worktrees/([^/]+)/(.+)$"
+    r"^(?P<vault>.+)/\.claude/worktrees/(?P<slug>[^/]+)/(?P<rel>.+)$"
 )
+
+
+def is_vault_root(candidate: str) -> bool:
+    """True iff `candidate` is a real vault root (per-target detection).
+
+    vault_root_for walks up from the candidate for a Meta-suffixed folder and
+    falls back to $VAULT_ROOT. The candidate qualifies when detection lands on
+    the candidate ITSELF — a match higher up would mean the worktree belongs to
+    some ancestor vault, not to this path, and the rel-path patterns below are
+    written relative to the vault root.
+    """
+    try:
+        here = Path(candidate).resolve()
+    except (OSError, RuntimeError):
+        return False
+    root = vault_root_for(here)
+    if root is None:
+        return False
+    try:
+        return root.resolve() == here
+    except (OSError, RuntimeError):
+        return False
 
 # Files where worktree-path edits silently diverge from master.
 # Editing these MUST happen at main vault path so vault-safe-commit picks them up.
@@ -107,11 +148,20 @@ def main() -> int:
     if not file_path:
         return 0
 
-    m = WORKTREE_RE.match(file_path)
+    # Normalize separators so a Windows path (backslashes) matches the same
+    # worktree shape as a POSIX one — #375 was reported from a Windows install.
+    m = WORKTREE_RE.match(file_path.replace("\\", "/"))
     if not m:
         return 0
 
-    slug, rel = m.groups()
+    vault_root, slug, rel = m.group("vault"), m.group("slug"), m.group("rel")
+
+    # Scope: only vault worktrees. A `.claude/worktrees/` checkout of a plain
+    # code repo is out of scope and must stay allowed.
+    if not is_vault_root(vault_root):
+        return 0
+
+    VAULT_ROOT = vault_root  # the messages below quote the resolved main vault
 
     for pat in SESSION_ARTIFACT_PATTERNS:
         if pat.match(rel):

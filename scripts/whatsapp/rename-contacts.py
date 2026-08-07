@@ -7,9 +7,10 @@ This script cross-references macOS Contacts to rename them to real names
 and updates the frontmatter + message sender lines inside each file.
 
 Requirements:
-  - macOS
-  - Terminal must have Contacts permission:
-    System Settings › Privacy & Security › Contacts › Terminal (enable)
+  - macOS (contacts are read through Contacts.app via osascript; no Xcode needed)
+  - The app you run this from (Claude, Terminal, iTerm, ...) needs permission to
+    control Contacts. The first run shows a one-click prompt; to change it later:
+    System Settings › Privacy & Security › Automation › <that app> › Contacts
 
 Usage:
   VAULT_ROOT=/path/to/vault python3 rename-contacts.py
@@ -26,6 +27,16 @@ import subprocess
 import tempfile
 import argparse
 from pathlib import Path
+
+# macOS only: contacts are read through Contacts.app via osascript, which does not
+# exist elsewhere. Say so in a sentence instead of dying on a FileNotFoundError
+# traceback -- this repo installs on Windows too, and this step is optional.
+if sys.platform != "darwin":
+    print("rename-contacts.py runs on macOS only: it reads Contacts through "
+          f"Contacts.app via osascript (detected platform: {sys.platform}).")
+    print("The rest of the WhatsApp export is unaffected; chats just keep their "
+          "phone-number names.")
+    sys.exit(1)
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 
@@ -47,40 +58,81 @@ if not WA_DIR.exists():
     print(f"Error: {WA_DIR} not found. Run sync.mjs first.")
     sys.exit(1)
 
-# ── Export contacts from macOS Contacts via Swift ─────────────────────────────
+# ── Export contacts from macOS Contacts via Contacts.app ──────────────────────
+# Ask the app that already owns the data. Contacts.app holds Contacts access
+# inherently and `osascript` ships with every macOS, so this needs neither an
+# Xcode toolchain nor an app bundle of its own:
+#   * the previous Swift path ran `swift`, which on a Mac without Xcode is a stub
+#     that triggers a multi-GB "install developer tools" prompt. Most people
+#     running this are not developers, so that step simply failed for them.
+#   * an ad-hoc-built binary never gets its own TCC identity (verified: `tccutil
+#     reset` reports "No such bundle identifier" for one, yet it still reads
+#     contacts via the host app's grant), so it can never hold Contacts access.
+# The remaining gate is the standard one-click Automation prompt, "<host app>
+# wants to control Contacts". JXA rather than AppleScript: same two Apple Events,
+# about 6x faster on a large address book (3.3s vs 20.8s for ~3k contacts).
 
-SWIFT = """
-import Contacts, Foundation
-let store = CNContactStore()
-let keys = [CNContactGivenNameKey, CNContactFamilyNameKey,
-            CNContactOrganizationNameKey, CNContactPhoneNumbersKey] as [CNKeyDescriptor]
-var out = ""
-do {
-    let req = CNContactFetchRequest(keysToFetch: keys)
-    try store.enumerateContacts(with: req) { c, _ in
-        var name = "\\(c.givenName) \\(c.familyName)".trimmingCharacters(in: .whitespaces)
-        if name.isEmpty { name = c.organizationName }
-        if name.isEmpty { return }
-        for ph in c.phoneNumbers { out += "\\(name)\\t\\(ph.value.stringValue)\\n" }
-    }
-} catch { fputs("Error: \\(error)\\n", stderr); exit(1) }
-print(out, terminator: "")
+JXA = r"""
+const app = Application('Contacts');
+const names = app.people.name();
+const phones = app.people.phones.value();
+const rows = [];
+for (let i = 0; i < names.length; i++) {
+  const nm = names[i] === null ? '' : String(names[i]);
+  const ps = phones[i] || [];
+  for (const p of ps) if (p) rows.push(nm + '\t' + String(p));
+}
+rows.join('\n');
 """
 
-print("Reading macOS Contacts...")
-with tempfile.NamedTemporaryFile(suffix=".swift", mode="w", delete=False) as f:
-    f.write(SWIFT)
-    swift_path = f.name
 
-result = subprocess.run(["swift", swift_path], capture_output=True, text=True)
-os.unlink(swift_path)
+def host_app() -> str:
+    """The app macOS attributes this script's permissions to.
+
+    TCC grants Automation (and Contacts) to the APP that launched the script,
+    never to the script itself. Naming the right one matters: telling someone to
+    enable "Terminal" when they ran this from Claude points them at a row that is
+    not in their list.
+    """
+    bundle = os.environ.get("__CFBundleIdentifier", "")
+    known = {
+        "com.anthropic.claudefordesktop": "Claude",
+        "com.apple.Terminal": "Terminal",
+        "com.googlecode.iterm2": "iTerm",
+        "com.microsoft.VSCode": "Visual Studio Code",
+        "dev.warp.Warp-Stable": "Warp",
+    }
+    if bundle in known:
+        return known[bundle]
+    term = os.environ.get("TERM_PROGRAM", "")
+    if term == "Apple_Terminal":
+        return "Terminal"
+    if term:
+        return term.replace(".app", "")
+    return bundle or "the app you ran this from"
+
+
+print("Reading macOS Contacts...")
+with tempfile.NamedTemporaryFile(suffix=".js", mode="w", delete=False) as f:
+    f.write(JXA)
+    jxa_path = f.name
+
+result = subprocess.run(
+    ["osascript", "-l", "JavaScript", jxa_path], capture_output=True, text=True
+)
+os.unlink(jxa_path)
 
 if result.returncode != 0:
-    err = result.stderr.strip()
-    print(f"\nCould not read Contacts: {err}")
-    if "Access Denied" in err:
-        print("\nFix: System Settings › Privacy & Security › Contacts")
-        print("     Enable access for Terminal, then re-run.")
+    err = (result.stderr or "").strip()
+    app_name = host_app()
+    print(f"\nCould not read Contacts: {err[:300]}")
+    print(f"\nmacOS grants this to the app that ran the script, which is {app_name}.")
+    print("The first run shows a one-click prompt. If it was denied:")
+    print("  1. Open System Settings > Privacy & Security > Automation")
+    print(f"  2. Under {app_name}, enable Contacts")
+    print("  3. Re-run this script.")
+    print("(This step only maps phone numbers to names; skipping it keeps the")
+    print("phone-number filenames and does not affect the rest of the export.)")
     sys.exit(1)
 
 # ── Phone → name lookup ───────────────────────────────────────────────────────
@@ -103,6 +155,15 @@ for line in result.stdout.splitlines():
         phone_map[d[2:]] = name          # Colombia: without country code
 
 print(f"Loaded {len(phone_map):,} phone entries")
+
+# Zero entries means nothing can be renamed. Say why and stop, rather than
+# scanning every file to change nothing and leaving the user to guess.
+if not phone_map:
+    print("\nNo usable contacts came back, so no file can be renamed.")
+    print("Either the address book is empty, or Contacts returned no data. Check")
+    print("System Settings > Privacy & Security > Automation >")
+    print(f"{host_app()} > Contacts, then re-run.")
+    sys.exit(1)
 
 def lookup(digits: str) -> str | None:
     return (phone_map.get(digits)

@@ -6,6 +6,8 @@ trigger: /patterns
 
 # /patterns — Instinct Engine
 
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). Shared starter files live at the repo root two levels up: `{SKILL_DIR}/../..`. If a path does not resolve, name the missing file and stop — never guess another location.
+
 You are extracting signal before it evaporates. This skill scans recent sessions and surfaces what's hardening into real insight, then proposes concrete captures.
 
 Run this after a weekly review, after a heavy journaling session, or whenever the user says "I keep noticing..." or "this keeps coming up."
@@ -89,9 +91,9 @@ If a weekly review was just run, its output is already in context — use that, 
 
 If the Instinct Engine is installed, a `PreToolUse` hook has logged EVERY tool call this session to `~/.claude/instinct/observations.jsonl`. Read that ledger instead of reconstructing the session from the transcript — it is the 100%-capture source, not a ~50-80% reconstruction.
 
-- **Apply decay first:** `python3 ~/.claude/skills/ai-brain-starter/scripts/instinct.py decay` (erodes instincts unseen past the grace window so confidence stays honest).
+- **Apply decay first:** `python3 "{SKILL_DIR}/../../scripts/instinct.py" decay` (erodes instincts unseen past the grace window so confidence stays honest).
 - **Friction (Trigger 1) with evidence:** count repeated `action` values per `session` in the ledger. 5+ of the same `action` to reach one outcome = a friction pattern backed by hard counts, not a vibe.
-- **Current standings:** `python3 ~/.claude/skills/ai-brain-starter/scripts/instinct.py report --limit 30` lists instincts by effective confidence and flags stale ones.
+- **Current standings:** `python3 "{SKILL_DIR}/../../scripts/instinct.py" report --limit 30` lists instincts by effective confidence and flags stale ones.
 
 If the engine is NOT installed, fall back to the in-context conversation review below.
 
@@ -135,7 +137,7 @@ After the user confirms, execute all approved captures in one pass:
 - **CLAUDE.md rule** → add to the relevant section, sync to any other CLAUDE.md files
 - **Concept note** → create in the concept folder, add wikilinks
 - **Skill improvement** → note it clearly: "This should be baked into [skill name] — flag for next update"
-- **Confidence update (self-improving memory)** → when this run confirms an existing instinct held (it fired again, uncorrected), run `python3 ~/.claude/skills/ai-brain-starter/scripts/instinct.py reinforce <slug>`. When the user corrected one, run `... correct <slug>`. That bidirectional update is what makes the library self-improving instead of append-only. See `docs/instinct-engine.md`. When a domain accumulates many high-confidence instincts, run `/evolve` to propose promoting the cluster into a dedicated skill.
+- **Confidence update (self-improving memory)** → when this run confirms an existing instinct held (it fired again, uncorrected), run `python3 "{SKILL_DIR}/../../scripts/instinct.py" reinforce <slug>`. When the user corrected one, run `... correct <slug>`. That bidirectional update is what makes the library self-improving instead of append-only. See `docs/instinct-engine.md`. When a domain accumulates many high-confidence instincts, run `/evolve` to propose promoting the cluster into a dedicated skill.
 
 ---
 

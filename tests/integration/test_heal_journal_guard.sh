@@ -20,6 +20,9 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 HEAL="$REPO_ROOT/scripts/heal-journal-guard.py"
+# HOME alone does not sandbox ~ on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$SCRIPT_DIR/lib/sandbox_home.sh"
 
 PASS=0
 FAIL=0
@@ -55,11 +58,11 @@ mkdir -p "$FAKE_VAULT/⚙️ Meta/scripts" "$FAKE_VAULT/⚙️ Meta/Decisions" "
 printf '%s\n' '{"hooks": {}}' > "$FAKE_HOME/.claude/settings.json"
 
 run_heal() {  # runs the wired SessionStart path against the fake account
-  printf '%s' '{}' | env HOME="$FAKE_HOME" VAULT_ROOT="$FAKE_VAULT" \
+  printf '%s' '{}' | run_sandboxed "$FAKE_HOME" env VAULT_ROOT="$FAKE_VAULT" \
     HEAL_JOURNAL_GUARD_NO_COOLDOWN=1 python3 "$HEAL" 2>/dev/null
 }
 check_only() {  # read-only diagnosis; exit 1 on any gap
-  env HOME="$FAKE_HOME" VAULT_ROOT="$FAKE_VAULT" python3 "$HEAL" --check-only >/dev/null 2>&1
+  run_sandboxed "$FAKE_HOME" env VAULT_ROOT="$FAKE_VAULT" python3 "$HEAL" --check-only >/dev/null 2>&1
 }
 guard_matchers() {  # prints the sorted PreToolUse matchers the guard is registered under
   python3 - "$FAKE_HOME/.claude/settings.json" <<'PY'
@@ -113,6 +116,31 @@ if [ "$count" = "2" ]; then
   ok "no duplicate registration after re-run (2 entries: one per matcher)"
 else
   bad "idempotent registration" "expected 2 guard entries, got $count"
+fi
+
+echo "=== 5. DATA-LOSS control: a CORRUPT settings.json is left byte-for-byte alone ==="
+# A file that exists but does not parse makes every hook look unregistered. Merging into
+# the {} a failed parse yields would write back ONLY the guard entries and destroy the
+# user's env / permissions / custom hooks. The wired SessionStart path must refuse.
+CORRUPT_HOME="$(mktemp -d)"; TMPDIRS+=("$CORRUPT_HOME")
+mkdir -p "$CORRUPT_HOME/.claude"
+printf '%s' '{"env":{"K":"V"},"hooks":{"Stop":[{"hooks":[{"command":"USER_CRITICAL"}]}]}' \
+  > "$CORRUPT_HOME/.claude/settings.json"
+before="$(shasum -a 256 "$CORRUPT_HOME/.claude/settings.json" | awk '{print $1}')"
+out="$(printf '%s' '{}' | run_sandboxed "$CORRUPT_HOME" env VAULT_ROOT="$FAKE_VAULT" \
+        HEAL_JOURNAL_GUARD_NO_COOLDOWN=1 python3 "$HEAL" 2>/dev/null)"
+rc=$?
+after="$(shasum -a 256 "$CORRUPT_HOME/.claude/settings.json" | awk '{print $1}')"
+if [ "$before" = "$after" ]; then
+  ok "corrupt settings.json left byte-for-byte untouched (user config preserved)"
+else
+  bad "corrupt settings preserved" "the self-heal REWROTE an unparseable settings.json"
+fi
+if [ "$rc" -eq 0 ]; then ok "still fail-open on corrupt input (exit 0)"; else bad "fail-open" "exit $rc"; fi
+if printf '%s' "$out" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); ctx=d.get("hookSpecificOutput",{}).get("additionalContext",""); sys.exit(0 if "not valid JSON" in ctx else 1)' 2>/dev/null; then
+  ok "surfaces an actionable 'not valid JSON' line instead of claiming a repair"
+else
+  bad "corrupt surface line" "expected a 'not valid JSON' notice, got: $out"
 fi
 
 echo

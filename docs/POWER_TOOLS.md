@@ -254,6 +254,30 @@ These adjacents were surfaced via [VoltAgent/awesome-agent-skills](https://githu
 
 ---
 
+## Repo-shipped CLI tools
+
+Standalone scripts this repo bundles at `scripts/` that you run directly against any git repo — not Claude skills, no setup required beyond a Python interpreter.
+
+### ci-cost-audit.py — find CI spend leaks before they become an invoice
+
+**What it does:** GitHub Actions bills per JOB, rounded up to a whole minute, times the runner multiplier (Linux 1x, Windows 2x, macOS 10x) — never per workflow, never per wall-clock minute. An AI brain opens many branches at once, so the shape that empties an Actions budget is a wide fan-out of very short jobs multiplied by branches in flight, not a slow test. `ci-cost-audit.py` reports that shape for any repo: per-job floor waste, expensive runners on PR triggers, missing `concurrency` groups, `cancel-in-progress` that would deadlock a merge queue, duplicate push+pull_request triggers, and relevance predicates broad enough to match ordinary churn (scored against real file counts, so a correctly-narrow predicate is not flagged).
+
+**Why it matters:** measured on a live fleet, one 11.5-hour window ran 2,967 jobs for $81.84 — macOS was 3.5% of the jobs and 41% of the bill, and 20% of the total was pure per-job rounding on jobs whose median runtime was 6 seconds. That is the default failure mode of any repo an agent fleet drives, and it is invisible until someone measures it.
+
+**Use it:**
+```bash
+python3 scripts/ci-cost-audit.py                       # static check, current repo
+python3 scripts/ci-cost-audit.py --path ../other-repo   # static check, elsewhere
+python3 scripts/ci-cost-audit.py --repo owner/name --hours 24   # + real billed minutes via gh
+python3 scripts/ci-cost-audit.py --self-test            # negative controls, no repo needed
+```
+
+Static mode needs no network access or credentials. Measured mode needs the `gh` CLI authenticated against the target repo.
+
+**Run it:** once per repo when GitHub Actions billing looks off, or periodically as a client install's agent fleet grows — the cost shape scales with how many branches are open at once, not with how big the codebase is.
+
+---
+
 ## Cheap model APIs
 
 When the task is mechanical — extract entities, summarize a doc, classify notes — burning Opus tokens is wasteful. A cheap reasoning model costs 100–150x less and is sufficient.

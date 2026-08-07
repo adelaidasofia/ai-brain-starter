@@ -5,6 +5,8 @@ description: Use when the user says /ingest-youtube <url-or-channel> [--days N],
 
 # ingest-youtube — YouTube-to-vault connector
 
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). If a path does not resolve, name the missing file and stop — never guess another location.
+
 Ingests YouTube transcripts into the vault as markdown the graphify pipeline can read and the rest of the AI Brain Starter substrate (decision log, session-close cascade, hooks) can act on.
 
 Same connector pattern as `ingest-github`: adding a new source means a new normalizer, not a new architecture.
@@ -45,7 +47,7 @@ Do NOT use for:
 
 ## Invocation
 
-The skill is a thin orchestrator. The actual ingestion runs in Python at `~/.claude/skills/ingest-youtube/ingest.py`.
+The skill is a thin orchestrator. The actual ingestion runs in Python at `{SKILL_DIR}/ingest.py`.
 
 When invoked:
 

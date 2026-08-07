@@ -4,6 +4,14 @@ name: dependabot-auto-merge
 on:
   pull_request:
     branches: [main]
+concurrency:
+  # A superseded push to the same PR cancels the in-flight run instead of
+  # billing it to completion. Scoped to pull_request ONLY: push / schedule runs
+  # are never cancelled (and if a merge queue is ever wired here, cancelling a
+  # queued group would deadlock it). Added by MYC-3180; moved into the
+  # generator by MYC-3412 so regeneration stops silently reverting it.
+  group: dependabot-auto-merge-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   pull-requests: write
   contents: write

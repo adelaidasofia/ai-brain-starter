@@ -9,6 +9,14 @@ conditions:
     pattern: \b(rotate|rotation|rotated|rotating)\b
 ---
 
+> **KNOWN INERT on the official hookify plugin (as of 2026-07-18).** `event: prompt`
+> rules never fire there: Claude Code sends the submitted text under the payload key
+> `prompt`, but the engine reads `user_prompt` — so the field resolves empty and the
+> condition never matches. This is true for BOTH field spellings, so there is no
+> template-side workaround. Upstream fix in flight: anthropics/claude-code#79873.
+> Copy this rule for the threat model it documents; do not rely on it firing until
+> that PR ships. (Verified against the official engine, not a local fork.)
+
 **Before recommending secret rotation, check the leak vector.**
 
 The reflex when a secret-detection layer fires is "rotate the secret." That reflex is wrong when the leak is confined to surfaces the user already trusts. Rotation has real cost (broken integrations, downtime, attention churn); spend that budget on real exposure.

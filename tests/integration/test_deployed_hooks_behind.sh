@@ -27,6 +27,9 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# HOME alone does not sandbox ~ on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$REPO_ROOT/tests/integration/lib/sandbox_home.sh"
 HOOK="$REPO_ROOT/hooks/surface-deployed-hooks-behind.py"
 INSTALLER="$REPO_ROOT/scripts/install-hooks-user-level.py"
 
@@ -78,7 +81,7 @@ PY
 
 echo "=== 1. NEG-CONTROL: healthy deploy (real installer + real hooks.json) -> silent ==="
 H1="$TMP/case1"; mkdir -p "$H1/.claude"
-HOME="$H1" python3 "$INSTALLER" --hooks-source "$REPO_ROOT/hooks.json" \
+run_sandboxed "$H1" python3 "$INSTALLER" --hooks-source "$REPO_ROOT/hooks.json" \
   --settings "$H1/.claude/settings.json" --quiet >/dev/null 2>&1
 run_hook "$REPO_ROOT" "$H1/.claude/settings.json"
 if ! fired; then ok "silent on a real, correct deploy (no cry-wolf)"; else bad "cry-wolf on a healthy deploy" "$(printf '%s' "$OUT" | head -c 300)"; fi

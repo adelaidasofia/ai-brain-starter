@@ -82,6 +82,28 @@ def _reclaim_stale_lock(lock: Path) -> None:
         pass
 
 
+# Abandoned-git-lock reclaim (MYC-3175). ONE canonical implementation in
+# hooks/_lib/git_locks.py, shared with the ~/dev hub fleet — a second copy would
+# rot the moment one is fixed. Fail-open: a missing _lib must never break the
+# updater, which is the thing that would repair it.
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks" / "_lib"))
+    from git_locks import reclaim_stale_git_locks as _reclaim_stale_git_locks
+except Exception:  # pragma: no cover - heal is best-effort, never load-bearing
+    def _reclaim_stale_git_locks(_repo):
+        return []
+
+
+def _stamp(path: Path) -> None:
+    """Record 'this happened now'. Never raises — a stamp failure must not
+    break the update it is only observing."""
+    try:
+        path.touch()
+        os.utime(path, None)
+    except OSError:
+        pass
+
+
 def _install_fix_cmd() -> str:
     """The manual re-install command, phrased for the user's actual platform."""
     py = "python" if os.name == "nt" else "python3"
@@ -94,6 +116,13 @@ def run() -> None:
     skill = _skill_dir()
     pin = state / ".ai-brain-starter-pinned"
     last = state / ".ai-brain-starter-last-update"
+    # Distinct from `last`, and the distinction IS the signal (MYC-3175).
+    # `last` records that an ATTEMPT happened; this records that the clone was
+    # confirmed CURRENT with origin. A frozen clone keeps stamping `last`
+    # forever while this one stops moving — the only reliable freeze signal,
+    # since "behind origin" is precisely what a clone that cannot fetch
+    # under-reports.
+    last_ok = state / ".ai-brain-starter-last-successful-pull"
     lock = state / ".ai-brain-starter-update.lock"
     interval_days = float(os.environ.get("ABS_UPDATE_INTERVAL_DAYS", "6"))
     deploy_timeout = float(os.environ.get("ABS_UPDATE_DEPLOY_TIMEOUT", "120"))
@@ -101,6 +130,24 @@ def run() -> None:
     # 0. Pinned -> no-op (the escape hatch; must win before any fetch).
     if pin.exists():
         silent()
+
+    # 0b. Reclaim abandoned git locks BEFORE the rate limit (MYC-3175 recurrence,
+    # 2026-07-23). Healing used to sit at step 2b, AFTER step 1 -- which gated the
+    # cure behind the disease. A stranded .git/index.lock fails every git
+    # operation forever, and step 1 claims the interval up-front, so a lock
+    # appearing just after a run cannot be healed for a full interval: every
+    # session in that window returns at step 1 without ever reaching the healer.
+    #
+    # Observed: a 0-byte lock dated Jul 21 18:32 survived ~30h of sessions on a
+    # machine where this healer was already deployed AND wired, and had to be
+    # cleared by hand. That is exactly the MYC-2453 cooldown-locks-out-retries
+    # trap that MYC-3175 named as a sibling it was not repeating.
+    #
+    # Safe to hoist: the reclaim is stdlib, network-free, and returns immediately
+    # when no lock file exists, so the common path costs one stat. It stays
+    # conservative (age threshold + liveness check) exactly as before.
+    if (skill / ".git").exists():
+        _reclaim_stale_git_locks(skill)
 
     # 1. Rate-limit: only once per interval. Absent LAST means "never ran".
     try:
@@ -118,11 +165,22 @@ def run() -> None:
     try:
         try:
             last.touch()  # claim this interval up-front (matches prior behavior)
+            # Seed the success stamp on the FIRST run so staleness is measured
+            # from real data. Without a seed, a clone that never once pulled
+            # successfully would have no stamp to age — and the freeze it is
+            # meant to catch would be the exact case that stays invisible.
+            if not last_ok.exists():
+                last_ok.touch()
         except OSError:
             pass
 
         if not (skill / ".git").exists():
             silent()
+
+        # 2b. Reclaim abandoned git locks BEFORE any git call. A stranded
+        # .git/index.lock fails every fetch/merge forever, so without this the
+        # install freezes permanently and silently (MYC-3175).
+        reclaimed_locks = _reclaim_stale_git_locks(skill)
 
         # 3. Fetch. Network down -> gentle note, never crash the turn.
         try:
@@ -130,6 +188,17 @@ def run() -> None:
         except (subprocess.TimeoutExpired, OSError):
             fetch = None
         if fetch is None or fetch.returncode != 0:
+            err = (fetch.stderr or "") if fetch is not None else ""
+            if "lock" in err.lower():
+                # Not a network problem. Saying "couldn't reach the internet"
+                # here sends the user to debug wifi while a held lock blocks
+                # every update (MYC-3175).
+                emit_ctx(
+                    "AI Brain Starter could not check for updates: a git lock file "
+                    f"in {skill} is being held. If another git process is running "
+                    "there, this clears itself; otherwise the updater auto-clears "
+                    "locks older than an hour on the next check. Verbatim git "
+                    f"error: {err.strip()[:300]}")
             emit_ctx(
                 "AI Brain Starter checked for updates but couldn't reach the "
                 "internet (or the repository). Nothing is wrong — it will try "
@@ -141,6 +210,21 @@ def run() -> None:
         except (subprocess.TimeoutExpired, OSError):
             silent()
         if not head or head == origin:
+            # Confirmed current with origin: the fetch reached the remote and
+            # HEAD matches it. That is a SUCCESSFUL pull for freeze-detection
+            # purposes even though nothing moved.
+            _stamp(last_ok)
+            # Surface a heal even when there is nothing to pull. This is the
+            # case that was invisible before: the clone had been frozen for
+            # days by a stranded lock, and going silent here would hide both
+            # the freeze and the repair (MYC-3175).
+            if reclaimed_locks:
+                emit_ctx(
+                    "AI Brain Starter cleared an abandoned git lock "
+                    f"({', '.join(reclaimed_locks)}) in {skill} that a crashed git "
+                    "process had left behind. Every update had been failing since "
+                    "then, silently. Updates work again — your copy is now current. "
+                    "No action needed.")
             silent()  # already current
 
         # 4. ff-ONLY. Tracked-file edits or a divergent fork refuse the pull.
@@ -156,6 +240,22 @@ def run() -> None:
                     "first). Everything else keeps working in the meantime.")
             merge = _git(["merge", "--ff-only", "origin/main", "--quiet"], skill)
             if merge.returncode != 0:
+                # Distinguish the two causes. A stuck lock is NOT a fork, and
+                # telling the user "you have a local fork" sends them to fix
+                # the wrong thing while the real cause (an abandoned
+                # .git/*.lock a crashed git left behind) persists forever.
+                # A lock still present HERE survived 2b, so it is either fresh
+                # (a real concurrent git) or genuinely held.
+                if "lock" in (merge.stderr or "").lower():
+                    emit_ctx(
+                        "AI Brain Starter auto-update is BLOCKED: a git lock file in "
+                        f"{skill} is being held, so the pull cannot run. If another "
+                        "git process is working there right now, this clears itself. "
+                        "If nothing else is running, a crashed git left the lock "
+                        "behind and every future update will keep failing until it "
+                        "is removed — the updater auto-clears locks older than an "
+                        "hour, so this should resolve on the next check. Verbatim "
+                        f"git error: {(merge.stderr or '').strip()[:300]}")
                 emit_ctx(
                     "AI Brain Starter auto-update is BLOCKED (safely): your copy at "
                     f"{skill} has diverged from the official version (a local "
@@ -164,6 +264,10 @@ def run() -> None:
                     "main (or your preferred strategy).")
         except (subprocess.TimeoutExpired, OSError):
             silent()
+
+        # The ff-only merge succeeded: fetched from origin and moved HEAD onto
+        # it. Every emit_ctx above exits, so reaching here means a real pull.
+        _stamp(last_ok)
 
         try:
             log = _git(["log", "--oneline", f"{head}..HEAD"], skill)

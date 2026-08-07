@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Stop hook. Block claims like "[X] hook fired" when X is not in recent hookify-blocks.log.
+"""Stop hook. Block claims like "[X] hook fired" when X can't be verified.
+
+Two verification sources — a claim passes if EITHER confirms it:
+  1. hookify-blocks.log — for hookify RULES (they log there as **[name]**).
+  2. This turn's transcript tool errors — for STANDALONE Python hooks, which
+     never touch hookify-blocks.log but DO appear verbatim in the tool error as
+     a `.../hooks/<name>.py` path. Only NON-assistant records (tool results,
+     system) count, so the model can't self-verify by writing the path itself.
+
+Without source 2 the guard false-flags every truthful attribution to a
+standalone hook, and a guard that punishes honesty gets uninstalled.
 
 Bypass: FAB_HOOK_CHECK_BYPASS=1.
 """
@@ -13,6 +23,15 @@ import re
 import sys
 import time
 from pathlib import Path
+
+# Fire telemetry (MYC-285). Fail-open: a missing _lib must never break the
+# guard or its tests.
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "_lib"))
+    from guard_telemetry import log_fire
+except Exception:  # pragma: no cover - telemetry is never load-bearing
+    def log_fire(*_a, **_k):
+        return
 
 WINDOW_SEC = 600
 LOG_PATH = Path.home() / ".claude" / "hookify-blocks.log"
@@ -31,6 +50,7 @@ CLAIM_PATTERNS = [
 
 def main() -> None:
     if os.environ.get("FAB_HOOK_CHECK_BYPASS") == "1":
+        log_fire("check-fabricated-hook-attribution", status="bypassed")
         sys.exit(0)
     try:
         data = json.load(sys.stdin)
@@ -48,19 +68,24 @@ def main() -> None:
     if not claimed:
         sys.exit(0)
     recent = _recent_rule_names()
+    fired_standalone = _standalone_hook_evidence(transcript_path, WINDOW_SEC)
     fabricated = sorted(
-        c for c in claimed if not _matches_any(c, recent)
+        c for c in claimed
+        if not _matches_any(c, recent) and not _matches_any(c, fired_standalone)
     )
     if not fabricated:
         sys.exit(0)
     msg = (
-        f"Hook attribution check: assistant claims {fabricated} fired, but no matching "
-        f"rule name appears in ~/.claude/hookify-blocks.log within last "
-        f"{WINDOW_SEC // 60} minutes. Recent fires: "
-        f"{sorted(recent) or 'none'}. Either quote the verbatim rule name from the actual "
-        f"tool error in this turn, or say 'a hookify rule blocked this' without naming a "
-        f"specific rule. Bypass for forensic discussion: FAB_HOOK_CHECK_BYPASS=1."
+        f"Hook attribution check: assistant claims {fabricated} fired, but that name is "
+        f"neither in ~/.claude/hookify-blocks.log nor present as a `.../hooks/<name>.py` "
+        f"path in this turn's tool errors, within the last {WINDOW_SEC // 60} minutes. "
+        f"Recent hookify fires: {sorted(recent) or 'none'}; standalone-hook fires: "
+        f"{sorted(fired_standalone) or 'none'}. Either quote the verbatim rule/hook name "
+        f"from the actual tool error in this turn, or say 'a hook blocked this' without "
+        f"naming a specific one. Bypass for forensic discussion: FAB_HOOK_CHECK_BYPASS=1."
     )
+    log_fire("check-fabricated-hook-attribution", status="blocked",
+             names=",".join(fabricated))
     print(json.dumps({"decision": "block", "reason": msg}))
     sys.exit(0)
 
@@ -137,6 +162,42 @@ def _recent_rule_names() -> set:
                 msg_field = "\t".join(parts[4:])
                 m = re.search(r"\*\*\[([a-z0-9][a-z0-9_-]*)\]\*\*", msg_field)
                 if m:
+                    names.add(m.group(1).lower())
+    except Exception:
+        return set()
+    return names
+
+
+def _standalone_hook_evidence(transcript_path: str, window_sec: int) -> set:
+    """Base-names of STANDALONE hooks that actually fired this turn, detected by
+    a `.../hooks/<name>.py` token in a NON-assistant transcript record (tool
+    result / system). Standalone hooks never write to hookify-blocks.log, so
+    this is the second verification source. Assistant records are skipped so the
+    model can't self-verify by writing the path in its own message."""
+    names: set = set()
+    cutoff = time.time() - window_sec
+    path_re = re.compile(r"/hooks/([a-z0-9][a-z0-9_-]*)\.py")
+    try:
+        with open(transcript_path) as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("type") == "assistant":
+                    continue
+                ts = rec.get("timestamp")
+                if isinstance(ts, str):
+                    try:
+                        rec_ts = datetime.datetime.fromisoformat(
+                            ts.replace("Z", "+00:00")
+                        ).timestamp()
+                        if rec_ts < cutoff:
+                            continue
+                    except ValueError:
+                        pass
+                blob = json.dumps(rec.get("message", rec))
+                for m in path_re.finditer(blob):
                     names.add(m.group(1).lower())
     except Exception:
         return set()

@@ -6,6 +6,8 @@ trigger: /instinct-export
 
 # /instinct-export — portable instinct pack out
 
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). Shared starter files live at the repo root two levels up: `{SKILL_DIR}/../..`. If a path does not resolve, name the missing file and stop — never guess another location.
+
 Turns your confidence-scored instincts into a portable, evidence-backed YAML
 pack. The unit of sharing is the instinct: `id / trigger / confidence / domain
 / source_repo` plus an `action` and `evidence` body.
@@ -17,11 +19,11 @@ Reimplemented clean per license-hygiene.
 
 ```bash
 # current project's instincts + globals, only confidence >= 0.70, to a file
-python3 ~/.claude/skills/ai-brain-starter/scripts/instinct.py export \
+python3 "{SKILL_DIR}/../../scripts/instinct.py" export \
   --min-confidence 0.70 --out ~/instinct-pack.yaml
 
 # everything regardless of project scope
-python3 ~/.claude/skills/ai-brain-starter/scripts/instinct.py export --all --out ~/all.yaml
+python3 "{SKILL_DIR}/../../scripts/instinct.py" export --all --out ~/all.yaml
 ```
 
 Flags:

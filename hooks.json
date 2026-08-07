@@ -76,6 +76,17 @@
             "type": "command",
             "command": "if [ -f ~/.claude/skills/ai-brain-starter/hooks/verify-session-close-cascade.py ]; then [PYTHON] ~/.claude/skills/ai-brain-starter/hooks/verify-session-close-cascade.py; else echo '{\"continue\":true,\"suppressOutput\":true}'; fi",
             "statusMessage": "Verifying session-close cascade (advisory unless the cascade is installed)..."
+          },
+          {
+            "_comment": "Anti-fabrication family. Blocks a close that asserts a verification result (deploy / HTTP status / commit / push / PR opened-or-merged) with no tool call in the session that sourced it from the system of record, or that names a hook/rule as having fired when that name is in no tool error. Wired if/then/else (NOT '|| echo') so a real block (the JSON decision) reaches Claude Code instead of being masked. Bypass: FAB_VERIFY_CHECK_BYPASS=1 / FAB_HOOK_CHECK_BYPASS=1.",
+            "type": "command",
+            "command": "if [ -f ~/.claude/skills/ai-brain-starter/hooks/check-fabricated-verification.py ]; then [PYTHON] ~/.claude/skills/ai-brain-starter/hooks/check-fabricated-verification.py; else echo '{\"continue\":true,\"suppressOutput\":true}'; fi",
+            "statusMessage": "Checking closing claims against tool evidence..."
+          },
+          {
+            "type": "command",
+            "command": "if [ -f ~/.claude/skills/ai-brain-starter/hooks/check-fabricated-hook-attribution.py ]; then [PYTHON] ~/.claude/skills/ai-brain-starter/hooks/check-fabricated-hook-attribution.py; else echo '{\"continue\":true,\"suppressOutput\":true}'; fi",
+            "statusMessage": "Checking hook attributions against fire evidence..."
           }
         ]
       }
@@ -106,6 +117,26 @@
           {
             "type": "command",
             "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/warn-journal-saved-without-context.py 2>/dev/null || echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'"
+          },
+          {
+            "_comment": "Warn-only. One Bash call chaining git commit/push, gh pr create/merge or gh release after '&&' AND piping to tail/head: '&&' short-circuits, so a truncated tail shows the FAILING step's error text while the agent infers the earlier steps landed. Bypass: CHAINED_STATE_CMD_BYPASS=1.",
+            "type": "command",
+            "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/warn-chained-state-command-truncated.py 2>/dev/null || echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'"
+          },
+          {
+            "_comment": "BLOCKING gate (CONCURRENT-SESSION-HEAD-DRIFT). From a worktree-rooted session, blocks `cd`/`pushd` into the MAIN checkout, which shares one .git/HEAD with every other main-checkout session. No-op unless cwd matches <main>/.claude/worktrees/<slug>. Wired in the `if [ -f ]` form on purpose: this hook signals by EXIT CODE 2 and writes its remediation prose to STDERR, so the usual `<script> 2>/dev/null || echo <allow>` idiom would discard the message AND convert the block into an allow. Bypass: WORKTREE_CD_BYPASS=1.",
+            "type": "command",
+            "command": "if [ -f ~/.claude/skills/ai-brain-starter/hooks/check-cd-outside-worktree.py ]; then [PYTHON] ~/.claude/skills/ai-brain-starter/hooks/check-cd-outside-worktree.py; else echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'; fi"
+          },
+          {
+            "_comment": "BLOCKING gate (GIT-MUTATION-INTO-IN-FLIGHT-OPERATION). Refuses a git-mutating command when the TARGET repo has an operation already in flight: rebase-merge/, rebase-apply/, MERGE_HEAD, CHERRY_PICK_HEAD, REVERT_HEAD, BISECT_LOG in the resolved git-dir. Pure git-STATE check, deliberately independent of session liveness: session-lock.py gates the rebase VERB while a sibling is live, but an ABANDONED rebase is indistinguishable from 'no session' to any heartbeat check. Incident 2026-07-28: a rebase stalled 22+ hours, ~22 commits landed on its detached HEAD, and six commits from four sessions fell off main. Costs one substring test on non-git calls; resolves the git-dir only when a mutating verb is present. Resolution verbs (--abort/--continue/--skip/--quit), `git tag` and `git branch` stay ALLOWED on purpose - blocking them would trap the repo and make the bypass the only exit. Same `if [ -f ]` form as the gate above and for the same reason: it signals by EXIT CODE 2 with its prose on STDERR, so the `2>/dev/null || echo <allow>` idiom would discard the message AND convert the block into an allow. Bypass: GIT_INFLIGHT_OP_BYPASS=1.",
+            "type": "command",
+            "command": "if [ -f ~/.claude/skills/ai-brain-starter/hooks/block-git-mutation-mid-operation.py ]; then [PYTHON] ~/.claude/skills/ai-brain-starter/hooks/block-git-mutation-mid-operation.py; else echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'; fi"
+          },
+          {
+            "_comment": "BLOCKING gate (MCP-SECRET-LEAK-VIA-ARGV). Blocks `claude mcp add ... --env NAME=<secret>`: every Claude Code child spawn carries the full MCP config via `--mcp-config '<json>'` argv, so `ps aux` / `pgrep -fl` / `lsof` on the running claude process dumps the secret in plaintext. Past incident: 2026-05-19 github-mcp PAT leaked via `pgrep -fl chrome-devtools-mcp`. Same `if [ -f ]` form as the two gates above and for the same reason: it signals by EXIT CODE 2 with its remediation prose on STDERR, so the `2>/dev/null || echo <allow>` idiom would discard the message AND convert the block into an allow. Bypass: MCP_INLINE_SECRET_BYPASS=1.",
+            "type": "command",
+            "command": "if [ -f ~/.claude/skills/ai-brain-starter/hooks/block-claude-mcp-inline-secret.py ]; then [PYTHON] ~/.claude/skills/ai-brain-starter/hooks/block-claude-mcp-inline-secret.py; else echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'; fi"
           }
         ]
       },
@@ -136,6 +167,11 @@
           },
           {
             "type": "command",
+            "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/validate-handoff-frontmatter.py 2>/dev/null || echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'",
+            "statusMessage": "Checking handoff files declare consumes_when..."
+          },
+          {
+            "type": "command",
             "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/block-populated-public-skill.py 2>/dev/null || echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'",
             "statusMessage": "Checking template purity (populated data in a public skill)..."
           },
@@ -146,7 +182,17 @@
           },
           {
             "type": "command",
+            "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/warn-workflow-call-permission-elevation.py 2>/dev/null || echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'",
+            "statusMessage": "Checking reusable-workflow permissions (callee cannot exceed caller)..."
+          },
+          {
+            "type": "command",
             "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/warn-journal-saved-without-context.py 2>/dev/null || echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'"
+          },
+          {
+            "_comment": "BLOCKING gate (MCP-SECRET-LEAK-VIA-CONFIG-FILE). Blocks a Write/Edit/MultiEdit to an MCP config file (~/.claude.json, **/.mcp.json, .claude/settings*.json) whose new content contains a secret-shaped value. Closes the direct-file-edit gap block-claude-mcp-inline-secret.py cannot see (that one only catches `claude mcp add` Bash commands). Past incidents: 2026-05-19 + 2026-05-23 github PAT leaks via this exact path. Wired in the `if [ -f ]` form for the same reason as the Bash-matcher blocking gates above: it signals by EXIT CODE 2 with its remediation prose on STDERR, so the `2>/dev/null || echo <allow>` idiom would discard the message AND convert the block into an allow. Bypass: MCP_CONFIG_SECRET_BYPASS=1.",
+            "type": "command",
+            "command": "if [ -f ~/.claude/skills/ai-brain-starter/hooks/block-mcp-config-inline-secret.py ]; then [PYTHON] ~/.claude/skills/ai-brain-starter/hooks/block-mcp-config-inline-secret.py; else echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'; fi"
           }
         ]
       },

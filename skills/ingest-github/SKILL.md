@@ -6,6 +6,8 @@ argument-hint: "<owner/repo> [--days N]"
 
 # ingest-github: GitHub-to-vault connector
 
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). If a path does not resolve, name the missing file and stop — never guess another location.
+
 Ingests recent GitHub repository activity into the vault as markdown the graphify pipeline can read and the rest of the AI Brain Starter substrate (decision log, session-close cascade, hooks) can act on.
 
 This is the second connector in the ingest-* pattern. Adding the next external source means writing a new normalizer, not a new architecture.
@@ -48,7 +50,7 @@ If the MCP is connected but the token lacks repo read scope, the call returns 40
 
 ## Invocation
 
-The skill is a thin orchestrator. The actual normalization runs in Python at `~/.claude/skills/ingest-github/ingest.py` (or the public-repo path). The skill assembles the GitHub MCP tool calls, hands the raw payloads to `ingest.py` as JSON on stdin, and the script writes the file.
+The skill is a thin orchestrator. The actual normalization runs in Python at `{SKILL_DIR}/ingest.py`. The skill assembles the GitHub MCP tool calls, hands the raw payloads to `ingest.py` as JSON on stdin, and the script writes the file.
 
 When invoked:
 
