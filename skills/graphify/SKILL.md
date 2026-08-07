@@ -7,6 +7,8 @@ argument-hint: "[subfolder path to process, e.g. Notes/ or Journals/ — for ver
 
 # /graphify
 
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). If a path does not resolve, name the missing file and stop — never guess another location.
+
 Turn any folder of files into a navigable knowledge graph with community detection, an honest audit trail, and three outputs: interactive HTML, GraphRAG-ready JSON, and a plain-language GRAPH_REPORT.md.
 
 > ⚡ **Before running on a corpus larger than ~50 files, READ [OPTIMIZATIONS.md](./OPTIMIZATIONS.md).** The wrapper scripts in `scripts/` (dedupe, regex preflight, word-balanced chunking, label canonicalization, cache integration) typically cut LLM token cost by 80–92% and produce a higher-quality graph. The single most important step is calling `graphify_canonicalize.py --cache` after merging — without it, the next `--update` run repays the entire cost. Skip these wrappers and a 1,500-file vault will burn ~10M LLM tokens for the same graph that costs ~1M with them.
@@ -204,7 +206,7 @@ If a typed-relationship extractor is available, run it in parallel with Part A a
 # Locate the shipped script; PATH fallback for users who installed it standalone.
 WIRE_SCRIPT=""
 for candidate in \
-    "$HOME/.claude/skills/graphify/scripts/wire_typed_relationships.py" \
+    "{SKILL_DIR}/scripts/wire_typed_relationships.py" \
     "$HOME/.claude/plugins/graphify/scripts/wire_typed_relationships.py" \
     "./scripts/wire_typed_relationships.py"; do
     if [ -f "$candidate" ]; then

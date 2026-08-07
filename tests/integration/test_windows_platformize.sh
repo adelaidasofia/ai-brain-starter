@@ -29,6 +29,9 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# HOME alone does not sandbox ~ on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$REPO_ROOT/tests/integration/lib/sandbox_home.sh"
 INSTALLER="$REPO_ROOT/scripts/install-hooks-user-level.py"
 RUNNER="$REPO_ROOT/scripts/hook_runner.py"
 SYNC="$REPO_ROOT/scripts/sync-skills.py"
@@ -46,7 +49,7 @@ WIN_ENV=(ABS_FORCE_WINDOWS=1 ABS_WIN_LAUNCHER="py -3")
 
 # ---- T1 + T2: fresh Windows install -> runner-form everywhere ----------------
 S="$TMPROOT/win.json"
-env "${WIN_ENV[@]}" HOME="$TMPROOT/home" python3 "$INSTALLER" \
+run_sandboxed "$TMPROOT/home" env "${WIN_ENV[@]}" python3 "$INSTALLER" \
   --hooks-source "$REPO_ROOT/hooks.json" --settings "$S" --quiet >/dev/null 2>&1
 audit=$(python3 - "$S" <<'PY'
 import json, sys
@@ -92,7 +95,7 @@ settings = {"hooks": {"UserPromptSubmit": [{"hooks": [
 ]}]}}
 json.dump(settings, open(sys.argv[1], "w"), indent=2)
 PY
-env "${WIN_ENV[@]}" HOME="$TMPROOT/home" python3 "$INSTALLER" \
+run_sandboxed "$TMPROOT/home" env "${WIN_ENV[@]}" python3 "$INSTALLER" \
   --hooks-source "$REPO_ROOT/hooks.json" --settings "$S3" --quiet >/dev/null 2>&1
 counts=$(python3 - "$S3" <<'PY'
 import json, sys
@@ -121,7 +124,7 @@ fi
 # ---- T4: bash-only vault hooks omitted on Windows even with a vault path -----
 S4="$TMPROOT/vault.json"
 mkdir -p "$TMPROOT/fakevault"
-env "${WIN_ENV[@]}" HOME="$TMPROOT/home" python3 "$INSTALLER" \
+run_sandboxed "$TMPROOT/home" env "${WIN_ENV[@]}" python3 "$INSTALLER" \
   --hooks-source "$REPO_ROOT/hooks.json" --settings "$S4" \
   --vault-path "$TMPROOT/fakevault" --quiet >/dev/null 2>&1
 sh_hits=$(python3 - "$S4" <<'PY'
@@ -144,7 +147,7 @@ else
 fi
 
 # ---- T5: drift surfacer SILENT on a Windows-form install ---------------------
-OUT=$(env ABS_SKILL_DIR="$REPO_ROOT" ABS_SETTINGS_JSON="$S" HOME="$TMPROOT/home" \
+OUT=$(run_sandboxed "$TMPROOT/home" env ABS_SKILL_DIR="$REPO_ROOT" ABS_SETTINGS_JSON="$S" \
   python3 "$SURFACER" </dev/null 2>/dev/null)
 if printf '%s' "$OUT" | grep -q "additionalContext"; then
   no "T5: drift surfacer FIRED on a healthy Windows install: $(printf '%s' "$OUT" | head -c 200)"

@@ -43,8 +43,12 @@ def fail(msg):
 TMP = Path(tempfile.mkdtemp()).resolve()
 HOME = TMP / "home";      HOME.mkdir()
 VAULT = TMP / "FakeVault"; VAULT.mkdir()
-env = dict(os.environ, HOME=str(HOME))
+# Both vars, always: POSIX expanduser reads HOME, Windows (ntpath) reads
+# USERPROFILE and ignores HOME entirely. Setting only HOME let this test install
+# hook scripts into the developer's real ~/.claude/skills (MYC-3536).
+env = dict(os.environ, HOME=str(HOME), USERPROFILE=str(HOME))
 os.environ["HOME"] = str(HOME)  # module-level expanduser during enumeration
+os.environ["USERPROFILE"] = str(HOME)
 
 tmpl = json.load(open(repo + "/hooks.json"))
 norm = ih.normalize_path_substitutions(tmpl, str(VAULT))

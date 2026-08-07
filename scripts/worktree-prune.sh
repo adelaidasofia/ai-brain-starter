@@ -27,11 +27,19 @@ LOG="$LOG_DIR/worktree-prune.log"
 SNAPSHOT_DIR="${SNAPSHOT_DIR:-$VAULT_ROOT/⚙️ Meta/Worktree Snapshots}"
 WT_DIR="${WT_DIR:-$VAULT_ROOT/.claude/worktrees}"
 SNAPSHOT_RETENTION_DAYS="${SNAPSHOT_RETENTION_DAYS:-30}"
-# Safe reclaim engine — first existing of: user hooks, skill install, alongside.
+# Safe reclaim engine — first existing of: alongside, skill install, legacy.
+# ORDER IS LOAD-BEARING. $SCRIPT_DIR first: worktree-reclaim.py is a sibling of
+# THIS script in scripts/, so that copy is always version-matched with the prune
+# logic invoking it. ~/.claude/hooks/ is LAST and legacy-only: no installer ever
+# writes worktree-reclaim.py there (it is a script, not a hook), so the only way
+# that path is populated is a hand-placed or stale copy. Ranking it FIRST meant
+# a stale copy silently shadowed canonical forever — observed live 2026-07-23.
+# Keep it in the chain so a machine that only has that copy still sweeps, but
+# never let it outrank canonical.
 RECLAIM=""
-for _c in "$HOME/.claude/hooks/worktree-reclaim.py" \
+for _c in "$SCRIPT_DIR/worktree-reclaim.py" \
           "$HOME/.claude/skills/ai-brain-starter/scripts/worktree-reclaim.py" \
-          "$SCRIPT_DIR/worktree-reclaim.py"; do
+          "$HOME/.claude/hooks/worktree-reclaim.py"; do
   [ -f "$_c" ] && RECLAIM="$_c" && break
 done
 mkdir -p "$(dirname "$LOG")"

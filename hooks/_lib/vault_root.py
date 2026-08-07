@@ -29,17 +29,38 @@ Meta folder) and uses that when found. The VAULT_ROOT env var / cwd fallback
 is now exactly that — a fallback for when no such repo is found (untracked
 locations, or a session already rooted in the default vault itself, which
 never needs the walk-up to win since it's reached via the fallback anyway).
+
+TWO RESOLVERS, TWO SURFACES (MYC-3529)
+    resolve_vault_root(cwd, env)  — SESSION-scoped. "Which vault does THIS
+        session's close cascade write to?" Keyed on a CLAUDE.md that declares
+        its own Session End/Close cascade, because that is the thing being
+        asked about. Always returns a Path (cwd is the floor).
+
+    vault_root_for(target)        — PER-TARGET. "Which vault governs THIS
+        file / directory?" Keyed on a Meta-suffixed folder, the same signature
+        scripts/_meta_resolver.py uses, because a hook fires on paths in ANY
+        vault and most of them never declare a close cascade. Returns None
+        when no vault can be identified, so a caller SKIPS rather than
+        guessing at `~/vault` — the #375/#404 defect shape.
+
+    The distinction is the whole point of MYC-2505's severity tagging: a
+    SCRIPT serves one vault, a SESSION has one vault, but a HOOK fires on
+    files in any vault and must resolve per target or it silently answers for
+    the wrong one. `$VAULT_ROOT` is the FALLBACK in both, never the primary.
 """
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
 __all__ = [
     "collapse_worktree",
+    "find_meta_vault_root",
     "find_repo_vault_root",
     "resolve_vault_root",
+    "vault_root_for",
 ]
 
 # Matches "## Session End", "## Session end", "# Session Close", etc. Deliberately
@@ -140,6 +161,82 @@ def find_repo_vault_root(start: Path) -> Path | None:
         if parent == current:  # reached filesystem root
             break
         current = parent
+    return None
+
+
+def find_meta_vault_root(start: Path) -> Path | None:
+    """Nearest ancestor of `start` (inclusive) holding a Meta-suffixed folder.
+
+    This is the PER-TARGET vault signature, and it is deliberately weaker than
+    _declares_own_session_close_cascade: a hook fires on files in any vault,
+    and most vaults never declare a close cascade, so keying per-file detection
+    on that heading would leave the hook inert on exactly the vaults it exists
+    to cover. A Meta-suffixed folder is the same signature
+    scripts/_meta_resolver.py and hooks/validate-handoff-frontmatter.py already
+    key on, so all three agree on what "a vault" means.
+
+    `start` may be a FILE: iterdir() on a non-directory raises OSError, which
+    is caught, so the walk simply continues at the parent. That makes one
+    function correct for both a target file and a target directory (a cwd),
+    which is what the hook surface actually needs.
+
+    Bounded by _MAX_WALKUP_LEVELS and stopped at the filesystem root, for the
+    same reason find_repo_vault_root is: a hook has a sub-500ms budget and must
+    not turn into an unbounded stat loop on an odd filesystem. Deliberately NOT
+    stopped at $HOME — a vault can live outside the home directory (an external
+    drive, D:\\ on Windows), and unlike the session-close walk there is no
+    default-vault fallback that would otherwise reach it.
+    """
+    try:
+        current = start.resolve()
+    except (OSError, RuntimeError):
+        return None
+    for _ in range(_MAX_WALKUP_LEVELS):
+        try:
+            if any(c.is_dir() and c.name.endswith("Meta") for c in current.iterdir()):
+                return current
+        except (OSError, ValueError):
+            pass
+        parent = current.parent
+        if parent == current:  # reached filesystem root
+            break
+        current = parent
+    return None
+
+
+def vault_root_for(target: Path) -> Path | None:
+    """Vault root governing `target`: detected FROM the target, else $VAULT_ROOT.
+
+    The per-target resolver for the hook surface, extracted from
+    hooks/validate-handoff-frontmatter.py (the #375/#404 fix) so the other
+    hooks in that class share one implementation instead of twelve.
+
+    Detection comes FIRST on purpose. $VAULT_ROOT names ONE vault, but a
+    machine routinely has several (a personal vault plus one per project) and
+    the variable is routinely exported machine-wide. If the env var won, a hook
+    firing on a path in any OTHER vault would resolve to a root that path does
+    not sit under, its containment check would return False, and it would
+    silently SKIP the very file it exists to check — failing open with no
+    signal. Per-target detection is correct for all of them.
+
+    Worktree paths collapse first: `<vault>/.claude/worktrees/<slug>/...` is
+    governed by `<vault>`, not by the throwaway checkout, which carries a full
+    copy of the tree (Meta folder included) and would otherwise win the walk-up.
+
+    Returns None when no vault can be identified at all. Callers must treat
+    that as "no vault here, do nothing" — NOT as a reason to fall back to
+    `Path.home() / "vault"`, which is the exact default that made this whole
+    class of guard inert on every vault not literally named "vault".
+    """
+    found = find_meta_vault_root(collapse_worktree(target))
+    if found is not None:
+        return found
+    env = (os.environ.get("VAULT_ROOT") or "").strip()
+    if env:
+        try:
+            return collapse_worktree(Path(env).expanduser()).resolve()
+        except (OSError, RuntimeError):
+            return None
     return None
 
 

@@ -1,0 +1,64 @@
+name: release drift heartbeat
+
+# MYC-3246 — the outcome alarm for this repo's release path.
+#
+# THE FAILURE THIS EXISTS FOR (MYC-3243, mycelium-studio): release.yml returned
+# `startup_failure` on every ref for eight days. Zero jobs ran, so not one
+# release gate fired. main carried the new version, users kept the old one, and
+# every existing guard stayed silent — because each of them was conditioned on a
+# release HAPPENING. Nothing was watching for SILENCE.
+#
+# WHY THIS REPO HAS THE SAME SHAPE: release.yml is `on: push: tags: ['v*']` with
+# a publish step, and README (EN + ES) plus docs/RELEASE_PROCESS.md document a
+# stable user-facing install URL served from `releases/latest/download/`. If a
+# version bump merges and the tag is never pushed — or release.yml rots the way
+# studio's did — that URL keeps serving the old plugin forever and nothing in CI
+# notices. Every other check here runs on a PR; none of them can see this.
+#
+# IT PROBES THE EFFECTIVE LEAF: the checker downloads the archive that URL
+# actually serves and reads the version out of the plugin manifest INSIDE it. A
+# release can be tagged correctly and still ship a stale or broken archive;
+# comparing tag names would call that green.
+#
+# NEGATIVE CONTROL: `scripts/check-shipped-version-drift.py --self-test` runs on
+# every PR from the `utf8-console-guard` job in lint.yml, so the alarm's decision
+# logic cannot silently stop biting. This workflow is the live half.
+#
+# HEARTBEAT + MANUAL ONLY, never `pull_request`: on a PR this would red for the
+# whole normal window between merging a version bump and cutting its release,
+# which is a legitimate state. It is also deliberately NOT a required check —
+# it asserts a fact about the outside world, not about the diff under review.
+#
+# No untrusted user input is referenced in any run: command.
+
+on:
+  # 14:23 UTC daily — off-peak, non-round minute so it is not queued behind the
+  # cron stampede, and offset from studio's 13:17 release gate.
+  schedule:
+    - cron: "23 14 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-drift-heartbeat-${{ github.ref }}
+  # Never cancel: each run is a fresh measurement of the outside world, and a
+  # cancelled heartbeat is indistinguishable from a heartbeat that never alarmed.
+  cancel-in-progress: false
+
+jobs:
+  shipped-version-drift:
+    name: shipped plugin matches main
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        # fetch-depth 0: the grace window is derived from the last commit that
+        # touched .claude-plugin/plugin.json, which a shallow clone cannot see.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Compare main's plugin version against what users actually receive
+        run: python3 scripts/check-shipped-version-drift.py

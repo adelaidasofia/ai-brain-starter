@@ -35,6 +35,8 @@ output_shape:
     summary_grade: overall hygiene grade (A through F) printed to stdout
 ---
 
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). Shared starter files live at the repo root two levels up: `{SKILL_DIR}/../..`. If a path does not resolve, name the missing file and stop — never guess another location.
+
 When the user types /security-snapshot [domain] or asks for a security check on a prospect, run the security snapshot generator and deliver a client-ready report.
 
 ## Why this skill exists
@@ -44,7 +46,7 @@ Prospects rarely have budget for a full security audit upfront, but they will re
 ## Command
 
 ```bash
-python3 "$HOME/.claude/skills/ai-brain-starter/scripts/security-snapshot.py" <domain> --company "<Display Name>"
+python3 "{SKILL_DIR}/../../scripts/security-snapshot.py" <domain> --company "<Display Name>"
 ```
 
 The script ships with the starter repo. Output goes to `$SNAPSHOTS_DIR` if set, otherwise `$VAULT_ROOT/security-snapshots/` if `VAULT_ROOT` is set, otherwise a `security-snapshots/` folder next to wherever you run the command from. It takes 60-180 seconds because SSL Labs is slow. The script prints the saved report path to stdout and progress to stderr.

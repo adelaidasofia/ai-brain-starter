@@ -52,10 +52,22 @@ PY
 }
 
 # Invoke the hook with a clean, deterministic footprint env (only the cloud
-# branch under test can speak; worktree-count / low-disk noise is silenced).
+# branch under test can speak; worktree-count / low-disk / dev-root / bloat-dir
+# noise is silenced). EVERY footprint input the hook reads must be pinned here,
+# including the ones that reach OUTSIDE the fixture: the dev-root and
+# aggregate-bloat signals read ambient machine state, so without pinning them
+# these "expected silent" assertions would pass or fail depending on how many
+# worktrees the developer happens to have — a hermeticity hole, not a fixture
+# detail. ABS_DEV_ROOT/WORKTREE_FOOTPRINT_CACHE point at empty scratch dirs.
+FOOTPRINT_SCRATCH="$(mktemp -d)"
+mkdir -p "$FOOTPRINT_SCRATCH/empty-dev"
+trap 'rm -rf "$FOOTPRINT_SCRATCH"' EXIT
 run_hook() {  # $1=cwd  rest=VAR=VAL env assignments
   local cwd="$1"; shift
-  ( cd "$cwd" && env WORKTREE_FREE_GB=0 WORKTREE_WARN=9999 "$@" \
+  ( cd "$cwd" && env WORKTREE_FREE_GB=0 WORKTREE_WARN=9999 \
+      ABS_DEV_ROOT="$FOOTPRINT_SCRATCH/empty-dev" \
+      WORKTREE_FOOTPRINT_CACHE="$FOOTPRINT_SCRATCH/bloat-cache.json" \
+      WORKTREE_FOOTPRINT_FILE_WARN=999999999 "$@" \
       python3 "$HOOK" </dev/null ) | emit_ctx
 }
 
