@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  MYC-3528 fixture: defect #1, the actual historical bug. Setup ran BEFORE
+  #410 with `$MyInvocation.MyCommand.Path` inside a function - empty there -
+  so this registered `-File ""`. Register-ScheduledTask succeeded anyway.
+  POSITIVE CONTROL: Get-BackupTaskProblems must flag exactly this and name
+  the empty path.
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Date>2026-06-01T03:00:00</Date>
+    <Author>DESKTOP-FIXTURE\user</Author>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-06-01T03:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT72H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>pwsh</Command>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -File "" run -Vault "C:\Users\test\Brain"</Arguments>
+    </Exec>
+  </Actions>
+</Task>

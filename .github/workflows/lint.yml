@@ -115,7 +115,11 @@ jobs:
           done < <(find . -name '*.ps1' -not -path './.git/*')
           exit $fail
 
-      - name: bash syntax (.sh)
+      # NOTE: ubuntu-latest ships bash 5.x, so this proves MODERN-bash syntax
+      # only. It is structurally blind to constructs that parse on 5.x and fail
+      # on bash 3.2 -- see the `bash32-syntax` job below, which is the half of
+      # this gate that runs on the bash every stock Mac actually has.
+      - name: bash syntax (.sh, modern bash)
         run: |
           set -e
           fail=0
@@ -418,6 +422,64 @@ jobs:
 
       - name: phase-doc Python (no undefined names / F821)
         run: python3 scripts/check-phase-python.py
+
+  bash32-syntax:
+    name: bash 3.2 syntax (macOS /bin/bash)
+    runs-on: macos-latest
+    # macOS ships bash 3.2.57 at /bin/bash -- the last GPLv2 release -- and that
+    # is the ONLY bash on an unmodified Mac. This repo's install path is a
+    # supported dev environment there, so every .sh here has to PARSE under it.
+    #
+    # Why this cannot be a step in the `lint` job: that job runs on
+    # ubuntu-latest, whose bash is 5.x. Bash 5 parses constructs 3.2 rejects, so
+    # the existing `bash syntax` step is green by construction on exactly the
+    # class of bug this job exists to catch, and shellcheck does not flag it
+    # either (verified: clean at -S warning on the file that was broken).
+    #
+    # The class, concretely: bash 3.2 parses a heredoc BODY as shell text while
+    # scanning for the closing paren of an enclosing "$(...)", ignoring the
+    # <<'EOF' quoting that makes the body literal everywhere else. An odd number
+    # of ' characters in that body -- ordinary in Python, e.g. a `["\']`
+    # character class -- opens a quote that never closes, and the WHOLE FILE
+    # dies with "unexpected EOF while looking for matching `)'". Not the one
+    # line: every assertion in it. tests/integration/test_rm_rf_vault_target.sh
+    # was unrunnable on any stock Mac this way while CI stayed green.
+    #
+    # Fix when this fails: write the heredoc to a file first, then run the file,
+    # so the heredoc is not nested inside a command substitution.
+    #
+    # Syntax-only (`-n`). Running the suite on macOS is a separate, larger
+    # question; parsing is the cheap floor, and it is the floor that broke.
+    # No untrusted user input is referenced in any run: command.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: confirm this runner really is bash 3.2
+        # A positive control on the GATE itself. If GitHub ever ships a modern
+        # /bin/bash on macos-latest, this job would keep passing while proving
+        # nothing -- the exact silent-no-op shape the repo bans. Fail loudly
+        # instead, so the gate cannot quietly stop being a gate.
+        run: |
+          set -e
+          ver="$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}"')"
+          /bin/bash --version | head -1
+          if [ "$ver" != "3" ]; then
+            echo "::error::/bin/bash on this runner is major version $ver, not 3."
+            echo "::error::This job exists to prove bash 3.2 compatibility and can no longer do so."
+            echo "::error::Re-point it at a real 3.2 (or retire it deliberately) - do not leave it green and vacuous."
+            exit 1
+          fi
+      - name: bash 3.2 syntax (.sh)
+        run: |
+          set -e
+          fail=0
+          while IFS= read -r f; do
+            if ! /bin/bash -n "$f" 2>err; then
+              echo "::error file=$f::/bin/bash -n (3.2) failed - parses on bash 5, not on macOS's stock bash"
+              sed "s|^|  |" err
+              fail=1
+            fi
+          done < <(find . -name '*.sh' -not -path './.git/*' -not -path './node_modules/*')
+          exit $fail
 
   ci:
     name: ci gate (py_compile + unit + integration tests)

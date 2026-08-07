@@ -161,20 +161,48 @@ def fail_count_in_window(
     return len(fail_minutes)
 
 
+def user_launchd_labels() -> set[str]:
+    """Labels of the launchd agents THIS user installed.
+
+    Scoped BY PROPERTY, not by a hardcoded namespace. A plist in the user's
+    own LaunchAgents directory is, by definition, a job they installed; its
+    filename stem is the label by the platform's own convention. That covers
+    every operator on every machine, which a hardcoded reverse-DNS prefix
+    could never do — a prefix naming one person's namespace makes this pass
+    permanently DEAD for everyone else, and this file ships in a public repo
+    that other people install.
+
+    Empty set off macOS (no such directory), which makes the caller a no-op
+    exactly as it already is where `launchctl` does not exist.
+    """
+    agents = HOME / "Library" / "LaunchAgents"
+    try:
+        return {p.stem for p in agents.glob("*.plist")}
+    except OSError:
+        return set()
+
+
 def launchd_failures() -> list[str]:
-    """Flag com.adelaida.* launchd jobs whose last run exited non-zero.
+    """Flag the user's own launchd jobs whose last run exited non-zero.
 
     `launchctl list` column 2 is the last exit status: 0 = clean, a positive
     int = non-zero exit, a negative int = killed by signal, '-' = never run.
     This auto-covers every job — including ones not in RUNNERS, the gap that
-    let routing-health-check and receipts-reconcile fail unnoticed.
+    let a health-check and a reconcile job fail unnoticed.
+
+    Restricted to labels the user installed (see user_launchd_labels), so the
+    machine's Apple and third-party agents stay out of the report.
     """
     try:
         result = subprocess.run(
             ["launchctl", "list"],
-            capture_output=True, text=True, timeout=10, check=False,
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=10, check=False,
         )
     except (subprocess.SubprocessError, OSError):
+        return []
+    mine = user_launchd_labels()
+    if not mine:
         return []
     out: list[str] = []
     for line in result.stdout.splitlines():
@@ -182,9 +210,9 @@ def launchd_failures() -> list[str]:
         if len(parts) != 3:
             continue
         _pid, status, label = parts
-        if not label.startswith("com.adelaida."):
+        if label not in mine:
             continue
-        if label in BESPOKE_LAUNCHD_LABELS:
+        if any(label.endswith(suffix) for suffix in BESPOKE_LAUNCHD_SUFFIXES):
             continue  # has a dedicated finder with recovery guidance
         try:
             code = int(status)
@@ -240,7 +268,10 @@ def receipts_reconcile_findings(vault: Path | None) -> list[str]:
     return out
 
 
-BESPOKE_LAUNCHD_LABELS = {"com.adelaida.team-broadcast-daily"}
+# Matched as a SUFFIX so any operator's reverse-DNS namespace works
+# (`com.<whoever>.team-broadcast-daily`). These jobs have a dedicated finder
+# below that gives better recovery guidance than the generic launchd pass.
+BESPOKE_LAUNCHD_SUFFIXES = (".team-broadcast-daily",)
 
 
 def team_broadcast_findings(log_path: Path | None = None) -> list[str]:
@@ -269,7 +300,10 @@ def team_broadcast_findings(log_path: Path | None = None) -> list[str]:
 
     last_exit: dict[str, int] = {}
     last_ts: str | None = None
-    exit_re = re.compile(r"^\[([^\]]+)\]\s+(onde|mycelium)\s+exit=(\d+)")
+    # Workspace token is generic: hardcoding one operator's workspace names
+    # here made the parser silently match nothing for everyone else, so a
+    # failed broadcast never surfaced on any other install.
+    exit_re = re.compile(r"^\[([^\]]+)\]\s+([A-Za-z0-9][\w.-]*)\s+exit=(\d+)")
     for line in text.splitlines():
         m = exit_re.match(line)
         if not m:
@@ -293,16 +327,15 @@ def team_broadcast_findings(log_path: Path | None = None) -> list[str]:
             if age_h > 48:
                 out.append(
                     f"  - team-broadcast-daily: no run in {int(age_h)}h. The "
-                    f"18:00 cron may have stopped (launchctl list "
-                    f"com.adelaida.team-broadcast-daily)"
+                    f"daily cron may have stopped (launchctl list | grep "
+                    f"team-broadcast-daily)"
                 )
         except ValueError:
             pass
 
-    channels = {"onde": "#daily-stand-ups", "mycelium": "#daily-updates"}
     failed = sorted(ws for ws, code in last_exit.items() if code != 0)
     if failed:
-        named = ", ".join(f"{ws} ({channels.get(ws, ws)})" for ws in failed)
+        named = ", ".join(failed)
         out.append(
             f"  - team-broadcast-daily: last run FAILED for {named}. That "
             f"stand-up never posted.\n"
@@ -345,7 +378,7 @@ def main() -> int:
                 f"    log: {log_path}"
             )
 
-    # launchd exit-status pass — auto-covers every com.adelaida.* job,
+    # launchd exit-status pass — auto-covers every job this user installed,
     # including ones not in RUNNERS (the gap behind the silent failures).
     try:
         findings.extend(launchd_failures())
@@ -383,4 +416,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())

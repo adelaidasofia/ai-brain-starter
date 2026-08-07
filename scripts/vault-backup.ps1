@@ -144,6 +144,63 @@ function Invoke-Rotate { param([string]$dest, [int]$keep)
   }
 }
 
+# MYC-3528 - the "registered but dead" class. A scheduled task can exist and
+# still never run once - Register-ScheduledTask succeeds regardless, because
+# registering is not running. Any ONE of these three breaks it:
+#   - empty/missing -File path (was $MyInvocation.MyCommand.Path inside a
+#     function, which is EMPTY there; fixed in #410 - but every task
+#     registered BEFORE that fix still carries the empty path)
+#   - Execute an interpreter not on PATH (a hardcoded "pwsh" when PowerShell 7
+#     is not installed, which is stock on a fresh Windows box)
+#   - DisallowStartIfOnBatteries true (Task Scheduler's own default; refuses
+#     every 03:00 run on a laptop running on battery)
+# Pure: takes plain values, not a live CIM object, so it is unit-testable
+# against captured Task-Scheduler XML fixtures without Windows Task Scheduler
+# itself (see scripts/test-vault-backup-task-healing.ps1). Returns a (possibly
+# empty) array of problem descriptions - empty means healthy, leave it alone.
+function Get-BackupTaskProblems {
+  param(
+    [string]$Arguments,
+    [string]$Execute,
+    [bool]$DisallowStartIfOnBatteries
+  )
+  $problems = @()
+  $regFile = [regex]::Match($Arguments, '-File\s+"([^"]*)"').Groups[1].Value
+  if (-not $regFile -or -not (Test-Path -LiteralPath $regFile)) {
+    $problems += "-File path is empty or does not exist: '$regFile'"
+  }
+  if (-not $Execute -or -not (Get-Command $Execute -ErrorAction SilentlyContinue)) {
+    $problems += "Execute does not resolve on PATH: '$Execute'"
+  }
+  if ($DisallowStartIfOnBatteries) {
+    $problems += "DisallowStartIfOnBatteries is true (refuses to run on battery)"
+  }
+  return , $problems
+}
+
+# Registers the daily task, then reads its OWN work back through the same
+# validator above before declaring success - registering is not running, and
+# that gap is exactly how this shipped broken the first time (setup printed
+# "Backup is live" over a task that never fired once). Throws on any failure;
+# the caller decides how to react.
+function Register-BackupTask {
+  param([string]$TaskName, [string]$Self, [string]$Vault)
+  $exe = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
+  if (-not $exe) { $exe = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source }
+  if (-not $exe) { throw "no PowerShell interpreter found on PATH" }
+
+  $action   = New-ScheduledTaskAction -Execute $exe -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$Self`" run -Vault `"$Vault`""
+  $trigger  = New-ScheduledTaskTrigger -Daily -At 3am
+  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+  Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
+
+  $reg = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+  $problems = Get-BackupTaskProblems -Arguments $reg.Actions[0].Arguments -Execute $reg.Actions[0].Execute -DisallowStartIfOnBatteries $reg.Settings.DisallowStartIfOnBatteries
+  if ($problems.Count -gt 0) {
+    throw "registered task still broken after registering: $($problems -join '; ')"
+  }
+}
+
 function Cmd-Setup {
   $v = Resolve-Vault $Vault
   Say "Backing up: $v"
@@ -187,38 +244,31 @@ function Cmd-Setup {
     try {
       # $PSCommandPath, NOT $MyInvocation.MyCommand.Path. We are inside a
       # function, where the latter describes the FUNCTION's invocation and is
-      # EMPTY - so this registered `-File ""` and the task could never run.
+      # EMPTY - so that spelling registered `-File ""` and the task could
+      # never run.
       $self = $PSCommandPath
       if (-not $self) { throw "cannot resolve this script's own path" }
 
-      # pwsh is PowerShell 7 and is NOT on a stock Windows install; the task
-      # then dies with 0x80070002 (file not found) on the INTERPRETER.
-      $exe = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
-      if (-not $exe) { $exe = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source }
-      if (-not $exe) { throw "no PowerShell interpreter found on PATH" }
-
-      $action  = New-ScheduledTaskAction -Execute $exe -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$self`" run -Vault `"$v`""
-      $trigger = New-ScheduledTaskTrigger -Daily -At 3am
-      # Task Scheduler's DEFAULT settings refuse to start on battery, so on a
-      # laptop the 03:00 run is refused every night (0x800710E0) and the vault
-      # silently goes months without a snapshot. StartWhenAvailable catches up
-      # a window missed while the machine was asleep.
-      $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-      Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
-
-      # Registering is not running. Register-ScheduledTask SUCCEEDS on an action
-      # that can never execute, which is exactly how this shipped broken: setup
-      # printed "Backup is live" over a task that never fired once. Read back
-      # what we actually registered and prove both halves resolve.
-      $reg = (Get-ScheduledTask -TaskName $taskName -ErrorAction Stop).Actions[0]
-      $regFile = [regex]::Match($reg.Arguments, '-File\s+"([^"]+)"').Groups[1].Value
-      if (-not $regFile -or -not (Test-Path -LiteralPath $regFile)) {
-        throw "registered task points at a script path that does not exist: '$regFile'"
+      # Self-heal (MYC-3528): #410 fixed NEW registrations only. Every install
+      # that already ran setup before that fix still carries whatever got
+      # registered then - and nothing else in the product ever looks at it
+      # again. Read the EXISTING task back, if one exists, and repair it in
+      # place ONLY when it is actually broken. Idempotent, no prompt: the user
+      # already consented to a daily backup when they ran setup the first time.
+      $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+      if ($existing) {
+        $problems = Get-BackupTaskProblems -Arguments $existing.Actions[0].Arguments -Execute $existing.Actions[0].Execute -DisallowStartIfOnBatteries $existing.Settings.DisallowStartIfOnBatteries
+        if ($problems.Count -eq 0) {
+          Ok "Daily backup already scheduled and healthy (03:00 local)."
+        } else {
+          Warn "Existing scheduled task is broken, repairing: $($problems -join '; ')"
+          Register-BackupTask -TaskName $taskName -Self $self -Vault $v
+          Ok "Daily backup repaired (03:00 local), verified runnable."
+        }
+      } else {
+        Register-BackupTask -TaskName $taskName -Self $self -Vault $v
+        Ok "Daily backup scheduled (03:00 local), verified runnable."
       }
-      if (-not (Get-Command $reg.Execute -ErrorAction SilentlyContinue)) {
-        throw "registered task points at an interpreter that does not resolve: '$($reg.Execute)'"
-      }
-      Ok "Daily backup scheduled (03:00 local), verified runnable."
     } catch {
       Warn "Could not register a working scheduled task: $($_.Exception.Message)"
       Warn "Run it yourself, or re-run setup: $PSCommandPath run -Vault `"$v`""
@@ -306,10 +356,17 @@ function Cmd-Status {
   }
 }
 
-switch ($Command.ToLower()) {
-  "setup"  { Cmd-Setup }
-  "run"    { Cmd-Run }
-  "verify" { Cmd-Verify }
-  "status" { Cmd-Status }
-  default  { Die "unknown command: $Command (use setup|run|verify|status)" }
+# Dot-source guard: `. .\vault-backup.ps1` (scripts/test-vault-backup-task-healing.ps1
+# unit-tests Get-BackupTaskProblems this way, without Windows Task Scheduler)
+# imports the functions above only and does not dispatch a command. Normal
+# invocation (`pwsh -File vault-backup.ps1 ...`) is unaffected -
+# $MyInvocation.InvocationName is the script path there, never ".".
+if ($MyInvocation.InvocationName -ne '.') {
+  switch ($Command.ToLower()) {
+    "setup"  { Cmd-Setup }
+    "run"    { Cmd-Run }
+    "verify" { Cmd-Verify }
+    "status" { Cmd-Status }
+    default  { Die "unknown command: $Command (use setup|run|verify|status)" }
+  }
 }

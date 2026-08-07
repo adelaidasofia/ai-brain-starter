@@ -292,10 +292,22 @@ else
   WTREAP="$SCRIPT_DIR/dev-worktree-prune.py"
   [ -f "$WTREAP" ] && run "dev-worktree-prune" /usr/bin/env python3 "$WTREAP" $DESTRUCTIVE_MODE
 
-  # 5. Bare ~/dev hub freshness — fast-forward the clean ones so a recon read is
+  # 5. Regenerable BUILD OUTPUT inside worktrees that STAY (MYC-3727). Legs 1-4
+  #    free build artifacts only as a side effect of deleting a whole worktree,
+  #    and the reaper removes one only when its branch is provably merged — so an
+  #    unmerged, in-flight, long-lived worktree keeps its multi-GB target/ and
+  #    node_modules forever, which is the majority case. Measured 2026-08-05:
+  #    ~130 worktrees holding 438 GB while every leg above ran green daily and
+  #    the volume fell to 2.3 GB free. No-ops on a healthy disk (the pressure
+  #    ladder); never touches a worktree whose SOURCE is recent, whose session
+  #    lock is live, or whose source is too large to measure.
+  BUILDRECLAIM="$SCRIPT_DIR/dev-build-reclaim.py"
+  [ -f "$BUILDRECLAIM" ] && run "dev-build-reclaim" /usr/bin/env python3 "$BUILDRECLAIM" $DESTRUCTIVE_MODE
+
+  # 6. Bare ~/dev hub freshness — fast-forward the clean ones so a recon read is
   #    never weeks stale (MYC-677 STALE-BARE-CHECKOUT-READ). Dirty / diverged
   #    hubs are surfaced by the SessionStart hook, never force-moved here.
-  # 6. Un-backed-up drift report -> state file. The EXPENSIVE leg (fleet-wide
+  # 7. Un-backed-up drift report -> state file. The EXPENSIVE leg (fleet-wide
   #    git I/O) lives here so the SessionStart surface can render it for free
   #    instead of paying ~15s and a process on every interactive start.
   DRIFT="$SCRIPT_DIR/dev-drift-report.py"

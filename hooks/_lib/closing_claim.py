@@ -69,7 +69,7 @@ CLOSING_PATTERNS = [
     r"\bcerrando la sesión\b",
     r"\bcierro la sesión\b",
     r"\bsesión cerrada\b",
-    r"\bchao\b.*\b(?:ade|adelaida)\b",
+    r"\bchao\b",
 ]
 
 # Discussion / definitional context — if any appears, the message is ABOUT
