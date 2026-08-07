@@ -43,6 +43,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOOK="$REPO_ROOT/hooks/detect-closing-signal.py"
+# HOME alone does not sandbox ~ on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$REPO_ROOT/tests/integration/lib/sandbox_home.sh"
 PACK="$REPO_ROOT/templates/closing-signals/en.json"
 if [ ! -f "$HOOK" ]; then
   echo "ERROR: $HOOK not found" >&2
@@ -62,8 +65,7 @@ fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-export HOME="$TMP/fake-home"
-mkdir -p "$HOME/.claude"
+sandbox_home "$TMP/fake-home"
 
 VAULT="$TMP/vault"
 META="$VAULT/Meta"

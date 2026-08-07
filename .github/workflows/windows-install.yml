@@ -34,6 +34,34 @@ name: windows-install
 #     and logged inside bootstrap (try/catch) and bootstrap still exits 0, so it
 #     is caught by the explicit post-assertion on settings.json hooks.
 #
+# WHY THIS RUNS ON EVERY CHANGE, AND IS NOT GATED (MYC-3419)
+# ----------------------------------------------------------
+# This is the repo's most expensive check per run: windows-latest bills at a 2x
+# multiplier, so its ~1m45s of work costs 4 billed minutes, and it was 14% of
+# the repo's entire Actions bill over the 40 runs measured with
+# `scripts/ci-cost-audit.py --repo`. That is deliberate, not an oversight:
+#
+#   * It is not the rounding class the rest of that audit targets. Only 2 of its
+#     20 measured minutes were per-job floor waste - the other 18 are real
+#     compute. A single-job workflow has no fan-out to consolidate away.
+#   * A relevance gate has no honest predicate here. This job seeds the runner
+#     with THIS checkout and runs bootstrap.ps1 end-to-end, so it exercises
+#     phases/*.md (the installer reads them), scripts/, hooks.json and skills/ -
+#     very nearly the whole tree. Any "Windows-irrelevant" path list narrow
+#     enough to be safe would almost never fire, and one drawn wider would
+#     silently stop testing the install that a real outage (PR #254) exists to
+#     protect.
+#   * Splitting a cheap Linux relevance job in front of it would make this
+#     check SKIP rather than post. Branch protection matches required checks by
+#     name (MYC-3418 will require this one), and a skipped required check is the
+#     classic way to deadlock every open PR. An in-job early exit would keep the
+#     check posting, but still pays the Windows floor at 2x, so it buys little.
+#
+# The real lever is `merge_group`: proving the predicted merge once instead of
+# every intermediate push. That is deliberately sequenced AFTER MYC-3418, because
+# today this repo's merge queue validates nothing, so moving there now would mean
+# the Windows install is effectively ungated.
+#
 # No GitHub event data is interpolated into any run: block (no event-context
 # expressions anywhere in this workflow).
 

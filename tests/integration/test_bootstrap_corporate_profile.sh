@@ -25,6 +25,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# HOME alone does not sandbox ~ on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$REPO_ROOT/tests/integration/lib/sandbox_home.sh"
 BOOTSTRAP="$REPO_ROOT/bootstrap.sh"
 
 if [ ! -f "$BOOTSTRAP" ]; then
@@ -54,7 +57,7 @@ run_bootstrap() {
   ln -s "$REPO_ROOT" "$h/.claude/skills/ai-brain-starter"
   touch "$h/.claude/.ai-brain-starter-email-on-file"
   set +e
-  ( export HOME="$h"
+  ( sandbox_home "$h"
     # shellcheck disable=SC2086
     env $extra_env EMAIL="ci@example.com" NAME="CI Test" LANG_HINT="en" \
       bash "$BOOTSTRAP" "$@" ) > "$out" 2>&1

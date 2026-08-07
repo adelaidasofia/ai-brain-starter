@@ -28,11 +28,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from _lib.vault_root import vault_root_for  # noqa: E402
+except Exception:  # fail-open: never break the Stop chain on an import error
+    def vault_root_for(target: Path):  # type: ignore
+        return None
+
 BYPASS_ENV = "DEV_CHECKPOINT_BYPASS"
 PREFIX = "claude-checkpoint"
 MAX_CHECKPOINTS = 20
 DEV_ROOT = Path.home() / "dev"
-VAULT_ROOT = Path(os.environ.get("VAULT_ROOT", str(Path.home() / "vault")))
 
 
 def run_git(repo: Path, args: list[str], timeout: int = 10) -> subprocess.CompletedProcess:
@@ -130,12 +136,24 @@ def main() -> int:
     except (OSError, RuntimeError):
         return 0
 
-    # Defense-in-depth: NEVER fire on vault paths (handled by auto-snapshot.sh)
-    try:
-        cwd.relative_to(VAULT_ROOT.resolve())
-        return 0  # cwd is under vault, skip
-    except ValueError:
-        pass  # Not under vault, continue
+    # Defense-in-depth: NEVER fire on vault paths (handled by auto-snapshot.sh).
+    #
+    # MYC-3529 — resolved PER CWD, not from $VAULT_ROOT. This gate is what keeps
+    # `git add -A` (below, in checkpoint()) away from a 60K-file vault, and
+    # block-raw-vault-git.py bans exactly that op there. The old code compared
+    # against a single env-named vault with a ~/vault default, so a SECOND vault
+    # sailed through: a vault checked out under ~/dev (e.g. ~/dev/mycelium-vault,
+    # which this repo's own hooks document as a real vault-namespace repo) passes
+    # the ~/vault test AND the DEV_ROOT test below, and gets the full-tree stage
+    # the vault guards exist to prevent. vault_root_for detects the vault from
+    # the cwd itself, so any vault is excluded regardless of what the env says.
+    vault = vault_root_for(cwd)
+    if vault is not None:
+        try:
+            cwd.relative_to(vault)
+            return 0  # cwd is under A vault, skip
+        except ValueError:
+            pass  # Not under that vault, continue
 
     # Only fire under ~/dev/<repo>
     try:

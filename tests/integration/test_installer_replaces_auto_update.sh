@@ -23,6 +23,9 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# HOME alone does not sandbox ~ on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$REPO_ROOT/tests/integration/lib/sandbox_home.sh"
 INSTALLER="$REPO_ROOT/scripts/install-hooks-user-level.py"
 HOOKS_SRC="$REPO_ROOT/hooks.json"
 [ -f "$INSTALLER" ] || { echo "ERROR: $INSTALLER not found" >&2; exit 1; }
@@ -62,7 +65,7 @@ print(n)
 PY
 }
 
-install() { HOME="$TMPROOT/home" python3 "$INSTALLER" --hooks-source "$HOOKS_SRC" --settings "$1" --quiet >/dev/null 2>&1; }
+install() { run_sandboxed "$TMPROOT/home" python3 "$INSTALLER" --hooks-source "$HOOKS_SRC" --settings "$1" --quiet >/dev/null 2>&1; }
 
 # A faithful-enough stand-in for each old inline blob: contains the retire
 # fingerprint + the delegated-install instruction, NOT the new script path.

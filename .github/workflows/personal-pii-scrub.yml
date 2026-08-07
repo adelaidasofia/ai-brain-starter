@@ -20,27 +20,39 @@ on:
   pull_request:
   push:
     branches: [main]
+  # MYC-3418: this gate is a REQUIRED status check on repos with a merge queue,
+  # so it must also run on the predicted-merge state the queue builds. A
+  # required context that never posts on `merge_group` makes the queue wait
+  # forever. This lives in the GENERATOR, not in any repo: the file is
+  # auto-managed, so a hand-added trigger is reverted on the next daily pass
+  # (MYC-3412). Harmless where no queue exists: `merge_group` never fires.
+  #
+  # NOTE for future edits to this template: no apostrophes. The heredoc is
+  # quoted but sits inside $(...), and bash scans a command substitution for
+  # quote pairs BEFORE heredoc processing, so one bare apostrophe here is an
+  # unterminated quote that breaks the whole script. Caught by the self-test.
+  merge_group:
   schedule:
     - cron: '0 12 * * 1'   # Mondays 12:00 UTC
   workflow_dispatch:
-
-permissions:
-  contents: read
 
 concurrency:
   # A superseded push to the same PR cancels the in-flight run instead of
   # billing it to completion. Scoped to pull_request ONLY: push / schedule runs
   # are never cancelled (and if a merge queue is ever wired here, cancelling a
-  # queued group would deadlock it). Added by MYC-3180 after ci-cost-audit.py
-  # flagged this workflow as billing every superseded push in full.
+  # queued group would deadlock it). Added by MYC-3180; moved into the
+  # generator by MYC-3412 so regeneration stops silently reverting it.
   group: personal-pii-scrub-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
   scrub:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           fetch-depth: 0
       - name: Personal-name + vault-path scrub (source files)
@@ -51,8 +63,8 @@ jobs:
           # list, so they cannot drift). NOT case-insensitive: 'wOnder'
           # contains 'Onde' but \bOnde\b skips it (CLAUDE.md false-positive trap).
           PATTERNS=(
-            '\bAdelaida\b'
-            '\bDiaz-Roa\b'
+            '\b[Aa]delaida\b'
+            '\b[Dd]iaz-[Rr]oa\b'
             '\bSergio\b'
             '\bSneider\b'
             '\bAlfonso\b'
@@ -76,7 +88,7 @@ jobs:
           # docs/), vendored deps, lock files, and the workflows themselves
           # (this file MENTIONS the patterns by definition).
           for p in "${PATTERNS[@]}"; do
-            matches=$(git grep -nE "$p"               -- ':!README*' ':!CHANGELOG*' ':!docs/' ':!*.md'               ':!LICENSE*' ':!COPYING*' ':!NOTICE*'               ':!AUTHORS*' ':!MAINTAINERS*'               ':!*pyproject.toml' ':!*setup.py' ':!*setup.cfg'               ':!*package.json' ':!*Cargo.toml' ':!*manifest.json'               ':!.claude-plugin/'               ':!.env.example' ':!*.env.example'               ':!tests/integration/test_smoke.py'               ':!vendor/' ':!node_modules/' ':!*.lock'               ':!package-lock.json' ':!pnpm-lock.yaml'               ':!.github/workflows/personal-pii-scrub.yml' 2>/dev/null || true)
+            matches=$(git grep -nE "$p"               -- ':!README*' ':!CHANGELOG*' ':!docs/' ':!*.md'               ':!LICENSE*' ':!COPYING*' ':!NOTICE*'               ':!AUTHORS*' ':!MAINTAINERS*'               ':!*pyproject.toml' ':!*setup.py' ':!*setup.cfg'               ':!*package.json' ':!*Cargo.toml' ':!*manifest.json' ':!*server.json'               ':!.claude-plugin/'               ':!.env.example' ':!*.env.example'               ':!tests/integration/test_smoke.py'               ':!vendor/' ':!node_modules/' ':!*.lock'               ':!package-lock.json' ':!pnpm-lock.yaml'               ':!.github/workflows/personal-pii-scrub.yml' 2>/dev/null || true)
             if [ -n "$matches" ]; then
               echo "::error::personal-data pattern leaked into source: $p"
               echo "$matches"
@@ -106,8 +118,8 @@ jobs:
           # (both arrays are injected from one placeholder, so they cannot
           # drift).
           PATTERNS=(
-            '\bAdelaida\b'
-            '\bDiaz-Roa\b'
+            '\b[Aa]delaida\b'
+            '\b[Dd]iaz-[Rr]oa\b'
             '\bSergio\b'
             '\bSneider\b'
             '\bAlfonso\b'

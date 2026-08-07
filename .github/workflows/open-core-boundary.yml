@@ -10,6 +10,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Required status check → must also run on the merge queue's predicted merge
+  # state, or the queue waits on a check that never posts (MYC-3418).
+  merge_group:
   workflow_dispatch:
 
 permissions:

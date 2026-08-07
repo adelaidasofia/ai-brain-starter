@@ -35,12 +35,55 @@ Allows explicit escapes:
     vault-safe-commit.sh ...   (the sanctioned wrapper)
     GIT_VAULT_BYPASS=1 git ... (emergency escape hatch for the user)
 """
+# MYC-3529: REQUIRED, not cosmetic. This module annotates with PEP-604
+# `X | None`, which is evaluated at def-time and is a TypeError on Python
+# 3.9 -- the floor version scripts/ci.sh's gate actually runs. py_compile
+# does NOT catch it (the annotation compiles fine and only blows up when
+# the def executes), so the import crash is invisible to the lint gates and
+# shows up only as a hook that silently does nothing.
+from __future__ import annotations
+
 import os
 from pathlib import Path
 import json, sys, re, os, subprocess
 
-VAULT = os.environ.get("VAULT_ROOT", str(Path.home() / "vault"))
-VAULT_GIT_DIR = os.path.realpath(os.path.join(VAULT, ".git"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from _lib.vault_root import vault_root_for  # noqa: E402
+except Exception:  # fail-open: never block a git op on an import error
+    def vault_root_for(target: Path):  # type: ignore
+        return None
+
+
+def _vault_git_dir_for(target: str) -> str | None:
+    """realpath of the `.git` of the vault governing `target`, or None.
+
+    MYC-3529 — resolved PER TARGET. The module used to bind
+        VAULT = os.environ.get("VAULT_ROOT", str(Path.home() / "vault"))
+        VAULT_GIT_DIR = os.path.realpath(os.path.join(VAULT, ".git"))
+    once, at import. That is the #375/#404 shape and it fails silently OPEN in
+    both directions: UNSET, VAULT_GIT_DIR was `~/vault/.git`, which exists on
+    almost no install, so `_targets_vault_repo` returned False for every op and
+    this guard allowed raw `git add`/`commit` in the vault it was written to
+    protect. SET, it named exactly ONE vault, so the same raw ops against a
+    SECOND vault — with the same 60K-file index.lock contention — passed
+    straight through.
+
+    A hook fires on ops against ANY vault, so the vault has to be derived from
+    the path the op actually targets (its effective cwd, or an explicit
+    --git-dir). vault_root_for detects it from that path and falls back to
+    $VAULT_ROOT only when detection finds nothing, which is what keeps the
+    previous behavior intact for a vault with no Meta-suffixed folder.
+
+    None = no vault governs this path; the caller must fail open (allow).
+    """
+    try:
+        root = vault_root_for(Path(target) if target else Path.cwd())
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if root is None:
+        return None
+    return os.path.realpath(os.path.join(str(root), ".git"))
 
 
 def _effective_cwd(command: str, initial: str) -> str:
@@ -120,8 +163,11 @@ def _targets_vault_repo(cwd: str) -> bool:
         return False
     if out.returncode != 0 or not out.stdout.strip():
         return False
+    vault_git_dir = _vault_git_dir_for(cwd)
+    if vault_git_dir is None:
+        return False
     common_dir = os.path.realpath(os.path.join(cwd, out.stdout.strip()))
-    return common_dir == VAULT_GIT_DIR
+    return common_dir == vault_git_dir
 
 
 def _git_dir_arg(opts_blob: str):
@@ -155,7 +201,10 @@ def _git_dir_is_vault(git_dir: str) -> bool:
             cands.append(os.path.join(git_dir, out.stdout.strip()))
     except Exception:
         pass
-    return any(os.path.realpath(c) == VAULT_GIT_DIR for c in cands)
+    vault_git_dir = _vault_git_dir_for(git_dir)
+    if vault_git_dir is None:
+        return False
+    return any(os.path.realpath(c) == vault_git_dir for c in cands)
 
 
 def _targets_vault(opts_blob: str, base_cwd: str) -> bool:

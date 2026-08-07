@@ -24,6 +24,9 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INSTALLER="$REPO_ROOT/scripts/install-hooks-user-level.py"
+# HOME alone does not sandbox the installer on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$SCRIPT_DIR/lib/sandbox_home.sh"
 
 PASS=0; FAIL=0
 TMP="$(mktemp -d)"
@@ -60,7 +63,7 @@ SETTINGS="$TMP/.claude/settings.json"
 
 # Run the REAL installer with the shim FIRST on PATH. It must resolve [PYTHON]
 # to a real interpreter that skips the shim.
-env -u CLAUDECODE PATH="$HOSTILE_PATH" HOME="$TMP" \
+run_sandboxed "$TMP" env -u CLAUDECODE PATH="$HOSTILE_PATH" \
   "$LAUNCH_PY" "$INSTALLER" --hooks-source "$REPO_ROOT/hooks.json" --quiet >/dev/null 2>&1
 
 echo "=== 0. NEGATIVE CONTROL: fake shim genuinely refuses bare python3 ==="

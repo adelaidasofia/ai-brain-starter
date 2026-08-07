@@ -20,6 +20,9 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 HEAL="$REPO_ROOT/scripts/heal-journal-guard.py"
+# HOME alone does not sandbox ~ on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$SCRIPT_DIR/lib/sandbox_home.sh"
 
 PASS=0
 FAIL=0
@@ -55,11 +58,11 @@ mkdir -p "$FAKE_VAULT/⚙️ Meta/scripts" "$FAKE_VAULT/⚙️ Meta/Decisions" "
 printf '%s\n' '{"hooks": {}}' > "$FAKE_HOME/.claude/settings.json"
 
 run_heal() {  # runs the wired SessionStart path against the fake account
-  printf '%s' '{}' | env HOME="$FAKE_HOME" VAULT_ROOT="$FAKE_VAULT" \
+  printf '%s' '{}' | run_sandboxed "$FAKE_HOME" env VAULT_ROOT="$FAKE_VAULT" \
     HEAL_JOURNAL_GUARD_NO_COOLDOWN=1 python3 "$HEAL" 2>/dev/null
 }
 check_only() {  # read-only diagnosis; exit 1 on any gap
-  env HOME="$FAKE_HOME" VAULT_ROOT="$FAKE_VAULT" python3 "$HEAL" --check-only >/dev/null 2>&1
+  run_sandboxed "$FAKE_HOME" env VAULT_ROOT="$FAKE_VAULT" python3 "$HEAL" --check-only >/dev/null 2>&1
 }
 guard_matchers() {  # prints the sorted PreToolUse matchers the guard is registered under
   python3 - "$FAKE_HOME/.claude/settings.json" <<'PY'
@@ -124,7 +127,7 @@ mkdir -p "$CORRUPT_HOME/.claude"
 printf '%s' '{"env":{"K":"V"},"hooks":{"Stop":[{"hooks":[{"command":"USER_CRITICAL"}]}]}' \
   > "$CORRUPT_HOME/.claude/settings.json"
 before="$(shasum -a 256 "$CORRUPT_HOME/.claude/settings.json" | awk '{print $1}')"
-out="$(printf '%s' '{}' | env HOME="$CORRUPT_HOME" VAULT_ROOT="$FAKE_VAULT" \
+out="$(printf '%s' '{}' | run_sandboxed "$CORRUPT_HOME" env VAULT_ROOT="$FAKE_VAULT" \
         HEAL_JOURNAL_GUARD_NO_COOLDOWN=1 python3 "$HEAL" 2>/dev/null)"
 rc=$?
 after="$(shasum -a 256 "$CORRUPT_HOME/.claude/settings.json" | awk '{print $1}')"

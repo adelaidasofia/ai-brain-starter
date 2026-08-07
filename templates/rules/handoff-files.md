@@ -34,7 +34,7 @@ consumes_when: production launch complete (calendar bookings, message relays, sc
 
 If you cannot name a concrete completion signal, the bridged work is not concrete enough to ship, write a clearer plan first.
 
-**Enforcement.** PreToolUse hook `~/.claude/hooks/validate-handoff-frontmatter.py` blocks any Write or Edit that produces a handoff file with missing/empty `consumes_when:`. Bypass: `HANDOFF_FRONTMATTER_BYPASS=1` (rare).
+**Enforcement.** PreToolUse hook `~/.claude/skills/ai-brain-starter/hooks/validate-handoff-frontmatter.py` blocks any Write, Edit or MultiEdit that produces a handoff file with missing/empty `consumes_when:`. Scope: markdown files inside a vault, where a vault is the nearest ancestor folder holding a `Meta` / `⚙️ Meta` subfolder (`$VAULT_ROOT` applies only when that lookup finds nothing). Writes outside a vault, and any internal error, fail OPEN. Bypass: `HANDOFF_FRONTMATTER_BYPASS=1` (rare).
 
 ## Close-time scan (Phase 0c of session-close.md)
 

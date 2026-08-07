@@ -20,12 +20,19 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NamedTuple, Optional
 
+
+SOURCE_EXT_RE = re.compile(
+    r"\.(py|ts|tsx|js|jsx|go|rs|java|rb|php|c|cpp|h|hpp|swift|kt|scala)$"
+)
 # Abandoned-git-lock reclaim (MYC-3175), shared with the install-clone updater.
 # Fail-open: a missing sibling must never break the scan.
 try:
@@ -40,9 +47,95 @@ except ImportError:  # loaded as a plain module (not a package), the common case
             return []
 
 
-SOURCE_EXT_RE = re.compile(
-    r"\.(py|ts|tsx|js|jsx|go|rs|java|rb|php|c|cpp|h|hpp|swift|kt|scala)$"
-)
+# ── client-safe configuration (MYC-2070) ─────────────────────────────────────
+# This module shipped assuming ONE operator's layout: a hardcoded ~/dev holding
+# a ~50-repo fleet. A client install is neither — their code may live anywhere,
+# and a 3-repo client shown a fleet banner learns to ignore banners, which is
+# the cry-wolf failure the surface exists to prevent. So the two things that
+# vary per install are configuration, not constants.
+CONFIG_PATH = Path.home() / ".claude" / "dev-hygiene.json"
+# A repo that is DELIBERATELY local-only (a scratch pad, a private journal, an
+# air-gapped client tree) is not drift. Without an opt-out it would surface as
+# NO_REMOTE every session forever — cry-wolf by construction.
+NO_REMOTE_OK_MARKER = ".no-remote-ok"
+
+
+def _config() -> dict:
+    """`~/.claude/dev-hygiene.json`, or {} when absent/unreadable. Fail-open:
+    dev hygiene must never break because its optional config is malformed."""
+    try:
+        doc = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def resolve_dev_root() -> Path:
+    """Where this install's code repos live: $ABS_DEV_ROOT, else the config's
+    `dev_root`, else ~/dev. Resolved per call so a test (and a client who edits
+    the config mid-session) sees the change without a reimport."""
+    env = os.environ.get("ABS_DEV_ROOT", "").strip()
+    if env:
+        return Path(env).expanduser()
+    cfg = _config().get("dev_root")
+    if isinstance(cfg, str) and cfg.strip():
+        return Path(cfg).expanduser()
+    return Path.home() / "dev"
+
+
+# Repos that legitimately ARE vaults (or ship vault scaffolding), so a
+# vault-shaped dir inside them is not the VAULT-ARTIFACT-INSIDE-PRODUCT-REPO
+# symptom. Substrate default + per-install `vault_shaped_repos` config, because
+# the operator's own vault repo is named whatever they named it.
+DEFAULT_VAULT_SHAPED_REPOS = frozenset({"ai-brain-starter"})
+
+
+def vault_shaped_repos() -> frozenset:
+    """Repo names exempt from the stray-vault-dir report (default + config)."""
+    extra = _config().get("vault_shaped_repos")
+    names = set(DEFAULT_VAULT_SHAPED_REPOS)
+    if isinstance(extra, list):
+        names.update(e.strip() for e in extra if isinstance(e, str) and e.strip())
+    return frozenset(names)
+
+
+def is_no_remote_ok(repo: Path) -> bool:
+    """True when this repo is deliberately local-only and must stay silent.
+
+    Two ways to say so, because the right one differs by who is asking: a
+    `.no-remote-ok` file in the repo (travels with the repo, obvious to the next
+    person who opens it) or the config's `no_remote_ok` list of names/paths
+    (central, for someone who does not want to touch the repos).
+    """
+    repo = Path(repo)
+    try:
+        if (repo / NO_REMOTE_OK_MARKER).exists():
+            return True
+    except OSError:
+        pass
+    allow = _config().get("no_remote_ok")
+    if not isinstance(allow, list):
+        return False
+    try:
+        rp = str(repo.resolve())
+    except OSError:
+        rp = str(repo)
+    for entry in allow:
+        if not isinstance(entry, str) or not entry.strip():
+            continue
+        e = entry.strip()
+        if e == repo.name:
+            return True
+        try:
+            if str(Path(e).expanduser().resolve()) == rp:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+# Kept as a module constant for back-compat with callers that read it directly;
+# every code path that MATTERS calls resolve_dev_root() so config/env win.
 DEV_ROOT = Path.home() / "dev"
 ACTIVE_WINDOW_SECONDS = 60 * 60  # 60 minutes
 MIN_FILES_FOR_MODULE = 3
@@ -63,14 +156,15 @@ class StashEntry(NamedTuple):
 
 
 def find_active_repos(now_ts: Optional[float] = None) -> list[Path]:
-    """Return ~/dev/<repo> dirs whose .git or working tree was touched recently."""
-    if not DEV_ROOT.exists():
+    """Dev-root <repo> dirs whose .git or working tree was touched recently."""
+    dev_root = resolve_dev_root()
+    if not dev_root.exists():
         return []
     now_ts = now_ts or time.time()
     cutoff = now_ts - ACTIVE_WINDOW_SECONDS
     out: list[Path] = []
     try:
-        for child in DEV_ROOT.iterdir():
+        for child in dev_root.iterdir():
             if not child.is_dir():
                 continue
             git_dir = child / ".git"
@@ -114,6 +208,11 @@ def find_modules_in_flight(repo: Path) -> list[ModuleInFlight]:
             ["git", "-C", str(repo), "status", "--porcelain=v1", "-uall"],
             capture_output=True,
             text=True,
+            # Pinned explicitly: `text=True` alone decodes with the console code
+            # page, and on a non-UTF-8 Windows console any path carrying a
+            # non-ASCII byte raises before the caller sees a line.
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
@@ -170,6 +269,8 @@ def find_wip_stashes(repo: Path) -> list[StashEntry]:
             ["git", "-C", str(repo), "stash", "list"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
@@ -212,14 +313,21 @@ def find_unpushed_local_commits(
 ) -> list[UnpushedCommitEntry]:
     """Return local branches with commits not on any remote ref.
 
-    Filters to commits older than `min_age_minutes` (default 24h) so a
-    just-committed change in active work doesn't get flagged as drift.
-
     Bug class this surfaces: LOCAL-COMMITS-DRIFT-UNPUSHED. A chore commit
     (e.g. a CI pin from an automated hardening pass) sitting on local main
     unpushed for days blocks fast-forward pulls AND silently corrupts any
     deploy that ships whatever is at local HEAD — the operator's local ends
     up several commits behind origin while production serves the stale tree.
+    Filters to commits older than `min_age_minutes` (default 24h) so a
+    just-committed change in active work doesn't get flagged as drift.
+
+    Bug class this surfaces: LOCAL-COMMITS-DRIFT-UNPUSHED. Observed
+    2026-05-29 on mycelium-site when a gh-harden-repos.sh chore CI pin
+    commit (`e40fcc4`) sat on local main unpushed for ~3 days, blocking
+    fast-forward pulls AND silently corrupting `vercel --prod` (which
+    deploys whatever's at local HEAD). Net effect: production
+    /app/digest 404'd for 48h after MYC-56 PR #102 merged because the
+    operator's local was 5 commits behind origin.
     """
     try:
         # --branches restricts to commits reachable from local branches.
@@ -237,6 +345,8 @@ def find_unpushed_local_commits(
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
@@ -265,10 +375,17 @@ def find_unpushed_local_commits(
         branch_names: list[str] = []
         for ref in refs.split(","):
             ref = ref.strip()
-            if not ref or ref.startswith("tag:") or ref.startswith("HEAD"):
+            if not ref or ref.startswith("tag:"):
                 continue
+            # Unwrap BEFORE the bare-HEAD skip. These were the other way round,
+            # so `HEAD -> claude/my-branch` hit the startswith("HEAD") skip and
+            # the unwrap was DEAD CODE — the branch you are CURRENTLY ON was
+            # never counted. That is the branch most likely to be carrying your
+            # work, so both surfaces under-reported by exactly it.
             if ref.startswith("HEAD -> "):
                 ref = ref[len("HEAD -> "):]
+            elif ref.startswith("HEAD"):
+                continue  # bare detached-HEAD decoration, no branch name
             if ref.startswith("origin/") or ref.startswith("upstream/"):
                 continue
             branch_names.append(ref)
@@ -308,6 +425,8 @@ def _resolve_upstream(repo: Path, branch: str) -> Optional[str]:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
@@ -339,13 +458,16 @@ class BranchClass:
     BACKED_UP = "backed_up"                  # pushed to its own origin/<branch>, not merged
     SQUASH_MERGED_STALE = "squash_merged_stale"  # content ⊆ origin/main (squash artifact)
     GENUINE_UNIQUE = "genuine_unique"        # real divergent work NOT on any remote → the only drift
+    NO_REMOTE = "no_remote"                  # repo has NO remote-tracking ref → backed up NOWHERE (strongest drift)
     UNKNOWN = "unknown"                      # can't classify safely → always preserve
 
 
 # Content is provably preserved on origin → the local branch ref is safe to delete.
 REAPABLE_CLASSES = frozenset({BranchClass.TRUE_MERGED, BranchClass.SQUASH_MERGED_STALE})
 # Real, un-backed-up state → surface for a human, NEVER auto-delete.
-SURFACE_CLASSES = frozenset({BranchClass.RELIC, BranchClass.GENUINE_UNIQUE})
+SURFACE_CLASSES = frozenset(
+    {BranchClass.RELIC, BranchClass.GENUINE_UNIQUE, BranchClass.NO_REMOTE}
+)
 
 
 def _git(repo: Path, *args: str, timeout: int = 15):
@@ -355,11 +477,100 @@ def _git(repo: Path, *args: str, timeout: int = 15):
             ["git", "-C", str(repo), *args],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         return r.returncode, r.stdout.strip(), r.stderr.strip()
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return 99, "", "git-exec-failed"
+
+
+# Known gh install locations, searched when gh is not on PATH. The reaper runs
+# from launchd (com.abs.dev-repo-reaper) with NO PATH set → the launchd
+# default `/usr/bin:/bin:/usr/sbin:/sbin`, which does NOT contain `~/.local/bin`
+# where gh lives. A bare subprocess(["gh", ...]) then FileNotFounds and the whole
+# merged-detection silently fail-opens — dormant in the ONE place it runs
+# unattended (MYC-2365). Resolving an absolute path makes it work regardless of
+# how the reaper is invoked. `git` doesn't need this (it's at /usr/bin/git, on
+# the default PATH).
+_GH_CANDIDATES = (
+    Path.home() / ".local" / "bin" / "gh",
+    Path("/opt/homebrew/bin/gh"),
+    Path("/usr/local/bin/gh"),
+    Path("/usr/bin/gh"),
+)
+
+
+def _resolve_gh() -> Optional[str]:
+    """Absolute path to the gh entrypoint, or None if it cannot be found.
+
+    `shutil.which("gh")` first (honors PATH for interactive / manual runs), then
+    the known install locations (robust to the launchd-default PATH that excludes
+    ~/.local/bin — see MYC-2365). None → caller fails OPEN (preserve), same as a
+    missing gh always did. Prefers `~/.local/bin/gh` (the MYC-657/793 token-
+    unshadow wrapper) so its keyring-pinning protection stays on the path; the
+    wrapper then needs a real gh on PATH, which `_gh_env` supplies.
+    """
+    found = shutil.which("gh")
+    if found:
+        return found
+    for cand in _GH_CANDIDATES:
+        if cand.exists():
+            return str(cand)
+    return None
+
+
+# Dirs prepended to the gh subprocess PATH. The resolved entrypoint is usually
+# the ~/.local/bin/gh WRAPPER, which resolves the real gh via "first PATH hit" —
+# so under the launchd-default PATH (no /opt/homebrew/bin) the wrapper itself
+# can't find real gh and exits "no real gh binary found on PATH". Supplying these
+# dirs lets the wrapper resolve the real gh (/opt/homebrew or /usr/local) and lets
+# gh shell out to git. ~/.local/bin first keeps the wrapper preferred. MYC-2365.
+_GH_PATH_DIRS = (
+    str(Path.home() / ".local" / "bin"),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+)
+
+
+def _gh_env() -> dict:
+    """os.environ with the gh/real-gh/git dirs prepended to PATH (MYC-2365)."""
+    env = dict(os.environ)
+    existing = env.get("PATH", "")
+    env["PATH"] = ":".join((*_GH_PATH_DIRS, existing) if existing else _GH_PATH_DIRS)
+    return env
+
+
+def _gh(repo: Path, *args: str, timeout: int = 20):
+    """Run gh with cwd=<repo>, never raise. Returns (rc, stdout, stderr) trimmed.
+
+    rc=99 on exec failure (gh missing / OS error / timeout). Mirrors `_git` so
+    the authoritative merged-PR fetch fails OPEN exactly like every other probe
+    here. gh resolves the GitHub repo from the cwd's origin remote. Resolved by
+    ABSOLUTE path (`_resolve_gh`) AND run with an augmented PATH (`_gh_env`) so it
+    works under the launchd-default PATH the weekly cron runs with — not just an
+    interactive PATH (MYC-2365: the wrapper needs real gh + git reachable).
+    """
+    gh_bin = _resolve_gh()
+    if gh_bin is None:
+        return 99, "", "gh-not-found"
+    try:
+        r = subprocess.run(
+            [gh_bin, *args],
+            cwd=str(repo),
+            env=_gh_env(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+        return r.returncode, r.stdout.strip(), r.stderr.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return 99, "", "gh-exec-failed"
 
 
 def detect_default_branch(repo: Path) -> Optional[str]:
@@ -409,12 +620,87 @@ def _branch_adds_nothing(repo: Path, base_ref: str, branch: str) -> Optional[boo
     return total_added == 0
 
 
+def fetch_merged_pr_branches(repo: Path) -> Optional[frozenset]:
+    """Authoritative set of head-branch names whose PRs are MERGED, via `gh`.
+
+    The squash-merge diff heuristic (`_branch_adds_nothing`) goes FALSE-NEGATIVE
+    once origin/main advances on a file a merged branch also touched: the branch's
+    now-stale content reads as net additions, so a genuinely-merged branch (and
+    its worktree) mis-classifies as GENUINE_UNIQUE and is never reaped. That is
+    how one repo piled up 47 merged worktrees (~170G) while the weekly
+    reaper ran (MYC-2347). `gh`'s PR state is immune to main moving on — a merged
+    PR's headRefName is recorded even after delete_branch_on_merge removes
+    origin/<branch>.
+
+    FAIL-OPEN by contract: returns None on ANY failure — gh not installed, not a
+    GitHub repo, sandbox-stripped auth (MYC-793), timeout, non-zero exit, or
+    unparseable JSON. The caller then falls back to the diff heuristic and
+    PRESERVES. This signal only ever ADDS a reap when gh AUTHORITATIVELY confirms
+    a branch merged; it never withholds a reap the diff heuristic already allows,
+    and it NEVER raises.
+
+    Keyed on headRefName, NOT headRefOid (SHA), deliberately. A SHA-strict match
+    is more precise against the name-reuse FP below, but on the real problem repo
+    (measured 2026-06-30) 6 of 56 genuinely-merged local branches had a
+    tip SHA that had DRIFTED from gh's recorded headRefOid (force-push/rebase
+    during the PR) — SHA-strict would FALSE-NEGATIVE all 6 and the bug persists.
+    Recall wins: the reaper's harm asymmetry is FN = a lingering worktree
+    (recoverable) vs the name-reuse FP = reaping new work on a reused merged name.
+    That FP is preempted for any PUSHED reuse by the BACKED_UP check (step 3, runs
+    BEFORE this override), never reaps a dirty worktree, and is reflog+manifest
+    recoverable for the unpushed remainder (0 occurrences observed across 549
+    merged PRs in two repos).
+    """
+    rc, out, _err = _gh(
+        repo, "pr", "list", "--state", "merged",
+        "--limit", "1000", "--json", "headRefName",
+    )
+    if rc != 0 or not out:
+        return None
+    try:
+        data = json.loads(out)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, list):
+        return None
+    names = {
+        d["headRefName"]
+        for d in data
+        if isinstance(d, dict) and d.get("headRefName")
+    }
+    return frozenset(names) if names else None
+
+
 def classify_branch(
-    repo: Path, branch: str, default_branch: Optional[str] = None
+    repo: Path,
+    branch: str,
+    default_branch: Optional[str] = None,
+    *,
+    merged_branches: Optional[frozenset] = None,
 ) -> str:
-    """Classify a local branch into one of BranchClass. Fail-safe to UNKNOWN."""
+    """Classify a local branch into one of BranchClass. Fail-safe to UNKNOWN.
+
+    `merged_branches` (keyword-only, optional): the gh-authoritative set of
+    head-branch names whose PRs are MERGED (see `fetch_merged_pr_branches`). When
+    a branch is in it, it overrides the squash-merge diff FALSE-NEGATIVE and is
+    classed SQUASH_MERGED_STALE (reapable) even after origin/main has advanced
+    past the merge (MYC-2347). None / empty → no override → the diff heuristic
+    runs (fail-open, preserve). The 4 hooks that share this module never pass it,
+    so their behavior is unchanged.
+    """
     default_branch = default_branch or detect_default_branch(repo)
     if not default_branch:
+        # No remote default branch. Distinguish two very different situations
+        # (MYC-1894 — the blind spot that hid 15 un-backed-up commits):
+        #   * NO remote-tracking ref at all → this repo's commits are backed up
+        #     NOWHERE. The STRONGEST drift signal, not an UNKNOWN. The prior
+        #     `return UNKNOWN` here is exactly why three whole repos with no
+        #     remote (one +13 commits) never surfaced at all.
+        #   * Has remotes but no resolvable default (detached origin/HEAD, a
+        #     non-main default we couldn't verify) → can't classify safely →
+        #     UNKNOWN (preserve).
+        if not repo_has_any_remote_ref(repo):
+            return BranchClass.NO_REMOTE
         return BranchClass.UNKNOWN
     origin_main = f"origin/{default_branch}"
     rc, _, _ = _git(repo, "rev-parse", "--verify", "--quiet", origin_main)
@@ -444,6 +730,13 @@ def classify_branch(
             return BranchClass.BACKED_UP
 
     # 4. SQUASH_MERGED_STALE — content already on origin/main (squash artifact).
+    #    Authoritative override FIRST: if `gh` confirms this branch's PR merged,
+    #    it IS absorbed into main even after main advanced on files the branch
+    #    also touched — the diff FALSE-NEGATIVE (MYC-2347) that _branch_adds_nothing
+    #    cannot see once main moves on. Empty / None merged_branches → no signal →
+    #    fall through to the diff heuristic (fail-open, preserve).
+    if merged_branches and branch in merged_branches:
+        return BranchClass.SQUASH_MERGED_STALE
     adds_nothing = _branch_adds_nothing(repo, origin_main, branch)
     if adds_nothing is True:
         return BranchClass.SQUASH_MERGED_STALE
@@ -539,11 +832,106 @@ def _has_live_session_lock(repo: Path, now_ts: Optional[float] = None) -> bool:
         return False
     if not isinstance(data, dict):
         return False
-    for s in data.get("sessions", []):
-        la = s.get("last_activity_at") if isinstance(s, dict) else None
+    for s in _lock_entries(data):
+        la = s.get("last_activity_at")
         if isinstance(la, (int, float)) and (now_ts - la) < SESSION_LOCK_LIVE_WINDOW_SEC:
             return True
     return False
+
+
+def _lock_entries(data: dict) -> list:
+    """Session entries from a lock file, across every schema it has worn.
+
+    THE bug this exists to kill (measured 2026-08-06): the live file is v2,
+    `{"version": 2, "sessions": {"<sid>": {...}}}` — sessions is a **dict**.
+    The reader iterated `data.get("sessions", [])` as a LIST, so iterating the
+    dict yielded its string KEYS, every `isinstance(entry, dict)` was False, and
+    the function returned "no live session" on a file that had two live ones.
+    It was documented as reading THE REAL lock and had been dead the whole time.
+
+    Mirrors `_load_sessions` in session-lock.py, the writer, so the reader and
+    the writer can no longer disagree about shape:
+      v2      -> {"sessions": {sid: entry}}
+      legacy  -> {"sessions": [entry, ...]}
+      v1 flat -> the top-level object IS one entry
+    """
+    sessions = data.get("sessions")
+    if isinstance(sessions, dict):
+        return [v for v in sessions.values() if isinstance(v, dict)]
+    if isinstance(sessions, list):
+        return [v for v in sessions if isinstance(v, dict)]
+    if "last_activity_at" in data:
+        return [data]
+    return []
+
+
+def has_live_session_lock(path: Path, now_ts: Optional[float] = None) -> bool:
+    """Is a Claude session live in this working tree? THE one answer.
+
+    Public because two DESTRUCTIVE tools need it and each had grown its own,
+    wrong, copy. Measured 2026-08-06: across the entire dev root there were ZERO
+    files named `.session-lock` — the probe both copies used. session-lock.py
+    writes `<main_root>/.claude/.session-lock.json`, a multi-session MAP keyed on
+    `last_activity_at`, and it resolves `main_root` through
+    `git rev-parse --git-common-dir`, so a sibling worktree's lock does not live
+    inside the worktree at all. Both guards were therefore dead in production
+    while reading, correctly, as "no session here".
+
+    That is not a cosmetic miss. `dev-build-reclaim.py`'s bottom pressure rung
+    sets the idle threshold to 0 days, which every worktree passes, so the
+    session lock is the ONLY thing standing between an actively-compiling
+    worktree and having its `target/` deleted. `dev-worktree-prune.py` deletes
+    the whole worktree.
+
+    Three probes, in order of authority. Legacy mtime probes are kept because
+    they cost one stat and any future tool that drops a plain `.session-lock`
+    still gets protected.
+
+    An OSError anywhere reads as LOCKED, never unlocked: "I could not tell" and
+    "nobody is here" are different answers, and only one is safe to act on when
+    the action is deletion.
+    """
+    now_ts = now_ts or time.time()
+
+    # 1. Legacy per-worktree marker files (cheap, and back-compatible).
+    for cand in (path / ".session-lock", path / ".claude" / ".session-lock"):
+        try:
+            if cand.exists() and (now_ts - cand.stat().st_mtime) < SESSION_LOCK_LIVE_WINDOW_SEC:
+                return True
+        except OSError:
+            return True
+
+    # 2. The REAL lock, in this tree.
+    if _has_live_session_lock(path, now_ts):
+        return True
+
+    # 3. The REAL lock, at the shared root a worktree points back to. This is
+    #    the case that was missing: `~/dev/<repo>-<slug>` keeps its lock at the
+    #    main checkout, so probing only the worktree finds nothing, forever.
+    root = session_lock_root(path)
+    if root is not None and root != path:
+        return _has_live_session_lock(root, now_ts)
+    return False
+
+
+def session_lock_root(path: Path) -> Optional[Path]:
+    """The checkout whose `.claude/.session-lock.json` covers `path`.
+
+    Mirrors session-lock.py: resolve `--git-common-dir`, then strip the trailing
+    `.git` to get the main working tree. Returns None when `path` is not in a
+    git repo or git is unavailable — callers treat None as "no extra place to
+    look", never as "unlocked".
+    """
+    rc, out, _ = _git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if rc != 0 or not out:
+        rc, out, _ = _git(path, "rev-parse", "--git-common-dir")
+    if rc != 0 or not out:
+        return None
+    common = Path(out.rstrip("/"))
+    if not common.is_absolute():
+        common = (path / common).resolve()
+    # common is typically <main_root>/.git; for a bare repo it is the repo dir.
+    return common.parent if common.name == ".git" else common
 
 
 def _plan_stash_reap(
@@ -590,6 +978,7 @@ def plan_repo_reap(
     ttl_days: float = 14,
     default_branch: Optional[str] = None,
     now_ts: Optional[float] = None,
+    merged_branches: Optional[frozenset] = None,
 ) -> ReapPlan:
     """Compute (do NOT execute) what is safe to reap in one repo.
 
@@ -598,6 +987,13 @@ def plan_repo_reap(
     branches, only surplus/old checkpoint stashes. Everything else is either
     surfaced for a human (RELIC, GENUINE_UNIQUE) or left untouched (BACKED_UP).
     A live .session-lock skips the whole repo.
+
+    `merged_branches` (optional): the gh-authoritative merged head-branch set for
+    this repo (see `fetch_merged_pr_branches`). Threaded into branch + worktree
+    classification so a branch/worktree merged BEFORE origin/main advanced past it
+    is still reaped (MYC-2347). None → diff heuristic only (fail-open, preserve);
+    the CLI computes it once per repo, tests inject it. Kept side-effect-free (no
+    gh call here) so the existing hermetic tests are unaffected.
     """
     repo = Path(repo)
     plan = ReapPlan(repo=repo)
@@ -608,7 +1004,27 @@ def plan_repo_reap(
 
     default_branch = default_branch or detect_default_branch(repo)
     if not default_branch:
-        plan.skipped.append((repo.name, "no origin default branch — repo skipped"))
+        # No remote default. If the repo has NO remote-tracking ref at all, its
+        # local branches are backed up nowhere → SURFACE them (never reapable:
+        # there is no origin to prove content-safe). This is the
+        # whole-repo-un-backed-up class the session-start surface also
+        # now catches (MYC-1894). Otherwise (remotes exist, default unresolved)
+        # skip the repo as before.
+        if repo_has_any_remote_ref(repo):
+            plan.skipped.append((repo.name, "no origin default branch — repo skipped"))
+            return plan
+        if is_no_remote_ok(repo):
+            plan.skipped.append((repo.name, "deliberately local-only (.no-remote-ok)"))
+            return plan
+        rc, out, _ = _git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
+        for branch in out.splitlines():
+            branch = branch.strip()
+            if not branch:
+                continue
+            rc_s, sha, _ = _git(repo, "rev-parse", "--short", branch)
+            plan.surface_branches.append(
+                ReapTarget(branch=branch, cls=BranchClass.NO_REMOTE, sha=sha)
+            )
         return plan
 
     worktrees = _list_worktrees(repo)
@@ -621,7 +1037,7 @@ def plan_repo_reap(
         branch = branch.strip()
         if not branch or branch == default_branch:
             continue  # never touch the default branch
-        cls = classify_branch(repo, branch, default_branch)
+        cls = classify_branch(repo, branch, default_branch, merged_branches=merged_branches)
         rc_s, sha, _ = _git(repo, "rev-parse", "--short", branch)
         tgt = ReapTarget(branch=branch, cls=cls, sha=sha)
         if cls in REAPABLE_CLASSES:
@@ -642,7 +1058,7 @@ def plan_repo_reap(
             continue  # never reap the primary checkout
         if wt_branch == default_branch:
             continue
-        cls = classify_branch(repo, wt_branch, default_branch)
+        cls = classify_branch(repo, wt_branch, default_branch, merged_branches=merged_branches)
         if cls not in REAPABLE_CLASSES:
             continue
         if _is_dirty(wt_path):
@@ -651,6 +1067,10 @@ def plan_repo_reap(
             )
             continue
         rc_s, sha, _ = _git(repo, "rev-parse", "--short", wt_branch)
+        # Removing the worktree FREES its branch; the (now not-checked-out) branch
+        # is reaped on the NEXT run's branch loop — a documented self-heal, so this
+        # run stays a minimal worktree-only removal (MYC-2347). The branch ref is
+        # ~40 bytes; the 170G harm is the worktree, removed here.
         plan.reap_worktrees.append(WorktreeTarget(path=wt_path, branch=wt_branch, sha=sha))
 
     plan.reap_stashes = _plan_stash_reap(repo, keep_k, ttl_days, now_ts)
@@ -660,6 +1080,40 @@ def plan_repo_reap(
 def _stash_index(ref: str) -> int:
     m = re.search(r"\{(\d+)\}", ref)
     return int(m.group(1)) if m else 0
+
+
+def _resolve_ls_sweep_tool() -> Optional[Path]:
+    """Locate ls-dead-handler-sweep.py (deployed or in-repo dev checkout).
+    Mirrors dev-repo-reaper.py's own _add_lib_to_path candidate-search pattern
+    (deployed path first, in-repo bin/ as the dev-checkout fallback)."""
+    candidates = [
+        os.environ.get("LS_SWEEP_TOOL"),
+        str(Path.home() / ".local" / "bin" / "ls-dead-handler-sweep.py"),  # deployed
+        str(Path(__file__).resolve().parent.parent.parent / "bin" / "ls-dead-handler-sweep.py"),  # in-repo
+    ]
+    for c in candidates:
+        if c and Path(c).is_file():
+            return Path(c)
+    return None
+
+
+def _ls_unregister_stale_bundles(path: Path) -> None:
+    """Best-effort: unregister any *.app bundles under `path` from LaunchServices
+    BEFORE it's deleted, so a reaped worktree doesn't leave a dead URL-scheme
+    handler behind for macOS to route deep-links to later (MYC-2626). ALWAYS
+    fail-open -- the worktree reap already works without this; this is pure
+    hygiene riding along, and must never be allowed to block or error it.
+    """
+    tool = _resolve_ls_sweep_tool()
+    if tool is None:
+        return
+    try:
+        subprocess.run(
+            [sys.executable, str(tool), "--unregister-path", str(path)],
+            capture_output=True, timeout=45,
+        )
+    except Exception:
+        pass
 
 
 def execute_reap(plan: ReapPlan, apply: bool = False) -> dict:
@@ -684,6 +1138,7 @@ def execute_reap(plan: ReapPlan, apply: bool = False) -> dict:
             {"path": str(wt.path), "branch": wt.branch, "sha": wt.sha}
         )
         if apply:
+            _ls_unregister_stale_bundles(wt.path)  # MYC-2626: before removal, not after
             _git(plan.repo, "worktree", "remove", str(wt.path))  # no --force
     for t in plan.reap_branches:
         manifest["branches"].append({"branch": t.branch, "cls": t.cls, "sha": t.sha})
@@ -715,6 +1170,8 @@ def has_recent_session_commits(repo: Path, minutes: int = 30) -> bool:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
@@ -722,23 +1179,910 @@ def has_recent_session_commits(repo: Path, minutes: int = 30) -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
-def discover_hubs(dev_root: Optional[Path] = None) -> list[Path]:
-    """Enumerate the BARE hubs under ~/dev — one primary checkout per repo.
+# ---------------------------------------------------------------------------
+# Fleet discovery + fetch + drift collection (MYC-1894).
+#
+# The session-start unpushed surface used to scan only repos touched in the last
+# 60 min (find_active_repos) — so COLD repos with stranded commits never
+# surfaced. discover_primary_repos() is the SHARED, worktree-deduped, full-fleet
+# discovery that BOTH the surface AND dev-repo-reaper.py use — one source of
+# truth, so a future coverage change happens in ONE place, not two drifting
+# copies (the second drift hole this ticket is itself an instance of).
+# ---------------------------------------------------------------------------
 
-    A bare hub's `.git` is a real DIRECTORY (it can rot). A linked worktree's
-    `.git` is a gitdir-pointer FILE (fresh off origin by construction) → excluded.
-    A bare ORIGIN mirror (`<name>.git`, no `.git` subdir) is excluded too. This is
-    deliberately simpler than the reaper's worktree-grouping discovery: hub-refresh
-    only ever ff's / surfaces bare hubs, never worktrees.
+
+def _common_git_dir(child: Path):
+    """(child, canonical common-git-dir) or None when it isn't a git checkout."""
+    git_marker = child / ".git"
+    try:
+        if not git_marker.exists():
+            return None
+    except OSError:
+        return None
+    rc, common, _ = _git(child, "rev-parse", "--git-common-dir")
+    if rc != 0 or not common:
+        return None
+    if not os.path.isabs(common):
+        common = os.path.normpath(os.path.join(child, common))
+    return child, os.path.realpath(common)
+
+
+def discover_primary_repos(
+    dev_root: Optional[Path] = None, max_workers: int = 8
+) -> list[Path]:
+    """Return one primary checkout per repo identity under the dev root.
+
+    Worktrees share a common git dir; group by it and pick the primary checkout
+    (the one whose .git is a real directory) so each repo is scanned exactly once
+    (refs/stashes are shared across its worktree set). Covers EVERY git repo
+    under the root — no activity-window filter, no hardcoded subset.
+
+    The root defaults to `resolve_dev_root()` (env / config / ~/dev) rather than
+    a hardcoded path, and the per-child `git rev-parse` runs in PARALLEL: it was
+    O(#dirs) SERIAL subprocesses, which is invisible on a warm cache and is a
+    slow session start on a client's cold, large, or network-backed tree
+    (MYC-2070). Order is restored by sorting, so the result is deterministic.
     """
-    dev_root = Path(dev_root) if dev_root is not None else (Path.home() / "dev")
+    dev_root = Path(dev_root) if dev_root is not None else resolve_dev_root()
     if not dev_root.exists():
         return []
+    by_common: dict = {}
     try:
         children = sorted(p for p in dev_root.iterdir() if p.is_dir())
     except OSError:
         return []
-    return [c for c in children if (c / ".git").is_dir()]
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            probed = list(ex.map(_common_git_dir, children))
+    except Exception:
+        probed = [_common_git_dir(c) for c in children]
+    for hit in probed:
+        if hit is None:
+            continue
+        child, common = hit
+        git_marker = child / ".git"
+        # Canonicalize the dedup KEY (the returned path is still `child`): git
+        # reports a worktree's common-dir as a realpath but a primary's as a
+        # relative join, so on symlinked roots (macOS /var↔/private/var) the two
+        # would not group without this. The dev root isn't symlinked in the
+        # common case, but keying on realpath makes the dedup robust everywhere.
+        # Canonicalize the dedup KEY (the returned path is still `child`): git
+        # reports a worktree's common-dir as a realpath but a primary's as a
+        # relative join, so on symlinked roots (macOS /var↔/private/var) the two
+        # would not group without this. ~/dev isn't symlinked in prod, but keying
+        # on realpath makes the worktree dedup robust everywhere.
+        # Primary checkout: .git is a directory (worktrees have a .git FILE).
+        is_primary = git_marker.is_dir()
+        if common not in by_common or is_primary:
+            by_common[common] = child
+    return sorted(set(by_common.values()))
+
+
+def has_full_fetch_refspec(repo: Path) -> bool:
+    """True when this repo fetches ALL branches, not just one.
+
+    A single-branch clone (`git clone --single-branch`, `gh repo clone` of a
+    large repo, most CI checkouts) carries
+    `+refs/heads/main:refs/remotes/origin/main`. `git fetch` then updates
+    origin/main and NOTHING else, so every OTHER branch has no local
+    remote-tracking ref no matter how thoroughly it was pushed.
+
+    That matters because every backup check here is `git log <ref> --not
+    --remotes`, which asks "is this commit reachable from a LOCAL remote-
+    tracking ref". On a narrow clone the honest answer to "is this pushed" is
+    NOT "no" — it is "this repo cannot tell you locally". Reporting the first
+    when the truth is the second is cry-wolf by construction, on a clone shape
+    that is completely normal. Measured live: two repos reported 1 un-backed-up
+    commit each; `git ls-remote` showed both commits sitting on origin.
+
+    FAIL-SAFE DIRECTION. A False from this function SUPPRESSES drift warnings
+    for the repo, so it must require POSITIVE evidence of a narrow refspec —
+    never merely the absence of evidence. A timed-out or failed `git config`
+    would otherwise silently switch off a safety warning for a repo that might
+    genuinely be holding un-backed-up work. So: narrow ONLY when git answered
+    cleanly AND what it returned lacks `refs/heads/*`; every failure mode reads
+    as full (warnings stay on).
+    """
+    rc, out, _ = _git(repo, "config", "--get-regexp", r"^remote\..*\.fetch$")
+    if rc != 0 or not out.strip():
+        # Could not read the config (timeout, permissions, no fetch refspec at
+        # all). Unknown -> do NOT suppress.
+        return True
+    return any("refs/heads/*" in line for line in out.splitlines())
+
+
+def narrow_refspec_repos(repos: list) -> list:
+    """Repos whose local backup state is UNVERIFIABLE (single-branch clones).
+
+    Surfaced separately with a one-command remedy rather than folded into the
+    drift count — "I cannot tell" is a different message from "your work is at
+    risk", and conflating them is what makes a banner ignorable.
+    """
+    out = []
+    for r in repos:
+        r = Path(r)
+        try:
+            if repo_has_any_remote_ref(r) and not has_full_fetch_refspec(r):
+                out.append(r)
+        except OSError:
+            continue
+    return out
+
+
+def format_narrow_refspec_section(repos: list, limit: int = 6) -> str:
+    """One advisory block, or "" when every repo can verify itself."""
+    if not repos:
+        return ""
+    lines = [
+        "[unverifiable-backup-state]",
+        "",
+        (f"{len(repos)} repo(s) are single-branch clones, so whether their "
+         f"branches are pushed CANNOT be determined locally — `git fetch` only "
+         f"updates one branch. Their branches are NOT reported as at-risk above, "
+         f"because the honest answer is \"unknown\", not \"unbacked\"."),
+        "",
+    ]
+    for r in repos[:limit]:
+        lines.append(f"- `{Path(r).name}`")
+    if len(repos) > limit:
+        lines.append(f"- ... and {len(repos) - limit} more")
+    lines += [
+        "",
+        "**Fix (per repo, one time):** "
+        "`git remote set-branches origin '*' && git fetch origin`",
+    ]
+    return "\n".join(lines)
+
+
+def repo_has_any_remote_ref(repo: Path) -> bool:
+    """True if the repo has at least one remote-tracking ref (a known backup).
+
+    Emptiness here is the harm signal MYC-1894 catches: NOTHING in this repo is
+    on any remote we know about, so every local commit is backed up nowhere.
+    Keys on refs/remotes/ (not `git remote`) so a configured-but-never-pushed
+    origin still reads as un-backed-up.
+    """
+    rc, out, _ = _git(repo, "for-each-ref", "--format=%(refname)", "refs/remotes/")
+    return rc == 0 and bool(out.strip())
+
+
+# Frequency-capped fetch state — so session-start does NOT fetch the whole fleet
+# every launch (only once per cap window). The local coverage scan still runs
+# every session; only NETWORK freshness is throttled.
+FETCH_STATE_PATH = Path.home() / ".claude" / ".drift-fetch-state.json"
+
+
+def fetch_repos_capped(
+    repos: list[Path],
+    cap_hours: float = 4.0,
+    timeout: int = 6,
+    max_workers: int = 8,
+    state_path: Path = FETCH_STATE_PATH,
+    now_ts: Optional[float] = None,
+) -> tuple[set, bool]:
+    """Fetch origin on each repo, at most once per cap_hours (frequency cap).
+
+    Returns (failed_repos, did_fetch):
+      * failed_repos: repos WITH an origin whose fetch errored this run — the
+        caller surfaces them so a stale-ref miss is never silent (fail-loud).
+      * did_fetch: True if a fetch pass actually ran (False = within the cap;
+        refs reused from the last fetch).
+
+    Coverage (the local scan) is independent of this cap — only network freshness
+    is throttled. Bounded + parallel + per-repo timeout so it can never hang the
+    session: each git fetch self-limits via `timeout`; repos with no origin are
+    skipped (not counted as failures — they have no refs to be stale).
+    """
+    now_ts = now_ts or time.time()
+    try:
+        last = float(json.loads(state_path.read_text()).get("last_fetch_ts", 0))
+    except Exception:
+        last = 0.0
+    if now_ts - last < cap_hours * 3600:
+        return set(), False  # within cap → reuse last-fetched refs
+
+    def _one(r: Path):
+        rc0, out0, _ = _git(r, "remote")
+        if rc0 != 0 or "origin" not in out0.split():
+            return r, None  # no origin → nothing to fetch, not a failure
+        rc, _, _ = _git(r, "fetch", "--quiet", "origin", timeout=timeout)
+        return r, (rc == 0)
+
+    failed: set = set()
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            for r, ok in ex.map(_one, repos):
+                if ok is False:
+                    failed.add(r)
+    except Exception:
+        return failed, True
+
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps({"last_fetch_ts": now_ts}))
+    except Exception:
+        pass
+    return failed, True
+
+
+def _no_remote_repo_drift(repo: Path, min_age_minutes: int) -> Optional[tuple]:
+    """One drift entry for a whole no-remote repo (backed up nowhere).
+
+    Attributes to the repo's REAL current branch (not the `%D`-label artifact)
+    and counts all un-backed-up commits older than the age floor, so a brand-new
+    repo mid-first-commit is not nagged. Returns None if nothing qualifies.
+    """
+    rc, head, _ = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    branch = head if rc == 0 and head and head != "HEAD" else "(detached HEAD)"
+    cutoff = time.time() - min_age_minutes * 60
+    rc, out, _ = _git(repo, "log", "--branches", "--not", "--remotes", "--format=%ct")
+    if rc != 0 or not out.strip():
+        return None
+    n = 0
+    for line in out.splitlines():
+        try:
+            ct = float(line)
+        except ValueError:
+            ct = 0.0  # unparseable → treat as old (count it)
+        if ct <= cutoff:
+            n += 1
+    if n == 0:
+        return None
+    return (repo.name, branch, n, BranchClass.NO_REMOTE)
+
+
+def _unpushed_count_on_ref(repo: Path, ref: str, min_age_minutes: int) -> int:
+    """Commits reachable from <ref> that are on NO remote, older than the age
+    floor. One git call. Accurate (no `%D` label artifact)."""
+    cutoff = time.time() - min_age_minutes * 60
+    rc, out, _ = _git(repo, "log", ref, "--not", "--remotes", "--format=%ct")
+    if rc != 0 or not out.strip():
+        return 0
+    n = 0
+    for line in out.splitlines():
+        try:
+            ct = float(line)
+        except ValueError:
+            ct = 0.0  # unparseable → treat as old (count it)
+        if ct <= cutoff:
+            n += 1
+    return n
+
+
+def _count_topic_branches_with_unpushed(repo: Path, default: Optional[str]) -> int:
+    """Cheap (ONE git call) count of NON-default local branches whose tips carry
+    commits not on any remote.
+
+    APPROXIMATE BY DESIGN — does NOT classify merged-stale vs genuine vs relic
+    (that is the reaper's precise, O(branches)-git-call job; doing it here, on
+    every session start, is what made the full-fleet scan slow enough to risk a
+    hook-timeout → fail-open → silent coverage loss). This is only the
+    'N branches to review with dev-repo-reaper.py' pointer.
+    """
+    rc, out, _ = _git(
+        repo, "log", "--branches", "--not", "--remotes",
+        "--simplify-by-decoration", "--format=%D",
+    )
+    if rc != 0 or not out.strip():
+        return 0
+    seen: set = set()
+    for line in out.splitlines():
+        for ref in line.split(","):
+            ref = ref.strip()
+            if not ref or ref.startswith("tag:"):
+                continue
+            # Unwrap BEFORE the bare-HEAD skip. These were the other way round,
+            # so `HEAD -> claude/my-branch` hit the startswith("HEAD") skip and
+            # the unwrap was DEAD CODE — the branch you are CURRENTLY ON was
+            # never counted. That is the branch most likely to be carrying your
+            # work, so both surfaces under-reported by exactly it.
+            if ref.startswith("HEAD -> "):
+                ref = ref[len("HEAD -> "):]
+            elif ref.startswith("HEAD"):
+                continue  # bare detached-HEAD decoration, no branch name
+            if ref.startswith("origin/") or ref.startswith("upstream/"):
+                continue
+            if default and ref == default:
+                continue  # the default branch is headlined separately
+            seen.add(ref)
+    return len(seen)
+
+
+def _repo_drift(repo: Path, min_age_minutes: int) -> tuple[list, int]:
+    """Drift for ONE repo → (genuine_entries, n_topic). See collect_drift."""
+    repo = Path(repo)  # tolerate str paths like the sibling scanners do
+    if not repo_has_any_remote_ref(repo):
+        # Deliberately local-only → not drift, and nagging about it every
+        # session is how a real signal gets trained into background noise
+        # (MYC-2070 client-safe posture).
+        if is_no_remote_ok(repo):
+            return [], 0
+        # Whole repo un-backed-up → report once, cleanly, on its real branch.
+        entry = _no_remote_repo_drift(repo, min_age_minutes)
+        return ([entry] if entry else []), 0
+    default = detect_default_branch(repo)
+    if not has_full_fetch_refspec(repo):
+        # Single-branch clone: `--not --remotes` cannot distinguish "unpushed"
+        # from "never fetched", so every claim it would make here is a coin
+        # flip. Report nothing; narrow_refspec_repos() surfaces the repo with
+        # the one-command fix instead. The DEFAULT branch is the one exception
+        # — it IS in the narrow refspec, so its answer is still trustworthy.
+        g: list = []
+        if default:
+            n_def = _unpushed_count_on_ref(repo, default, min_age_minutes)
+            if n_def > 0:
+                g.append((repo.name, default, n_def, BranchClass.GENUINE_UNIQUE))
+        return g, 0
+    g: list = []
+    if default:
+        n_def = _unpushed_count_on_ref(repo, default, min_age_minutes)
+        if n_def > 0:
+            g.append((repo.name, default, n_def, BranchClass.GENUINE_UNIQUE))
+    return g, _count_topic_branches_with_unpushed(repo, default)
+
+
+def collect_drift(
+    repos: list[Path], min_age_minutes: int = 24 * 60, max_workers: int = 8
+) -> tuple[list, int]:
+    """Fast, O(#repos)-git-call drift scan for the session-start banner.
+
+    Headlines ONLY real LOST-WORK risk — computed cheaply + precisely + in
+    PARALLEL so the hook can never grow slow enough to time out and fail open
+    (which would silently REINTRODUCE the coverage hole this surface exists to
+    close):
+      * NO_REMOTE repos — the whole repo is backed up nowhere.
+      * Unpushed commits on the repo's DEFAULT branch (main/master) — the
+        backbone; this is the MYC-683 incident class (unpushed `main` silently
+        corrupting a deploy).
+
+    Demotes everything else to a single COUNT (n_topic): non-default local TOPIC
+    branches carrying commits not on any remote. dev-repo-reaper.py classifies +
+    drains those precisely on demand; listing all ~150 of them in a session-start
+    banner would cry wolf (the EXACT failure MYC-683 exists to prevent).
+
+    Returns (genuine, n_topic). genuine items are (repo_name, branch, n, cls),
+    in input-repo order. Shared by the surface and its tests so the buckets are
+    proven, not re-implemented per consumer.
+    """
+    if not repos:
+        return [], 0
+    # Pure read-only git I/O per repo → parallelize (ex.map preserves order).
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            results = list(ex.map(lambda r: _repo_drift(r, min_age_minutes), repos))
+    except Exception:
+        results = [_repo_drift(r, min_age_minutes) for r in repos]
+    genuine: list = []
+    n_topic = 0
+    for g, t in results:
+        genuine.extend(g)
+        n_topic += t
+    return genuine, n_topic
+
+
+# ---------------------------------------------------------------------------
+# Claim-bearing branch surface (MYC-3290).
+#
+# collect_drift above headlines exactly two classes (no-remote repos, unpushed
+# commits on a DEFAULT branch) and folds everything else into one suppressed
+# count. That volume-based demotion is right for cry-wolf reasons and wrong on
+# one axis: a branch named `claude/myc-3252-…` is not topic-branch noise. The
+# ticket ID in the name is an explicit statement that this is CLAIMED WORK
+# against a tracked issue — the highest-value stranded thing in the tree, and
+# precisely what today's policy suppresses.
+#
+# Measured, twice, on the same class:
+#   * MYC-3252 (2026-07-24) — `claude/myc-3252-inkcap-generate-dead` held a
+#     complete, tested P1 fix plus a novel CI gate. UNPUSHED, session dead 9h. A
+#     second session was on course to re-derive it from scratch; what caught it
+#     was the concurrent-session check firing on the local worktree path, which
+#     only worked because the worktree happened to still be on disk.
+#   * MYC-86 (2026-07-27) — `origin/claude/myc-86-consent-pause` held 1292
+#     insertions already through adversarial review. PUSHED, 15h, NO PR, because
+#     that session hit its usage limit mid-flight.
+#
+# The second case widens the predicate and is why this is not simply an
+# unpushed-branch feature: pushed-with-no-PR is invisible to a DIFFERENT set of
+# detectors, which is why it survived. dev-repo-reaper sees a pushed branch as
+# healthy (nothing is at risk of loss); the unpushed surface skips it for the
+# same reason; nothing in the PR-watching path sees it because there is no PR.
+# It falls in the gap between "safe from loss" and "visible to review" — the
+# unpushed case at least trips a loss-risk detector, this one trips nothing.
+#
+# Volume is a SECOND promotion axis, not a replacement: a 2026-07-25 sample of
+# 40 `claude/*` branches on one repo found 3 with no PR ever, one of them
+# `claude/adoring-hypatia-f30d1a` carrying 9 commits under a generated name — the
+# largest stranded thing on disk and exactly what a name-only rule fails to see.
+#
+# Bug class CLAIMED-WORK-STRANDED-UNPUSHED-AND-INVISIBLE.
+# ---------------------------------------------------------------------------
+
+
+# Tracker IDs that mark a branch as a claim. Case-insensitive and matched in ANY
+# path segment, so `claude/myc-3252-slug`, `codex/MYC-3252`, and a bare
+# `ond-1250-fix` all resolve.
+TICKET_RE = re.compile(r"(?i)\b(MYC|OND|AB)-(\d+)\b")
+
+# Age floor, measured on the branch TIP's committer timestamp. This is the
+# negative control's live-session axis and it is self-regulating: a session
+# actively committing keeps resetting its own clock, so it is never nagged about
+# the branch it is working on, while a dead session's branch ages past the floor
+# on its own. Deliberately NOT keyed on the repo's .session-lock — worktrees
+# share one lock per repo, so on a busy repo a single live
+# session would suppress every claim branch in it, which is the whole failure.
+CLAIM_MIN_AGE_HOURS = 6.0
+# Second promotion axis (see header): an unnamed branch this far ahead of the
+# default branch is promoted on volume alone.
+CLAIM_VOLUME_MIN_COMMITS = 5
+
+
+class ClaimState:
+    """Which side of the pipeline the claimed work is stranded on."""
+
+    UNPUSHED = "unpushed"            # commits on no remote -> also a LOSS risk
+    PUSHED_NO_PR = "pushed_no_pr"    # pushed + ahead of default + no PR ever opened
+
+
+@dataclass
+class ClaimBranch:
+    repo: str
+    branch: str
+    ticket: Optional[str]      # normalized "MYC-3252", or None when promoted on volume
+    state: str                 # ClaimState
+    commits: int               # ahead of the default branch
+    age_hours: float           # since the tip's committer timestamp
+    subject: str               # tip commit subject — tells finished from mid-edit
+    tree: str                  # tip tree sha, for identical-content dedupe
+    promoted_by: str           # "ticket-id" | "volume"
+    branch_class: str = ""     # BranchClass — content-vs-origin verdict, not ref topology
+    duplicates: list = field(default_factory=list)  # sibling branch names, same tree
+
+
+def extract_ticket_id(branch: str) -> Optional[str]:
+    """Normalized tracker ID carried by a branch name, or None.
+
+    `claude/myc-3252-inkcap-generate-dead` -> "MYC-3252".
+    """
+    m = TICKET_RE.search(branch or "")
+    return f"{m.group(1).upper()}-{m.group(2)}" if m else None
+
+
+def is_claim_bearing(branch: str) -> bool:
+    """True when a branch name states a claim against a tracked issue."""
+    return extract_ticket_id(branch) is not None
+
+
+def fetch_pr_head_branches(repo: Path) -> Optional[frozenset]:
+    """Every head-branch name that has EVER had a PR, any state, via `gh`.
+
+    Distinct from fetch_merged_pr_branches (merged only) because the question
+    here is the opposite one: not "did this land?" but "was it ever offered for
+    review at all?". A closed-without-merge PR still counts as offered — the work
+    was seen and rejected, which is not stranded.
+
+    FAIL-CLOSED FOR THE CALLER BY CONTRACT: returns None on ANY failure (gh
+    missing, not a GitHub repo, sandbox-stripped auth, timeout, bad JSON) and the
+    caller then reports NO pushed-no-PR findings for that repo. Absence of
+    evidence is not evidence of absence: claiming "no PR exists" from a failed
+    lookup would assert external state we never read. The unpushed half of the
+    surface is pure local git and is unaffected.
+    """
+    rc, out, _err = _gh(
+        repo, "pr", "list", "--state", "all",
+        "--limit", "1000", "--json", "headRefName",
+    )
+    if rc != 0 or not out:
+        return None
+    try:
+        data = json.loads(out)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, list):
+        return None
+    names = {
+        d["headRefName"]
+        for d in data
+        if isinstance(d, dict) and d.get("headRefName")
+    }
+    return frozenset(names)
+
+
+def _clean_subject(subject: str, limit: int = 120) -> str:
+    """A commit subject safe to drop into the SessionStart banner.
+
+    Strips non-printable characters and truncates. This text is embedded in the
+    JSON the harness parses and comes from whatever any branch's tip commit
+    happens to say, so an unescaped control byte is a correctness problem rather
+    than a cosmetic one — a real one broke JSON parsing on the first live run.
+    """
+    cleaned = "".join(ch for ch in (subject or "") if ch.isprintable()).strip()
+    return cleaned[: limit - 1] + "…" if len(cleaned) > limit else cleaned
+
+
+def _candidate_claim_refs(repo: Path, default: str) -> list:
+    """[(branch, ref, tip_ts, subject)] for refs NOT merged into origin/<default>.
+
+    ONE `for-each-ref` per scope — name, tip timestamp and subject together, with
+    `--no-merged` doing the "is this ahead of the default branch?" prune inside
+    git instead of as a rev-list per branch.
+
+    That prune is the whole performance story. The first version asked git three
+    questions per candidate ref across every ~/dev repo and took 68s on the real
+    fleet. A SessionStart hook that slow gets killed, fails open, and silently
+    restores the very coverage hole it exists to close — so the cost had to come
+    out of the algorithm, not out of the coverage.
+
+    Local branches UNION origin/* heads: remote refs matter because the MYC-86
+    shape lives there (pushed from a session whose worktree is gone). A branch on
+    both is listed once, read from the LOCAL ref (at least as new).
+    """
+    seen: dict = {}
+    # %(tree) comes back in this same call, so the per-ref `rev-parse ref^{tree}`
+    # the dedupe needs disappears entirely.
+    fmt = (
+        "--format=%(refname:short)%09%(committerdate:unix)"
+        "%09%(tree)%09%(contents:subject)"
+    )
+    for scope in ("refs/heads/", "refs/remotes/origin/"):
+        rc, out, _ = _git(
+            repo, "for-each-ref", "--no-merged", f"origin/{default}", fmt, scope
+        )
+        if rc != 0:
+            continue
+        for line in out.splitlines():
+            parts = line.split("\t", 3)
+            if len(parts) < 3:
+                continue
+            name, ref = parts[0].strip(), parts[0].strip()
+            try:
+                ts = float(parts[1])
+            except ValueError:
+                continue
+            tree = parts[2].strip()
+            subject = parts[3] if len(parts) > 3 else ""
+            if not tree:
+                continue
+            if scope.endswith("origin/"):
+                if not name.startswith("origin/"):
+                    continue
+                name = name[len("origin/"):]
+                if name in seen:
+                    continue  # local ref already recorded and is at least as new
+            if not name or name == default or name == "HEAD":
+                continue
+            seen[name] = (ref, ts, tree, subject)
+    return sorted((n, r, t, tr, s) for n, (r, t, tr, s) in seen.items())
+
+
+def _claim_branches_for_repo(
+    repo: Path,
+    *,
+    min_age_hours: float,
+    volume_min_commits: int,
+    now_ts: Optional[float] = None,
+    deadline: Optional[float] = None,
+) -> list:
+    """Stranded claim-bearing branches in ONE repo. Read-only; never raises."""
+    repo = Path(repo)
+    now_ts = now_ts or time.time()
+    default = detect_default_branch(repo)
+    if not default:
+        return []  # no origin default -> the no-remote surface already owns this repo
+
+    origin_default = f"origin/{default}"
+    found: list = []
+    pushed_pending: list = []
+
+    for branch, ref, tip_ts, tree, raw_subject in _candidate_claim_refs(repo, default):
+        if deadline and time.time() > deadline:
+            break
+        # Age and name are already in hand from the single for-each-ref, so both
+        # cheap filters run BEFORE any git call: a live session's in-flight
+        # branch and the ordinary topic-branch bulk cost nothing at all.
+        age_hours = (now_ts - tip_ts) / 3600.0
+        if age_hours < min_age_hours:
+            continue  # a live session's own branch -> never nag it
+        ticket = extract_ticket_id(branch)
+        promoted_by = "ticket-id" if ticket is not None else "volume"
+
+        rc, out, _ = _git(repo, "rev-list", "--count", f"{origin_default}..{ref}")
+        if rc != 0:
+            continue
+        try:
+            ahead = int(out.strip())
+        except ValueError:
+            continue
+        if ahead == 0:
+            continue  # nothing the default branch lacks -> not stranded work
+        if ticket is None and ahead < volume_min_commits:
+            continue  # ordinary topic branch -> stays in the suppressed count
+
+        # UNPUSHED whenever any commit sits on no remote at all (also a loss
+        # risk); otherwise the work is on a remote and the question becomes
+        # whether it was ever offered for review.
+        rc, out, _ = _git(repo, "rev-list", "--count", ref, "--not", "--remotes")
+        try:
+            unpushed = int(out.strip()) if rc == 0 else 0
+        except ValueError:
+            unpushed = 0
+
+        # `--not --remotes` reads LOCAL remote-tracking refs, which only exist for
+        # branches the repo's fetch refspec actually covers. A repo cloned
+        # single-branch (`+refs/heads/main:refs/remotes/origin/main` — what
+        # `git clone --single-branch` leaves behind) never gets a tracking ref for
+        # ANY topic branch, so every one of them reads as "backed up nowhere"
+        # forever. Measured on a real fleet: 15 of 56 repos were in that state,
+        # and one flagged branch was provably on origin — `ls-remote` returned the
+        # identical sha while the count still said 1 unpushed. Claiming
+        # un-backed-up work that is in fact safe is the cry-wolf direction, and a
+        # false one sits in the same list as the real ones and dilutes them.
+        # So before asserting the strongest claim this surface makes, confirm it
+        # against the SYSTEM OF RECORD. Bounded: runs only for the handful of
+        # branches that already passed every cheap filter above.
+        if unpushed:
+            rc_ls, ls_out, _ = _git(repo, "ls-remote", "--heads", "origin", branch, timeout=10)
+            if rc_ls == 0 and ls_out.strip():
+                remote_sha = ls_out.split()[0]
+                rc_tip, tip, _ = _git(repo, "rev-parse", ref)
+                if rc_tip == 0 and tip.strip() == remote_sha:
+                    unpushed = 0  # identical on origin: pushed, tracking ref just absent
+
+        # Is this branch's CONTENT already on origin, just not under this ref?
+        # Without this the surface cannot tell a stale iteration of SHIPPED work
+        # from genuinely unmerged work, and both read as "claimed and stranded".
+        # Squash-merges guarantee the confusing shape — the tip is never an
+        # ancestor of the default branch — so "differs from main" was never
+        # evidence of anything on a merge-queue repo. classify_branch already
+        # answers it; it simply was not asked.
+        try:
+            cls = classify_branch(repo, branch, default)
+        except Exception:
+            cls = BranchClass.UNKNOWN
+        if cls in REAPABLE_CLASSES:
+            continue  # content provably on origin -> shipped, not a stranded claim
+
+        entry = ClaimBranch(
+            repo=repo.name, branch=branch, ticket=ticket,
+            state=ClaimState.UNPUSHED if unpushed else ClaimState.PUSHED_NO_PR,
+            commits=ahead, age_hours=age_hours,
+            subject=_clean_subject(raw_subject), tree=tree,
+            promoted_by=promoted_by, branch_class=cls,
+        )
+        (found if unpushed else pushed_pending).append(entry)
+
+    # One gh call per repo, and ONLY when a pushed candidate exists — most repos
+    # have none, so the network cost stays near zero on a full-fleet scan.
+    if pushed_pending and not (deadline and time.time() > deadline):
+        pr_heads = fetch_pr_head_branches(repo)
+        if pr_heads is not None:  # None -> cannot prove "no PR" -> report nothing
+            found.extend(e for e in pushed_pending if e.branch not in pr_heads)
+
+    return _dedupe_claims(found)
+
+
+def _dedupe_claims(entries: list) -> list:
+    """Collapse branches holding IDENTICAL content into one entry.
+
+    Two branches held byte-identical work for MYC-3179 on 2026-07-25; a surface
+    that lists both without saying they are the same wastes the reader's
+    judgment, which is the scarce resource here. Grouped by (ticket, tree) —
+    same claim AND same tip tree — keeping the entry with the most commits and
+    naming the rest as duplicates.
+    """
+    by_key: dict = {}
+    for e in entries:
+        key = (e.ticket or f"~{e.branch}", e.tree)
+        prev = by_key.get(key)
+        if prev is None:
+            by_key[key] = e
+        elif e.commits > prev.commits:
+            e.duplicates = prev.duplicates + [prev.branch]
+            by_key[key] = e
+        else:
+            prev.duplicates.append(e.branch)
+    return sorted(
+        by_key.values(), key=lambda e: (-e.age_hours, e.repo, e.branch)
+    )
+
+
+def collect_claim_bearing(
+    repos: list,
+    *,
+    min_age_hours: Optional[float] = None,
+    volume_min_commits: Optional[int] = None,
+    max_workers: int = 8,
+    now_ts: Optional[float] = None,
+    budget_sec: Optional[float] = None,
+    stats: Optional[dict] = None,
+) -> list:
+    """Stranded claim-bearing branches across the fleet, oldest first.
+
+    Thresholds fall back to CLAIM_BRANCH_MIN_AGE_HOURS / CLAIM_BRANCH_MIN_COMMITS
+    in the environment so the negative control can drive them without editing
+    code. Parallel + read-only; any repo that errors contributes nothing rather
+    than failing the scan.
+
+    HARD WALL-CLOCK BUDGET (CLAIM_BRANCH_BUDGET_SEC, default 45s). The algorithm
+    is fast now, but "fast on this fleet today" is not a guarantee — repo count
+    and branch count only grow, and a hung `gh` on a flaky network answers to no
+    algorithm. Past the deadline the scan stops and returns what it has. Partial
+    output is the right failure mode for a surfacer: a hook that overruns is
+    killed and reports NOTHING, which is indistinguishable from a clean fleet and
+    is exactly the silent coverage loss this whole surface exists to prevent.
+
+    A truncated scan SAYS SO. Pass `stats` (a dict) to receive
+    {"truncated": bool, "repos": int}; the caller renders it. Without it, hitting
+    the budget silently drops repos while the banner still reads as a complete
+    answer — measured on a real fleet, 29 entries reported when the true count
+    was 109, with nothing in the output to tell the two apart. A cap nobody can
+    see is the same bug class this surface exists to catch, one level up.
+    """
+    if not repos:
+        return []
+    if budget_sec is None:
+        try:
+            # 45s, sized off a MEASURED complete scan (29.9s over 56 repos / 109
+            # entries). The first value chosen (15s) silently truncated EVERY
+            # real run — it reported 29 entries when the true count was 109, with
+            # nothing in the output distinguishing the two. Sized under the
+            # caller's cache, not under a single session's patience.
+            budget_sec = float(os.environ.get("CLAIM_BRANCH_BUDGET_SEC", 45.0))
+        except (TypeError, ValueError):
+            budget_sec = 15.0
+    deadline = time.time() + budget_sec if budget_sec > 0 else None
+    if min_age_hours is None:
+        try:
+            min_age_hours = float(os.environ.get("CLAIM_BRANCH_MIN_AGE_HOURS", CLAIM_MIN_AGE_HOURS))
+        except (TypeError, ValueError):
+            min_age_hours = CLAIM_MIN_AGE_HOURS
+    if volume_min_commits is None:
+        try:
+            volume_min_commits = int(
+                os.environ.get("CLAIM_BRANCH_MIN_COMMITS", CLAIM_VOLUME_MIN_COMMITS)
+            )
+        except (TypeError, ValueError):
+            volume_min_commits = CLAIM_VOLUME_MIN_COMMITS
+
+    def _one(r):
+        try:
+            return _claim_branches_for_repo(
+                r, min_age_hours=min_age_hours,
+                volume_min_commits=volume_min_commits, now_ts=now_ts,
+                deadline=deadline,
+            )
+        except Exception:
+            return []
+
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            results = list(ex.map(_one, repos))
+    except Exception:
+        results = [_one(r) for r in repos]
+
+    if stats is not None:
+        stats["repos"] = len(repos)
+        # Overrunning the deadline is the only way coverage is dropped here, so
+        # it is also the only thing the caller has to be told about.
+        stats["truncated"] = bool(deadline and time.time() > deadline)
+
+    flat: list = []
+    for r in results:
+        flat.extend(r)
+    return sorted(flat, key=lambda e: (-e.age_hours, e.repo, e.branch))
+
+
+def _partial_scan_notice() -> str:
+    """Emitted whenever the budget cut the scan short and nothing else would be
+    said. "No claims found" and "I ran out of time looking" are different
+    answers, and only one of them is safe to act on."""
+    return (
+        "[claimed-work-stranded]\n\n"
+        "⚠ PARTIAL SCAN — the claim-bearing branch scan hit its time budget "
+        "before finishing, so coverage is INCOMPLETE. No claim-bearing branches "
+        "were confirmed either way; this is NOT a clean result. Re-run for full "
+        "coverage with a larger `CLAIM_BRANCH_BUDGET_SEC`."
+    )
+
+
+def format_claim_section(
+    entries: list, limit: int = 10, truncated: bool = False
+) -> Optional[str]:
+    """The headlined claim-bearing block, or None when there is nothing to say.
+
+    TICKET-BEARING branches are headlined individually; VOLUME-promoted ones are
+    demoted to a single counted line. That split is the ticket's own framing —
+    "volume is the wrong axis; claim-bearing-ness is the right one" — and it is
+    load-bearing, not cosmetic. Measured on the real fleet: 20 ticket-bearing vs
+    16 volume-only, and the volume-only set was topped by 364/330/146-commit
+    ancient forks. Listing all 36 as equals buries the 20 real claims under
+    relics and rebuilds the exact cry-wolf banner MYC-683 exists to prevent.
+    Volume still earns full protection in the REAPER guard, which is where the
+    follow-up comment actually asked for it (item 3) — dev-repo-reaper.py can
+    classify a RELIC properly, and this surfacer deliberately does not try.
+    """
+    if not entries:
+        # A scan that ran out of budget before finding anything is NOT a clean
+        # fleet, and must not render as one.
+        return _partial_scan_notice() if truncated else None
+    ticketed = [e for e in entries if e.ticket]
+    volume_only = [e for e in entries if not e.ticket]
+    if not ticketed:
+        # Nothing claimed against a tracked issue. The volume-only set is the
+        # reaper's job and is not worth a banner of its own -- UNLESS the scan
+        # was cut short, in which case "no claims found" is an artifact of the
+        # budget rather than a finding, and silence would be a silent cap.
+        return _partial_scan_notice() if truncated else None
+
+    n = len(ticketed)
+    plural = "es" if n != 1 else ""
+    at_least = "at least " if truncated else ""
+    lines = [
+        "[claimed-work-stranded]",
+        "",
+        (
+            f"{at_least}{n} branch{plural} carry CLAIMED work against a tracked issue "
+            f"that no other session can act on. A fresh session's default path is to "
+            f"write it AGAIN from scratch; the cost is duplicated judgment, not lost "
+            f"bytes. Check here BEFORE starting work on any ticket named below."
+        ),
+        "",
+    ]
+    if truncated:
+        lines += [
+            (
+                "⚠ PARTIAL — the scan hit its time budget, so this list is INCOMPLETE "
+                "and the count is a floor, not a total. Re-run with a larger "
+                "`CLAIM_BRANCH_BUDGET_SEC` for full coverage."
+            ),
+            "",
+        ]
+    for e in ticketed[:limit]:
+        who = e.ticket or f"unnamed, {e.commits} commits"
+        if e.state == ClaimState.UNPUSHED:
+            where = "UNPUSHED — invisible to every other session, and backed up nowhere"
+        else:
+            where = "pushed, NO PR ever opened — safe from loss, invisible to review"
+        age = (
+            f"{e.age_hours / 24:.1f}d" if e.age_hours >= 48 else f"{e.age_hours:.0f}h"
+        )
+        lines.append(f"- **{who}** · `{e.repo}` :: `{e.branch}`")
+        lines.append(f"    {e.commits} commit(s), idle {age} — {where}")
+        # The subject alone usually settles finished-vs-abandoned, which is the
+        # judgment the reader has to make (MYC-86: "close the two gaps
+        # adversarial review found" reads as done, not mid-edit).
+        lines.append(f'    last commit: "{e.subject}"')
+        if e.duplicates:
+            dupes = ", ".join(f"`{d}`" for d in e.duplicates)
+            lines.append(f"    identical content also on: {dupes} (same tree — one piece of work)")
+    if n > limit:
+        lines.append(f"- ... and {n - limit} more claim-bearing branch(es)")
+    if volume_only:
+        biggest = max(e.commits for e in volume_only)
+        lines += [
+            "",
+            (
+                f"({len(volume_only)} unnamed branch(es) also hold >= "
+                f"{CLAIM_VOLUME_MIN_COMMITS} unmerged commits, largest {biggest} — "
+                f"NOT headlined: no ticket ID, and many are ancient forks. "
+                f"`dev-repo-reaper.py` classifies relic-vs-genuine properly. They "
+                f"are still protected from the reaper.)"
+            ),
+        ]
+    lines += [
+        "",
+        (
+            "**Per branch:** read it before rebuilding it — `git log origin/main..<branch>` "
+            "then `git diff origin/main...<branch>`. Finished → open a PR "
+            "(`gh pr create -H <branch> -B main`). Unpushed → `git push origin <branch>` "
+            "NOW, so the claim is visible where other sessions look. Superseded → delete it."
+        ),
+        (
+            "Bug class: `CLAIMED-WORK-STRANDED-UNPUSHED-AND-INVISIBLE` (MYC-3290) — "
+            "collides with the codified rule *A Claim Is Only Real Once It Is Visible "
+            "to Other Sessions*, which nothing detected until now."
+        ),
+    ]
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -754,6 +2098,18 @@ def discover_hubs(dev_root: Optional[Path] = None) -> list[Path]:
 # version was cut). Fetch-first is the CALLER's job (a stale local ref misleads
 # in BOTH directions — MYC-1893 correction); this classifier reads refs only.
 # ---------------------------------------------------------------------------
+
+
+def discover_hubs(dev_root: Optional[Path] = None) -> list[Path]:
+    """The BARE hubs under ~/dev (linked worktrees + bare-origin mirrors excluded).
+
+    A thin bare-hub filter over the shared discover_primary_repos (MYC-1894) so
+    fleet discovery stays ONE source of truth: hub-refresh only ever ff's /
+    surfaces bare hubs (`.git` a real DIRECTORY, which can rot), never worktrees
+    (`.git` a gitdir-pointer FILE, fresh off origin by construction).
+    """
+    root = Path(dev_root) if dev_root is not None else resolve_dev_root()
+    return [p for p in discover_primary_repos(root) if (p / ".git").is_dir()]
 
 
 class HubAction:
@@ -907,7 +2263,6 @@ def execute_hub_refresh(
         res["skipped"] = "state-changed-since-plan"
         return res
 
-    upstream = f"origin/{fresh.default_branch}"
     # Reclaim an abandoned index.lock first (MYC-3175). A crashed git strands it
     # and then EVERY ff here fails forever, so the hub silently rots while the
     # report keeps calling it merely "behind" — the same permanent freeze the
@@ -915,6 +2270,8 @@ def execute_hub_refresh(
     reclaimed = reclaim_stale_git_locks(state.repo)
     if reclaimed:
         res["reclaimed_locks"] = reclaimed
+
+    upstream = f"origin/{fresh.default_branch}"
     rc, _out, err = _git(state.repo, "merge", "--ff-only", upstream)
     res["ok"] = rc == 0
     res["applied"] = rc == 0

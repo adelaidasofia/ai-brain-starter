@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  MYC-3528 fixture: defect #3. Task Scheduler's OWN default is
+  DisallowStartIfOnBatteries=true, so a laptop's 03:00 run is refused every
+  night (0x800710E0) unless setup explicitly overrides it. This is the shape
+  a task gets if it was ever hand-edited, or registered by a version of
+  Register-BackupTask that forgot -AllowStartIfOnBatteries.
+  POSITIVE CONTROL: Get-BackupTaskProblems must flag this even though the
+  file path and interpreter are both fine.
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Date>2026-06-01T03:00:00</Date>
+    <Author>DESKTOP-FIXTURE\user</Author>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-06-01T03:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>true</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT72H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>pwsh</Command>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -File "__EXISTING_FILE__" run -Vault "C:\Users\test\Brain"</Arguments>
+    </Exec>
+  </Actions>
+</Task>

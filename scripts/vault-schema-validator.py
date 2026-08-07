@@ -101,7 +101,12 @@ def extract_frontmatter(text: str) -> tuple[str | None, str | None]:
     """Return (frontmatter_text, error_message_or_None)."""
     if not text.startswith("---"):
         return (None, None)  # no frontmatter, that's fine for many files
-    m = re.match(r"^---\n(.*?)\n---\s*", text, re.DOTALL)
+    # \r?\n throughout: this text arrives from safe_read_text, which decodes
+    # bytes directly with no universal-newline translation. A vault authored or
+    # touched on Windows genuinely contains CRLF on disk (the session-close
+    # cascade's own pre-built session shell is one), so an LF-only pattern
+    # reports perfectly valid frontmatter as unterminated.
+    m = re.match(r"^---\r?\n(.*?)\r?\n---\s*", text, re.DOTALL)
     if not m:
         return (None, "frontmatter delimiter '---' not properly closed")
     return (m.group(1), None)
@@ -345,15 +350,48 @@ def run_self_test() -> int:
             print(f"FAIL [{desc}]: expected pass={should_pass}, got pass={actual_pass}")
         else:
             print(f"PASS [{desc}]")
+    # Line-ending regression (the bug behind the Windows total-denial incident).
+    # safe_read_text decodes raw bytes with NO universal-newline translation, so a
+    # file authored on Windows -- or a temp file written in text mode -- reaches
+    # extract_frontmatter with \r\n intact. An LF-only delimiter pattern rejected
+    # it as "not properly closed", which denied EVERY Write/Edit of a vault .md
+    # file on Windows regardless of content.
+    #
+    # Asserting "no error" alone is not enough: a pattern that matched but captured
+    # the wrong span would still look clean. Assert the captured frontmatter too.
+    body = "creationDate: 2026-04-30\nfloor: 16"
+    line_ending_cases = [
+        ("LF line endings", "---\n" + body + "\n---\n\nbody\n"),
+        ("CRLF line endings", ("---\n" + body + "\n---\n\nbody\n").replace("\n", "\r\n")),
+    ]
+    for desc, text in line_ending_cases:
+        fm, err = extract_frontmatter(text)
+        normalized = (fm or "").replace("\r\n", "\n")
+        if err or fm is None:
+            failures += 1
+            print(f"FAIL [{desc}]: {err or 'no frontmatter extracted'}")
+        elif normalized != body:
+            failures += 1
+            print(f"FAIL [{desc}]: captured {normalized!r}, expected {body!r}")
+        else:
+            print(f"PASS [{desc}]")
+
+    total = len(fixtures) + len(line_ending_cases)
     if failures:
-        print(f"\n{failures}/{len(fixtures)} fixtures failed.")
+        print(f"\n{failures}/{total} fixtures failed.")
         return 1
-    print(f"\n{len(fixtures)}/{len(fixtures)} fixtures passed.")
+    print(f"\n{total}/{total} fixtures passed.")
     return 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    # vault-root-ok: CLI default for an explicit --vault-root flag on a standalone
+    # validator that checks ANY vault by path. This script ships in the skill dir and
+    # is never itself inside a vault, so a location-derived _resolve_vault_root() would
+    # resolve to the skill rather than to the vault under test. In --file mode (how
+    # lint-vault-frontmatter.py invokes it) the value is computed but never read: the
+    # --file branch resolves the target path directly. Caller always wins.
     ap.add_argument("--vault-root", default=os.environ.get("VAULT_ROOT", os.getcwd()))
     ap.add_argument("--type", choices=["decision", "session", "journal", "all"], default="all")
     ap.add_argument("--file", help="validate one specific file")

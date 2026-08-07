@@ -18,6 +18,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# HOME alone does not sandbox ~ on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$REPO_ROOT/tests/integration/lib/sandbox_home.sh"
 INSTALLER="$REPO_ROOT/scripts/install-hooks-user-level.py"
 HOOKS_SRC="$REPO_ROOT/hooks.json"
 
@@ -27,7 +30,7 @@ done
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-export HOME="$TMP"
+sandbox_home "$TMP"
 SETTINGS="$TMP/settings.json"
 CUSTOM='echo CUSTOM_HOOK_SENTINEL'
 fail() { echo "FAIL: $1" >&2; exit 1; }
