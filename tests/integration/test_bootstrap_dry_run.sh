@@ -16,6 +16,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# HOME alone does not sandbox ~ on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$REPO_ROOT/tests/integration/lib/sandbox_home.sh"
 BOOTSTRAP="$REPO_ROOT/bootstrap.sh"
 
 if [ ! -f "$BOOTSTRAP" ]; then
@@ -27,8 +30,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Pre-stage the email marker so the bootstrap doesn't try to mint a token.
-export HOME="$TMP"
-mkdir -p "$HOME/.claude"
+sandbox_home "$TMP"
 touch "$HOME/.claude/.ai-brain-starter-email-on-file"
 
 # Pre-create a fake SKILL_DIR so the bootstrap finds itself.

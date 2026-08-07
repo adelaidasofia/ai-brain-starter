@@ -250,6 +250,10 @@ async function connect() {
   // ── History sync — fires in chunks; export when stream goes quiet for 5 s
   let historyDone = false
   let idleTimer   = null
+  // 0 = no history chunk has EVER arrived. Read by the connection-open fallback
+  // below so it can tell "this account emits no history" apart from "history is
+  // still streaming" (see the truncation note there).
+  let lastChunkAt = 0
 
   const scheduleIdleCheck = () => {
     if (idleTimer) clearTimeout(idleTimer)
@@ -263,6 +267,7 @@ async function connect() {
   }
 
   sock.ev.on('messaging-history.set', ({ chats, contacts, messages, isLatest }) => {
+    lastChunkAt = Date.now()
     mergeContacts(contacts || [])
     mergeMessages(messages || [])
 
@@ -295,14 +300,21 @@ async function connect() {
 
     if (connection === 'open') {
       console.log('\nConnected. Receiving history...\n')
-      // Fallback for already-synced sessions that emit no history events
+      // Fallback for already-synced sessions that emit NO history events at all.
+      // It must only fire in that case. It used to fire whenever history had not
+      // finished by 20s, but on a large account the `messaging-history.set`
+      // chunks are still streaming then, so it exported a PARTIAL history and
+      // exited 0 with no warning -- silent data loss the user could not see.
+      // When chunks are flowing, the 5s idle timer owns the exit instead: it
+      // waits for the stream to actually go quiet.
       setTimeout(() => {
-        if (!historyDone) {
-          historyDone = true
-          if (idleTimer) clearTimeout(idleTimer)
-          exportToVault(store)
-          process.exit(0)
-        }
+        if (historyDone) return
+        if (lastChunkAt !== 0) return   // history is streaming; let the idle timer finish it
+        historyDone = true
+        if (idleTimer) clearTimeout(idleTimer)
+        console.log('No history was sent for this session; exporting what is stored locally.')
+        exportToVault(store)
+        process.exit(0)
       }, 20_000)
     }
 

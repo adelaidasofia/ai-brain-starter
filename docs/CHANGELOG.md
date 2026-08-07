@@ -9,6 +9,72 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-05: on Mac and Linux, "daily backup scheduled" now means it really is
+
+**Who this affects:** anyone on macOS or Linux who set up the daily vault backup.
+
+Setup said "Daily backup scheduled (03:00 local)" as long as it managed to write the small job file that describes the schedule. Whether the operating system's scheduler ever *accepted* that job was never checked, and any error it gave back was thrown away. So that message really only reported "I wrote a file", while the thing meant to take your nightly snapshot might never have been running at all.
+
+There is a concrete way this happened. The job file is XML, and your vault's own path gets written into it. A vault in a folder with an `&` in the name (say, "R & D Vault") produced a file that is not valid XML, which macOS refuses to load. The file still existed, so setup still called it scheduled. Two other versions of the same problem: a vault or starter folder you later moved, leaving the job pointing at a script that is no longer there (it runs every night and fails every night), and a job that is simply not loaded any more.
+
+Now setup writes your vault path into the job file correctly whatever characters it contains, then asks the scheduler itself whether it holds the job, and only says "scheduled" if the answer is yes. Re-running setup reads the existing schedule back and repairs it when it is broken, automatically and with no prompt, the same way the Windows fix below does. A healthy schedule is left completely alone. When it cannot install one, you get the scheduler's own error and the command to take a snapshot by hand, instead of a bare "could not".
+
+There is also a new, faster way to check and fix just the schedule, without re-running the whole setup:
+
+```
+bash scripts/vault-backup.sh schedule
+```
+
+It asks the operating system whether it really holds your daily backup job, repairs it if not, and takes no snapshot, so it is safe to run any time. If it cannot fix it, it tells you why and gives you the command to take a snapshot by hand. This matters because a repair that only happens when you re-run setup would miss exactly the people whose schedule is dead, since those are the people who never re-run setup.
+
+**What you should do:** run `bash scripts/vault-backup.sh schedule` once (or ask Claude to), then check `status` and confirm a snapshot has actually landed in the last day or two. Worth doing now in particular if your vault folder has an `&`, `<` or `>` in its name, or if you have moved your vault or the starter since you set backups up.
+
+---
+
+## 2026-08-05: on Windows, a backup that never actually ran now fixes itself
+
+**Who this affects:** anyone who set up the daily vault backup on Windows before 2026-07-31.
+
+A previous fix stopped the daily backup's Windows scheduled task from being registered broken in the first place. What it could not do was reach back and fix a task that was ALREADY broken on a machine that had run setup before that fix landed — and nothing else in the product ever looked at that task again. Measured on a real install: 25 days with zero snapshots, while setup had printed "Backup is live" and the health check reported the vault backed up. Three separate things could each cause this on their own: the script path the task points at being empty, the task pointing at a PowerShell version that is not on a stock Windows machine, or Windows Task Scheduler's own default of refusing to run on battery power.
+
+Now, every time you run backup setup again, it reads your existing scheduled task back, checks all three things, and — if any of them is wrong — re-registers it correctly, automatically, with no prompt. A healthy task is left alone. If it truly cannot fix it (for example, no PowerShell interpreter can be found at all), it says so loudly instead of pretending it worked.
+
+**What you should do:** run backup setup again once (`vault-backup.ps1 setup`, or ask Claude to do it) if you set up backups on Windows before 2026-07-31. Then check status and confirm a snapshot has actually landed recently.
+
+---
+
+## 2026-07-31: five Windows install bugs, all of them silent
+
+**Who this affects:** everyone on Windows. Two of the five also affect Mac and Linux. All of them were reported by people who ran the installer, were told it succeeded, and found out later that it hadn't.
+
+**Your patched vault scripts are no longer overwritten during an update.** When bootstrap finds uncommitted changes in your copy of the starter, it stashes them before pulling — that part was known. What wasn't: right after the pull it copies the starter's scripts into your vault's `Meta/scripts` folder, and at that moment the starter no longer holds your patches. So the update quietly replaced patched vault scripts with the unpatched versions. One person lost their fixes to `session-close-runner.sh` and `vault-safe-commit.sh` this way. A backup was written, and it held the good version, which is exactly why nobody noticed: the step printed "Updated: 2" and looked like any healthy update. Now the vault sync refuses to run while your patches are stashed, tells you so, and shows you the two commands to restore and sync when you're ready. Your vault keeps working scripts instead of getting silently reverted.
+
+**Your memory now actually lands in your vault on a Spanish-language Windows.** The installer runs a helper that links Claude Code's memory into your vault, and it read that helper's output using the console's language setting rather than UTF-8. Your vault path contains the ⚙️ of the Meta folder, and on a Spanish (or French, or Portuguese) Windows one byte of that character has no meaning in the console's character set, so reading the output crashed. The installer then reported "could NOT link Claude Code memory into the vault" on machines where nothing was actually wrong, and your memory stayed in a hidden tool folder — the one outcome that step exists to prevent.
+
+**Hooks work if your Windows username has an accent in it.** A user named `JuanArturoGómez` had all 53 hooks fail and block the session, every time, because Windows hands hook commands to a shell that mangles the accented character in the path. You can't rename a Windows account, so the installer now writes the short `C:\Users\JUANAR~1` form of the path, which has no accents to mangle. Anyone with á, é, ñ, ü or similar in their username is covered. In the rare case where Windows has short names turned off, the installer says so plainly instead of writing hooks that can't run.
+
+**And once that link step could run, it had to be able to succeed.** Creating the link from Claude Code's memory folder into your vault used a symlink, and Windows only lets you make one if you are an administrator or have Developer Mode turned on. A normal account gets "a required privilege is not held by the client" and the memory stays put. It now falls back to a directory junction, which needs no special permission and behaves the same for reading and writing. If both routes fail you get the exact command to run, instead of a shrug.
+
+**Three hooks that had never once fired now do.** `pre-write-settings-lint.py`, `lint-claude-settings.py` and `check-claude-code-version.sh` were wired into your settings but nothing ever copied them onto disk — on a real machine that was 11 references pointing at 0 files. Because the wiring is written to stay quiet when a hook is missing (so you can delete one you don't want), the absence looked exactly like health, and the installer's own check reported everything fine. The installer now installs them, its check can see them, and a new gate stops a future hook from shipping the same way.
+
+**Also:** `--verify-only` is a new option that checks an existing install and writes nothing. `--verify` still means "install, then verify", which is what it always did — but there was no way to ask "is my install healthy?" without changing it first.
+
+---
+
+## 2026-07-30: closing a session no longer gets stuck behind a goal you set
+
+**Who this affects:** anyone who uses `/goal`.
+
+`/goal <condition>` tells Claude "keep working until this is true." It does that by holding the exit door shut — which is right in the middle of a session and wrong at the end of one. You say "close this session," Claude finishes the close checklist, tries to stop, the goal blocks it, and Claude comes back with nothing left to do. Then again. The only way out is `/goal clear`, and **Claude cannot type it for you** — it is a command your terminal handles, with no tool behind it. So it has to hand you the line.
+
+Now it does. When a session set a goal that was never cleared, the close ends by asking you to type `/goal clear`, quoting the goal so you know which one. If the goal's condition was actually met it already cleared itself, and Claude says nothing — being told to clear something that succeeded is noise.
+
+**Also fixed, same area:** the session-close rule and the close instructions Claude receives had drifted apart on what their step numbers meant. "Phase 3" was the goodbye in one and the audit in the other; "Phase 4" was the goodbye in one and the automatic cleanup in the other. Two documents describing one process, disagreeing about which step is which — and each was internally consistent, so nothing looked wrong. The rule was also missing its commit step entirely, which could hard-block a close. Both are fixed, and a checker now runs against **your** copy of the rule during daily maintenance, since a customised rule is exactly where this drifts.
+
+**On macOS:** the `vault-root` test suite had been failing on every Mac for a path-spelling reason (`/var` vs `/private/var`) that never appeared in CI. Fixed. A gate that is always red on your platform is a gate you learn to skip.
+
+---
+
 ## 2026-07-16: the test gate now runs green on Spanish-locale Macs
 
 **Who this affects:** anyone contributing (or just running `bash scripts/ci.sh`) from a Mac whose system language is Spanish — until now the gate failed on two tests and, because it stops at the first failure, hid every test wired after them. On linux CI everything was green, so the breakage was invisible upstream.

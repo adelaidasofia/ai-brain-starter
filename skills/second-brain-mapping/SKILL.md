@@ -7,6 +7,8 @@ argument-hint: "[--metadata-only | --insights-only | --dry-run | --sample [N] | 
 
 # /second-brain-mapping
 
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). Shared starter files live at the repo root two levels up: `{SKILL_DIR}/../..`. If a path does not resolve, name the missing file and stop — never guess another location.
+
 Your vault is a database. This skill makes it queryable.
 
 ## What it does
@@ -197,7 +199,7 @@ stat -f "%Sm" "$(pwd)/graphify-out/graph.json" 2>/dev/null || echo "Last graph: 
 
 Then ask: **"Run graphify on this corpus? y/N"**
 
-If yes, invoke `/graphify --update`. Read `~/.claude/skills/graphify/SKILL.md` first. On success, stamp `phase_2_graphify`.
+If yes, invoke `/graphify --update`. Read the graphify skill's own SKILL.md first (`{SKILL_DIR}/../graphify/SKILL.md` — sibling skill folder, resolves in both local and served installs). On success, stamp `phase_2_graphify`.
 
 **Cost framing (do not misquote):** the token estimate is real, but on a Claude Max/Pro subscription graphify's semantic extraction runs through subagents (no per-token dollar charge) and ~80% of edges come from zero-LLM deterministic passes — so the marginal dollar cost is effectively **$0**. Only quote dollars if the user is on metered API billing. Never let a paid-API figure talk a subscription user out of a rebuild — that inverts the whole point of maximum context.
 

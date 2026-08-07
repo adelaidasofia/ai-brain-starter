@@ -21,6 +21,9 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# HOME alone does not sandbox ~ on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$REPO_ROOT/tests/integration/lib/sandbox_home.sh"
 BOOTSTRAP="$REPO_ROOT/bootstrap.sh"
 [ -f "$BOOTSTRAP" ] || { echo "ERROR: $BOOTSTRAP not found" >&2; exit 1; }
 
@@ -71,7 +74,7 @@ exit 0
 STUBEOF
 chmod +x "$STUB/claude"
 
-OUT="$(cd "$TMPROOT" && HOME="$FAKEHOME" PATH="$STUB:/usr/bin:/bin" \
+OUT="$(cd "$TMPROOT" && run_sandboxed "$FAKEHOME" env PATH="$STUB:/usr/bin:/bin" \
       EMAIL_GATE_BYPASS=1 PREFLIGHT_BYPASS=1 \
       bash "$BOOTSTRAP" --dry-run 2>&1)"; RC=$?
 

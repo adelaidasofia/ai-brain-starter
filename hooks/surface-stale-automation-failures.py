@@ -30,52 +30,79 @@ import time
 from pathlib import Path
 
 HOME = Path.home()
-VAULT = Path(os.environ.get("VAULT_ROOT", str(Path.home() / "vault")))
 
-# Known runner logs to scan.
-# Each entry: (label, log path, fail-pattern, threshold, hint).
-RUNNERS = [
-    (
-        "auto-snapshot",
-        VAULT / "⚙️ Meta" / ".auto-snapshot.log",
-        re.compile(r"FAIL|errored"),
-        3,
-        "hourly vault commit; mirror-drift between CLAUDE.md and AGENTS.md "
-        "is the common blocker",
-    ),
-    (
-        "hookify-auto-commit",
-        HOME / ".claude" / "hooks" / "hookify-auto-commit.log",
-        re.compile(r"failed|error", re.IGNORECASE),
-        5,
-        "on-edit auto-commit of .claude/hookify.*.local.md files",
-    ),
-    (
-        "vault-safe-commit",
-        VAULT / "⚙️ Meta" / ".vault-snapshot.log",
-        re.compile(r"FAIL"),
-        3,
-        "the wrapper Claude uses for explicit vault commits",
-    ),
-    (
-        "scrub-session-jsonl",
-        HOME / ".claude" / "hooks" / "scrub-log.jsonl",
-        re.compile(r'"error"'),
-        3,
-        "SessionEnd secret-pattern redaction over the closing session's JSONL",
-    ),
-    # team-broadcast-daily moved to team_broadcast_findings() below: a daily
-    # job needs last-run-outcome detection, not a 3-in-72h count (2026-05-22).
-    (
-        "substack-cookie-refresh",
-        HOME / ".claude" / "substack-mcp" / "refresh.log",
-        re.compile(r"ERROR"),
-        3,
-        "12-hourly Substack session-cookie refresh; a logged-out browser or "
-        "a flaky cookie-store backend (the comet keychain-decryption class) "
-        "shows here. Fix: switch the pub's `browser` field in config.json",
-    ),
-]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from _lib.vault_root import vault_root_for  # noqa: E402
+except Exception:  # fail-open: a SessionStart nudge must never break startup
+    def vault_root_for(target: Path):  # type: ignore
+        return None
+
+
+def runners(vault: Path | None) -> list[tuple]:
+    """Known runner logs to scan: (label, log path, fail-pattern, threshold, hint).
+
+    MYC-3529 — the vault-rooted entries take the vault resolved for THIS
+    session's cwd, not a module-level
+    `os.environ.get("VAULT_ROOT", str(Path.home() / "vault"))`. Both branches of
+    that read were wrong for the job. UNSET, the two vault logs resolved under
+    `~/vault/⚙️ Meta/`, which does not exist on any vault not literally named
+    "vault", so `fail_count_in_window` short-circuited on `log_path.exists()`
+    and returned 0 — this hook reported "nothing wrong" while auto-snapshot
+    failed hourly, which is precisely the 2026-05-14 191-file strand it was
+    written to make impossible. SET, it watched ONE vault's runners and stayed
+    blind to a second vault's.
+
+    `vault is None` (no vault detectable, no $VAULT_ROOT) drops the vault-rooted
+    entries entirely; the ~/.claude-rooted runners are machine-global and are
+    always scanned.
+    """
+    machine_global = [
+        (
+            "hookify-auto-commit",
+            HOME / ".claude" / "hooks" / "hookify-auto-commit.log",
+            re.compile(r"failed|error", re.IGNORECASE),
+            5,
+            "on-edit auto-commit of .claude/hookify.*.local.md files",
+        ),
+        (
+            "scrub-session-jsonl",
+            HOME / ".claude" / "hooks" / "scrub-log.jsonl",
+            re.compile(r'"error"'),
+            3,
+            "SessionEnd secret-pattern redaction over the closing session's JSONL",
+        ),
+        # team-broadcast-daily moved to team_broadcast_findings() below: a daily
+        # job needs last-run-outcome detection, not a 3-in-72h count (2026-05-22).
+        (
+            "substack-cookie-refresh",
+            HOME / ".claude" / "substack-mcp" / "refresh.log",
+            re.compile(r"ERROR"),
+            3,
+            "12-hourly Substack session-cookie refresh; a logged-out browser or "
+            "a flaky cookie-store backend (the comet keychain-decryption class) "
+            "shows here. Fix: switch the pub's `browser` field in config.json",
+        ),
+    ]
+    if vault is None:
+        return machine_global
+    return [
+        (
+            "auto-snapshot",
+            vault / "⚙️ Meta" / ".auto-snapshot.log",
+            re.compile(r"FAIL|errored"),
+            3,
+            "hourly vault commit; mirror-drift between CLAUDE.md and AGENTS.md "
+            "is the common blocker",
+        ),
+        (
+            "vault-safe-commit",
+            vault / "⚙️ Meta" / ".vault-snapshot.log",
+            re.compile(r"FAIL"),
+            3,
+            "the wrapper Claude uses for explicit vault commits",
+        ),
+    ] + machine_global
 
 WINDOW_SECONDS = 72 * 3600  # 72-hour rolling window
 # Optional leading bracket: auto-snapshot.log uses "[2026-...]", refresh.log
@@ -134,20 +161,48 @@ def fail_count_in_window(
     return len(fail_minutes)
 
 
+def user_launchd_labels() -> set[str]:
+    """Labels of the launchd agents THIS user installed.
+
+    Scoped BY PROPERTY, not by a hardcoded namespace. A plist in the user's
+    own LaunchAgents directory is, by definition, a job they installed; its
+    filename stem is the label by the platform's own convention. That covers
+    every operator on every machine, which a hardcoded reverse-DNS prefix
+    could never do — a prefix naming one person's namespace makes this pass
+    permanently DEAD for everyone else, and this file ships in a public repo
+    that other people install.
+
+    Empty set off macOS (no such directory), which makes the caller a no-op
+    exactly as it already is where `launchctl` does not exist.
+    """
+    agents = HOME / "Library" / "LaunchAgents"
+    try:
+        return {p.stem for p in agents.glob("*.plist")}
+    except OSError:
+        return set()
+
+
 def launchd_failures() -> list[str]:
-    """Flag com.adelaida.* launchd jobs whose last run exited non-zero.
+    """Flag the user's own launchd jobs whose last run exited non-zero.
 
     `launchctl list` column 2 is the last exit status: 0 = clean, a positive
     int = non-zero exit, a negative int = killed by signal, '-' = never run.
     This auto-covers every job — including ones not in RUNNERS, the gap that
-    let routing-health-check and receipts-reconcile fail unnoticed.
+    let a health-check and a reconcile job fail unnoticed.
+
+    Restricted to labels the user installed (see user_launchd_labels), so the
+    machine's Apple and third-party agents stay out of the report.
     """
     try:
         result = subprocess.run(
             ["launchctl", "list"],
-            capture_output=True, text=True, timeout=10, check=False,
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=10, check=False,
         )
     except (subprocess.SubprocessError, OSError):
+        return []
+    mine = user_launchd_labels()
+    if not mine:
         return []
     out: list[str] = []
     for line in result.stdout.splitlines():
@@ -155,9 +210,9 @@ def launchd_failures() -> list[str]:
         if len(parts) != 3:
             continue
         _pid, status, label = parts
-        if not label.startswith("com.adelaida."):
+        if label not in mine:
             continue
-        if label in BESPOKE_LAUNCHD_LABELS:
+        if any(label.endswith(suffix) for suffix in BESPOKE_LAUNCHD_SUFFIXES):
             continue  # has a dedicated finder with recovery guidance
         try:
             code = int(status)
@@ -171,15 +226,19 @@ def launchd_failures() -> list[str]:
     return out
 
 
-def receipts_reconcile_findings() -> list[str]:
+def receipts_reconcile_findings(vault: Path | None) -> list[str]:
     """Surface receipts-reconcile data findings the launchd pass can't see.
 
     daily_reconcile.py exits 0 on data findings (only operational errors exit
     non-zero), so a stale pipeline heartbeat or bad receipt row slips past the
     launchctl-status pass. Read the newest note: flag hard_violations > 0, or
     flag the note being > 48h stale (the reconcile job itself stopped).
+
+    `vault is None` → nothing to read; the notes live inside a vault.
     """
-    notes_dir = VAULT / "⚙️ Meta" / "Receipts Reconcile"
+    if vault is None:
+        return []
+    notes_dir = vault / "⚙️ Meta" / "Receipts Reconcile"
     if not notes_dir.exists():
         return []
     notes = sorted(notes_dir.glob("*.md"), reverse=True)
@@ -209,7 +268,10 @@ def receipts_reconcile_findings() -> list[str]:
     return out
 
 
-BESPOKE_LAUNCHD_LABELS = {"com.adelaida.team-broadcast-daily"}
+# Matched as a SUFFIX so any operator's reverse-DNS namespace works
+# (`com.<whoever>.team-broadcast-daily`). These jobs have a dedicated finder
+# below that gives better recovery guidance than the generic launchd pass.
+BESPOKE_LAUNCHD_SUFFIXES = (".team-broadcast-daily",)
 
 
 def team_broadcast_findings(log_path: Path | None = None) -> list[str]:
@@ -238,7 +300,10 @@ def team_broadcast_findings(log_path: Path | None = None) -> list[str]:
 
     last_exit: dict[str, int] = {}
     last_ts: str | None = None
-    exit_re = re.compile(r"^\[([^\]]+)\]\s+(onde|mycelium)\s+exit=(\d+)")
+    # Workspace token is generic: hardcoding one operator's workspace names
+    # here made the parser silently match nothing for everyone else, so a
+    # failed broadcast never surfaced on any other install.
+    exit_re = re.compile(r"^\[([^\]]+)\]\s+([A-Za-z0-9][\w.-]*)\s+exit=(\d+)")
     for line in text.splitlines():
         m = exit_re.match(line)
         if not m:
@@ -262,16 +327,15 @@ def team_broadcast_findings(log_path: Path | None = None) -> list[str]:
             if age_h > 48:
                 out.append(
                     f"  - team-broadcast-daily: no run in {int(age_h)}h. The "
-                    f"18:00 cron may have stopped (launchctl list "
-                    f"com.adelaida.team-broadcast-daily)"
+                    f"daily cron may have stopped (launchctl list | grep "
+                    f"team-broadcast-daily)"
                 )
         except ValueError:
             pass
 
-    channels = {"onde": "#daily-stand-ups", "mycelium": "#daily-updates"}
     failed = sorted(ws for ws, code in last_exit.items() if code != 0)
     if failed:
-        named = ", ".join(f"{ws} ({channels.get(ws, ws)})" for ws in failed)
+        named = ", ".join(failed)
         out.append(
             f"  - team-broadcast-daily: last run FAILED for {named}. That "
             f"stand-up never posted.\n"
@@ -287,13 +351,23 @@ def main() -> int:
         return 0
 
     # SessionStart payload arrives on stdin (JSON). Drain so we don't block.
+    # `cwd` on it is how we know WHICH vault's runners to scan.
+    raw = ""
     try:
-        sys.stdin.read()
+        raw = sys.stdin.read()
     except Exception:
         pass
+    cwd = ""
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+        if isinstance(payload, dict):
+            cwd = payload.get("cwd") or ""
+    except Exception:
+        pass
+    vault = vault_root_for(Path(cwd) if cwd else Path.cwd())
 
     findings: list[str] = []
-    for label, log_path, pattern, threshold, hint in RUNNERS:
+    for label, log_path, pattern, threshold, hint in runners(vault):
         try:
             n = fail_count_in_window(log_path, pattern, WINDOW_SECONDS)
         except Exception:
@@ -304,7 +378,7 @@ def main() -> int:
                 f"    log: {log_path}"
             )
 
-    # launchd exit-status pass — auto-covers every com.adelaida.* job,
+    # launchd exit-status pass — auto-covers every job this user installed,
     # including ones not in RUNNERS (the gap behind the silent failures).
     try:
         findings.extend(launchd_failures())
@@ -314,7 +388,7 @@ def main() -> int:
     # receipts-reconcile exits 0 on data findings, so its stale-pipeline
     # signal won't show in the launchd pass — read the note directly.
     try:
-        findings.extend(receipts_reconcile_findings())
+        findings.extend(receipts_reconcile_findings(vault))
     except Exception:
         pass
 
@@ -342,4 +416,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())

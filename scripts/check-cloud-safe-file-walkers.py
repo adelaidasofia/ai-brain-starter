@@ -588,11 +588,24 @@ def evaluate(source: str, filename: str = "<memory>") -> dict:
     return {"ok": not findings, "parse_error": None, "findings": findings}
 
 
+def normalize(source: str) -> str:
+    """CRLF/CR -> LF.
+
+    The ratchet hash MUST be identical on every checkout or the pin is useless.
+    This repo has no .gitattributes, so a Windows clone with core.autocrlf=true
+    has CRLF on disk while the Linux CI runner has LF.  A raw-decode hash pinned
+    on one platform is 100% stale on the other: every reviewed row reds the gate
+    with no real violation behind it, which trains maintainers to ignore it.
+    Normalizing makes the pin describe the CONTENT, not the checkout.
+    """
+    return source.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def check_file(path: Path) -> tuple[int, dict]:
     result = safe_read_text(path, timeout=5.0, max_bytes=1_000_000)
     if not result.ok:
         return 2, {"ok": False, "read_error": result.status, "findings": []}
-    source = result.text or ""
+    source = normalize(result.text or "")
     verdict = evaluate(source, str(path))
     verdict["sha256"] = hashlib.sha256(source.encode("utf-8")).hexdigest()
     if verdict.get("parse_error"):
@@ -678,7 +691,7 @@ def check_all(root: Path, baseline_path: Path) -> int:
         return 1
     print(
         f"CLEAN fleet: {len(relative_files)} Python files; "
-        f"{len(current_unsafe)} byte-pinned legacy exception(s)"
+        f"{len(current_unsafe)} content-pinned legacy exception(s)"
     )
     return 0
 

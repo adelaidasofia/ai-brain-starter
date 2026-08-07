@@ -139,6 +139,57 @@ if [ "$hook_found" -eq 0 ]; then
     "/setup-brain Phase 5 wires them. Without them, no auto context-loading."
 fi
 
+# Wired-but-absent: a hook command naming ~/.claude/hooks/<file> that is not on
+# disk. Every such command carries a `[ -f ]` guard (or hook_runner's
+# --fallback silent), so the miss is a SILENT no-op -- the hook never fires and
+# nothing says so. The `grep -q '"hooks"'` check above passes even when every
+# referenced file is gone.
+#
+# Observed on a real install: vault-context.py wired 7 times, present 0 times,
+# alongside retry-budget.py and validate-mcp-json.py -- all three are phase-05
+# "install by default" copies that never ran. scripts/check-home-hook-deploy.py
+# does NOT cover this: it is a static REPO lint proving each hook has a
+# documented deploy route, and cannot see whether that route ever executed here.
+#
+# WARNING, not error: phase-05 documents `rm ~/.claude/hooks/<name>.py` as the
+# supported uninstall, so an absent file is genuinely ambiguous between
+# never-installed and deliberately-removed. Naming it lets the reader tell which.
+ABS_HOOKS_DIR="$HOME/.claude/hooks"
+ABS_HOOKS_SRC="$HOME/.claude/skills/ai-brain-starter/hooks"
+wired_names=""
+for f in "$SETTINGS" "$LOCAL_SETTINGS"; do
+  [ -f "$f" ] || continue
+  # Anchor on .claude/hooks/ so the starter's own hooks dir
+  # (.claude/skills/ai-brain-starter/hooks/) is not swept in. The separator
+  # class covers POSIX "/" and JSON-escaped Windows "\\".
+  names=$(grep -oE '\.claude[\\/]+hooks[\\/]+[A-Za-z0-9_.-]+\.(py|sh)' "$f" 2>/dev/null \
+          | sed 's#.*[\\/]##')
+  [ -n "$names" ] && wired_names="$wired_names$names
+"
+done
+wired_names=$(printf '%s' "$wired_names" | grep -v '^$' | sort -u)
+if [ -n "$wired_names" ]; then
+  wired_count=$(printf '%s\n' "$wired_names" | grep -c .)
+  missing=""
+  for n in $wired_names; do
+    [ -f "$ABS_HOOKS_DIR/$n" ] || missing="$missing $n"
+  done
+  missing=$(printf '%s' "$missing" | sed 's/^ //')
+  if [ -z "$missing" ]; then
+    ok "all $wired_count wired ~/.claude/hooks/ file(s) present on disk"
+  else
+    missing_count=$(printf '%s\n' "$missing" | tr ' ' '\n' | grep -c .)
+    hint="These never fire and report no error."
+    for n in $missing; do
+      if [ -f "$ABS_HOOKS_SRC/$n" ]; then
+        hint="$hint Reinstall: cp $ABS_HOOKS_SRC/{$(printf '%s' "$missing" | tr ' ' ',')} $ABS_HOOKS_DIR/ -- or, if you removed them on purpose, this is expected."
+        break
+      fi
+    done
+    warn "$missing_count of $wired_count wired ~/.claude/hooks/ file(s) MISSING: $(printf '%s' "$missing" | tr ' ' ' ')" "$hint"
+  fi
+fi
+
 # graph-context-hook script (the one that bit Windows users)
 GCH="$META/scripts/graph-context-hook.sh"
 if [ -f "$GCH" ]; then
@@ -345,7 +396,18 @@ if [ -n "$CHECK_BACKUP" ]; then
   bverdict="$(python3 "$CHECK_BACKUP" --porcelain "$VAULT" 2>/dev/null)"
   case "$bverdict" in
     BACKED_UP:vault-backup:*)
-      ok "Off-machine backup present (vault-backup, ~${bverdict##*:} days old)" ;;
+      # An archive that EXISTS is not the same as a backup that RUNS. Mirror the
+      # staleness contract of hooks/surface-backup-status.py so the two surfaces
+      # cannot disagree: past the threshold, a snapshot is evidence the schedule
+      # stopped firing, not evidence of a healthy backup.
+      _bage="${bverdict##*:}"
+      _bstale="${VAULT_BACKUP_STALE_DAYS:-3}"
+      if awk "BEGIN{exit !($_bage > $_bstale)}" 2>/dev/null; then
+        warn "Last vault snapshot is ~${_bage} days old (> ${_bstale}d) — the backup is not running on schedule" \
+          "Run it now: bash scripts/vault-backup.sh run --vault '$VAULT'. Then find out why the schedule stopped firing."
+      else
+        ok "Off-machine backup present (vault-backup, ~${_bage} days old)"
+      fi ;;
     BACKED_UP:timemachine)   ok "Off-machine backup present (Time Machine destination configured)" ;;
     BACKED_UP:cloud:*)       ok "Off-machine copy present (${bverdict#BACKED_UP:cloud:} — a cloud copy; single-file snapshots are safer, see docs/BACKUP.md)" ;;
     BACKED_UP:git-remote)    ok "Off-machine backup present (git HEAD pushed to a remote)" ;;

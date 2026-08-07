@@ -70,6 +70,8 @@ From the content, identify:
 - It requires your decision or follow-up ("we need to define X" where you're the one with context)
 - You said you'd research or provide something
 
+Commitment cues are language-specific, so listen for them in the language actually spoken. Spanish first-person commitments read as "me toca...", "voy a...", "yo lo hago", "yo me encargo", "quedo de...". A transcript can be bilingual within one sentence; catch the cue in whichever language it appears.
+
 **Others' tasks** — anything assigned to someone else — list these separately for visibility but DO NOT add to your to-do.
 
 **Decisions pending** — anything that was left unresolved and needs a meeting or decision soon.

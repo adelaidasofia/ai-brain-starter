@@ -43,15 +43,41 @@ bash scripts/vault-daily-maintenance.sh --vault-root /path/to/vault --reconcile-
 
 Resource-awareness (load gate + close-cascade mutex) is shared with the close hook via `scripts/_session_close_guard.sh`, so the two can never drift. Override the threshold with `CLOSE_MAX_LOAD_PER_CORE` (default `3.0`). Logs to `<vault>/Meta/logs/vault-daily-maintenance.log`. See the close-side documentation in `templates/rules/session-close.md` ("Resource-aware close").
 
-**Install the schedule:**
+**The schedule installs itself.** `scripts/install-hooks-user-level.py` calls
+`install-vault-daily-maintenance.sh` whenever it knows the vault path — launchd
+on macOS, a cron entry elsewhere, both idempotent. This is deliberate: every
+reclaim tool below used to be opt-in, so on a default install none of them ever
+ran and the machine only ever got fuller (MYC-2363). Nothing gates the VALUE
+behind a flag; `ABS_NO_AUTO_GC=1` turns it off for someone who drives reclaim by
+hand.
+
+Re-point or re-install it by hand with:
 
 ```bash
-# macOS (launchd, runs daily at 04:30 local, low CPU + IO priority)
+# macOS (launchd) / Linux (cron) — same command, runs daily at 04:30 local
 bash scripts/install-vault-daily-maintenance.sh /path/to/vault
-
-# Linux (cron), add to `crontab -e`:
-30 4 * * *  /bin/bash /abs/path/to/ai-brain-starter/scripts/vault-daily-maintenance.sh --vault-root /path/to/vault >> ~/.local/state/ai-brain-starter/vault-daily-maintenance.out.log 2>&1
 ```
+
+**What the auto-GC tier reclaims** (each was previously opt-in, each runs behind
+the same load + battery + user-idle gates):
+
+| Leg | Reclaims |
+|---|---|
+| `worktree-prune.sh` | vault scratch worktrees, orphan dirs/branches, old snapshots |
+| `graphify_prune_stale_cache.py` | graph-cache entries matching no current file |
+| `dev-repo-reaper.py --apply` | merged branches / worktrees / checkpoint stashes |
+| `dev-worktree-prune.py --apply` | orphaned `<dev-root>/<repo>-<slug>` session worktrees |
+| `dev-hub-refresh.py --apply` | fast-forwards clean bare hubs so a recon read is never weeks stale |
+| `dev-drift-report.py --write-state` | measures un-backed-up drift for the SessionStart surface |
+
+Everything reaped is provably preserved elsewhere: a branch is reaped only when
+its content is on a remote, a dirty worktree is snapshotted to
+`~/.claude/logs/dev-worktree-snapshots/` before removal, and un-backed-up work is
+surfaced for a human, never deleted.
+
+**Idle-awareness.** Beyond the load gate, the pass defers when the machine is on
+battery or when someone was at the keyboard in the last 5 minutes
+(`MAINT_MIN_USER_IDLE_SEC`). Both are deferrals with catch-up, not skips.
 
 ### vault_maintenance.py
 
@@ -121,10 +147,9 @@ Workaround until upstream supports a `cron_only: true` frontmatter flag (tracked
 
 Edit the existing task by renaming the directory and updating the `name:` field in its `SKILL.md` frontmatter to match. `/diagnose` will warn on any scheduled task that does not follow this convention or that collides with an installed skill name.
 
-### Daily Vault Maintenance (recommended for mature vaults)
+### Daily Vault Maintenance + auto-GC (installed by default)
 - **What:** the resource-gated daily cron above (`vault-daily-maintenance.sh`): deferred-close reconciliation + heavy hygiene, off the interactive close path.
-- **Install (macOS):** `bash scripts/install-vault-daily-maintenance.sh /path/to/vault` (runs daily at 04:30 local, low CPU + IO priority).
-- **Install (Linux):** add the cron line shown in the `vault-daily-maintenance.sh` section above.
+- **Install:** automatic — the hook installer schedules it (launchd on macOS, cron elsewhere). Re-run by hand with `bash scripts/install-vault-daily-maintenance.sh /path/to/vault`; opt out with `ABS_NO_AUTO_GC=1`.
 - **Why a launchd/cron job and not a Claude Code scheduled task:** this is a deterministic shell pass with no model judgment, and it must run at low IO/CPU priority even when no Claude session is open, exactly what launchd/cron does and a scheduled task does not.
 
 ### Monthly Vault Maintenance (recommended)

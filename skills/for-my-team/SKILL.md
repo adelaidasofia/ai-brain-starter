@@ -7,6 +7,8 @@ argument-hint: "[no arguments — fully conversational]"
 
 # /for-my-team
 
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). Shared starter files live at the repo root two levels up: `{SKILL_DIR}/../..`. If a path does not resolve, name the missing file and stop — never guess another location.
+
 Help the user understand what the team version of this brain looks like, what it costs them to build it themselves, and what their options are.
 
 ## Why this skill exists
@@ -37,7 +39,7 @@ The vault should have ai-brain-starter installed. Find the for-teams folder:
 ls ~/Desktop/ai-brain-starter/for-teams/
 
 # End-user install:
-ls ~/.claude/skills/ai-brain-starter/for-teams/
+ls "{SKILL_DIR}/../../for-teams/"
 ```
 
 If it is missing, tell the user their install is incomplete and offer to re-run bootstrap. Do not improvise the team content from memory.

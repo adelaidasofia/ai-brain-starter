@@ -20,6 +20,9 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 GUARD="$REPO_ROOT/hooks/sessionstart-hook-snapshot-guard.py"
+# HOME alone does not sandbox ~ on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$SCRIPT_DIR/lib/sandbox_home.sh"
 
 PASS=0
 FAIL=0
@@ -65,7 +68,7 @@ PY
 # run_guard <home> [args...] ; sets RC + OUT + ERR
 run_guard() {
   local home="$1"; shift
-  OUT="$(HOME="$home" python3 "$GUARD" "$@" 2>/tmp/_ss_err.$$)"
+  OUT="$(run_sandboxed "$home" python3 "$GUARD" "$@" 2>/tmp/_ss_err.$$)"
   RC=$?
   ERR="$(cat /tmp/_ss_err.$$ 2>/dev/null)"; rm -f /tmp/_ss_err.$$
   return 0

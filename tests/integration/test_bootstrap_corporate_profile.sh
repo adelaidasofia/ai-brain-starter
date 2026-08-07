@@ -25,6 +25,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# HOME alone does not sandbox ~ on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$REPO_ROOT/tests/integration/lib/sandbox_home.sh"
 BOOTSTRAP="$REPO_ROOT/bootstrap.sh"
 
 if [ ! -f "$BOOTSTRAP" ]; then
@@ -60,7 +63,7 @@ run_bootstrap() {
   # Spanish-locale Mac the t()-translated lines came out in Spanish and the
   # English greps below failed. Green on linux CI (no AppleLocale fallback),
   # red on any es_* Mac.
-  ( export HOME="$h"
+  ( sandbox_home "$h"
     # shellcheck disable=SC2086
     env $extra_env EMAIL="ci@example.com" NAME="CI Test" LANG_HINT="en" BOOTSTRAP_LANG="en" \
       bash "$BOOTSTRAP" "$@" ) > "$out" 2>&1

@@ -31,8 +31,18 @@ if [ ! -f "$HOOK" ]; then
   exit 1
 fi
 
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/sandbox_home.sh"
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+
+# This suite invokes the hook directly, and the hook resolves ~/.claude. Without a
+# sandbox it therefore rewrites the DEVELOPER'S real ~/.claude/settings.json on every
+# run — measured here as a fresh settings.json.bak per run, 309 of them going back to
+# 2026-04-16. Sandbox HOME *and* USERPROFILE (the Windows resolution path) before any
+# hook runs; the harness fails the suite if the real file is touched.
+sandbox_home "$TMP"
 
 VAULT="$TMP/vault"
 mkdir -p "$VAULT"
