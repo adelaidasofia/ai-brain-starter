@@ -70,6 +70,9 @@ try:
         SESSION_LOCK_LIVE_WINDOW_SEC,
         resolve_dev_root,
     )
+    from _lib.dev_repo_scan import (  # noqa: E402
+        has_live_session_lock as _shared_has_live_session_lock,
+    )
 except ImportError as exc:
     print(f"dev-worktree-prune: the _lib/dev_repo_scan.py on sys.path is older "
           f"than this script ({exc}). Re-run scripts/install-hooks-user-level.py. "
@@ -94,8 +97,12 @@ SURFACE = "surface"
 
 def _git(cwd, *args, timeout: int = 20):
     try:
+        # encoding pinned: `text=True` alone decodes with the console code page,
+        # and on a non-UTF-8 Windows console a path with any non-ASCII byte
+        # raises before this returns — on the tool that decides what to DELETE.
         r = subprocess.run(["git", "-C", str(cwd), *args],
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout)
         return r.returncode, r.stdout.strip(), r.stderr.strip()
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
         return 99, "", str(exc)
@@ -127,16 +134,18 @@ def has_live_session_lock(path: Path, now_ts: float) -> bool:
     """A session actively working in this worktree. Removing it out from under a
     live run is how a 45-minute gate loses its files mid-flight.
 
+    Delegates to the shared `_lib.has_live_session_lock`. This function used to
+    carry its own probe of `<path>/.session-lock` — a filename that, measured
+    2026-08-06, exists NOWHERE under the dev root. session-lock.py writes
+    `.claude/.session-lock.json` at the git-common-dir root, so a sibling
+    worktree's lock is not inside the worktree. The guard was dead in production
+    while reading as "no session here", on a tool that deletes whole worktrees.
+
     An OSError while probing a lock reads as LOCKED, not unlocked. "I could not
     tell" and "nobody is here" are different answers, and only one of them is
     safe to act on when the action is deletion.
     """
-    for cand in (path / ".session-lock", path / ".claude" / ".session-lock"):
-        try:
-            if cand.exists() and (now_ts - cand.stat().st_mtime) < SESSION_LOCK_LIVE_WINDOW_SEC:
-                return True
-        except OSError:
-            return True  # unreadable lock -> assume a session holds it
+    return _shared_has_live_session_lock(path, now_ts)
     return False
 
 
