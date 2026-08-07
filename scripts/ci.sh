@@ -60,6 +60,16 @@
 #                           a never-deployed hook look identical to one the user
 #                           switched off, so it never fires and nothing says so.
 #                           Same SILENT-NO-OP family as (e)/(e2)/(e3); pure stdlib.
+#   (e5) subprocess decode - scripts/check-utf8-subprocess.py is the READ half of (e).
+#                           (e) fails a CLI that PRINTS non-ASCII without a UTF-8
+#                           stdout guard; this fails one that READS a child's output
+#                           with text=True and no encoding=, so the decode uses the
+#                           console code page. Every child here prints a vault path
+#                           and every vault path carries the gear emoji, whose 0x8F
+#                           byte is unmapped in cp1252 -> UnicodeDecodeError inside
+#                           subprocess.run(). Shipped twice: #313 (write side) and
+#                           #430 (read side, memory stranded outside the vault).
+#                           Content-pinned in scripts/utf8-subprocess-baseline.txt.
 #   (f) Python unit tests - the scripts/test_*.py stdlib suites (the claude-router
 #                           structured-envelope gate, the graph-liveness
 #                           STAMP-GREEN-WHILE-GONE guard). Gate (a) py_compiles them,
@@ -197,6 +207,7 @@ INTEGRATION_TESTS=(
   test_vault_backup_conf_bom
   test_backup_staleness_surfaces
   test_scheduled_task_registration
+  test_vault_backup_task_healing
   test_resource_aware_session_close
   test_cloud_sync_guard
   test_cloud_safe_file_walkers
@@ -304,6 +315,20 @@ INTEGRATION_TESTS=(
   # copy, with a negative control that a first install from a dev tree still
   # wires a runner that exists.
   test_hook_runner_path_stability
+  # In-flight git-operation gate (incident 2026-07-28): proves a fresh install
+  # REGISTERS the guard, wires it in the block-preserving `if [ -f ]` form, and
+  # that the SHIPPED command refuses a commit into a genuinely stalled rebase
+  # while allowing one in a clean repo. Registration is the assertion — a guard
+  # present on disk and absent from settings.json protects nobody.
+  test_installer_registers_inflight_guard
+  # MCP secret-leak guards (MYC-3560): block-claude-mcp-inline-secret.py and
+  # block-mcp-config-inline-secret.py were written after three real GitHub PAT
+  # leaks and shipped as working files, referenced nowhere — never wired, so
+  # never once fired on any install. Same registration-is-the-assertion proof
+  # as the guard above, for both hooks: wired in the block-preserving form,
+  # and the shipped command actually BLOCKS a seeded secret while passing a
+  # clean payload.
+  test_installer_registers_mcp_secret_guards
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new
@@ -342,30 +367,205 @@ fi
 # after EVERY test, so the failure names the exact culprit instead of surfacing
 # weeks later as an unexplained fail-closed harness.
 #
-# The path is resolved through Python's Path.home() — the same resolution the
+# SCOPE. settings.json alone is not enough — measured, not assumed. The sweep
+# that found the original 10 escaping suites showed only 3 rewrote settings.json;
+# the other 7 wrote elsewhere under ~/.claude, including SIX hook scripts copied
+# straight into the live install at ~/.claude/skills/ai-brain-starter/hooks/.
+# A settings.json-only tripwire would have missed 70% of them. So it watches the
+# paths a test can plausibly corrupt, and deliberately NOT the ones Claude Code
+# itself churns during a session (projects/, logs/, todos/, shell-snapshots/,
+# statsig/) — watching those would make the gate flaky and get it disabled,
+# which is worse than not having it.
+#
+# The paths resolve through Python's Path.home() — the same resolution the
 # installer uses — deliberately NOT through $HOME, because on Windows those two
-# disagree and $HOME would watch the wrong file.
+# disagree and $HOME would watch the wrong home.
 REAL_SETTINGS="$(python3 -c 'from pathlib import Path; print(Path.home() / ".claude" / "settings.json")')"
 real_home_fingerprint() {
-  python3 - "$REAL_SETTINGS" <<'PY'
-import hashlib, glob, os, sys
-p = sys.argv[1]
+  python3 <<'PY'
+import glob, hashlib, os
+from pathlib import Path
+
+claude = Path.home() / ".claude"
+settings = claude / "settings.json"
+parts = []
+
+# The catastrophic one: full content + mtime.
 try:
-    with open(p, "rb") as f:
-        stamp = hashlib.sha256(f.read()).hexdigest()
-    stamp += " mtime=%r" % (os.path.getmtime(p),)
+    parts.append(hashlib.sha256(settings.read_bytes()).hexdigest())
+    parts.append("mtime=%r" % (settings.stat().st_mtime,))
 except FileNotFoundError:
-    stamp = "ABSENT"
-# Installer backups are a dead giveaway that a run wrote here and rolled back,
-# leaving content identical but the side effect on disk.
-stamp += " baks=%d" % len(glob.glob(p + ".bak-*"))
-print(stamp)
+    parts.append("ABSENT")
+# Installer backups: a run that wrote here and rolled back leaves content
+# identical but the side effect on disk.
+parts.append("baks=%d" % len(glob.glob(str(settings) + ".bak-*")))
+
+# The live install's own code, deployed hooks, activated rules, and the
+# SessionStart snapshot. size+mtime, not content: enough to catch a rewrite,
+# fast enough to run around all ~100 tests.
+WATCH_TREES = [
+    claude / "skills" / "ai-brain-starter" / "hooks",
+    claude / "skills" / "ai-brain-starter" / "scripts",
+    claude / "hooks",
+]
+WATCH_GLOBS = [
+    str(claude / "hookify.*.md"),
+    str(claude / "settings.local.json"),
+    # state/ as a TREE is gone (see below); this is the one durable artifact in
+    # it worth protecting -- the SessionStart snapshot the paragraph above meant.
+    str(claude / "state" / "sessionstart-hooks-snapshot.json"),
+]
+
+# WHAT THIS WATCHES, AND WHAT IT DELIBERATELY NO LONGER DOES (2026-08-05)
+#
+# The paragraph above names projects/, logs/, todos/, shell-snapshots/ and
+# statsig/ as the churn to stay out of -- but that is a list of DIRECTORIES,
+# and the churn was never confined to them. Two places leaked:
+#
+#   ~/.claude/hooks/  holds append-only logs (cwd-changed.log,
+#       sync-my-skills.log, secret-detection-log.jsonl) and runtime lock dirs
+#       (sync.*.lock/pid) sitting right beside the deployed hook CODE this
+#       tripwire exists to protect.
+#   ~/.claude/state/  is not "the SessionStart snapshot". Measured: 93 files,
+#       78 of them per-session scratch keyed by session UUID
+#       (branch-ticket-warn-<uuid>, linear-ids-seen-<uuid>), the rest last-run
+#       stamps and append-only integrity streams. It is a scratch directory,
+#       the same category as the five already excluded above.
+#
+# Measured at rest with no test running: hooks/cwd-changed.log,
+# hooks/sync-my-skills.log, two sync.*.lock/pid files and
+# state/settings-hook-integrity.jsonl all moved inside 30 seconds; a full
+# instrumented run additionally caught state/linear-ids-seen-<uuid>.txt. The
+# gate therefore failed on a DIFFERENT test every run, naming whichever test
+# happened to be executing when a background job appended a line -- a pristine
+# origin/main checkout failed identically. That is exactly the outcome the
+# paragraph above warns against: "watching those would make the gate flaky and
+# get it disabled, which is worse than not having it."
+#
+# state/ is excluded as a TREE rather than by picking off file kinds. Its
+# churn set is open-ended -- every new hook that drops a dedup marker there
+# would redden this gate again -- and a denylist against an open set always
+# loses. The one durable artifact in it is allow-listed in WATCH_GLOBS above.
+#
+# COVERAGE IS UNCHANGED for every corruption class this gate was built for,
+# each verified against a fake home so the real one is never touched:
+#   trips    settings.json rewritten (the catastrophic 2026-07-30 class,
+#            still compared by FULL CONTENT hash)
+#   trips    hook script copied into the live install (.py)
+#   trips    deployed .sh hook modified
+#   trips    installer backup left behind (.bak-*)
+#   trips    the SessionStart snapshot rewritten
+#   ignores  append-only .log / .jsonl grows, lock dir churns, per-session
+#            scratch appears
+CHURN_SUFFIXES = (".log", ".jsonl")
+
+seen = []
+for tree in WATCH_TREES:
+    if not tree.is_dir():
+        seen.append(f"{tree.name}:ABSENT")
+        continue
+    for root, dirs, files in os.walk(tree):
+        # Prune runtime lock dirs from the walk (sync.*.lock/pid is rewritten
+        # per run), and keep the traversal order deterministic.
+        dirs[:] = sorted(d for d in dirs if not d.endswith(".lock"))
+        for name in sorted(files):
+            fp = Path(root) / name
+            if fp.suffix in CHURN_SUFFIXES:
+                continue
+            try:
+                st = fp.stat()
+            except OSError:
+                continue
+            seen.append(f"{fp.relative_to(claude)}:{st.st_size}:{st.st_mtime!r}")
+for pattern in WATCH_GLOBS:
+    for match in sorted(glob.glob(pattern)):
+        try:
+            st = os.stat(match)
+        except OSError:
+            continue
+        seen.append(f"{os.path.basename(match)}:{st.st_size}:{st.st_mtime!r}")
+
+parts.append("tree=" + hashlib.sha256("\n".join(seen).encode()).hexdigest()[:16])
+parts.append("files=%d" % len(seen))
+print(" ".join(parts))
+PY
+}
+
+# ---- QUIET control for the tripwire ----------------------------------------
+# A guard needs TWO controls, and this repo had only ever written the first:
+#
+#   BITE   does it FIRE on the real thing?   (six such steps in lint.yml)
+#   QUIET  does it stay SILENT at rest?      (this)
+#
+# Both of the 2026-08-05 defects lived in the missing one. The tripwire watched
+# append-only logs and per-session scratch, so it reddened the gate on a
+# DIFFERENT test every run while its bite control passed the whole time; a
+# pristine origin/main checkout failed identically, which is what proved the
+# noise was ambient rather than the diff. A guard that cries wolf gets bypassed,
+# and the bypass becomes the habit -- so a noisy guard is a security problem,
+# not a nuisance.
+#
+# Asserted STRUCTURALLY, not by timing. "Sample twice and compare" would be a
+# sleep-dependent test that is itself flaky, and flaky is the disease. Instead:
+# the watched set must contain nothing whose whole purpose is to be rewritten
+# while the machine runs. That is deterministic, costs milliseconds, and goes
+# red the moment someone re-adds a churning tree.
+real_home_quiet_control() {
+  # Resolved from THIS script's own location, never cwd: a control that
+  # inspects the wrong file, or no file, must not be able to pass.
+  CI_SH_PATH="${CI_SH_PATH:-$SCRIPT_DIR/ci.sh}" python3 <<'PY'
+import os, re, sys
+from pathlib import Path
+
+# STRUCTURAL, not behavioural. The churn files legitimately EXIST in
+# ~/.claude/hooks/ — that is normal and is not the bug. The bug is the
+# fingerprint COLLECTING them. So assert the three exclusions that actually
+# regressed, against this script's own source, which is where a regression
+# lands. A behavioural walk here would either restate the exclusion (a
+# tautology) or flag reality (a false alarm).
+ci_sh = Path(os.environ.get("CI_SH_PATH", "scripts/ci.sh"))
+if not ci_sh.is_file():
+    print("::error::tripwire quiet-control cannot read %s — it would pass "
+          "vacuously. A control that inspects nothing is worse than no "
+          "control." % ci_sh)
+    sys.exit(1)
+
+body = ci_sh.read_text(encoding="utf-8", errors="replace")
+fn = re.search(r"real_home_fingerprint\(\) \{(.*?)\n\}", body, re.S)
+bad = []
+
+if not fn:
+    bad.append("real_home_fingerprint() not found — this control is looking at "
+               "the wrong file and would pass vacuously")
+else:
+    src = fn.group(1)
+    trees = re.search(r"WATCH_TREES = \[(.*?)\]", src, re.S)
+    if trees and re.search(r'claude\s*/\s*"state"\s*,', trees.group(1)):
+        bad.append('state/ is back in WATCH_TREES — ~78 of its ~93 files are '
+                   'per-session scratch keyed by session UUID, so no suffix '
+                   'rule can tame it; allow-list the one durable artifact')
+    if "CHURN_SUFFIXES" not in src or "fp.suffix in CHURN_SUFFIXES" not in src:
+        bad.append("the append-only (.log/.jsonl) exclusion is gone from the "
+                   "fingerprint walk")
+    if 'endswith(".lock")' not in src:
+        bad.append("the runtime lock-dir pruning is gone from the walk")
+
+if bad:
+    print("::error::real-home tripwire quiet-control FAILED — the watched set "
+          "is picking up churn again. It will redden this gate on an unrelated "
+          "test and train a bypass. Exclude the CLASS, never pin the file:")
+    for b in bad:
+        print("::error::  - " + b)
+    sys.exit(1)
+print("    tripwire quiet-control: fingerprint still excludes append-only "
+      "logs, lock dirs and per-session scratch")
 PY
 }
 _home_before_suite="$(real_home_fingerprint)"
 
 echo "==> (b) Shell integration: ${#INTEGRATION_TESTS[@]} tests"
-echo "    real-home tripwire watching: $REAL_SETTINGS"
+echo "    real-home tripwire watching: $(dirname "$REAL_SETTINGS") (settings.json, installed skill, deployed hooks; state/ only its SessionStart snapshot)"
+real_home_quiet_control || exit 1
 for t in "${INTEGRATION_TESTS[@]}"; do
   script="tests/integration/$t.sh"
   if [ ! -f "$script" ]; then
@@ -377,7 +577,7 @@ for t in "${INTEGRATION_TESTS[@]}"; do
   bash "$script"
   _home_after="$(real_home_fingerprint)"
   if [ "$_home_before" != "$_home_after" ]; then
-    echo "::error::$t modified the real $REAL_SETTINGS — the suite must sandbox HOME *and* USERPROFILE (source tests/integration/lib/sandbox_home.sh and use sandbox_home/run_sandboxed). before=[$_home_before] after=[$_home_after]"
+    echo "::error::$t wrote into the real $(dirname "$REAL_SETTINGS") — the suite must sandbox HOME *and* USERPROFILE (source tests/integration/lib/sandbox_home.sh and use sandbox_home/run_sandboxed). before=[$_home_before] after=[$_home_after]"
     exit 1
   fi
 done
@@ -385,7 +585,7 @@ done
 # suite as a whole having moved it (e.g. mtime churn across several tests).
 _home_after_suite="$(real_home_fingerprint)"
 if [ "$_home_before_suite" != "$_home_after_suite" ]; then
-  echo "::error::the integration suite modified the real $REAL_SETTINGS. before=[$_home_before_suite] after=[$_home_after_suite]"
+  echo "::error::the integration suite wrote into the real $(dirname "$REAL_SETTINGS"). before=[$_home_before_suite] after=[$_home_after_suite]"
   exit 1
 fi
 
@@ -466,6 +666,18 @@ fi
 echo "==> (e2) hook block-protocol: $PY scripts/check-hook-block-protocol.py"
 "$PY" scripts/check-hook-block-protocol.py
 
+# ---- (e2b) Hook activation --------------------------------------------------
+# scripts/check-hook-activation.py fails a hook that ships in hooks/ but is wired
+# in NO activation channel (dormant on every install), and a hook we DO wire that
+# the installer does not own (a re-install duplicates a hand-wired copy instead of
+# replacing it, and verify_paths_on_disk() skips it). Three guards shipped dormant
+# before this existed: MYC-1017, MYC-1031, and MYC-782 / #371.
+# The ARTIFACT-WITHOUT-ACTIVATION half of the family whose WIRED-BUT-NEUTERED half
+# is (e2) and whose wired-but-never-deployed half is (e4). Pure stdlib.
+echo "==> (e2b) hook activation: $PY scripts/check-hook-activation.py"
+"$PY" scripts/check-hook-activation.py --selftest >/dev/null
+"$PY" scripts/check-hook-activation.py
+
 # ---- (e3) Naive VAULT_ROOT reads -------------------------------------------
 # scripts/check-vault-root-reads.py fails code that reads the VAULT_ROOT env var
 # outside a sanctioned resolver. A globally-exported VAULT_ROOT names ONE vault,
@@ -491,6 +703,17 @@ echo "==> (e3) vault-root reads: $PY scripts/check-vault-root-reads.py"
 # verification. Same SILENT-NO-OP family as (e), (e2) and (e3). Pure stdlib.
 echo "==> (e4) home-hook deploy: $PY scripts/check-home-hook-deploy.py"
 "$PY" scripts/check-home-hook-deploy.py
+
+# ---- (e5) Locale-decoded subprocess output ---------------------------------
+# The READ half of (e). scripts/check-utf8-subprocess.py fails a subprocess call
+# that decodes a child's output with the LOCALE encoding instead of an explicit
+# one. On a Spanish/French Windows that is cp1252, and any vault path carries the
+# gear emoji whose 0x8F byte is unmapped there -- subprocess.run() raises before
+# the caller sees a byte. Self-test first (proves the gate still bites), then the
+# fleet against the content-pinned baseline. Pure stdlib, always runs here.
+echo "==> (e5) subprocess decode: $PY scripts/check-utf8-subprocess.py"
+"$PY" scripts/check-utf8-subprocess.py --self-test >/dev/null
+"$PY" scripts/check-utf8-subprocess.py
 
 # ---- (f) Python unit tests (scripts/ + hooks/ + tests/) --------------------
 # Every Python unit suite in the repo, run under the SAME interpreter as the rest
@@ -530,6 +753,7 @@ PY_DIRECT=(
   hooks/test_check_fabricated_verification.py
   hooks/test_warn_chained_state_command.py
   hooks/test_footprint_aggregate_bloat.py
+  hooks/test_footprint_disk_floor.py
   hooks/test_unpushed_drift_surface.py
   hooks/test_claim_surface_honesty.py
   hooks/test_narrow_refspec_falsealarm.py
@@ -539,6 +763,7 @@ PY_DIRECT=(
   # ran the hook, so nothing noticed. Also carries the CLASS guard: no hook may
   # resolve a zone at module level.
   hooks/test_auto_capture_ships_tz.py
+  hooks/test_git_inflight_op_guard.py
   # The generalisation of the line above (MYC-3537). Two hooks were dead on
   # arrival for their whole lives because NOTHING executed them: the tz
   # placeholder, and `import fcntl` at module scope in the SessionStart secret
@@ -574,4 +799,4 @@ done
 echo "    OK - ${#PY_DIRECT[@]} hooks/+tests/ direct suite(s) passed; dormancy invariant clean"
 
 echo
-echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed] + home-hook deploy [passed]."
+echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed] + home-hook deploy [passed] + subprocess decode [passed]."

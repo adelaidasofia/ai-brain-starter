@@ -148,3 +148,43 @@ violation as it happens.
 7. Test every case: exempt/clean (no page), each criterion (pages), absent-field
    (dormant), channel-raises (fail-closed), dedup (pages once),
    all-channels-failed (does NOT dedup), partial-failure (still dedups).
+
+## Probe the guard, not just the fix
+
+Once a guard ships, it is the thing most likely to be wrong, because nothing is
+guarding *it*. A guard that reports green is indistinguishable from a guard that
+works — the same false-green class it was written to catch. Re-reading it does not
+find the holes. Feeding it deliberate offenders does.
+
+Worked example, MYC-3536 (2026-07-31). The guards shipped in #429 looked right and
+passed review. Probing them found three holes in minutes:
+
+1. **Scope taken on faith.** The runtime tripwire watched `~/.claude/settings.json`.
+   The sweep from the *same* investigation had already shown only 3 of 10 escaping
+   suites touched `settings.json` — the other 7 wrote elsewhere under `~/.claude`,
+   six of them copying hook scripts into the live install. The guard would have
+   missed 70% of the leaks that motivated it, and the evidence was in hand the
+   whole time. **A guard's scan scope is its blind spot**: check it against the
+   measured failure set, not against the one example that prompted it.
+2. **Per-file where it needed per-site.** A file that sandboxed three call sites
+   and leaked a fourth passed, because the paired variable appeared *somewhere* in
+   the file. A proximity/window rule has the identical hole — the leaking line
+   usually sits directly under a correctly paired one. Pair by **value**, not by
+   nearness.
+3. **Scope boundary never tested.** The scan covered `tests/integration/*.sh` only,
+   so Python suites were invisible. One redirected `HOME` so a health test would use
+   a temp DB; on Windows it read and wrote the developer's real `health.duckdb`,
+   while its own comment asserted it was isolated.
+
+Before calling guarded work done:
+
+- Write a synthetic offender that *should* trip it. If it doesn't, the guard is decor.
+- Write a synthetic clean case. If that trips, the guard gets disabled within a week,
+  and a disabled guard is worse than none.
+- Confirm the guard does not indict itself — its docs and fixtures contain the very
+  pattern it hunts.
+- Prefer a stable, targeted watch list over a whole-tree hash. Watching directories
+  the runtime churns (logs, sessions, caches) makes the gate flaky, and flaky gates
+  get turned off.
+- State what the guard does NOT cover, in the guard. An exemption with a reason is a
+  known gap; an unstated one is a surprise.

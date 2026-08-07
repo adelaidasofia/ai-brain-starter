@@ -34,6 +34,16 @@ import re
 import sys
 from pathlib import Path
 
+# UTF-8 console guard (ai-brain-starter#313 cp1252 crash class). This file's
+# advisory messages carry non-ASCII (em dashes, arrows), and on a Windows
+# console defaulting to cp1252 printing them raises UnicodeEncodeError — which
+# would crash the hook on the very call it is trying to warn about.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+    except (AttributeError, ValueError):
+        pass
+
 # Fire telemetry (MYC-285). Fail-open: a missing _lib must never break the
 # guard or its tests.
 try:
@@ -51,15 +61,29 @@ STATE_CMD = re.compile(
 )
 # Verification gates whose ONLY trustworthy verdict is their exit status.
 VERIFY_CMD = re.compile(
-    r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:typecheck|type-check|lint|test|build)\b"
+    r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:typecheck|type-check|lint|test|build|ci)\b"
     r"|\btsc\b|\beslint\b|\bvitest\b|\bjest\b|\bpytest\b|\bmypy\b|\bruff\b"
-    r"|\bcargo\s+(?:test|clippy|check)\b|\bgo\s+(?:test|vet)\b",
+    r"|\bcargo\s+(?:test|clippy|check|build)\b|\bgo\s+(?:test|vet)\b"
+    # A repo's CANONICAL full-gate wrapper, and the CI status read. Omitting the
+    # wrapper is how this guard missed the incident that produced detector C:
+    # every individual gate was listed, but the ONE command an agent actually
+    # runs pre-push -- the wrapper around them -- was not, so the guard stayed
+    # silent on the exact call that reported a fake green.
+    r"|\bci-test\b|\bmake\s+(?:ci|test|lint|check)\b|\bgh\s+pr\s+checks\b"
+    # Generic gate scripts: <name>-gate.sh, <name>-check.py, verify-<x>.sh ...
+    r"|\b\S*(?:-gate|-check|-audit)\.(?:sh|py)\b|\bverify-\S+\.(?:sh|py)\b",
     re.IGNORECASE,
 )
 # A truncating filter on the OUTPUT of the pipeline.
 TRUNCATE = re.compile(r"\|\s*(?:tail|head)\b", re.IGNORECASE)
 # `&&` chaining (not `&` backgrounding, not `||`).
 CHAIN = re.compile(r"(?<!&)&&(?!&)")
+# Reading an exit status back out of a pipeline (detector C).
+STATUS_READ = re.compile(r"\$\?|\$\{\?\}|PIPESTATUS|pipestatus", re.IGNORECASE)
+# The two spellings that make the read CORRECT, so a fixed command stays quiet.
+# zsh's array is lowercase and 1-INDEXED; `set -o pipefail` moves the failure
+# into `$?` itself.
+STATUS_READ_OK = re.compile(r"\$\{pipestatus\[1\]\}|pipefail")
 
 
 def main() -> None:
@@ -79,7 +103,59 @@ def main() -> None:
     if not cmd:
         sys.exit(0)
 
-    if not CHAIN.search(cmd) or not TRUNCATE.search(cmd):
+    if not TRUNCATE.search(cmd):
+        sys.exit(0)
+
+    # Detector C: a gate or state command piped to tail/head, whose exit status
+    # is then READ BACK in the same call. No `&&` required — and that absence is
+    # the whole point: A and B both key off `&&`, so the commonest fake-green of
+    # all slipped past both.
+    #
+    #   ci-test 2>&1 | tail -80; echo "EXIT=$?"        -> EXIT=0, always
+    #   gh pr merge 911 --squash | tail -8; echo "$?"  -> 0, always
+    #
+    # `$?` after a pipeline is the LAST stage's status, and tail/head essentially
+    # always succeed, so a RED gate reports GREEN and the agent ships on a verdict
+    # it never saw. Worse in zsh (the agent shell): the bash spelling
+    # `${PIPESTATUS[0]}` expands to EMPTY, so the popular `${PIPESTATUS[0]:-$?}`
+    # idiom silently falls back to the pager's status too.
+    #
+    # Observed twice in ONE session (2026-07-29, MYC-3446) — on the ci-test gate
+    # and again on the merge — after the operating rule for it already existed in
+    # the shared brain. A retrieval-tier doc reaches you AFTER you have written
+    # the command; this fires while you are writing it.
+    if STATUS_READ.search(cmd) and not STATUS_READ_OK.search(cmd):
+        masked_c = sorted(
+            {m.group(0).strip() for m in VERIFY_CMD.finditer(cmd)}
+            | {m.group(0).strip() for m in STATE_CMD.finditer(cmd)}
+        )
+        if masked_c:
+            cmsg = (
+                "This reads a PAGER's exit code, not the gate's: "
+                f"{', '.join(masked_c)}.\n"
+                "A pipeline exits with its LAST stage's status. `tail`/`head` "
+                "essentially always succeed, so `$?` here is ~always 0 — a RED gate "
+                "would report GREEN and you would ship on a verdict you never saw.\n"
+                "In zsh the bash spelling `${PIPESTATUS[0]}` expands to EMPTY, so "
+                "`${PIPESTATUS[0]:-$?}` reports the pager too. Use one of:\n"
+                "  1. Do not pipe the gate:  ci-test > /tmp/gate.log 2>&1; echo \"EXIT=$?\"\n"
+                "  2. zsh, LOWERCASE + 1-INDEXED:  ... | tail -80; echo \"${pipestatus[1]}\"\n"
+                "  3. set -o pipefail  (then `$?` is the pipeline's real status)\n"
+                "Bypass: CHAINED_STATE_CMD_BYPASS=1."
+            )
+            log_fire("warn-chained-state-command-truncated", status="warned",
+                     detector="pager-exit-code-read", cmds=",".join(masked_c))
+            print(json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": cmsg,
+                },
+                "systemMessage": cmsg,
+            }))
+            sys.exit(0)
+
+    if not CHAIN.search(cmd):
         sys.exit(0)
 
     # Detector B: a verification gate piped to tail/head in a segment BEFORE a
