@@ -9,6 +9,40 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-05: on Mac and Linux, "daily backup scheduled" now means it really is
+
+**Who this affects:** anyone on macOS or Linux who set up the daily vault backup.
+
+Setup said "Daily backup scheduled (03:00 local)" as long as it managed to write the small job file that describes the schedule. Whether the operating system's scheduler ever *accepted* that job was never checked, and any error it gave back was thrown away. So that message really only reported "I wrote a file", while the thing meant to take your nightly snapshot might never have been running at all.
+
+There is a concrete way this happened. The job file is XML, and your vault's own path gets written into it. A vault in a folder with an `&` in the name (say, "R & D Vault") produced a file that is not valid XML, which macOS refuses to load. The file still existed, so setup still called it scheduled. Two other versions of the same problem: a vault or starter folder you later moved, leaving the job pointing at a script that is no longer there (it runs every night and fails every night), and a job that is simply not loaded any more.
+
+Now setup writes your vault path into the job file correctly whatever characters it contains, then asks the scheduler itself whether it holds the job, and only says "scheduled" if the answer is yes. Re-running setup reads the existing schedule back and repairs it when it is broken, automatically and with no prompt, the same way the Windows fix below does. A healthy schedule is left completely alone. When it cannot install one, you get the scheduler's own error and the command to take a snapshot by hand, instead of a bare "could not".
+
+There is also a new, faster way to check and fix just the schedule, without re-running the whole setup:
+
+```
+bash scripts/vault-backup.sh schedule
+```
+
+It asks the operating system whether it really holds your daily backup job, repairs it if not, and takes no snapshot, so it is safe to run any time. If it cannot fix it, it tells you why and gives you the command to take a snapshot by hand. This matters because a repair that only happens when you re-run setup would miss exactly the people whose schedule is dead, since those are the people who never re-run setup.
+
+**What you should do:** run `bash scripts/vault-backup.sh schedule` once (or ask Claude to), then check `status` and confirm a snapshot has actually landed in the last day or two. Worth doing now in particular if your vault folder has an `&`, `<` or `>` in its name, or if you have moved your vault or the starter since you set backups up.
+
+---
+
+## 2026-08-05: on Windows, a backup that never actually ran now fixes itself
+
+**Who this affects:** anyone who set up the daily vault backup on Windows before 2026-07-31.
+
+A previous fix stopped the daily backup's Windows scheduled task from being registered broken in the first place. What it could not do was reach back and fix a task that was ALREADY broken on a machine that had run setup before that fix landed — and nothing else in the product ever looked at that task again. Measured on a real install: 25 days with zero snapshots, while setup had printed "Backup is live" and the health check reported the vault backed up. Three separate things could each cause this on their own: the script path the task points at being empty, the task pointing at a PowerShell version that is not on a stock Windows machine, or Windows Task Scheduler's own default of refusing to run on battery power.
+
+Now, every time you run backup setup again, it reads your existing scheduled task back, checks all three things, and — if any of them is wrong — re-registers it correctly, automatically, with no prompt. A healthy task is left alone. If it truly cannot fix it (for example, no PowerShell interpreter can be found at all), it says so loudly instead of pretending it worked.
+
+**What you should do:** run backup setup again once (`vault-backup.ps1 setup`, or ask Claude to do it) if you set up backups on Windows before 2026-07-31. Then check status and confirm a snapshot has actually landed recently.
+
+---
+
 ## 2026-08-01: WhatsApp chats that were all filed as one-on-ones
 
 **Who this affects:** anyone using the WhatsApp bridge, especially if your vault is not in English.
