@@ -2,7 +2,7 @@
 """Build a date index of all journal entries for fast lookup by the insights skill.
 
 Reads YAML frontmatter from every .md file in your journal directory and emits
-a sorted JSON index of {file, date, floor, floor_level} entries. The insights
+a sorted JSON index of {file, date, floor, floor_level, floor_arc} entries. The insights
 skill (and any /weekly or /monthly review) uses this index to scan thousands
 of journal entries in milliseconds without re-reading every file.
 
@@ -28,7 +28,12 @@ Expected frontmatter fields (only `creationDate` is required):
     creationDate: 2026-04-11
     floor: Courage
     floor_level: middle
+    floor_arc: [Fear, Frustration, Courage]   # optional — only on a day that moved
     ---
+
+`floor_arc` (when present) is the ordered path of floors the entry moved
+through, last element == the primary `floor`. It is indexed as a real list so
+the insights movement report can read within-entry transitions (elevators).
 """
 import argparse
 import json
@@ -48,6 +53,26 @@ from _lib.safe_read import safe_read_text  # noqa: E402
 # never silently dropped.
 READ_TIMEOUT = 5.0
 MAX_JOURNAL_BYTES = 1_000_000
+
+
+def _parse_inline_list(v):
+    """Parse a simple inline YAML flow list "[a, b, c]" -> ["a", "b", "c"].
+
+    The frontmatter reader below is line-based (stdlib-only, no YAML dep), so a
+    `floor_arc: [Fear, Frustration, Hope]` line arrives here as the raw string
+    "[Fear, Frustration, Hope]". Return the parsed list so the index carries a
+    real array the insights skill can iterate; return the value unchanged if it
+    is not an inline list.
+    """
+    if not isinstance(v, str):
+        return v
+    s = v.strip()
+    if s.startswith("[") and s.endswith("]"):
+        inner = s[1:-1].strip()
+        if not inner:
+            return []
+        return [x.strip().strip("'\"") for x in inner.split(",") if x.strip()]
+    return v
 
 
 def main():
@@ -132,6 +157,8 @@ def main():
                     entry["floor"] = meta["floor"]
                 if "floor_level" in meta:
                     entry["floor_level"] = meta["floor_level"]
+                if "floor_arc" in meta:
+                    entry["floor_arc"] = _parse_inline_list(meta["floor_arc"])
                 entries.append(entry)
 
     if skipped:

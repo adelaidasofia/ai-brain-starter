@@ -10,7 +10,7 @@ aliases: [Humildad, "Floor 27", "Piso 27"]
 
 **Floor 27 · High tier**
 
-Accurate self-perception, 'I was wrong about'.
+Accurate self-perception, "I was wrong about".
 
 Part of the high tier: see [[High Floors]].
 

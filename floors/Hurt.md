@@ -10,7 +10,7 @@ aliases: [Herida, "Floor 12", "Piso 12"]
 
 **Floor 12 · Low tier**
 
-Breach in a relationship, 'how could they'.
+Breach in a relationship, "how could they".
 
 Part of the low tier: see [[Low Floors]].
 

@@ -10,7 +10,7 @@ aliases: [Aceptación, "Floor 23", "Piso 23"]
 
 **Floor 23 · Middle tier**
 
-Making peace with reality (not Resignation).
+Making peace with reality (NOT Resignation).
 
 Part of the middle tier: see [[Middle Floors]].
 
@@ -18,7 +18,7 @@ Part of the middle tier: see [[Middle Floors]].
 
 **[[Resignation]] (6)** is the shadow of **Acceptance (23)**.
 
-> 'I've given up' vs 'I've made peace'
+> "I've given up" vs. "I've made peace"
 
 Most "Acceptance" people claim is actually [[Resignation]]. The difference is whether you are still bracing.
 

@@ -1,0 +1,11 @@
+{
+  "_comment": "Pinned vendor of the open-source High-Rise framework. Do not edit vendored files by hand - edit upstream (Fundacion-Lontananza/high-rise) and run scripts/sync-high-rise.py. Re-pin with --tag vX.Y.Z.",
+  "repo": "Fundacion-Lontananza/high-rise",
+  "tag": "v0.1.0",
+  "commit": "da692df83c08f4eb0e11fb3b9b1ebe2356469a9e",
+  "files": {
+    "floors.md": "7406aa27ec5c5477158fe367aaa9dbbc051cc963ea1b60c0fa4eb0f09782b46e",
+    "methodology/journaling.md": "c7cde240293f5b3eeb5129c6481240dd1fbff33caa01cc3dbcd341f9cedf5ba9",
+    "methodology/coaching.md": "967474b5665167a222d2fdc48f8c1e4c7d6ab3b01cbc71b3e18776508fb98782"
+  }
+}

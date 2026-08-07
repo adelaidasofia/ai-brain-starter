@@ -10,7 +10,7 @@ aliases: [Rabia, "Floor 16", "Piso 16"]
 
 **Floor 16 · Low tier**
 
-Directed energy, 'this is wrong,' disrespect.
+Directed energy, "this is wrong," disrespect.
 
 Part of the low tier: see [[Low Floors]].
 

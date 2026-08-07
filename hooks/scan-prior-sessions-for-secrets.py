@@ -125,6 +125,11 @@ def _stamp() -> None:
 
 def _vault_root() -> Path | None:
     """Resolve VAULT_ROOT or return None (disables auto-scrub safely)."""
+    # vault-root-ok: here VAULT_ROOT is an explicit opt-in SWITCH for auto-scrub,
+    # not vault detection (see "Environment" above). There is no ~/vault default:
+    # unset returns None and the hook drops to warn-only, the safe mode. Detecting
+    # a vault instead would silently ENABLE in-place redaction on a vault the user
+    # never opted in for, so the naive read is the correct behavior here.
     val = os.environ.get(VAULT_ROOT_ENV, "").strip()
     if not val:
         return None

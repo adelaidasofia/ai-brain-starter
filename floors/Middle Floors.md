@@ -14,7 +14,7 @@ Floors **19-24**:
 - 20. [[Hope]] (Esperanza) — future-facing trust, steady forward momentum
 - 21. [[Neutrality]] (Neutralidad) — calm observation, processing without charge
 - 22. [[Willingness]] (Disposición) — optimistic restart, curiosity replaces fear
-- 23. [[Acceptance]] (Aceptación) — making peace with reality (not Resignation)
+- 23. [[Acceptance]] (Aceptación) — making peace with reality (NOT Resignation)
 - 24. [[Reason]] (Razón) — analytical, strategic, clear-headed
 
 ## Reference

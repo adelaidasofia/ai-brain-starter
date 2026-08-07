@@ -31,7 +31,7 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 
 # Self-locate the starter dir from the script's own location
 # scripts\drift-check.ps1 → parent dir is the repo root
-$ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptDir   = Split-Path -Parent $PSCommandPath
 $StarterDir  = Split-Path -Parent $ScriptDir
 $InstallDir  = "$env:USERPROFILE\.claude\skills"
 $CooldownFile = "$env:USERPROFILE\.claude\.ai-brain-starter-drift-check-last-run"

@@ -220,7 +220,7 @@ if ($env:EMAIL_GATE_BYPASS -ne "1" -and -not $DryRun -and -not (Test-Path $email
 }
 
 # ─── Pre-flight gate (skip with $env:PREFLIGHT_BYPASS = "1") ──────────────────
-$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptRoot = Split-Path -Parent $PSCommandPath
 $preflightLocal = Join-Path $scriptRoot "scripts\preflight.ps1"
 $preflightInstalled = "$env:USERPROFILE\.claude\skills\ai-brain-starter\scripts\preflight.ps1"
 $preflightToRun = ""
@@ -650,7 +650,21 @@ if (Test-Path "$SkillDir\.git") {
             $stashMsg = "bootstrap auto-stash $(Get-Date -Format 'yyyy-MM-dd-HHmm')"
             Log "Detected local uncommitted changes - stashing as: $stashMsg"
             Log "Recover later with: cd $SkillDir; git stash list; git stash pop"
-            if (-not $DryRun) { git stash push -u -m $stashMsg 2>$null | Out-Null }
+            if (-not $DryRun) {
+                git stash push -u -m $stashMsg 2>$null | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    # The checkout is now pristine upstream with the user's patches
+                    # removed. sync-vault-scripts.ps1 refuses to run while this is
+                    # set, so the vault keeps its patched scripts instead of having
+                    # the UNPATCHED upstream copies written over them (the reported
+                    # session-close-runner.sh / vault-safe-commit.sh regression).
+                    $env:ABS_CLONE_PATCHES_STASHED = $stashMsg
+                    Warn "Your vault's <meta>/scripts/ will NOT be refreshed this run - this"
+                    Warn "  clone no longer holds your patches, and syncing would overwrite the"
+                    Warn "  patched copies in your vault. Restore and sync when ready:"
+                    Warn "    cd $SkillDir; git stash pop; pwsh scripts/sync-vault-scripts.ps1"
+                }
+            }
         }
         if ($DryRun) { Dry "would: git pull --quiet (fast-forward $behind commit(s))" }
         else { git pull --quiet 2>$null }
@@ -678,7 +692,7 @@ if ((Test-Path "$SkillDir\SKILL.md") -or $DryRun) { Ok "ai-brain-starter at $Ski
 Hdr "Installing bundled sub-skills (with safety checks)"
 $stamp = Get-Date -Format "yyyy-MM-dd-HHmm"
 
-foreach ($sub in @("graphify", "meeting-todos", "patterns", "insights", "deconstruct", "daily-journal", "rise", "repurpose-talk", "nano-banana", "second-brain-mapping", "setup-vault-types", "diagnose", "note-todos", "sunday-review", "coach", "coaching", "backfill-journal-body-context", "longitudinal", "resolver-query", "for-my-team", "health-context", "health-doctor", "health-setup", "ingest-github", "ingest-health", "ingest-youtube", "evolve", "instinct-export", "instinct-import", "interview-me", "doubt-driven-development", "secret-warn")) {
+foreach ($sub in @("graphify", "cierre-de-llamada", "meeting-todos", "patterns", "insights", "deconstruct", "daily-journal", "rise", "repurpose-talk", "nano-banana", "second-brain-mapping", "setup-vault-types", "diagnose", "note-todos", "sunday-review", "coach", "coaching", "backfill-journal-body-context", "longitudinal", "resolver-query", "for-my-team", "health-context", "health-doctor", "health-setup", "ingest-github", "ingest-health", "ingest-youtube", "evolve", "instinct-export", "instinct-import", "interview-me", "doubt-driven-development", "secret-warn")) {
     $src = "$SkillDir\skills\$sub"
     $dst = "$env:USERPROFILE\.claude\skills\$sub"
 
@@ -847,7 +861,7 @@ if ($DryRun) {
 foreach ($pair in @(@("graphify","graphify"), @("node","node"), @("npm","npm"), @("pipx","pipx"), @("gh","gh"))) {
     if (Have $pair[1]) { Ok $pair[0] } else { Err "$($pair[0]) not callable" }
 }
-foreach ($sub in @("graphify","meeting-todos","patterns","insights","deconstruct","daily-journal","rise","repurpose-talk","nano-banana","humanizer","ai-brain-starter","diagnose","second-brain-mapping","setup-vault-types","note-todos","sunday-review","coach","coaching","backfill-journal-body-context","longitudinal","resolver-query","for-my-team","health-context","health-doctor","health-setup","ingest-github","ingest-health","ingest-youtube","evolve","instinct-export","instinct-import","interview-me","doubt-driven-development","secret-warn")) {
+foreach ($sub in @("graphify","cierre-de-llamada","meeting-todos","patterns","insights","deconstruct","daily-journal","rise","repurpose-talk","nano-banana","humanizer","ai-brain-starter","diagnose","second-brain-mapping","setup-vault-types","note-todos","sunday-review","coach","coaching","backfill-journal-body-context","longitudinal","resolver-query","for-my-team","health-context","health-doctor","health-setup","ingest-github","ingest-health","ingest-youtube","evolve","instinct-export","instinct-import","interview-me","doubt-driven-development","secret-warn")) {
     if (Test-Path "$env:USERPROFILE\.claude\skills\$sub") { Ok "skill: $sub" } else { Err "skill missing: $sub" }
 }
 if (Test-Path "$env:USERPROFILE\.claude\skills\graphify\scripts") { Ok "graphify scripts" } else { Err "graphify scripts missing" }

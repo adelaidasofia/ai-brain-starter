@@ -10,7 +10,7 @@ supersedes: session-end-cascade.md (deprecated; this file is the canonical sourc
 
 **What a close is for: nothing the session produced gets lost.** What the user learned, decided, felt, and committed to gets written to their vault — their second brain — so the next session, and the next month, build on it instead of starting cold. Everything else in this file is plumbing that serves that one goal.
 
-**Most people running this are not developers.** They journal, plan, think, run a business. Speak to them in plain language. Never narrate machinery — "git snapshot", "Bash task", "mutex", "worktree" — at them. The git/resource detail in Phase 4 runs automatically and silently; it is maintainer reference, not something the user reads or hears.
+**Most people running this are not developers.** They journal, plan, think, run a business. Speak to them in plain language. Never narrate machinery — "git snapshot", "Bash task", "mutex", "worktree" — at them. The git/resource detail in the final step runs automatically and silently; it is maintainer reference, not something the user reads or hears.
 
 **You don't need to read this file when the cascade fires** — `detect-closing-signal.py` injects all paths and instructions into your context automatically. This file is documentation, debugging, and the rare manual run. Full architecture + internals: [docs/SESSION_CLOSE.md](../../docs/SESSION_CLOSE.md).
 
@@ -21,6 +21,8 @@ supersedes: session-end-cascade.md (deprecated; this file is the canonical sourc
 | 1 | `detect-closing-signal.py` (UserPromptSubmit) | Detect the goodbye; resolve paths; pre-build the session-file shell; inject everything you need |
 | 2 | Your turn | Surface unfinished work, scan the conversation, write captures to the vault in one batched block |
 | 3 | `session-end-hook.sh` (Stop) | Backstop + aggregate + (only if the vault is backed up by git) snapshot — automatic, silent |
+
+**Phase numbers match the injected cascade.** The phase names and numbers below are the same ones `detect-closing-signal.py` puts in your context at close, so the two can be read together. Numbering that drifts between the two is a bug in whichever one moved: they describe one process, and a number that means different things in each is worse than no number.
 
 **Skip condition.** Fewer than 5 user messages AND no captures = trivial. Say a warm goodbye, skip the protocol. The hook still logs a timestamp.
 
@@ -68,11 +70,31 @@ All edits in parallel. No read-write ping-pong. No tool-call narration.
 
 **Vault firewall.** Personal content → personal vault. Team/business → team vault. Ambiguous → personal. Never leak personal content into a shared vault.
 
-## Phase 3 — Goodbye (you, one line)
+## Phase 2b — Commit what you wrote (you, before the goodbye)
+
+Save the files this close produced: the session file, any decision files, the captures, plus anything else you touched. Use the vault's safe-commit wrapper with **explicit paths** — never stage the whole tree, which on a large vault is slow and sweeps up work that is not yours.
+
+```bash
+bash "<vault>/scripts/vault-safe-commit.sh" "session: <slug> — <summary>" "<path>" "<path>"
+```
+
+This is yours to do, not the Stop hook's. `verify-session-close-cascade.py` runs BEFORE the Stop hook and blocks the close while session-close artifacts are still uncommitted, so waiting for the automatic snapshot in the final step costs you a hard block and a forced re-run.
+
+*Skip if the vault is not git-tracked* — the captures are already on disk.
+
+## Phase 3 — Functional audit (you, code sessions only)
+
+Only when the session shipped code or docs to a repo other people install. Syntax-check what changed, resolve every path referenced in docs, smoke-test new scripts, and reread shipped copy for claims that overstate what is actually wired. Non-dev sessions have none of this: skip it and say nothing.
+
+## Phase 4 — Goodbye (you, one line)
 
 Tell the user plainly what you saved: "Saved to your vault: N decisions, M to-dos, the belief shift about Y. Anything I missed?" Then a warm goodbye in their language. No machinery, no phase names, no file paths unless they ask.
 
-## Phase 4 — Automatic finalization (the Stop hook — you do nothing)
+**If this session set a `/goal`, add one line: ask them to type `/goal clear`.** `/goal` installs a session-scoped Stop hook that blocks stopping until its condition holds, so at a deliberate close it blocks the close and re-invokes you with nothing left to do. This is the one part of the goodbye that is **not** automatic and cannot be: `/goal` is a client-side command with no tool behind it, so only the user can run it. You do not have to go looking — when the detector sees a `/goal` that was never cleared, it adds the reminder (and quotes the condition) to the close instructions it injects.
+
+**The one exception:** a goal whose condition was actually met auto-cleared already. Say nothing then. Telling someone to clear a goal that succeeded is noise.
+
+## After your turn — Automatic finalization (the Stop hook, you do nothing)
 
 Runs after your turn with zero involvement from you, and silently from the user's view:
 

@@ -14,14 +14,6 @@ Quiet confidence that things hold.
 
 Part of the high tier: see [[High Floors]].
 
-## Shadow twin
-
-**[[Pride]] (18)** is the shadow of **Trust (25)**.
-
-> 'I need you to see me' vs 'I see myself'
-
-Most "Trust" people claim is actually [[Pride]]. The difference is whether you are still bracing.
-
 ## How to use this floor
 
 - **Name it.** "I'm on Trust," not "I'm in Trust." The naming reduces the charge.

@@ -6,6 +6,8 @@ trigger: /evolve
 
 # /evolve — promote a cluster of instincts into a structure
 
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). Shared starter files live at the repo root two levels up: `{SKILL_DIR}/../..`. If a path does not resolve, name the missing file and stop — never guess another location.
+
 When many related, high-confidence instincts pile up in one domain, that is a
 signal to promote them into ONE reusable structure instead of leaving them as
 loose memories. `/evolve` finds those clusters deterministically and drafts a
@@ -17,7 +19,7 @@ structures: Commands / Skills / Agents." Reimplemented clean per license-hygiene
 ## Step 1 — run the clusterer (deterministic, zero LLM cost)
 
 ```bash
-python3 ~/.claude/skills/ai-brain-starter/scripts/instinct.py evolve
+python3 "{SKILL_DIR}/../../scripts/instinct.py" evolve
 ```
 
 It groups every instinct by inferred `domain`, computes each cluster's median

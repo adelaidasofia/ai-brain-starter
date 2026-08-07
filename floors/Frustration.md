@@ -10,7 +10,7 @@ aliases: [Frustración, "Floor 14", "Piso 14"]
 
 **Floor 14 · Low tier**
 
-Blocked energy, 'this should be working'.
+Blocked energy, "this should be working".
 
 Part of the low tier: see [[Low Floors]].
 

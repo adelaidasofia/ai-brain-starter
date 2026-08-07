@@ -1,113 +1,178 @@
 #!/usr/bin/env python3
 """Generate one stub note per Floor + tier-index notes for the public substrate.
 
-The substrate ships `floors.md` (one table). The `daily-journal` skill tags every
-entry with wikilinks like `[[Fear]]` and `[[Low Floors]]`. Without per-floor
-notes, those wikilinks resolve to empty bare-string nodes in the graph.
+The `daily-journal` skill tags every entry with wikilinks like `[[Fear]]` and
+`[[Low Floors]]`. Without per-floor notes, those wikilinks resolve to empty
+bare-string nodes in the graph. This script emits 34 floor stubs + 3 tier-index
+notes at `floors/<Name>.md`, plus the writing-series pointer note.
 
-This script emits 34 floor stubs + 3 tier-index notes at `floors/<Name>.md`.
-Bodies are the framework (energy line, elevator emotions involving the floor,
-shadow-twin links, Substack series links) — not lived-experience prose.
-
-Re-run after any change to the 34-floor canonical list in floors.md.
+The canonical floor data (the 34-floor table, elevator emotions, shadow twins,
+EN + ES) is NOT hardcoded here. It is PARSED from the vendored, pinned copy of
+the open-source High-Rise framework at `vendor/high-rise/floors.md`
+(see vendor/high-rise/README.md). ai-brain-starter consumes that upstream; it
+does not keep its own divergent floor list. To change the floors, change them in
+`Fundacion-Lontananza/high-rise`, run `scripts/sync-high-rise.py`, then re-run
+this script. `scripts/test_generate_floor_stubs.py` fails if `floors/` drifts
+from this generator's output.
 """
 
+from __future__ import annotations
+
+import re
 import sys
 from pathlib import Path
 from textwrap import dedent
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "floors"
+CANONICAL = ROOT / "vendor" / "high-rise" / "floors.md"
 
 SUBSTACK_EN = "https://adelaidadiazroa.substack.com"
 SUBSTACK_ES = "https://perspectivasblog.substack.com"
 
-FLOORS = [
-    (1,  "Disgust",       "Asco",          "Low",    "outward rejection, visceral 'get it away from me'"),
-    (2,  "Shame",          "Vergüenza",     "Low",    "'I'm such an idiot,' self-disgust, hiding"),
-    (3,  "Embarrassment",  "Bochorno",      "Low",    "social exposure, temporary, recoverable"),
-    (4,  "Guilt",          "Culpa",         "Low",    "'I should be doing more,' letting people down"),
-    (5,  "Apathy",         "Apatía",        "Low",    "'nothing matters,' checked out, numb"),
-    (6,  "Resignation",    "Resignación",   "Low",    "defeated 'it is what it is' (not making peace)"),
-    (7,  "Confusion",      "Confusión",     "Low",    "mind reaching and failing, contradictory thoughts"),
-    (8,  "Loneliness",     "Soledad",       "Low",    "surrounded but unfound, no one gets it"),
-    (9,  "Boredom",        "Aburrimiento",  "Low",    "restless, understimulated, the trampoline floor"),
-    (10, "Grief",          "Duelo",         "Low",    "loss, sadness, missing someone or something"),
-    (11, "Disappointment", "Decepción",     "Low",    "gap between hope and what arrived"),
-    (12, "Hurt",           "Herida",        "Low",    "breach in a relationship, 'how could they'"),
-    (13, "Fear",           "Miedo",         "Low",    "anxiety, 'what if,' imposter feelings"),
-    (14, "Frustration",    "Frustración",   "Low",    "blocked energy, 'this should be working'"),
-    (15, "Desire",         "Deseo",         "Low",    "wanting, craving, reaching, ambition mixed with lack"),
-    (16, "Anger",          "Rabia",         "Low",    "directed energy, 'this is wrong,' disrespect"),
-    (17, "Contempt",       "Desprecio",     "Low",    "'you are beneath me,' cold dismissal"),
-    (18, "Pride",          "Orgullo",       "Low",    "proving something, need for external validation"),
-    (19, "Courage",        "Valentía",      "Middle", "taking action despite fear, doing the hard thing"),
-    (20, "Hope",           "Esperanza",     "Middle", "future-facing trust, steady forward momentum"),
-    (21, "Neutrality",     "Neutralidad",   "Middle", "calm observation, processing without charge"),
-    (22, "Willingness",    "Disposición",   "Middle", "optimistic restart, curiosity replaces fear"),
-    (23, "Acceptance",     "Aceptación",    "Middle", "making peace with reality (not Resignation)"),
-    (24, "Reason",         "Razón",         "Middle", "analytical, strategic, clear-headed"),
-    (25, "Trust",          "Confianza",     "High",   "quiet confidence that things hold"),
-    (26, "Compassion",     "Compasión",     "High",   "feeling others' pain without collapsing"),
-    (27, "Humility",       "Humildad",      "High",   "accurate self-perception, 'I was wrong about'"),
-    (28, "Belonging",      "Pertenencia",   "High",   "being received, 'I'm in the right room'"),
-    (29, "Love",           "Amor",          "High",   "connection, warmth, giving freely"),
-    (30, "Gratitude",      "Gratitud",      "High",   "presence recognizing abundance"),
-    (31, "Excitement",     "Entusiasmo",    "High",   "anticipatory joy, body saying yes"),
-    (32, "Wonder",         "Asombro",       "High",   "awe at what exists, expansion"),
-    (33, "Joy",            "Alegría",       "High",   "delight, fun, laughter, alive"),
-    (34, "Peace",          "Paz",           "High",   "stillness, nothing to fix, enough as-is"),
-]
-
-ELEVATORS = {
-    "Nostalgia":     [(10, "Grief"), (29, "Love")],
-    "Awe":           [(13, "Fear"), (32, "Wonder")],
-    "Jealousy":      [(13, "Fear"), (15, "Desire"), (16, "Anger")],
-    "Schadenfreude": [(18, "Pride"), (33, "Joy (corrupted)")],
-    "Vulnerability": [(2, "Shame"), (29, "Love")],
-    "Bittersweet":   [(10, "Grief"), (33, "Joy")],
-}
-
-SHADOWS = {
-    6:  (23, "Acceptance", "'I've given up' vs 'I've made peace'"),
-    5:  (21, "Neutrality", "'I don't care' vs 'I'm not attached'"),
-    15: (29, "Love",       "'I want from you' vs 'I give to you'"),
-    18: (25, "Trust",      "'I need you to see me' vs 'I see myself'"),
-}
-SHADOW_INVERSE = {high: (low, low_name, tell) for low, (high, _, tell) in SHADOWS.items()
-                  for low_name in [next(f[1] for f in FLOORS if f[0] == low)]}
-
+# Tier presentation (note titles + blurbs) is this substrate's own framing; the
+# tier BOUNDARIES and each floor's tier come from the canonical table below.
 TIER_INDEX = {
     "Low":    ("Low Floors",    "Pisos Bajos",    "Reactive: 1-18. The reactive tier. Where the charge lives.",      1, 18),
     "Middle": ("Middle Floors", "Pisos Medios",   "Transitional: 19-24. The transitional tier. The climb up.",       19, 24),
     "High":   ("High Floors",   "Pisos Altos",    "Generative: 25-34. The generative tier. Where the energy gives.", 25, 34),
 }
 
-TIER_LEVEL = {"Low": "Low", "Middle": "Middle", "High": "High"}
+# A member reference inside an elevator/shadow line: "Grief (10)", "Love (29)".
+_MEMBER_RE = re.compile(r"([A-Z][A-Za-z]+)\s*\((\d+)\)")
+# A floors-table data row: | 13 | Fear | Miedo | Low | anxiety, ... |
+_FLOOR_ROW_RE = re.compile(
+    r"^\|\s*(\d+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*(Low|Middle|High)\s*\|\s*(.+?)\s*\|\s*$"
+)
+
+
+def _canon_die(msg: str) -> None:
+    print(
+        f"generate_floor_stubs: ERROR parsing {CANONICAL.relative_to(ROOT)}: {msg}\n"
+        f"  Is the vendored High-Rise framework present + current? "
+        f"Run: python3 scripts/sync-high-rise.py",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
+def _english_section(text: str, header: str) -> str:
+    """Return the body of the first `## <header>` section (English half only).
+
+    The canonical file has an English half then a `---` then a Spanish half whose
+    sub-sections are level-3 (`### ...`). Matching the level-2 `## <header>`
+    exactly keeps us in the English half.
+    """
+    lines = text.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if line.strip() == f"## {header}":
+            start = i + 1
+            break
+    if start is None:
+        _canon_die(f"missing '## {header}' section")
+    body = []
+    for line in lines[start:]:
+        if line.startswith("## ") or line.strip() == "---":
+            break
+        body.append(line)
+    return "\n".join(body)
+
+
+def load_canonical() -> tuple[list, dict, list]:
+    """Parse FLOORS, ELEVATORS, SHADOWS from the vendored canonical floors.md."""
+    if not CANONICAL.exists():
+        _canon_die("file not found")
+    text = CANONICAL.read_text(encoding="utf-8")
+
+    # --- floors table (the whole file has exactly one; rows are 1..34) --------
+    floors = []
+    for line in text.splitlines():
+        m = _FLOOR_ROW_RE.match(line)
+        if m:
+            num, en, es, tier, energy = m.groups()
+            floors.append((int(num), en.strip(), es.strip(), tier, energy.strip()))
+    if len(floors) != 34:
+        _canon_die(f"expected 34 floor rows, parsed {len(floors)}")
+    nums = [f[0] for f in floors]
+    if nums != list(range(1, 35)):
+        _canon_die(f"floor numbers are not 1..34 in order: {nums}")
+
+    # --- elevator emotions ----------------------------------------------------
+    elevators = {}
+    for line in _english_section(text, "Elevator emotions").splitlines():
+        line = line.strip()
+        if not line.startswith("- **"):
+            continue
+        name_m = re.match(r"-\s*\*\*(.+?)\*\*", line)
+        if not name_m:
+            continue
+        name = name_m.group(1).strip()
+        members = [(int(n), fn) for fn, n in _MEMBER_RE.findall(line)]
+        elevators[name] = members  # members may be [] (e.g. Overwhelm = any floor)
+
+    # --- shadow twins ---------------------------------------------------------
+    shadows = []  # (low_num, low_name, high_num|None, high_name, tell)
+    for line in _english_section(text, "Shadow twins").splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) != 3:
+            continue
+        low_cell, high_cell, tell = cells
+        if low_cell.lower().startswith("shadow") or set(low_cell) <= {"-", ":"}:
+            continue  # header / separator row
+        low_m = _MEMBER_RE.search(low_cell)
+        if not low_m:
+            continue
+        low_name, low_num = low_m.group(1), int(low_m.group(2))
+        high_m = _MEMBER_RE.search(high_cell)
+        if high_m:
+            high_name, high_num = high_m.group(1), int(high_m.group(2))
+        else:
+            # True twin can be a non-floor concept (e.g. Confidence) — no number.
+            high_name, high_num = high_cell.strip(), None
+        shadows.append((low_num, low_name, high_num, high_name, tell))
+    if not shadows:
+        _canon_die("parsed zero shadow-twin rows")
+
+    return floors, elevators, shadows
+
+
+FLOORS, ELEVATORS, SHADOWS = load_canonical()
+FLOOR_NAME = {num: en for num, en, *_ in FLOORS}
+SHADOW_BY_LOW = {low: (hi, hi_name, tell) for low, _ln, hi, hi_name, tell in SHADOWS}
+SHADOW_BY_HIGH = {hi: (low, low_name, tell)
+                  for low, low_name, hi, _hn, tell in SHADOWS if hi is not None}
 
 
 def elevators_for(num: int) -> list[tuple[str, list[tuple[int, str]]]]:
+    """Elevators this floor is a member of (elevators with no members are skipped)."""
     return [(name, members) for name, members in ELEVATORS.items()
-            if any(m[0] == num or m[1].startswith(name[:4]) for m in members)
-            and any(m[0] == num for m in members)]
+            if any(m_num == num for m_num, _ in members)]
 
 
 def floor_body(num: int, en: str, es: str, tier: str, energy: str) -> str:
     elevators = elevators_for(num)
+
     shadow_block = ""
-    if num in SHADOWS:
-        high_num, high_name, tell = SHADOWS[num]
+    if num in SHADOW_BY_LOW:
+        high_num, high_name, tell = SHADOW_BY_LOW[num]
+        # The true twin may be a floor (link it) or a non-floor concept (plain).
+        twin = f"[[{high_name}]] ({high_num})" if high_num is not None else f"**{high_name}**"
+        check = f"[[{high_name}]]" if high_num is not None else high_name
         shadow_block = dedent(f"""
             ## Shadow twin
 
-            **{en} ({num})** is the shadow of **[[{high_name}]] ({high_num})**.
+            **{en} ({num})** is the shadow of {twin}.
 
             > {tell}
 
-            When {en} shows up easily, check whether [[{high_name}]] is what you actually mean. The difference is whether you are still bracing.
+            When {en} shows up easily, check whether {check} is what you actually mean. The difference is whether you are still bracing.
         """).strip() + "\n\n"
-    elif num in SHADOW_INVERSE:
-        low_num, low_name, tell = SHADOW_INVERSE[num]
+    elif num in SHADOW_BY_HIGH:
+        low_num, low_name, tell = SHADOW_BY_HIGH[num]
         shadow_block = dedent(f"""
             ## Shadow twin
 
@@ -127,10 +192,13 @@ def floor_body(num: int, en: str, es: str, tier: str, energy: str) -> str:
                 if m_num == num:
                     parts.append(f"**{m_name}**")
                 else:
-                    base_name = m_name.split(" (")[0]
-                    parts.append(f"[[{base_name}]]")
+                    parts.append(f"[[{m_name}]]")
             lines.append(f"- **{elev_name}** = " + " + ".join(parts))
-        elevator_block = "## Elevators involving this floor\n\n" + "\n".join(lines) + "\n\nThese are movements between floors, not floors themselves. The journal tags the floor you land on; the elevator name describes the trip.\n\n"
+        elevator_block = (
+            "## Elevators involving this floor\n\n" + "\n".join(lines)
+            + "\n\nThese are movements between floors, not floors themselves. "
+            "The journal tags the floor you land on; the elevator name describes the trip.\n\n"
+        )
 
     tier_name = TIER_INDEX[tier][0]
 
@@ -231,17 +299,17 @@ def main():
     written = []
     for num, en, es, tier, energy in FLOORS:
         path = OUT / f"{en}.md"
-        path.write_text(floor_body(num, en, es, tier, energy))
+        path.write_text(floor_body(num, en, es, tier, energy), encoding="utf-8")
         written.append(str(path.relative_to(ROOT)))
     for tier in ("Low", "Middle", "High"):
         en, _, _, _, _ = TIER_INDEX[tier]
         path = OUT / f"{en}.md"
-        path.write_text(tier_body(tier))
+        path.write_text(tier_body(tier), encoding="utf-8")
         written.append(str(path.relative_to(ROOT)))
     series_path = OUT / "The High-Rise Series.md"
-    series_path.write_text(SERIES_BODY)
+    series_path.write_text(SERIES_BODY, encoding="utf-8")
     written.append(str(series_path.relative_to(ROOT)))
-    print(f"Wrote {len(written)} files:")
+    print(f"Wrote {len(written)} files from {CANONICAL.relative_to(ROOT)}:")
     for p in written:
         print(f"  {p}")
 

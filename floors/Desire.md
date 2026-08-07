@@ -22,9 +22,9 @@ These are movements between floors, not floors themselves. The journal tags the 
 
 ## Shadow twin
 
-**Desire (15)** is the shadow of **[[Love]] (29)**.
+**Desire (15)** is the shadow of [[Love]] (29).
 
-> 'I want from you' vs 'I give to you'
+> "I want from you" vs. "I give to you"
 
 When Desire shows up easily, check whether [[Love]] is what you actually mean. The difference is whether you are still bracing.
 

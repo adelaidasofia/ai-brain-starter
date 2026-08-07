@@ -509,7 +509,15 @@ Tag what the answer reveals, not what the user first claimed. If a correction ha
 - `story` — an actual event/insight/decision did it
 If they moved UP from a low floor, also capture `rope:` — what specifically pulled them (the dog, the person, the promise). Over months this builds the user's personal rope inventory: what reliably works for THEM when nothing else does.
 
-When tagging, use array format: `floor: [Grief, Love]` means dominant Grief with Love also present. First element = dominant.
+**Tag the primary floor — then, only if the day moved, the arc.** Set `floor:` to the single primary floor (where the entry *landed*) and `floor_level:` to its tier. Naming one base floor is deliberate, not a limitation: it is the move that reduces the charge, and it keeps the long-run dataset clean. Then, ONLY when the day moved from one floor to another, add `floor_arc:` — the floors moved through, in order, ending on the primary:
+
+```yaml
+floor: <primary floor>
+floor_level: <Low | Middle | High>
+floor_arc: [<floor>, <floor>, <primary floor>]   # optional — ordered path through the day, last element = floor
+```
+
+The arc is the point: the elevators are the lesson, the floors are just where the door opens, so a path like Fear → Frustration → Hope carries more than any single endpoint. `floor_arc` already holds both the other floors that were present and the order they came in — there is no separate "floors present" list. Keep capture frictionless: **always** ask the one primary-floor question; **offer the arc only when the person signals the day moved** ("started rough, ended okay"); **never prompt for it on a still day** — just omit it. For an elevator emotion (Nostalgia = Grief + Love), tag the floor you land on as `floor` and, if it clarifies things, record the blend as `floor_arc`. (Legacy entries may carry `floor: [A, B]`; that still reads, but new entries use a single `floor` plus an optional `floor_arc`.)
 
 ### Step 5: Advisory Panel Dialogue
 
@@ -615,8 +623,9 @@ If the vault's `CLAUDE.md` states a filename rule, it wins — `filename_format`
 ```markdown
 ---
 creationDate: YYYY-MM-DDTHH:MM
-floor: Primary              # single floor name (or [Primary, Secondary] for elevator emotions) — this is the EVENING floor
+floor: Primary              # single floor name — where the entry LANDED (this is the EVENING floor)
 floor_level: Low | Middle | High
+# floor_arc: [FloorA, FloorB, Primary]   # OPTIONAL — ordered path through the day, last element = floor. Add ONLY when the day moved; omit on a still day.
 entry_status: captured | enriched   # captured = saved at first touch (Step 1.5); enriched = the interview/panel ran
 context_sources: [messages, rescuetime, session_captures, todays_activity, calendar, body_health]   # REQUIRED — every Step-0 source actually folded into this entry (drop any that were off/unavailable, but name what you pulled). Absent => warn-journal-saved-without-context.py fires.
 # Morning pairing fields — ONLY include if a /rise entry was found in Step 0h:

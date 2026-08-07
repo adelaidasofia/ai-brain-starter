@@ -17,7 +17,18 @@
         {"type": "string", "minLength": 1},
         {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 3}
       ],
-      "description": "Floor framework level: numeric 1-34, a named floor, or an array of 1-3 named floors for elevator emotions (e.g. [Gratitude, Excitement]) — first element is dominant. Matches daily-journal SKILL.md, which instructs the array form for dual/elevator floors."
+      "description": "The PRIMARY floor: the one floor the entry landed on (numeric 1-34 or a named floor). Going forward this is a single value; record any movement through the entry in `floor_arc`, not by listing floors here. The array form is legacy (pre-floor_arc) and stays valid for old entries — its first element was dominant."
+    },
+    "floor_level": {
+      "type": "string",
+      "description": "Tier of the primary floor: Low (1-18), Middle (19-24), or High (25-34)."
+    },
+    "floor_arc": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 2,
+      "maxItems": 8,
+      "description": "Optional. The floors moved through during the entry, in order; the last element is where it landed and equals `floor` (e.g. floor: Hope, floor_arc: [Fear, Frustration, Hope]). Present ONLY when the entry moved from one floor to another; omit on a still day. It subsumes any 'floors present' — there is no separate list. Weekly/monthly review reads it to surface recurring elevators (the transitions); stats count either the primary `floor` alone or every floor in the arc."
     },
     "tags": {
       "type": ["array", "string", "null"],

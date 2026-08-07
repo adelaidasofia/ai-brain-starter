@@ -5,6 +5,8 @@ description: 'Use when the user asks for the weekly meta-review or Sunday wrap-u
 
 # /sunday-review — weekly meta-orchestrator
 
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). Shared starter files live at the repo root two levels up: `{SKILL_DIR}/../..`. If a path does not resolve, name the missing file and stop — never guess another location.
+
 You are running the Sunday meta-review. This skill doesn't reinvent the existing weekly skills — it orchestrates them in the right sequence, surfaces the cross-cutting signal, and produces ONE clean note instead of N independent reports.
 
 ## Order of operations
@@ -23,7 +25,7 @@ Invoke `/patterns`. It scans recent sessions, journals, and decisions for harden
 
 Run:
 ```bash
-python3 ~/.claude/skills/ai-brain-starter/scripts/vault-hygiene.py --quiet
+python3 "{SKILL_DIR}/../../scripts/vault-hygiene.py" --quiet
 ```
 
 It writes a fresh report to `⚙️ Meta/Vault Hygiene.md`. Capture: how many broken wikilinks, empty notes, stale notes, duplicate concepts.
@@ -32,7 +34,7 @@ It writes a fresh report to `⚙️ Meta/Vault Hygiene.md`. Capture: how many br
 
 Run:
 ```bash
-python3 ~/.claude/skills/ai-brain-starter/scripts/check-claude-md-drift.py --quiet
+python3 "{SKILL_DIR}/../../scripts/check-claude-md-drift.py" --quiet
 ```
 
 It writes a report to `⚙️ Meta/CLAUDE-md drift.md`. Capture: any dormant people, archived projects, broken links, or old codifications that need review.
@@ -121,7 +123,7 @@ Engram-inspired (`mem_capture_passive`) — scans the past week's session transc
 
 Run:
 ```bash
-python3 ~/.claude/skills/ai-brain-starter/scripts/closed-loop-week-report.py \
+python3 "{SKILL_DIR}/../../scripts/closed-loop-week-report.py" \
   --vault-root "$VAULT_ROOT" --days 7
 ```
 
@@ -157,7 +159,7 @@ Source: panel synthesis (Schneier + Charity Majors + Patrick Collison + DHH-diss
 
 Run:
 ```bash
-python3 ~/.claude/skills/ai-brain-starter/scripts/decision-retrospective.py --apply-prompt
+python3 "{SKILL_DIR}/../../scripts/decision-retrospective.py" --apply-prompt
 ```
 
 This surfaces decisions older than 90 days with empty Outcome and appends review-ready prompts to `⚙️ Meta/Decision Retrospective.md`. Capture: how many stale decisions need their Outcome filled in.
@@ -166,8 +168,8 @@ This surfaces decisions older than 90 days with empty Outcome and appends review
 
 Run:
 ```bash
-python3 ~/.claude/skills/ai-brain-starter/scripts/skill-usage-report.py
-python3 ~/.claude/skills/ai-brain-starter/scripts/curate-skills-surface.py --top 5 --days 7
+python3 "{SKILL_DIR}/../../scripts/skill-usage-report.py"
+python3 "{SKILL_DIR}/../../scripts/curate-skills-surface.py" --top 5 --days 7
 ```
 
 Capture: the 3 most-used skills this week + any skills that haven't been used in 30+ days (dormant — candidates for pruning or re-promoting).

@@ -10,15 +10,15 @@ aliases: [Resignación, "Floor 6", "Piso 6"]
 
 **Floor 6 · Low tier**
 
-Defeated 'it is what it is' (not making peace).
+Defeated "it is what it is" (NOT making peace).
 
 Part of the low tier: see [[Low Floors]].
 
 ## Shadow twin
 
-**Resignation (6)** is the shadow of **[[Acceptance]] (23)**.
+**Resignation (6)** is the shadow of [[Acceptance]] (23).
 
-> 'I've given up' vs 'I've made peace'
+> "I've given up" vs. "I've made peace"
 
 When Resignation shows up easily, check whether [[Acceptance]] is what you actually mean. The difference is whether you are still bracing.
 

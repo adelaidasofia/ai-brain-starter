@@ -10,7 +10,7 @@ aliases: [Asco, "Floor 1", "Piso 1"]
 
 **Floor 1 · Low tier**
 
-Outward rejection, visceral 'get it away from me'.
+Outward rejection, visceral "get it away from me".
 
 Part of the low tier: see [[Low Floors]].
 

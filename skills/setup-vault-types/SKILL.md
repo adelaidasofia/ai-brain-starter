@@ -36,6 +36,8 @@ output_shape:
 
 # /setup-vault-types
 
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). Shared starter files live at the repo root two levels up: `{SKILL_DIR}/../..`. If a path does not resolve, name the missing file and stop — never guess another location.
+
 Figure out which doc types belong in this vault, then wire the right extractors.
 
 ## Why
@@ -110,7 +112,7 @@ For each checked type, symlink its extractor into the vault's `scripts/extractor
 
 ```bash
 VAULT="$(vault-root)"
-STARTER="$HOME/.claude/skills/ai-brain-starter"  # or wherever it's installed
+STARTER="{SKILL_DIR}/../.."  # the starter repo root, two levels above this skill's folder
 for type in ${SELECTED_TYPES[@]}; do
   ln -sf "$STARTER/scripts/extractors/$type.py" "$VAULT/scripts/extractors/$type.py"
 done

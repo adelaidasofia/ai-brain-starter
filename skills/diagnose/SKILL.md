@@ -31,6 +31,8 @@ output_shape:
 
 # /diagnose
 
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). Shared starter files live at the repo root two levels up: `{SKILL_DIR}/../..`. If a path does not resolve, name the missing file and stop — never guess another location.
+
 Tells you whether your second brain is healthy.
 
 ## Why
@@ -47,22 +49,22 @@ Most "Claude is broken" reports trace to one of:
 
 ## What to do
 
-1. Find the script. On the maintainer machine: `~/Desktop/ai-brain-starter/scripts/diagnose.sh`. On an end-user install: `~/.claude/skills/ai-brain-starter/scripts/diagnose.sh`.
+1. Find the script: `{SKILL_DIR}/../../scripts/diagnose.sh` (the starter repo root sits two levels above this skill's folder on every install shape).
 
 2. Run it. Pick the right one for the platform:
 
    **Mac / Linux:**
    ```bash
-   bash ~/.claude/skills/ai-brain-starter/scripts/diagnose.sh
+   bash "{SKILL_DIR}/../../scripts/diagnose.sh"
    # or pass an explicit vault:
-   bash ~/.claude/skills/ai-brain-starter/scripts/diagnose.sh "/path/to/vault"
+   bash "{SKILL_DIR}/../../scripts/diagnose.sh" "/path/to/vault"
    ```
 
    **Windows:**
    ```powershell
-   pwsh ~/.claude/skills/ai-brain-starter/scripts/diagnose.ps1
+   pwsh "{SKILL_DIR}/../../scripts/diagnose.ps1"
    # or:
-   pwsh ~/.claude/skills/ai-brain-starter/scripts/diagnose.ps1 -Vault "C:\path\to\vault"
+   pwsh "{SKILL_DIR}/../../scripts/diagnose.ps1" -Vault "C:\path\to\vault"
    ```
 
    By default it uses `$VAULT_PATH` if set, else the current directory.
@@ -86,7 +88,7 @@ Most "Claude is broken" reports trace to one of:
 | 7 | Vault is a git repo | - | Recommend `git init` for snapshot history |
 | 8 | All .ps1 have BOM, no em dashes, parse clean | Fix the parser error | Add BOM and strip em dashes (see SKILL.md notes) |
 | 9 | MCP config valid JSON | Fix the JSON | No MCPs registered (fine if intentional) |
-| 10 | ai-brain-starter up to date with origin/main | Re-clone | git pull in ~/.claude/skills/ai-brain-starter |
+| 10 | ai-brain-starter up to date with origin/main | Re-clone | git pull in the starter root (`{SKILL_DIR}/../..`) |
 | 10b | No scheduled-task name collides with a skill; cron-only tasks `_`-prefixed | - | Rename per docs/MAINTENANCE.md |
 | 11 | Vault on a local disk, not a consumer cloud-sync root | Move it local (docs/CLOUD_SYNC.md) | Could not evaluate the path |
 | 12 | Vault has an off-machine backup | Set one up: `bash scripts/vault-backup.sh setup` (docs/BACKUP.md) | Backup configured but no snapshot yet |

@@ -10,7 +10,7 @@ aliases: [Aburrimiento, "Floor 9", "Piso 9"]
 
 **Floor 9 · Low tier**
 
-Restless, understimulated, the trampoline floor.
+Restless, understimulated — the trampoline floor.
 
 Part of the low tier: see [[Low Floors]].
 

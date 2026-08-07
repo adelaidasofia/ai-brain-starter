@@ -10,7 +10,7 @@ aliases: [Pertenencia, "Floor 28", "Piso 28"]
 
 **Floor 28 · High tier**
 
-Being received, 'I'm in the right room'.
+Being received, "I'm in the right room".
 
 Part of the high tier: see [[High Floors]].
 

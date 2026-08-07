@@ -16,7 +16,6 @@ Part of the high tier: see [[High Floors]].
 
 ## Elevators involving this floor
 
-- **Schadenfreude** = [[Pride]] + **Joy (corrupted)**
 - **Bittersweet** = [[Grief]] + **Joy**
 
 These are movements between floors, not floors themselves. The journal tags the floor you land on; the elevator name describes the trip.
