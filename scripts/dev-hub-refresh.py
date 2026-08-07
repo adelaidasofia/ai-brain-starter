@@ -38,6 +38,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+    except (AttributeError, ValueError):
+        pass
 DEV_ROOT = Path(os.environ.get("DEV_HUB_REFRESH_ROOT") or (Path.home() / "dev"))
 STATE_PATH = Path(
     os.environ.get("DEV_HUB_REFRESH_STATE")

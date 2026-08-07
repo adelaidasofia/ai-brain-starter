@@ -330,11 +330,80 @@ def main() -> int:
     # =====================================================================
     rc4, _, _ = run_sweep("--no-auto-discover", "--root", str(goroot))
     (pass_ if rc4 == 2 else fail)(f"EXIT: 2 on usage error / missing --old (got {rc4})")
+    rc4b, _, _ = run_sweep(
+        "--old", OLD, "--read-timeout", "inf", "--no-auto-discover", "--root", str(goroot)
+    )
+    (pass_ if rc4b == 2 else fail)(
+        f"EXIT: 2 on non-finite --read-timeout instead of crashing (got {rc4b})"
+    )
+
+    large_root = Path(tmp) / "large-root"
+    large_root.mkdir()
+    (large_root / "recreator.py").write_text(
+        ("# bounded filler\n" * 70_000) + f'CWD = "{OLD}"\n'
+    )
+    rc4c, obj4c, raw4c = run_sweep(
+        "--old", OLD,
+        "--no-auto-discover",
+        "--root", str(large_root),
+        "--config-dir", str(Path(tmp) / "no-config"),
+    )
+    if obj4c is None:
+        fail(f"oversized executable config emitted no JSON (rc={rc4c}): {raw4c[:200]}")
+    else:
+        (pass_ if rc4c == 1 and obj4c.get("verdict") == "NO-GO" else fail)(
+            "INCOMPLETE: oversized executable config can never publish GO"
+        )
+        (pass_ if obj4c.get("incomplete") else fail)(
+            "INCOMPLETE: oversized skipped file is explicit in the report"
+        )
+
+    watch_cfg = Path(tmp) / "oversized-watch-config"
+    watch_cfg.mkdir()
+    (watch_cfg / "relocations.json").write_text(
+        json.dumps([{"old": OLD, "new": NEW, "padding": "x" * 1_100_000}])
+    )
+    rc4d, obj4d, raw4d = run_sweep(
+        "--watch",
+        "--no-auto-discover",
+        "--root", str(goroot),
+        "--config-dir", str(watch_cfg),
+    )
+    if obj4d is None:
+        fail(f"oversized watch manifest emitted no JSON (rc={rc4d}): {raw4d[:200]}")
+    else:
+        (pass_ if rc4d == 1 and obj4d.get("verdict") == "ALARM" else fail)(
+            "WATCH: present oversized manifest fails closed with ALARM"
+        )
+        (pass_ if obj4d.get("manifest_error") else fail)(
+            "WATCH: unreadable manifest state is explicit"
+        )
+
+    invalid_cfg = Path(tmp) / "invalid-watch-config"
+    invalid_cfg.mkdir()
+    (invalid_cfg / "relocations.json").write_text(
+        json.dumps([{"old": 123, "new": 456}])
+    )
+    rc4e, obj4e, raw4e = run_sweep(
+        "--watch",
+        "--no-auto-discover",
+        "--root", str(goroot),
+        "--config-dir", str(invalid_cfg),
+    )
+    if obj4e is None:
+        fail(f"typed-invalid watch manifest emitted no JSON (rc={rc4e}): {raw4e[:200]}")
+    else:
+        (pass_ if rc4e == 1 and obj4e.get("verdict") == "ALARM" else fail)(
+            "WATCH: non-string old/new entry fails closed with ALARM"
+        )
+        (pass_ if (invalid_cfg / "relocate-watch-state.json").is_file() else fail)(
+            "WATCH: invalid manifest still publishes an ALARM cache"
+        )
 
     # =====================================================================
-    # RUN 5: BOUNDED READ — a blocking file (FIFO) is skipped, never hangs.
-    # The un-hangable invariant: a read that would block forever (cloud
-    # placeholder / FIFO / stalled mount) is abandoned + skipped, not awaited.
+    # RUN 5: BOUNDED READ — a blocking file (FIFO) is rejected, never opened.
+    # The shared primitive recognizes special files before content IO; unknown
+    # stalls/placeholders still take the hard-timeout path tested separately.
     # =====================================================================
     fifo_root = Path(tmp) / "fiforoot"
     fifo_root.mkdir()
@@ -357,8 +426,8 @@ def main() -> int:
                 fail(f"BOUNDED READ: no JSON (rc={rc5}): {raw5[:200]}")
             else:
                 pass_("BOUNDED READ: sweep completed on a FIFO root (did not hang)")
-                warned = any("timed out" in w for w in obj5.get("warnings", []))
-                (pass_ if warned else fail)("BOUNDED READ: the blocking file was timed-out + warned")
+                warned = any("not-regular" in w for w in obj5.get("warnings", []))
+                (pass_ if warned else fail)("BOUNDED READ: the FIFO was rejected + warned")
     else:
         pass_("BOUNDED READ: os.mkfifo unavailable here — skipped (cross-platform)")
 
@@ -402,4 +471,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())

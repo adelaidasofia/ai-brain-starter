@@ -1,0 +1,18 @@
+{
+  "description": "Which hookify rule templates the ai-brain-starter installer (scripts/install-hooks-user-level.py, invoked by bootstrap.sh) auto-activates by copying into ~/.claude/. 'default' rules are copied on every install, copy-if-absent so a user's customized copy is never overwritten. 'opt_in' rules stay documentation-only until the user copies them by hand (see README.md). EVERY hookify.*.local.md in this directory MUST appear in exactly one list; an unclassified template, a duplicate, or an entry naming a missing file fails tests/integration/test_delegated_task_needs_source.sh. This is the one declaration for the governed set: add a template and classify it in the same change.",
+  "default": [
+    "hookify.warn-delegated-task-needs-source.local.md"
+  ],
+  "opt_in": [
+    "hookify.block-malformed-mcp-json.local.md",
+    "hookify.compress-claude-docs.local.md",
+    "hookify.dangerous-rm.local.md",
+    "hookify.fact-check-template.local.md",
+    "hookify.public-repo-firewall.local.md",
+    "hookify.voice-no-em-dash.local.md",
+    "hookify.voice-no-exclamation.local.md",
+    "hookify.warn-claude-call-without-cache.local.md",
+    "hookify.warn-filesystem-walk-without-bounded-read.local.md",
+    "hookify.warn-rotation-push-on-local-only-leak.local.md"
+  ]
+}

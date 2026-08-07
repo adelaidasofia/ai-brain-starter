@@ -1,6 +1,6 @@
 ---
 name: coaching
-description: Multi-pass coaching session for processing a hard conversation, decision, or accumulated tension that won't fit in a daily journal. Runs panel passes with corrections, surfaces patterns to track over time, files a synthesized accountability record, and updates the rolling Panel Feedback Log. Use when the user wants honest panel feedback on a specific event (a difficult call, a decision they're second-guessing, accumulated friction with a person), wants to track whether they're growing on a specific theme over weeks/months, or wants the panel to run multiple passes with their corrections instead of one shot. Do NOT use for daily journal entries (use /journal), weekly/monthly reviews (use /weekly or /monthly), one-off panel reactions inside a journal (those run inline in /journal), or pattern detection across many sessions (use /patterns).
+description: 'Use when the user wants to process a hard conversation, a decision they''re second-guessing, or accumulated friction with a person (too big for a daily journal), wants panel takes that update with their corrections, or wants growth on a theme tracked over weeks. Triggers: /coaching, "coach me through this", "help me process this". NOT fitness coaching (/coach), daily entries (/journal), weekly/monthly reviews (/weekly, /monthly), or cross-session pattern detection (/patterns).'
 ---
 
 # Coaching Session — Multi-Pass Panel + Accountability Tracking

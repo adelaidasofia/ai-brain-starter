@@ -10,7 +10,7 @@ aliases: [Culpa, "Floor 4", "Piso 4"]
 
 **Floor 4 · Low tier**
 
-'I should be doing more,' letting people down.
+"I should be doing more," letting people down.
 
 Part of the low tier: see [[Low Floors]].
 

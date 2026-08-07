@@ -261,7 +261,7 @@ Create a `First Time Setup.md` in the team vault's Meta folder that tells team m
 3. Open the shared folder as a vault
 4. Install Claude Code
 5. Install the AI Brain Starter skill:
-   > Please install the ai-brain-starter skill from https://github.com/adelaidasofia/ai-brain-starter
+   > Please install the ai-brain-starter skill from https://github.com/mycelium-hq/ai-brain-starter
 6. The team vault has its own CLAUDE.md — Claude will know the business context automatically
 7. For personal use, set up their own vault with /setup-brain
 
@@ -361,7 +361,7 @@ cp "$(dirname "$(realpath "$0")")/themes/warm-earth/theme.css" "[VAULT_PATH]/.ob
 
 If the repo path isn't available, download it:
 ```bash
-curl -sL "https://raw.githubusercontent.com/adelaidasofia/ai-brain-starter/main/themes/warm-earth/theme.css" -o "[VAULT_PATH]/.obsidian/snippets/warm-earth.css"
+curl -sL "https://raw.githubusercontent.com/mycelium-hq/ai-brain-starter/main/themes/warm-earth/theme.css" -o "[VAULT_PATH]/.obsidian/snippets/warm-earth.css"
 ```
 
 Then in Obsidian: Settings → Appearance → CSS snippets → enable "warm-earth".

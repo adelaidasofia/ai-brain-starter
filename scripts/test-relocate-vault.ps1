@@ -15,6 +15,14 @@ $Here = $PSScriptRoot
 $RV   = Join-Path $Here "relocate-vault.ps1"
 $script:fails = 0
 
+# HERMETICITY: Obsidian-running is a SOFT gate in relocate-vault.ps1 (skippable
+# with -Force). Its real probe (Get-Process -Name Obsidian) reads AMBIENT host
+# state, so a developer with Obsidian open would see the no--Force cases below
+# (the dry-run) die at that gate. Pin the probe to "absent" for the suite (child
+# pwsh processes inherit this env var); Section 6 flips it to "running" to cover
+# the refusal itself. Parity with the .sh suite's RELOCATE_VAULT_OBSIDIAN seam.
+$env:RELOCATE_VAULT_OBSIDIAN = "absent"
+
 function Check { param([string]$Label, [bool]$Cond)
   if ($Cond) { Write-Host "PASS  $Label" } else { Write-Host "FAIL  $Label"; $script:fails++ }
 }
@@ -124,6 +132,28 @@ try {
   $r = Run-RV -RvArgs @("-MigrateClaudeState", $old5, $new5) -ConfigDir $cfg5
   Check "state-only: rc 0"                    ($r.rc -eq 0)
   Check "state-only: transcript at new key"   (Test-Path -LiteralPath (Join-Path $cfg5 "projects/$nk5/t.jsonl"))
+
+  # ---- 6. OBSIDIAN SOFT GATE: refuses while Obsidian runs; -Force overrides --
+  # The suite pins RELOCATE_VAULT_OBSIDIAN=absent (top of file) so the dry-run
+  # case runs on a dev box with Obsidian open. Here we flip it to "running" to
+  # prove the gate itself still refuses, and that -Force escapes it -
+  # deterministically, no real Obsidian. Parity with Section 10 of the .sh suite.
+  $old6 = Join-Path $TMP "cloud6/Brain"; New-Item -ItemType Directory -Force -Path $old6 | Out-Null
+  Set-Content -LiteralPath (Join-Path $old6 "CLAUDE.md") -Value "# brain"
+  $new6 = Join-Path $TMP "local6/Brain"
+  $cfg6 = Join-Path $TMP "cfg6"
+  $env:RELOCATE_VAULT_OBSIDIAN = "running"
+  try {
+    $r = Run-RV -RvArgs @($old6, $new6) -ConfigDir $cfg6
+    Check "obsidian gate: refuses while Obsidian runs -> rc 1" ($r.rc -eq 1)
+    Check "obsidian gate: refusal names Obsidian"              ($r.out -match "Obsidian is running")
+    Check "obsidian gate: target not created on refusal"       (-not (Test-Path -LiteralPath $new6))
+    $r = Run-RV -RvArgs @($old6, $new6, "-Force") -ConfigDir $cfg6
+    Check "obsidian gate: -Force overrides while Obsidian runs -> rc 0" ($r.rc -eq 0)
+    Check "obsidian gate: -Force moved the vault (new exists)"          (Test-Path -LiteralPath (Join-Path $new6 "CLAUDE.md"))
+  } finally {
+    $env:RELOCATE_VAULT_OBSIDIAN = "absent"
+  }
 }
 finally {
   Remove-Item -LiteralPath $TMP -Recurse -Force -ErrorAction SilentlyContinue

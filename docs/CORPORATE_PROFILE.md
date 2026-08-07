@@ -22,8 +22,8 @@ bash bootstrap.sh --profile corporate
 
 ```powershell
 # Windows (PowerShell):
-.\bootstrap.ps1 -Profile corporate -DryRun   # review
-.\bootstrap.ps1 -Profile corporate           # install
+powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Profile corporate -DryRun   # review
+powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Profile corporate           # install
 ```
 
 The environment-variable form is equivalent (useful for MDM / scripted rollout):
@@ -32,7 +32,7 @@ The environment-variable form is equivalent (useful for MDM / scripted rollout):
 CORPORATE_PROFILE=1 bash bootstrap.sh
 ```
 ```powershell
-$env:CORPORATE_PROFILE = "1"; .\bootstrap.ps1
+$env:CORPORATE_PROFILE = "1"; powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 ```
 
 After the run, the exact manifest is written to
@@ -65,7 +65,7 @@ every corporate run and writes it to `~/.claude/.ai-brain-starter-corporate-mani
 
 | Component | Version / pin | Source | Why it's in the minimal set |
 |---|---|---|---|
-| ai-brain-starter skill (+ bundled first-party skills: graphify, daily-journal, insights, patterns, meeting-todos, second-brain-mapping, …) | Pinned to the git revision you install; self-update disabled | `https://github.com/adelaidasofia/ai-brain-starter` | The vault workflow itself. Ships in-repo — no per-skill network fetch. |
+| ai-brain-starter skill (+ bundled first-party skills: graphify, daily-journal, insights, patterns, meeting-todos, second-brain-mapping, …) | Pinned to the git revision you install; self-update disabled | `https://github.com/mycelium-hq/ai-brain-starter` | The vault workflow itself. Ships in-repo — no per-skill network fetch. |
 | `obsidian@obsidian-skills` | Marketplace pin | `github: kepano/obsidian-skills` | Obsidian/vault authoring skills — core knowledge-worker need. |
 | `context7` | Claude Code plugin | Anthropic plugin registry | Documentation lookup. Read-only, no data egress. |
 | Python 3.10+, Node.js, pipx, GitHub CLI, graphify | **Not installed by this profile** | Your IT-approved channel | Runtime prerequisites. Provision + pin them yourself so versions stay under your control. |

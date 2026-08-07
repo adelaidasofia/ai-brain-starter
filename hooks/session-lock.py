@@ -24,9 +24,30 @@ PreToolUse(Bash)  [the enforcement layer]
 Stop / any other invocation
     Activity heartbeat: bump last_activity_at on this session's entry.
 
+SCOPE LIMIT -- THIS HOOK GATES THE VERB, NOT THE REPO'S STATE
+    `rebase` appears in the gated-verb list above, and that has been misread as
+    "rebases are covered." It is not. This hook stops you STARTING a rebase
+    while a sibling is live. It has NO idea whether one is ALREADY IN FLIGHT.
+
+    Worse, its signal is LIVENESS, which structurally cannot see the dangerous
+    case: a session that starts a rebase and then dies (usage limit, closed
+    terminal, crash) leaves the repo mid-operation while looking exactly like
+    "no session" to a heartbeat check. Incident 2026-07-28: a rebase stalled
+    22+ hours, ~22 commits from several sessions landed on its detached HEAD,
+    and six commits from four sessions fell off `main`. This hook was working
+    correctly the entire time -- a session was stopped from STARTING a rebase,
+    then allowed to commit into someone else's.
+
+    In-flight operation state (rebase-merge/, rebase-apply/, MERGE_HEAD,
+    CHERRY_PICK_HEAD, REVERT_HEAD, BISECT_LOG) is covered by a separate,
+    liveness-independent gate: hooks/block-git-mutation-mid-operation.py.
+    Do not add state checks here -- the two signals have different lifetimes
+    and merging them would make this hook's liveness cache authoritative over
+    facts that outlive any session.
+
 WHY
 ---
-Worktree isolation (the dev-repo-worktrees pattern) prevents the shared-HEAD
+Worktree isolation (per-session git worktrees) prevents the shared-HEAD
 collision structurally, but two sessions can still pick the SAME repo and
 clobber each other's in-flight work (SIBLING-SESSION-PARALLEL-COMMIT-COLLISION:
 a sibling commits broken state + reverts, wiping in-flight work). The
@@ -154,7 +175,8 @@ def _git_common_dir(cwd):
         try:
             r = subprocess.run(
                 ["git", "-C", cwd] + args,
-                capture_output=True, text=True, timeout=GIT_TIMEOUT_SEC,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=GIT_TIMEOUT_SEC,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             return ""
@@ -886,4 +908,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # This hook prints repo paths, and a vault path carries non-ASCII. On a
+    # cp1252 Windows console that print() raises UnicodeEncodeError, the caller
+    # reads the empty output as failure, and a coordination lock that cannot
+    # speak is a lock that silently stops coordinating.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())

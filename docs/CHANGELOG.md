@@ -9,6 +9,233 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-05: on Mac and Linux, "daily backup scheduled" now means it really is
+
+**Who this affects:** anyone on macOS or Linux who set up the daily vault backup.
+
+Setup said "Daily backup scheduled (03:00 local)" as long as it managed to write the small job file that describes the schedule. Whether the operating system's scheduler ever *accepted* that job was never checked, and any error it gave back was thrown away. So that message really only reported "I wrote a file", while the thing meant to take your nightly snapshot might never have been running at all.
+
+There is a concrete way this happened. The job file is XML, and your vault's own path gets written into it. A vault in a folder with an `&` in the name (say, "R & D Vault") produced a file that is not valid XML, which macOS refuses to load. The file still existed, so setup still called it scheduled. Two other versions of the same problem: a vault or starter folder you later moved, leaving the job pointing at a script that is no longer there (it runs every night and fails every night), and a job that is simply not loaded any more.
+
+Now setup writes your vault path into the job file correctly whatever characters it contains, then asks the scheduler itself whether it holds the job, and only says "scheduled" if the answer is yes. Re-running setup reads the existing schedule back and repairs it when it is broken, automatically and with no prompt, the same way the Windows fix below does. A healthy schedule is left completely alone. When it cannot install one, you get the scheduler's own error and the command to take a snapshot by hand, instead of a bare "could not".
+
+There is also a new, faster way to check and fix just the schedule, without re-running the whole setup:
+
+```
+bash scripts/vault-backup.sh schedule
+```
+
+It asks the operating system whether it really holds your daily backup job, repairs it if not, and takes no snapshot, so it is safe to run any time. If it cannot fix it, it tells you why and gives you the command to take a snapshot by hand. This matters because a repair that only happens when you re-run setup would miss exactly the people whose schedule is dead, since those are the people who never re-run setup.
+
+**What you should do:** run `bash scripts/vault-backup.sh schedule` once (or ask Claude to), then check `status` and confirm a snapshot has actually landed in the last day or two. Worth doing now in particular if your vault folder has an `&`, `<` or `>` in its name, or if you have moved your vault or the starter since you set backups up.
+
+---
+
+## 2026-08-05: on Windows, a backup that never actually ran now fixes itself
+
+**Who this affects:** anyone who set up the daily vault backup on Windows before 2026-07-31.
+
+A previous fix stopped the daily backup's Windows scheduled task from being registered broken in the first place. What it could not do was reach back and fix a task that was ALREADY broken on a machine that had run setup before that fix landed — and nothing else in the product ever looked at that task again. Measured on a real install: 25 days with zero snapshots, while setup had printed "Backup is live" and the health check reported the vault backed up. Three separate things could each cause this on their own: the script path the task points at being empty, the task pointing at a PowerShell version that is not on a stock Windows machine, or Windows Task Scheduler's own default of refusing to run on battery power.
+
+Now, every time you run backup setup again, it reads your existing scheduled task back, checks all three things, and — if any of them is wrong — re-registers it correctly, automatically, with no prompt. A healthy task is left alone. If it truly cannot fix it (for example, no PowerShell interpreter can be found at all), it says so loudly instead of pretending it worked.
+
+**What you should do:** run backup setup again once (`vault-backup.ps1 setup`, or ask Claude to do it) if you set up backups on Windows before 2026-07-31. Then check status and confirm a snapshot has actually landed recently.
+
+---
+
+## 2026-07-31: five Windows install bugs, all of them silent
+
+**Who this affects:** everyone on Windows. Two of the five also affect Mac and Linux. All of them were reported by people who ran the installer, were told it succeeded, and found out later that it hadn't.
+
+**Your patched vault scripts are no longer overwritten during an update.** When bootstrap finds uncommitted changes in your copy of the starter, it stashes them before pulling — that part was known. What wasn't: right after the pull it copies the starter's scripts into your vault's `Meta/scripts` folder, and at that moment the starter no longer holds your patches. So the update quietly replaced patched vault scripts with the unpatched versions. One person lost their fixes to `session-close-runner.sh` and `vault-safe-commit.sh` this way. A backup was written, and it held the good version, which is exactly why nobody noticed: the step printed "Updated: 2" and looked like any healthy update. Now the vault sync refuses to run while your patches are stashed, tells you so, and shows you the two commands to restore and sync when you're ready. Your vault keeps working scripts instead of getting silently reverted.
+
+**Your memory now actually lands in your vault on a Spanish-language Windows.** The installer runs a helper that links Claude Code's memory into your vault, and it read that helper's output using the console's language setting rather than UTF-8. Your vault path contains the ⚙️ of the Meta folder, and on a Spanish (or French, or Portuguese) Windows one byte of that character has no meaning in the console's character set, so reading the output crashed. The installer then reported "could NOT link Claude Code memory into the vault" on machines where nothing was actually wrong, and your memory stayed in a hidden tool folder — the one outcome that step exists to prevent.
+
+**Hooks work if your Windows username has an accent in it.** A user named `JuanArturoGómez` had all 53 hooks fail and block the session, every time, because Windows hands hook commands to a shell that mangles the accented character in the path. You can't rename a Windows account, so the installer now writes the short `C:\Users\JUANAR~1` form of the path, which has no accents to mangle. Anyone with á, é, ñ, ü or similar in their username is covered. In the rare case where Windows has short names turned off, the installer says so plainly instead of writing hooks that can't run.
+
+**And once that link step could run, it had to be able to succeed.** Creating the link from Claude Code's memory folder into your vault used a symlink, and Windows only lets you make one if you are an administrator or have Developer Mode turned on. A normal account gets "a required privilege is not held by the client" and the memory stays put. It now falls back to a directory junction, which needs no special permission and behaves the same for reading and writing. If both routes fail you get the exact command to run, instead of a shrug.
+
+**Three hooks that had never once fired now do.** `pre-write-settings-lint.py`, `lint-claude-settings.py` and `check-claude-code-version.sh` were wired into your settings but nothing ever copied them onto disk — on a real machine that was 11 references pointing at 0 files. Because the wiring is written to stay quiet when a hook is missing (so you can delete one you don't want), the absence looked exactly like health, and the installer's own check reported everything fine. The installer now installs them, its check can see them, and a new gate stops a future hook from shipping the same way.
+
+**Also:** `--verify-only` is a new option that checks an existing install and writes nothing. `--verify` still means "install, then verify", which is what it always did — but there was no way to ask "is my install healthy?" without changing it first.
+
+---
+
+## 2026-07-30: closing a session no longer gets stuck behind a goal you set
+
+**Who this affects:** anyone who uses `/goal`.
+
+`/goal <condition>` tells Claude "keep working until this is true." It does that by holding the exit door shut — which is right in the middle of a session and wrong at the end of one. You say "close this session," Claude finishes the close checklist, tries to stop, the goal blocks it, and Claude comes back with nothing left to do. Then again. The only way out is `/goal clear`, and **Claude cannot type it for you** — it is a command your terminal handles, with no tool behind it. So it has to hand you the line.
+
+Now it does. When a session set a goal that was never cleared, the close ends by asking you to type `/goal clear`, quoting the goal so you know which one. If the goal's condition was actually met it already cleared itself, and Claude says nothing — being told to clear something that succeeded is noise.
+
+**Also fixed, same area:** the session-close rule and the close instructions Claude receives had drifted apart on what their step numbers meant. "Phase 3" was the goodbye in one and the audit in the other; "Phase 4" was the goodbye in one and the automatic cleanup in the other. Two documents describing one process, disagreeing about which step is which — and each was internally consistent, so nothing looked wrong. The rule was also missing its commit step entirely, which could hard-block a close. Both are fixed, and a checker now runs against **your** copy of the rule during daily maintenance, since a customised rule is exactly where this drifts.
+
+**On macOS:** the `vault-root` test suite had been failing on every Mac for a path-spelling reason (`/var` vs `/private/var`) that never appeared in CI. Fixed. A gate that is always red on your platform is a gate you learn to skip.
+
+---
+
+## 2026-07-14: the secret detector stopped crying wolf over container IDs and migration checksums
+
+**Who this affects:** everyone — a detector that flags things that aren't secrets teaches you to stop trusting its real alerts.
+
+**The bug:** the secret detector cried wolf 16 times in one session over things that are not secrets: the ID Docker prints when it starts a container, and the checksums a database migration table stores.
+
+**The fix:** those two exact shapes are now recognized by their command context and quietly recorded instead of alarmed. Everything else — including a real secret printed in the same output — still alarms. The scrubbing and scanning layers that protect your session files were not loosened at all.
+
+**New test:** `hooks/test_secret_patterns_fp_filter.py`, run directly by `scripts/ci.sh`'s Python unit-test gate.
+
+**What you should do:** nothing. Update as usual.
+
+---
+
+## 2026-07-14: the journal now tracks how you MOVE between floors, not just where you stand
+
+**Who this affects:** everyone who uses `/journal`, `/weekly`, or `/monthly`.
+
+**What changed and why:** naming your floor is a point; a year of floors is a map of how you actually move — what pulls you down, what pulls you back up, where you loop. The journal now captures that movement, and the insight reports read it.
+
+**In `/journal` (daily-journal skill):**
+
+- **The door.** Every session now ends with ONE small, dated, physical action matched to your floor — and tomorrow's session opens by asking if it happened. A named floor without a next move produces articulate stuck people; the map now always comes with a door. Includes a guard for floors that deserve *time* rather than exits (fresh grief gets a container — "ten minutes to feel this fully" — not an escape plan).
+- **Body-first check.** Low floors usually arrive body-first, story-second. Before the journal accepts "it's about the meeting," it checks sleep, food, movement, and sunlight — and tells you when the floor might be physiology, not psychology.
+- **Shadow-twin probe.** Before tagging Acceptance, Neutrality, Peace, or Pride, one distinguishing question ("if this could change tomorrow, would you want it to?") — because Resignation feels like Acceptance from the inside, and the mislabel is how people stay stuck for years.
+- **Movement capture.** New frontmatter records yesterday's floor, WHY the floor changed (body / witness / rupture / rope / role / story), and — when something pulled you up from a low floor — what the rope was. Over months this builds your personal rope inventory: the things that reliably work for YOU.
+- **Crisis protocol, formalized.** The "crisis-tier override" other steps referenced now has a full definition: stop all mechanics, witness first, ask the nearest-rope question, surface a support line once, save their words verbatim.
+- **Hand the naming back.** After ~30 entries, roughly weekly, you name the floor before Claude does. The journal trains the muscle instead of becoming it.
+
+**In `/weekly` and `/monthly` (insights skill) — new section 0e, the Movement report:**
+
+- Your personal **transition map** (your Fear goes to Frustration, not Shame — everyone's wiring differs)
+- **Loop detection** with mechanism classes (protective / structural / physiological) — loops need their mechanism addressed, not the floor's generic way out
+- **Resilience direction** — after each dip, did you land higher than before or snap back to the stuck place? Speed means nothing without direction; this trend is the single most important line in the report
+- **Body-attribution rate** ("5 of your 7 low-floor days were underslept days")
+- **Rope inventory** and **door completion rate** (the insight-vs-action gauge: "you named the floor 12 times and walked through the door 3 times — the map is not the walking")
+
+The standalone `claude-daily-journal` plugin got the same journal-skill changes in its 1.4.0 (kept in sync).
+
+---
+
+## 2026-07-05: your vault's hooks no longer silently die when a Python plugin is present
+
+**Who this affects:** everyone installing — especially workshop rooms. Found on a test install the day before a workshop.
+
+**The bug:** one of the Trail of Bits plugins the installer used to add, `modern-python`, installs a "shim" that intercepts the plain `python3` command and refuses to run it — it prints "use `uv run python3`" and stops. That is a reasonable nudge for a Python developer. But the AI Brain Starter runs all of its own automation through plain `python3` — session close, the write-time secret guard, the context loaders, backups, the aggregators — and almost all of it is written to fail quietly (`|| true`, `2>/dev/null`) so a hiccup never blocks you. Put those two facts together and the result is the worst kind of bug: with that plugin present, the **entire** automation layer went dark with **no error message at all**. It looked like everything installed fine. One developer machine hid the problem entirely because it had a hand-patched copy of the shim that no fresh install has.
+
+**The fix, in three layers:**
+
+1. **The default install no longer adds `modern-python`.** It is Python-developer tooling, not note-taking tooling, and a footgun for non-developers. The seven Trail of Bits *security* skills still install. If you do Python work and want the `uv`/`ruff` toolchain, you can add it back yourself — it is now safe to have installed (see layer 2).
+2. **The substrate is immune to the shim regardless.** Hook commands now resolve a real Python interpreter by absolute path at install time, and the shell scripts strip any `*/hooks/shims` directory off their PATH. So even if you already have `modern-python` (or a pyenv/conda setup), every hook runs.
+3. **A guard so it can never come back silently.** A new CI test installs the real hooks with a fake refuse-shim first on the PATH and fails the build if any hook command would still be intercepted. `/diagnose` runs a real interpreter through the same stripped PATH, so a broken machine surfaces loudly instead of going quiet.
+
+**New test:** `tests/integration/test_installer_shim_safe_interpreter.sh` (wired into `scripts/ci.sh`, the canonical gate).
+
+**What you should do:** nothing. Update and re-run setup. If you specifically want the `uv`/`ruff` Python toolchain: `claude plugin install modern-python@trailofbits`.
+
+---
+
+## 2026-07-02: previews never install, hiccups fix themselves, and no more red ✗ for things that are fine
+
+**Who this affects:** everyone installing — especially workshop rooms full of first-time users.
+
+**Three bugs, all found on real machines:**
+
+1. **"Preview" mode actually installed things.** `--dry-run` is supposed to show what WOULD be installed without touching anything. Instead it really installed Homebrew, Node, gh, pipx, and graphify on a user's machine — one branch of the script literally said "or dry-run: install for real." Now a dry run prints its plan and changes nothing, and a new test runs the real installer in a sealed sandbox that records any attempt to install something — zero attempts allowed, forever.
+
+2. **One Wi-Fi blip looked like a broken product.** On a workshop machine, graphify showed a red ✗ "install failed" under a line saying most of the setup depends on it — scary, and wrong twice over. First, the error hid a plumbing bug: the installer sometimes couldn't SEE a tool it had just installed successfully (the folder it lands in wasn't on the session's path when pipx was already present). Second, all the diagnostic output went to `/dev/null`, so nobody could tell what actually happened. Now: the path is set unconditionally, every install's full output lands in `~/.claude/.bootstrap.log`, installs retry automatically (thirty machines on one workshop network hitting the package server together WILL have blips), and there's a fallback install method behind the first.
+
+3. **When something still doesn't land, the assistant fixes it — not you.** If a component genuinely can't install right then, the bootstrap no longer shows a failure. It notes the gap in a small file, tells you the interview will finish it, and the setup interview (and the first-week check-in after it) quietly completes it. A person who has never opened a terminal never sees a dead end.
+
+**Also:** the Windows installer's preview mode had the same real-install holes (now gated the same way), and there's now a documented one-line Terminal path for when Claude Code's own safety layer prefers that you run the installer yourself — pasted by you, resumed by the assistant, no dead end.
+
+**New tests:** `tests/integration/test_dry_run_purity.sh` — runs the real installer's dry-run in a sandbox with recording stubs (zero mutations allowed) plus a structural check that every install command sits behind a dry-run guard; verified to fail against the old installer (10 unguarded sites) and pass against this one.
+
+**What you should do:** nothing. If your last install showed a graphify ✗, run the update and tell Claude "finish my install gaps" — or just start the setup interview, which does it for you.
+
+---
+
+## 2026-07-02: the setup now treats every approval as genuinely yours
+
+**Who this affects:** everyone who installs or re-runs the setup, and especially anyone whose assistant refused to run it.
+
+**The bug:** parts of the setup instructions told the assistant things like "tell the user it's safe to approve, go ahead and approve it," "no pause options — never offer to stop," and "if they ask for a work-only setup, decline and install everything anyway." The intent was good — first-time users were abandoning installs when a routine safety prompt ambushed them, or getting lost in option menus — but the wording crossed a line: it asked the assistant to pre-commit you to approving things you hadn't read and to hide choices you were allowed to make. Newer Claude models read that and (correctly) refused — on one machine the assistant declined to run the setup at all and removed the download, which meant nobody got anything.
+
+**What's new:** the same guidance, rewritten around your consent. The assistant still warns you before the safety prompt appears (so it doesn't feel like an ambush), still installs the full brain by default, and still doesn't pepper you with menus — but it now tells you the decision is yours, offers to review or skip anything, honors "stop" or "pause" the moment you say it (resuming later is one sentence), and if you explicitly ask for a smaller setup it makes the case once and then does what you said.
+
+**Also fixed:** a real Windows installer crash — PowerShell was treating harmless warning messages from tools like pip as fatal errors and aborting the whole install partway through. Installs now judge success by whether the tool actually succeeded, not by whether it printed a warning. And the locked-down corporate install now prints the exact one-line command your IT team can approve to add Node.js, instead of a dead end.
+
+**New tests:** the consent guarantees are pinned by the updated `test_trust_prompt_preframing.sh` and `test_personal_brain_not_optional.sh` suites, so the old wording can't quietly come back.
+
+**What you should do:** nothing. If someone's assistant previously refused the install, it will run now — the parts it objected to are gone.
+
+---
+
+## 2026-07-02: Windows actually works now — no more error notices every session
+
+**Who this affects:** everyone on Windows, in a big way. macOS/Linux users keep working exactly as before (same behavior, now with more tests around it).
+
+**The bug:** the background helpers ("hooks") that make the brain work were written in the language of Mac/Linux terminals. Windows speaks several different terminal dialects depending on your setup, and none of them understood those commands. So on a Windows machine, most helpers failed on every single message — you'd see error notices that looked like something was badly broken, the auto-updater could never run, and the "your update didn't finish" checker then warned you every session about a problem you had no way to fix. None of it was your fault, and your notes were never in danger — but it looked scary, and the helpers genuinely weren't running.
+
+**What's new:** on Windows, the installer now writes every helper in a form all Windows terminals understand, routed through a small runner that keeps a misbehaving helper invisible instead of surfacing an error notice. The auto-updater and the skill-sync were rewritten in Python (which runs the same everywhere), so Windows machines now get updates, self-heal, and stay current just like Macs. Helpers that only make sense on Mac/Linux (like the one that cleans up runaway Mac processes) now stay quietly off on Windows instead of erroring. And the handful of warnings you *should* see (like "your vault has no backup") now show Windows commands that actually work when you paste them.
+
+**Also in this release:** several warning messages lost their internal engineering jargon ("bug class DEPLOY-FAILS-OPEN-SILENTLY-ON-CLIENT" is now a plain sentence that says nothing is broken and gives you the one command to run), fix-it suggestions no longer reference tools that were never shipped with the starter, and the Windows bootstrap validates that the `python` it found is real (Windows ships a fake one that opens the Microsoft Store) and double-checks that every hook it wires actually exists on disk.
+
+**Under the hood:** `install-hooks-user-level.py` rewrites hook commands per-platform at install time (`hooks.json` stays the single source of truth); `scripts/hook_runner.py` reproduces the old shell-level failure-masking in portable Python, including letting intentional blocks through; `scripts/ai-brain-auto-update.py` and `scripts/sync-skills.py` replace the bash versions (the `.sh` files remain as thin pass-throughs so older installs migrate seamlessly); path checks in the worktree/vault helpers now understand Windows path separators; and `scripts/PORTABILITY.md` gained the Windows rules so new hooks stay portable.
+
+**New tests:** `tests/integration/test_windows_platformize.sh` — proves a Windows install contains zero commands Windows can't parse, that an existing broken install migrates in place without duplicates, that the update checker stays silent on a healthy Windows install (the false-alarm loop this kills), and pins the runner's exact failure behavior. The existing auto-update and installer suites all still pass against the Python rewrites.
+
+**What you should do:** on Windows, run the update once — tell Claude "update the ai-brain-starter skill" or run `git pull` in `%USERPROFILE%\.claude\skills\ai-brain-starter`, then `py -3 "%USERPROFILE%\.claude\skills\ai-brain-starter\scripts\install-hooks-user-level.py"`. After that one command, updates take care of themselves. On Mac/Linux: nothing.
+
+---
+
+## 2026-07-01: your machine now tells you if an auto-update half-landed
+
+**Who this affects:** everyone. This is the safety net for the auto-update in the entry just below.
+
+**The bug:** the previous entry made the auto-update install its own hooks the moment you pull them. But that install step is allowed to fail without stopping your session (that's on purpose — a stuck installer must never wedge your prompt). When it *does* fail, it prints one warning for that one turn and moves on. A few days later the auto-update looks, sees your checkout is already current, and does nothing — so the warning is gone for good and the hooks it never finished wiring just stay off. The result is a quieter version of the exact problem the auto-update was built to kill: your copy of the starter is up to date, but the hooks Claude actually runs are behind it, and nothing tells you. The daily "are you up to date?" check only compares your *download* to the latest — it never checks whether the download was actually *wired in*.
+
+**What's new:** every session now does a quick, local check that the hooks you've downloaded are actually the hooks that are turned on. If a background install half-landed, the next session says so in one line and gives you the single command to finish it. If everything's wired correctly (the normal case) you never hear a word. It's a plain file comparison — no network, no waiting, and it can never crash your session (any hiccup just makes it stay quiet).
+
+**Under the hood:** the check reuses the installer's own definition of which hooks belong to the starter, rather than keeping its own copy of that list — so it can't fall out of step the next time a hook is added (which would have been the same class of silent drift all over again). It deliberately ignores the handful of hooks that only turn on once you've set up a vault, since those are wired by a different step and were never part of what a background update touches.
+
+**New tests:** `tests/integration/test_deployed_hooks_behind.sh` — proves it stays silent on a real, correct install, fires (and names the culprit) when a hook is missing or a retired one is still wired, and never falsely flags a vault-only hook. Includes negative controls in both directions.
+
+**What you should do:** nothing. If your last update half-landed, your next session will tell you the one command to run.
+
+---
+
+## 2026-07-01: updates now install themselves the moment you pull them
+
+**Who this affects:** everyone. This is about how the starter keeps itself up to date.
+
+**The bug:** the auto-update ran a `git pull` in the background every few days, but the step that actually *wires the new hooks into Claude* was left as an instruction for the assistant to run afterward. If the assistant didn't get to it — the session ended, you asked about something else, the note scrolled past — the pull landed but the new hooks never turned on. Over time the installed copy drifted further and further behind what had actually shipped, silently, because nothing was checking. On one machine it reached 131 versions behind before anyone noticed.
+
+**What's new:** the auto-update now installs the hooks itself, in the same step as the pull, so a shipped change reaches your machine the same session with nothing left to remember. It also pulls more safely: if you've edited the starter files locally, or your copy has diverged into a fork, it refuses to overwrite your work and tells you how to merge by hand instead of forcing a merge. It can still be paused (create a `~/.claude/.ai-brain-starter-pinned` file), it still only runs every few days, and it never runs twice at once.
+
+**Under the hood:** the update logic moved out of a hard-to-read one-line hook and into `scripts/ai-brain-auto-update.sh`, so it can be tested. The installer now retires the old inline version and installs the new one cleanly, so a machine that already had the old one doesn't end up running both.
+
+**New tests:** `tests/integration/test_ai_brain_auto_update.sh` (the pull-and-deploy path plus five things it must NOT touch — pinned, already current, rate-limited, dirty, diverged) and `tests/integration/test_installer_replaces_auto_update.sh` (proves an existing install ends up with exactly one updater, not two). Both include negative controls that fail against the old behavior.
+
+---
+
+## 2026-06-30: session-close now writes to the vault you're actually working in, not just your default one
+
+**Who this affects:** anyone who works across more than one vault or repo that each has its own CLAUDE.md and its own Sessions/Decisions setup — for example, a personal vault plus one or more separate team or client repos.
+
+**The bug:** the session-close cascade resolves a "vault root" to decide where your session file, decisions, and captures get written. That resolution checked an environment variable (`VAULT_ROOT`) first and only fell back to your current folder if it was unset. Most installs set `VAULT_ROOT` once, globally, as a convenience default — which meant the fallback never ran, for any session, ever. A session spent entirely inside a separate repo with its own session-close setup still had every path resolved against the unrelated default vault. Notes didn't error or warn; they just landed in the wrong place. Bug class: **WRONG-VAULT-ROOT-FROM-GLOBAL-DEFAULT**.
+
+**What's new:** closing a session now checks first whether the folder you're actually in (or one of its parent folders, up to your home directory) has its own CLAUDE.md declaring a "Session End" or "Session Close" setup with a real Sessions folder already in place. If it finds one, that's where your session goes — even if a different vault is configured as the default. If it doesn't find one (a scratch folder, a one-off script, or your actual default vault itself), everything falls back exactly like before. Single-vault setups see no change at all.
+
+The safety-net hooks that double-check a session actually got saved before letting you close (`verify-session-close-cascade.py`, `verify-discoverability-on-close.py`) now use the SAME resolution, for the same reason the writing hook does — otherwise a session correctly saved to its own repo could get hard-blocked at close because the safety check was still looking for it in the unrelated default vault.
+
+**New:** `hooks/_lib/vault_root.py` — the shared resolver all three hooks now import, so this can't drift out of sync the way three independent copies eventually would have.
+
+**New tests:** `tests/integration/test_detect_closing_signal_repo_aware_vault.sh` and `tests/integration/test_verify_cascade_repo_aware_vault.sh` — both include a negative control that fails against the old behavior and passes against the fix.
+
+**What you should do:** nothing. The SessionStart auto-update flow picks this up on your next session (or `git pull` manually in `~/.claude/skills/ai-brain-starter/` to grab it immediately).
+
+---
+
 ## 2026-06-30: Google Health connector replaces the retiring Fitbit sync
 
 Google is shutting down the Fitbit Web API and Google Fit REST API from **September 2026** — the pipes that fed `health_import_fitbit`. The replacement is the **Google Health API**, Google's new unified cloud health surface (Fitbit + Pixel Watch + third-party devices, one OAuth2 REST API).
@@ -206,6 +433,27 @@ A vault can legitimately have two folders ending in "Meta": the human `⚙️ Me
 ### Verification
 
 A regression test ships with it (`scripts/test-meta-resolver.sh`, wired into `scripts/ci.sh`): it proves that when both `Meta/` and `⚙️ Meta/` exist the resolver picks the human `⚙️ Meta/`, plus negative controls — a machine-memory caller still resolves to plain `Meta/`, a stock single-`Meta` vault still resolves to it, and a vault with no Meta folder exits non-zero so the caller's own fallback runs. So the check is neither always-passing nor always-failing.
+
+---
+
+## 2026-06-07: your vault's own scripts now stay in sync with the repo (they used to silently rot)
+
+**Who this affects:** anyone who set up a vault more than a few updates ago. The helper scripts inside your vault's `⚙️ Meta/scripts/` folder were copied in once, at setup, and never refreshed. So every fix or new script shipped *after* your setup — the session-close runner, the rule-conflict and drift checks, the passive-capture helper — never reached your vault. Your skills updated on `git pull`; your vault scripts didn't.
+
+### The problem
+
+`scripts/sync-skills.sh` keeps your installed skills (`~/.claude/skills/…`) current on every update, but it never touched the *vault* copy of the scripts. Those were only ever written by the setup phases, the first time. Nothing brought an existing vault's `⚙️ Meta/scripts/` back up to date, so it drifted further behind the repo with every release.
+
+### The fix
+
+- **New `scripts/sync-vault-scripts.sh`** — the skill→vault half of the sync. It copies the canonical vault scripts from the repo into your vault's `<meta>/scripts/` with the *same* safety contract as the skill sync: a file you edited locally is backed up to `<file>.bak-YYYY-MM-DD-HHMM` before it's overwritten, a symlinked scripts dir (maintainers editing the repo live) is left untouched, and an identical file is a silent no-op. It finds your vault automatically (`--vault`, `$VAULT_ROOT`, or your `settings.json`), so it runs with no arguments.
+- **It runs automatically on update.** `sync-skills.sh` now calls it at the end, so a `git pull` refreshes your vault scripts the same way it refreshes your skills — no extra step.
+- **`/diagnose`'s partial-install check uses it.** `detect-partial-installs.sh` now checks your whole vault-script set (not just the two aggregators), and `--fix` re-syncs them.
+- The synced set is an explicit, **import-closed** manifest — a script ships only alongside the helper modules it needs, so it can't land half-broken in your vault.
+
+### Verification
+
+`tests/integration/test_vault_script_sync.sh` (wired into `scripts/ci.sh`) proves the manifest is import-closed, a fresh sync populates the folder, a re-run is a no-op, a locally-edited script is backed up before being updated, a symlinked scripts dir is skipped, `--dry-run` writes nothing, and an unresolvable vault is a non-fatal no-op.
 
 ---
 
@@ -602,7 +850,7 @@ PR #66 fixed this same bug class for the Stop hook (`session-end-hook.sh`). It w
 
 | PR | What | Impact |
 |---|---|---|
-| #66 | 5-layer fix for the worktree session-loss bug class. `session-end-hook.sh` `resolve_main_vault()` strips `.claude/worktrees/<slug>/` from path resolution. `worktree-prune.sh` refuses to delete branches with unmerged commits. New CI test enforces the invariant. New `recover-orphan-claude-branches.py` recovery script. | Closes [#65](https://github.com/adelaidasofia/ai-brain-starter/issues/65) (reported by a user who lost a full debrief session). Existing orphan commits surface via the new SessionStart hook. |
+| #66 | 5-layer fix for the worktree session-loss bug class. `session-end-hook.sh` `resolve_main_vault()` strips `.claude/worktrees/<slug>/` from path resolution. `worktree-prune.sh` refuses to delete branches with unmerged commits. New CI test enforces the invariant. New `recover-orphan-claude-branches.py` recovery script. | Closes [#65](https://github.com/mycelium-hq/ai-brain-starter/issues/65) (reported by a user who lost a full debrief session). Existing orphan commits surface via the new SessionStart hook. |
 | #67 | Phase 0 install guidance: don't wrap bootstrap output in the Monitor tool. It rendered every stdout line as a "Human:" turn and leaked `<task-notification>` XML to the chat. | Quieter install, no more wall of bare "Human:" labels. |
 | #68 | reconcile-worktree-shared.py now does `git merge --ff-only master` first instead of always committing on the worktree branch. Cuts orphan-commit accumulation from ~1 per session-end to zero in the normal case. Plus install fixes: killed the "2-3 hours / 30 min for basic" time-gate line; wired key-people interview to also create per-person CRM files. | Cleaner branch history. Install asks for full name + nickname per person. |
 | #69 | CI test for the reconcile FF invariant (companion to PR #66's test). New SessionStart hook surfaces orphan-branch count when nonzero. Em-dash warning added to the public-repo scrub gate. | Drift prevention. The 78f4a37 → #65 → #68 chain (same defect recurring one week later because no CI test caught it) is now closed at every layer. |
@@ -1118,7 +1366,7 @@ Both packs use the `/vertical-finance` / `/vertical-legal` triggers with `init |
 
 ### What shipped
 
-- **`.github/workflows/release.yml` — tag-triggered release builder.** Fires on `v*` tag push (or manual `workflow_dispatch` with a tag input). Validates `.claude-plugin/plugin.json` + `marketplace.json` parse as JSON, builds a clean `ai-brain-starter.zip` + `ai-brain-starter.tar.gz` (excluding `.git`, `.github`, secrets, build artifacts, local settings), generates SHA256 sums, and creates the GitHub release with auto-generated release notes. The release URL is stable: `https://github.com/adelaidasofia/ai-brain-starter/releases/latest/download/ai-brain-starter.zip`.
+- **`.github/workflows/release.yml` — tag-triggered release builder.** Fires on `v*` tag push (or manual `workflow_dispatch` with a tag input). Validates `.claude-plugin/plugin.json` + `marketplace.json` parse as JSON, builds a clean `ai-brain-starter.zip` + `ai-brain-starter.tar.gz` (excluding `.git`, `.github`, secrets, build artifacts, local settings), generates SHA256 sums, and creates the GitHub release with auto-generated release notes. The release URL is stable: `https://github.com/mycelium-hq/ai-brain-starter/releases/latest/download/ai-brain-starter.zip`.
 - **`.github/workflows/lint.yml` — new `privacy` job, PR-diff-scoped.** Mirrors the maintainer's write-time hookify guard so external contributors cannot introduce tokens the repo treats as private context. Scoped to files changed in the PR (pre-existing committed content already passed hookify on prior writes). Pushes to main skip this job — the maintainer's local hookify catches direct pushes. Pattern matches `hookify.no-personal-in-starter.local.md` exactly.
 - **README quick-try section.** A new "Quick-try (existing Claude Code users)" subsection inside the install block documents the `--plugin-url` invocation. Frames the path as session-scoped evaluation, not a replacement for the full bootstrap (which still sets up the Obsidian vault + hooks + resolver). Existing email-gated install remains the primary path.
 
@@ -1268,7 +1516,7 @@ All existing skills, hooks, schemas, scripts, the session-close cascade, the boo
 Two alternative fixes considered and rejected:
 
 1. *"Detect worktrees and install hooks at the worktree level too."* Project-level config inside `.claude/worktrees/<name>/.claude/settings.json` would still be brittle and require reinstalling on every new worktree. User-level wins on simplicity.
-2. *"File a Claude Code bug and wait for an upstream fix."* Issue is open ([#6](https://github.com/adelaidasofia/ai-brain-starter/issues/6)) but waiting blocks every user. The user-level install is a structural workaround that's actually cleaner — global hooks belong at global scope.
+2. *"File a Claude Code bug and wait for an upstream fix."* Issue is open ([#6](https://github.com/mycelium-hq/ai-brain-starter/issues/6)) but waiting blocks every user. The user-level install is a structural workaround that's actually cleaner — global hooks belong at global scope.
 
 ### What's preserved
 
@@ -1282,7 +1530,7 @@ The full session-close cascade, all 14 bundled skills, all the Phase 5 setup, ev
 - **Verification:** `bash ~/.claude/skills/ai-brain-starter/scripts/test-hooks-in-worktree.sh` (6/6 expected).
 - **Uninstall:** `python3 ~/.claude/skills/ai-brain-starter/scripts/install-hooks-user-level.py --uninstall` removes ONLY ai-brain-starter entries, preserves everything else.
 
-**Closes [adelaidasofia/ai-brain-starter#6](https://github.com/adelaidasofia/ai-brain-starter/issues/6).**
+**Closes [mycelium-hq/ai-brain-starter#6](https://github.com/mycelium-hq/ai-brain-starter/issues/6).**
 
 ---
 
@@ -1295,7 +1543,7 @@ The full session-close cascade, all 14 bundled skills, all the Phase 5 setup, ev
 ### Layer 1 — Reliability foundations
 
 - **Vault schema linter.** Same permanent-fix pattern that saved settings.json. New `hooks/lint-vault-frontmatter.py` is a PreToolUse hook that catches malformed YAML in Decisions/, Sessions/, and journal frontmatter before it lands. New `scripts/vault-schema-validator.py` is a standalone validator with 9-fixture self-test, runnable in CI or on-demand. Per-type schemas at `templates/schemas/{decision,session,journal}.json`. Closes the same class of bug that nuked a real CRM record 2026-04-27 (silent YAML parse error → empty re-marshal over real content).
-- **Bootstrap reliability bundle (closes [#2](https://github.com/adelaidasofia/ai-brain-starter/issues/2), [#3](https://github.com/adelaidasofia/ai-brain-starter/issues/3), [#4](https://github.com/adelaidasofia/ai-brain-starter/issues/4) at once).** New flags: `--restore` for interactive recovery from .bak files, `--smoke-test` for end-to-end install verification, `--detect-partial` for finding half-installed components. Persistent log at `~/.claude/.bootstrap.log` with size-based rotation. Three new scripts: `bootstrap-restore.sh`, `detect-partial-installs.sh`, `post-install-smoke-test.sh`. The smoke test runs Python syntax, bash syntax, JSON validity, hook smoke tests, aggregator smoke tests, schema validator self-test, and the closing-signal fixture harness — 130+ checks in one command.
+- **Bootstrap reliability bundle (closes [#2](https://github.com/mycelium-hq/ai-brain-starter/issues/2), [#3](https://github.com/mycelium-hq/ai-brain-starter/issues/3), [#4](https://github.com/mycelium-hq/ai-brain-starter/issues/4) at once).** New flags: `--restore` for interactive recovery from .bak files, `--smoke-test` for end-to-end install verification, `--detect-partial` for finding half-installed components. Persistent log at `~/.claude/.bootstrap.log` with size-based rotation. Three new scripts: `bootstrap-restore.sh`, `detect-partial-installs.sh`, `post-install-smoke-test.sh`. The smoke test runs Python syntax, bash syntax, JSON validity, hook smoke tests, aggregator smoke tests, schema validator self-test, and the closing-signal fixture harness — 130+ checks in one command.
 
 ### Layer 2 — Telemetry foundation
 
@@ -1341,9 +1589,9 @@ The next auto-update sync wires every new hook into `hooks.json` and pulls in th
 
 ### Issues closed
 
-- [#2](https://github.com/adelaidasofia/ai-brain-starter/issues/2) bootstrap: --restore mode (shipped as `bootstrap.sh --restore` + `scripts/bootstrap-restore.sh`)
-- [#3](https://github.com/adelaidasofia/ai-brain-starter/issues/3) bootstrap: persistent log file (shipped as `~/.claude/.bootstrap.log` with size-rotation)
-- [#4](https://github.com/adelaidasofia/ai-brain-starter/issues/4) bootstrap: detect partially-installed graphify (shipped as `bootstrap.sh --detect-partial` + `scripts/detect-partial-installs.sh`)
+- [#2](https://github.com/mycelium-hq/ai-brain-starter/issues/2) bootstrap: --restore mode (shipped as `bootstrap.sh --restore` + `scripts/bootstrap-restore.sh`)
+- [#3](https://github.com/mycelium-hq/ai-brain-starter/issues/3) bootstrap: persistent log file (shipped as `~/.claude/.bootstrap.log` with size-rotation)
+- [#4](https://github.com/mycelium-hq/ai-brain-starter/issues/4) bootstrap: detect partially-installed graphify (shipped as `bootstrap.sh --detect-partial` + `scripts/detect-partial-installs.sh`)
 
 ---
 
@@ -2635,7 +2883,7 @@ If you run multiple Claude Code sessions at the same time in different worktrees
 
 This isn't a bug in any one session. It's a structural race condition in the cascade rule itself. If you've been using this setup with parallel worktrees for any length of time, some of your session summaries and decisions have quietly disappeared without you knowing.
 
-I caught it live on 2026-04-11 — four concurrent worktrees wrote to the meta files in one evening; at least two decisions and one session summary were overwritten before the fix shipped. Reported and tracked in [#5](https://github.com/adelaidasofia/ai-brain-starter/issues/5).
+I caught it live on 2026-04-11 — four concurrent worktrees wrote to the meta files in one evening; at least two decisions and one session summary were overwritten before the fix shipped. Reported and tracked in [#5](https://github.com/mycelium-hq/ai-brain-starter/issues/5).
 
 ### What changed
 
@@ -2778,7 +3026,7 @@ bash bootstrap.sh --dry-run
 ```
 
 ```powershell
-iex "& { $(irm https://raw.githubusercontent.com/adelaidasofia/ai-brain-starter/main/bootstrap.ps1) } -DryRun"
+iex "& { $(irm https://raw.githubusercontent.com/mycelium-hq/ai-brain-starter/main/bootstrap.ps1) } -DryRun"
 ```
 
 The output looks like:

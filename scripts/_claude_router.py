@@ -56,6 +56,7 @@ __all__ = [
     "call_claude_text",
     "call_claude_json",
     "RouterUnavailable",
+    "RateLimitExhausted",
 ]
 
 
@@ -65,6 +66,16 @@ API_TIMEOUT_SECONDS = 180
 
 class RouterUnavailable(RuntimeError):
     """Raised when neither the CLI nor an API key is available."""
+
+
+class RateLimitExhausted(RouterUnavailable):
+    """Subclass for transient rate-limit refusals (weekly Max cap, 5h burst, etc.).
+
+    Distinguished from the parent so callers can return a transient-failure exit
+    code (e.g. EX_TEMPFAIL, 75) and signal a scheduler that the next run — after
+    the limit window resets — will likely succeed, versus a hard config failure.
+    A subclass, so existing ``except RouterUnavailable`` handlers still catch it.
+    """
 
 
 def _log(msg: str) -> None:
@@ -104,23 +115,103 @@ def _resolve_api_key() -> str | None:
     return os.environ.get("ANTHROPIC_API_KEY") or None
 
 
+def _extract_result_envelope(stdout: str) -> dict | None:
+    """Return the `--output-format json` result envelope, or None if stdout is
+    not a parseable result envelope.
+
+    None is itself a STRUCTURAL failure signal: in json mode a real response is
+    always a valid envelope, so unparseable stdout can never be a success — this
+    is the positive content-validity gate. Tolerant of a stray hook line leaked
+    ahead of the envelope (scans from the last line back)."""
+    if not stdout:
+        return None
+    try:
+        obj = json.loads(stdout)
+        if isinstance(obj, dict) and obj.get("type") == "result":
+            return obj
+    except json.JSONDecodeError:
+        pass
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "result":
+            return obj
+    return None
+
+
+# Marker tuple is a failure CLASSIFIER (rate-limit vs generic-unavailable) on an
+# ALREADY-determined failure — never the success gate. The old code sniffed raw
+# stdout against a denylist to DECIDE success and was patched repeatedly, always
+# one banner phrasing behind: an unrecognized banner (login / connection /
+# weekly-limit / session-limit) was consumed as a successful response. The fix
+# makes success purely structural (a valid result envelope with is_error false),
+# so an unknown future banner has no envelope and can never be consumed as
+# content. Bug class: PRODUCER-OUTPUT-CONSUMED-WITHOUT-CONTENT-VALIDITY-CHECK.
+_RATELIMIT_MARKERS = (
+    "weekly limit",
+    "hit your weekly",
+    "session limit",        # 5-hour rolling cap (newer CLI)
+    "hit your session",
+    "rate limit",
+    "rate_limit_exceeded",
+    "usage limit",
+    "quota exceeded",
+)
+
+
+def _classify_cli_failure(text: str, raw: str = "") -> RouterUnavailable:
+    """Map a known-failure error string to the right typed exception.
+
+    Rate-limit markers -> RateLimitExhausted (transient; the next scheduled run
+    after the window reset should succeed). Everything else (auth/network
+    refusal OR an unrecognized banner) -> RouterUnavailable. Default-unavailable
+    on unknown is the safe direction: a banner we don't recognize fails loudly
+    instead of being consumed as a response."""
+    low = (text or "").lower()
+    snippet = ((raw or text or "")[:200])
+    if any(m in low for m in _RATELIMIT_MARKERS):
+        return RateLimitExhausted(
+            f"claude CLI rate-limit signal: {snippet!r}. Transient — the next "
+            "scheduled run after the limit window resets should succeed."
+        )
+    return RouterUnavailable(
+        f"claude CLI failure (no valid result envelope): {snippet!r}. "
+        "Auth/network refusal or an unrecognized banner — not a model response."
+    )
+
+
 def _call_via_cli(
     cli: str, system: str, user: str, model: str
 ) -> str:
-    """Run `claude -p` and return stdout text.
+    """Run `claude -p --output-format json` and return the envelope's result text.
 
-    Acceptance logic:
-      - exit 0 with any stdout (including "PONG.") → accept
-      - exit non-zero with non-empty stdout → accept (likely a SessionEnd
-        hook failed AFTER Claude wrote its response; throwing the response
-        away just because the hook failed is a regression we explicitly
-        log + accept past)
-      - exit non-zero with empty stdout → real failure, raise
+    Acceptance logic (structural — independent of exit code):
+      - valid result envelope, is_error=false → accept (return envelope.result)
+      - valid result envelope, is_error=true  → raise (classified)
+      - NO valid envelope, non-empty stdout    → raise (classify the banner)
+      - NO valid envelope, empty stdout        → raise RouterUnavailable
 
-    `claude -p` runs SessionStart and SessionEnd hooks even in print mode;
-    a failing hook (sync-my-skills.sh push, etc.) used to bubble up as exit 1
-    even when Claude succeeded. The earlier MIN_RESPONSE_CHARS heuristic was
-    wrong because legitimate replies can be very short ("PONG.", "Yes", "42").
+    Success is gated on a parseable result envelope, NOT on sniffing raw text
+    for a denylist of bad banners. An unknown future banner has no envelope and
+    can never be returned as content — that is the whole
+    PRODUCER-OUTPUT-CONSUMED-WITHOUT-CONTENT-VALIDITY-CHECK fix.
+
+    HARD DEPENDENCY on `--output-format json`: a CLI that IGNORES the flag and
+    emits plain text on exit 0 (an older `claude`, or a wrapper that strips the
+    flag) has no envelope, so it is treated as UNAVAILABLE and call_claude_text
+    falls through to the API-key tier. This is the safe direction (no envelope
+    is never consumed as content) and is intentional, not silent.
+
+    Exit code is no longer part of the gate: `claude -p` runs SessionStart and
+    SessionEnd hooks even in print mode, and a hook failing AFTER Claude wrote
+    its response exits non-zero while the envelope on stdout is still valid — so
+    we accept it. The earlier MIN_RESPONSE_CHARS heuristic was wrong because
+    legitimate replies can be very short ("PONG.", "Yes", "42").
     """
     cmd = [
         cli,
@@ -130,9 +221,16 @@ def _call_via_cli(
         system,
         "--model",
         model,
+        "--output-format",
+        "json",                 # structured envelope, not raw text
         "--no-session-persistence",
         "--disable-slash-commands",
         "--dangerously-skip-permissions",
+        # Router calls are pure text/JSON generation — none invoke MCP tools.
+        # Without this, `claude -p` cold-loads the whole project .mcp.json fleet
+        # on EVERY call (slow + heavy footprint). With no --mcp-config alongside
+        # it, --strict-mcp-config loads ZERO MCP servers.
+        "--strict-mcp-config",
     ]
     _log(f"calling via CLI ({cli}, model={model})")
     try:
@@ -141,7 +239,7 @@ def _call_via_cli(
             capture_output=True,
             text=True,
             timeout=CLI_TIMEOUT_SECONDS,
-            check=False,  # tolerate non-zero exits with valid stdout
+            check=False,  # tolerate non-zero exits with a valid envelope
         )
     except subprocess.TimeoutExpired as e:
         raise RouterUnavailable(
@@ -149,77 +247,51 @@ def _call_via_cli(
         ) from e
 
     stdout = result.stdout.strip()
-    # Refusal markers — CLI returned a string but it's an auth/refusal banner,
-    # not an actual model response. Treat as CLI unavailable so the router
-    # falls back to API. Patched 2026-05-19 after hallucination-sample-audit
-    # accepted "Not logged in · Please run /login" as a 33-char success.
-    # Rate-limit banners — transient refusals when a Max account hits its
-    # weekly cap or 5-hour session cap. The CLI returns the banner as stdout
-    # and exits non-zero, so the accept-non-zero-with-stdout branch below
-    # would otherwise return the banner as a "response" (e.g. 63 chars of
-    # "You've hit your session limit · resets <time>"). Detecting them here
-    # raises RouterUnavailable instead, so callers fall back to the API path
-    # or surface a real error rather than consuming the banner as content.
-    # The bug class is PRODUCER-OUTPUT-CONSUMED-WITHOUT-CONTENT-VALIDITY-CHECK
-    # — substring matching is a stopgap; the principled fix is to use
-    # `claude -p --output-format json` and read `is_error` / `subtype` from
-    # the result envelope. Keeping the substring list short and scoped.
-    ratelimit_markers = (
-        "weekly limit",
-        "hit your weekly",
-        "session limit",
-        "hit your session",
-        "rate limit",
-        "rate_limit_exceeded",
-        "usage limit",
-        "quota exceeded",
-    )
-    if stdout and any(m in stdout.lower() for m in ratelimit_markers):
-        raise RouterUnavailable(
-            f"claude CLI returned rate-limit banner: {stdout[:200]!r}. "
-            "Transient — wait for the limit window to reset, or set "
-            "ANTHROPIC_API_KEY for an API-key fallback."
-        )
 
-    refusal_markers = (
-        "not logged in",
-        "please run /login",
-        "authentication required",
-        "authentication failed",
-        "session expired",
-        # Transport / connectivity errors. When the network is not ready
-        # (e.g. a launchd-fired job during wake-from-sleep), `claude -p` can
-        # emit "API Error: Unable to connect to API (ConnectionRefused)" on
-        # stdout and exit 1 — the accept-non-zero-with-stdout branch below
-        # would otherwise accept that error string as a 55-char "response".
-        # Treat them as RouterUnavailable so the CLI-retry path (below) has
-        # a chance once the network comes up.
-        "api error",
-        "unable to connect to api",
-        "connectionrefused",
-        "failedtoopensocket",
-    )
-    if stdout and any(m in stdout.lower() for m in refusal_markers):
-        raise RouterUnavailable(
-            f"claude CLI returned refusal banner: {stdout[:200]!r}. "
-            "Subprocess cannot reach Max OAuth — set ANTHROPIC_API_KEY for "
-            "API fallback, or run from a shell with claude CLI logged in."
-        )
+    # Structural content-validity gate. SUCCESS requires a valid result envelope
+    # with is_error=false — independent of exit code. No valid envelope, or an
+    # envelope flagged is_error, is a failure classified into the right typed
+    # exception. An unknown future banner has no envelope -> RouterUnavailable,
+    # never consumed as content.
+    envelope = _extract_result_envelope(stdout)
 
-    if result.returncode == 0:
-        return stdout
+    if envelope is not None and not bool(envelope.get("is_error")):
+        text = envelope.get("result")
+        text = "" if text is None else str(text)
+        if not text.strip():
+            # is_error:false but NO content (null / "" / whitespace / missing
+            # result key). A real model response is never empty here; returning
+            # '' as success would let call_claude_json raise a confusing
+            # ValueError that is neither RateLimitExhausted nor
+            # RouterUnavailable. Fail loud instead — an empty result IS the
+            # degenerate error the content-validity gate must reject.
+            _log("CLI returned is_error:false with an empty result — failing")
+            raise RouterUnavailable(
+                "claude CLI returned a success envelope with an empty result "
+                "(no content). Treating as unavailable rather than returning ''."
+            )
+        return text.strip()
+
+    if envelope is not None:
+        # Structured error envelope — classify from its own fields.
+        err_text = " ".join(
+            str(envelope.get(k, ""))
+            for k in ("subtype", "result", "api_error_status",
+                      "stop_reason", "terminal_reason")
+        )
+        _log(f"CLI returned error envelope (is_error): {err_text[:160]!r}")
+        raise _classify_cli_failure(err_text, raw=stdout)
 
     if stdout:
-        _log(
-            f"CLI exit {result.returncode} but stdout has "
-            f"{len(stdout)} chars — accepting (likely SessionEnd "
-            f"hook failure post-response)"
-        )
-        return stdout
+        # Non-JSON stdout in --output-format json mode = failure by
+        # construction (an error banner, or output corruption). Classify the
+        # banner; an unrecognized one defaults to RouterUnavailable.
+        _log(f"CLI returned non-envelope stdout ({len(stdout)} chars); failing")
+        raise _classify_cli_failure(stdout, raw=stdout)
 
     raise RouterUnavailable(
-        f"claude CLI exit {result.returncode} with empty stdout. "
-        f"stderr: {result.stderr[:300]}"
+        f"claude CLI exit {result.returncode} with empty stdout / no JSON "
+        f"envelope. stderr: {result.stderr[:300]}"
     )
 
 
@@ -315,6 +387,7 @@ def call_claude_text(
     prefer_api = os.environ.get("CLAUDE_ROUTER_PREFER_API_KEY") == "1"
 
     cli = None if prefer_api else _resolve_cli()
+    last_ratelimit: RateLimitExhausted | None = None
     if cli is not None:
         # One retry: an unattended `claude -p` (cron, launchd, agent) can
         # intermittently hang or return a stale-OAuth refusal on the first
@@ -324,6 +397,15 @@ def call_claude_text(
         for cli_attempt in range(1, cli_attempts + 1):
             try:
                 return _call_via_cli(cli, system, user, model)
+            except RateLimitExhausted as e:
+                # Retrying the SAME account inside its limit window is futile.
+                # Skip straight to the API-key tier, and remember the signal so
+                # a caller with no API key gets RateLimitExhausted (transient,
+                # retry after reset) rather than a misleading "no CLI" error.
+                # MUST precede the RouterUnavailable handler (it is a subclass).
+                last_ratelimit = e
+                _log(f"CLI rate-limited; not retrying, trying API fallback: {e}")
+                break
             except RouterUnavailable as e:
                 if cli_attempt < cli_attempts:
                     _log(f"CLI attempt {cli_attempt}/{cli_attempts} failed "
@@ -335,6 +417,12 @@ def call_claude_text(
     api_key = _resolve_api_key()
     if api_key is not None:
         return _call_via_api(api_key, system, user, model, max_tokens, cache_system)
+
+    if last_ratelimit is not None:
+        # Every CLI path was rate-limited and no API key is configured. Surface
+        # the transient signal so a scheduled caller can back off and retry
+        # after the window resets, not treat this as a hard config failure.
+        raise last_ratelimit
 
     raise RouterUnavailable(
         "no claude CLI and no ANTHROPIC_API_KEY — install `claude` "

@@ -61,6 +61,16 @@ def _cli(argv: list[str]) -> int:
     vault has no Meta-suffixed folder at all (caller applies its own fallback);
     exits 2 on a usage error.
     """
+    # The resolved path usually contains the "⚙️ Meta" emoji. On a Windows
+    # cp1252 console (or a C-locale pipe) print() raises UnicodeEncodeError, and
+    # the caller then sees an empty result and misreads it as "no Meta folder".
+    # Force UTF-8 on the CLI streams so the path always round-trips; PowerShell
+    # and POSIX shell callers decode UTF-8 on their side.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     if not argv:
         print("usage: _meta_resolver.py VAULT_ROOT [SUBFOLDER ...]", file=sys.stderr)
         return 2

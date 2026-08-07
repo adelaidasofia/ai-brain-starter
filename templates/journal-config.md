@@ -14,6 +14,8 @@ data_sources:
   imessage_24h: off           # iMessage threads with traffic in last 24h — opt-in (sees private conversations)
   whatsapp_24h: off           # WhatsApp threads with traffic in last 24h — opt-in (sees private conversations)
   body_health: off            # Step 0h: sleep/HRV/RHR/steps/workouts/recovery/cycle from health-mcp DuckDB — opt-in (most sensitive; local-only, never leaves your machine)
+  email: off                  # email triage digest (Email Needs You.md) + a fresh gmail_search — opt-in (sees private mail)
+  slack: off                  # on-disk Slack export + a fresh slack search — opt-in (sees private messages)
 # Per-source filters (only consulted when the source is "on")
 imessage_filters:
   exclude_chats: []           # phone numbers, emails, or contact names to skip on every pull
@@ -23,6 +25,16 @@ whatsapp_filters:
   only_unread: false
 calendar_filters:
   include_calendars: []       # leave empty to pull all calendars; or list calendar IDs to whitelist
+# Contacts surfaced FIRST in the message digest (⭐) so family/partner threads are never
+# buried under work chatter. Matched case-insensitively against the thread/contact name.
+# Generic family terms are always included; add YOUR close people's names here.
+relational_priority: []       # e.g. [Alex, Sam, mom, dad, sister] — your family + partner (use their real names)
+# Journal entry filename convention. The skill honors this at every save.
+#   descriptive : "Ranch Weekend Dad Health Worries.md"  (default; human-readable titles)
+#   date        : "2026-04-11.md"                          (one file per day, sorts chronologically)
+#   date-title  : "2026-04-11 Ranch Weekend.md"            (date prefix + short title)
+# If your CLAUDE.md states a journal filename rule, keep this field in sync with it.
+filename_format: descriptive
 ---
 
 # Daily Journal Config
@@ -96,6 +108,16 @@ imessage_filters:
 whatsapp_filters:
   exclude_chats: ["+15551234567"]
 ```
+
+## Journal filename format
+
+`filename_format` in the frontmatter controls how each entry file is named:
+
+- **`descriptive`** (default) — a 5-8 word Title Case summary, e.g. `Ranch Weekend Dad Health Worries.md`. Human-readable; the original behavior.
+- **`date`** — one file per day, `YYYY-MM-DD.md`. Sorts chronologically and is easy for tooling to key on.
+- **`date-title`** — `YYYY-MM-DD` plus a short title, e.g. `2026-04-11 Ranch Weekend.md`. Both worlds.
+
+One calendar day is still one entry regardless of format (the skill resumes and updates the same file). If your `CLAUDE.md` states a filename rule, set this field to match it — `CLAUDE.md` is the tiebreaker if they ever disagree.
 
 ## How the skill installs this file
 

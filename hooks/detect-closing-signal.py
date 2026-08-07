@@ -25,6 +25,9 @@ Behavior contract:
     list, recently-touched-files list, session-file shell pre-build)
   - Returns additionalContext that injects all of the above plus the cascade
     instructions inline (no separate rule-file read needed)
+  - Adds Phase 4b when this session set a `/goal`: that installs a
+    session-scoped Stop hook which would block the close, and only the user
+    can run `/goal clear`
   - Skips entirely if session is trivial (<5 user messages, no captures detected)
   - Fails open: any error returns empty context, never blocks the user
 
@@ -40,9 +43,11 @@ Or via absolute path during install:
   python3 ~/.claude/skills/ai-brain-starter/hooks/detect-closing-signal.py
 
 Environment variables (all optional):
-  VAULT_ROOT — vault path. Defaults to cwd. Worktree paths are collapsed to
-               the main vault root so session artifacts never strand on a
-               worktree (see resolve_main_vault).
+  VAULT_ROOT — fallback vault path, used only when cwd is not inside a repo
+               that declares its own Session End/Close cascade (see
+               _lib/vault_root.resolve_vault_root). Defaults to cwd.
+               Worktree paths are collapsed to the main vault root so
+               session artifacts never strand on a worktree.
   CLOSING_SIGNAL_LANGS — comma-separated language packs to load (default: en,es,pt)
   CLOSING_SIGNAL_DETECTION — "regex" (default) or "hybrid" (regex + Haiku fallback)
   CLOSING_SIGNAL_DEBUG — set to 1 for stderr trace
@@ -70,6 +75,18 @@ import sys
 import time
 from pathlib import Path
 from datetime import datetime
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from _lib.vault_root import resolve_vault_root  # noqa: E402
+except Exception:  # fail-open: if the lib cannot load, behave as before
+    def resolve_vault_root(cwd: Path, env_vault_root: str | None) -> Path:  # type: ignore
+        text = str(Path(env_vault_root) if env_vault_root else cwd)
+        norm = text.replace("\\", "/")  # marker must match Windows paths too
+        marker = "/.claude/worktrees/"
+        if marker in norm:
+            return Path(norm.split(marker, 1)[0])
+        return Path(text)
 
 
 def log_debug(msg: str) -> None:
@@ -419,30 +436,6 @@ def derive_worktree(cwd: Path) -> str:
     return "main"
 
 
-def resolve_main_vault(path: Path) -> Path:
-    """Collapse a worktree path to the MAIN vault root.
-
-    If `path` is inside `<vault>/.claude/worktrees/<slug>/...`, return
-    `<vault>` — the main vault root. Otherwise return `path` unchanged.
-
-    Session artifacts (the session file, Decisions/, Captures, Time
-    Tracking) MUST land in the main vault. A worktree's own checkout sits
-    on a throwaway `claude/<slug>` branch; anything written there is
-    discarded when the worktree is archived. The close cascade can fire
-    from inside a worktree, so the cwd-derived vault root must be
-    collapsed back to main before any artifact path is resolved.
-
-    Mirrors resolve_main_vault() in scripts/session-end-hook.sh — the same
-    fix applied to the Stop hook for issue #65 / PR #66. This hook (the
-    UserPromptSubmit Layer 1 of the cascade) was never brought to parity.
-    """
-    marker = "/.claude/worktrees/"
-    text = str(path)
-    if marker in text:
-        return Path(text.split(marker, 1)[0])
-    return path
-
-
 def find_meta_dir(vault_root: Path) -> Path:
     """Auto-detect Meta folder. Returns the canonical dir for THIS vault.
 
@@ -525,6 +518,78 @@ def count_user_messages(transcript_path: str | None) -> int:
     except OSError:
         return 99
     return count
+
+
+# /goal renders in the transcript as a client-side command record:
+#   <command-name>/goal</command-name> ... <command-args>CONDITION</command-args>
+# Bare `/goal` (no args) is a status query; `/goal clear` clears. Anything else
+# sets the condition.
+_GOAL_CMD = "<command-name>/goal</command-name>"
+_GOAL_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
+
+
+def _record_text(rec: dict) -> str:
+    """Flatten a transcript record's message content to plain text."""
+    msg = rec.get("message")
+    if not isinstance(msg, dict):
+        return ""
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            blk.get("text", "") for blk in content if isinstance(blk, dict)
+        )
+    return ""
+
+
+def active_session_goal(transcript_path: str | None) -> str | None:
+    """Return the condition of a /goal still set on this session, else None.
+
+    `/goal <condition>` installs a session-scoped Stop hook that blocks stopping
+    until the condition holds, so a goal that is still set will fight a
+    deliberate close: the cascade finishes, Stop fires, the goal hook blocks,
+    and the model is re-invoked with nothing left to do.
+
+    The condition lives only in Claude Code's in-memory session state — there is
+    no goal state file — so the transcript is the sole readable record. Replay
+    the /goal invocations in order and keep the last one that SET a goal.
+
+    Blind spot, handled model-side: a goal auto-clears once its condition is
+    met, and that leaves no transcript marker. So a True here means "a goal was
+    set and never explicitly cleared", NOT "a goal is definitely still live".
+    The injected phase tells the model to stay silent when the condition was in
+    fact met — nagging after success is the one case the harness rules out.
+    """
+    if not transcript_path:
+        return None
+    p = Path(transcript_path)
+    if not p.is_file():
+        return None
+    goal: str | None = None
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            for line in f:
+                if _GOAL_CMD not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                text = _record_text(rec)
+                if _GOAL_CMD not in text:
+                    continue  # matched inside some other field, not a command
+                m = _GOAL_ARGS_RE.search(text)
+                args = (m.group(1).strip() if m else "")
+                if not args:
+                    continue  # bare /goal is a status query
+                if args.lower() == "clear":
+                    goal = None
+                else:
+                    goal = args
+    except OSError:
+        return None
+    return goal
 
 
 def list_decisions_with_empty_outcome(meta_dir: Path) -> list[str]:
@@ -634,6 +699,7 @@ def build_injected_context(
     pending_outcomes: list[str],
     is_trivial: bool,
     is_ambiguous: bool,
+    goal_condition: str | None = None,
 ) -> str:
     """Compose the system block injected into the model's context.
 
@@ -641,11 +707,14 @@ def build_injected_context(
     inline so the model doesn't need to read a separate rule file.
     """
     if is_trivial:
+        # A live /goal blocks stopping regardless of how small the session was,
+        # so the goal note survives the skip-if-trivial rule.
         return (
             f"SESSION CLOSE detected (signal: {matched!r}, confidence: {confidence}). "
             f"This session is trivial (<5 user messages). Per the skip rule, "
             f"skip the cascade and just say a clean goodbye. The Stop hook will "
             f"still log a timestamp."
+            + _goal_clear_block(goal_condition, trivial=True)
         )
 
     if is_ambiguous:
@@ -670,9 +739,46 @@ def build_injected_context(
         + _full_cascade_block(
             timestamp_human, timestamp_file, worktree, vault_root,
             meta_dir, session_file, decisions_dir, captures_file,
-            pending_outcomes,
+            pending_outcomes, goal_condition,
         )
     )
+
+
+def _goal_clear_block(goal_condition: str | None, trivial: bool = False) -> str:
+    """Tail block telling the model to hand `/goal clear` back to the user.
+
+    Empty string when this session never set a goal — no goal, no nag.
+    """
+    if not goal_condition:
+        return ""
+    cond = " ".join(goal_condition.split())
+    if len(cond) > 160:
+        cond = cond[:157] + "..."
+    if trivial:
+        instruction = "End your goodbye with one plain line asking them to type:"
+    else:
+        instruction = (
+            'Add one plain line to the PHASE 4 summary, after "Anything I '
+            'missed?", asking them to type:'
+        )
+    return f"""
+
+PHASE 4b — CLEAR THE SESSION GOAL (fires only because this session set one):
+  Goal on record: "{cond}"
+
+`/goal` installed a session-scoped Stop hook that blocks stopping until that
+condition holds. A close is a deliberate EARLY stop, so unless the condition is
+actually met the goal hook will block this close and re-invoke you with nothing
+left to do — the loop the user is trying to end.
+
+You CANNOT clear it yourself: `/goal` is a client-side command with no tool
+behind it. Only the user can. {instruction}
+
+  /goal clear
+
+EXCEPTION — if the goal's condition was genuinely MET this session, it already
+auto-cleared. Say nothing. Telling the user to clear a goal that succeeded is
+the one case the harness explicitly rules out."""
 
 
 def _full_cascade_block(
@@ -685,6 +791,7 @@ def _full_cascade_block(
     decisions_dir: Path,
     captures_file: Path,
     pending_outcomes: list[str],
+    goal_condition: str | None = None,
 ) -> str:
     """The reusable cascade-instruction block."""
     pending = ", ".join(pending_outcomes) if pending_outcomes else "(none)"
@@ -806,6 +913,43 @@ your job before goodbye.
 Phases 0c/0d/0e and the Phase 3 audit are MODEL-SIDE. The post-Stop hook
 does NOT run them.
 
+PHASE 1.8 — TEAM BROADCAST (per workspace, MODEL-SIDE, OPT-IN; physically
+here in run order because broadcasts must follow Phase 2 writes — the
+"1.8" name matches the canonical reference in chief-of-staff/SKILL.md):
+SKIP this phase entirely unless the OPTIONAL companion skill is installed:
+  ~/.claude/skills/team-broadcast/scripts/auto-send.py
+If absent (the common case for solo / personal-vault users): do nothing,
+do not narrate, move on to Phase 3. The companion skill is install-it-
+yourself; ai-brain-starter does NOT auto-install it.
+
+If installed AND this session shipped, decided, or unblocked anything
+the team should know about, broadcast via:
+
+  python ~/.claude/skills/team-broadcast/scripts/auto-send.py \\
+    {{onde|mycelium}} --trigger session-close --body-file <file>
+
+Use --body-file with the plain 5th-grader recap THIS conversation already
+showed the user (do NOT re-derive or re-scan; --allow-rescan is an escape
+hatch, not the default). Body lives in scratchpad; the script consumes
++ removes it after posting.
+
+Per-workspace rule: post to EACH workspace where the work is materially
+relevant. A typical product-ticket ship -> that product's workspace only.
+A change to a shared substrate (an *-mcp, a public skill) -> the
+substrate's workspace. Cross-umbrella work -> both.
+
+SKIP conditions (broadcast nothing):
+  - Tiny / housekeeping session (close cascade alone, no substantive ship)
+  - Personal-only work (journaling, coaching, calendar, finance)
+  - Already broadcast earlier this session
+
+Dry-run first (--dry-run) when uncertain about content or audience; go
+live once the dry-run output reads clean. Audit log is automatic.
+
+If a workspace's Slack creds are missing, the script fails loud — do NOT
+silently swallow. Report the failure in Phase 4 + add a to-do to fix the
+creds.
+
 PHASE 3 — Functional audit (conditional, MODEL-SIDE):
 If this session shipped code or docs to a PUBLIC REPO that users download
 (ai-brain-starter, humanizer, mycelium-site, any *-mcp, etc.), run the
@@ -832,10 +976,11 @@ misleading copy, or unreferenced files. The audit catches what CI can't.
 
 PHASE 4 — Final summary (one line, after audit if Phase 3 fired):
 "Filed X seeds, Y to-dos (yours: A, delegations: B), Z decisions, checked
-off M items. Anything I missed?"
+off M items[, broadcast to <workspaces> if Phase 1.8 fired]. Anything I
+missed?"
 
 Then say goodbye in the user's primary language, warm, no machinery
-narration."""
+narration.{_goal_clear_block(goal_condition)}"""
 
 
 def main() -> int:
@@ -887,13 +1032,15 @@ def main() -> int:
             emit_passthrough()
             return 0
 
-        # Resolve the vault root. When the close cascade fires from inside a
-        # worktree, cwd IS the worktree; resolve_main_vault collapses it back
-        # so every session artifact lands in the main vault, never a throwaway
-        # claude/<slug> branch that gets discarded when the worktree archives.
-        vault_root = resolve_main_vault(
-            Path(os.environ.get("VAULT_ROOT") or cwd)
-        )
+        # Resolve the vault root. Priority: (1) the nearest ancestor of cwd
+        # that declares its own Session End/Close cascade — even when a
+        # global VAULT_ROOT default is configured, so a session rooted in
+        # its own vault-shaped repo resolves to itself, not an unrelated
+        # default vault; (2) VAULT_ROOT env var; (3) cwd, worktree-collapsed
+        # so a close cascade firing inside a worktree never strands
+        # artifacts on its throwaway claude/<slug> branch. See
+        # _lib/vault_root.py for the full contract.
+        vault_root = resolve_vault_root(cwd, os.environ.get("VAULT_ROOT"))
 
         langs = [
             x.strip() for x in
@@ -986,6 +1133,7 @@ def main() -> int:
             pending_outcomes=pending_outcomes,
             is_trivial=is_trivial,
             is_ambiguous=is_ambiguous,
+            goal_condition=active_session_goal(transcript_path),
         )
         emit_context(context)
         log_debug(f"injected context for {confidence} signal in {int((time.time() - start) * 1000)}ms")

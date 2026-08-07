@@ -177,6 +177,26 @@ def self_test():
         print(f"[self-test] clean docs tree -> no findings:    {len(f2) == 0}")
         ok = got_marker and got_big and len(f2) == 0
 
+        # Metadata-only negative control: a FIFO has the same forever-blocking
+        # behavior as a placeholder if opened for content. This scanner must
+        # finish without opening it, and the content-walker guard must therefore
+        # keep classifying this file as metadata-only rather than demand fake
+        # safe_read wiring.
+        if hasattr(os, "mkfifo"):
+            fifo_docs = os.path.join(tmp, "fifo_docs")
+            os.makedirs(fifo_docs)
+            try:
+                os.mkfifo(os.path.join(fifo_docs, "offline-note.md"))
+                started = time.monotonic()
+                fifo_findings = scan_root(fifo_docs, "TEST")
+                fifo_safe = not fifo_findings and time.monotonic() - started < 1.0
+            except OSError:
+                fifo_safe = True  # platform exposes mkfifo but filesystem rejects it
+            print(f"[self-test] FIFO metadata is never content-read: {fifo_safe}")
+            ok = ok and fifo_safe
+        else:
+            print("[self-test] FIFO metadata control: unavailable on this platform")
+
         # --- MYC-705: Drive Mirror-root (sync_type=1) DB detection ---
         mdb = os.path.join(tmp, "root_preference_sqlite.db")
         con = sqlite3.connect(mdb)

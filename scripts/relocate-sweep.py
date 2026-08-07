@@ -84,11 +84,11 @@ import argparse
 import ast
 import io
 import json
+import math
 import os
 import re
 import subprocess
 import sys
-import threading
 import time
 import tokenize
 from concurrent.futures import ThreadPoolExecutor
@@ -96,10 +96,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 HOME = Path.home()
+HOOKS_DIR = Path(__file__).resolve().parent.parent / "hooks"
+sys.path.insert(0, str(HOOKS_DIR))
 
-# Per-file read timeout (s). A read slower than this — a cloud placeholder, a
-# stalled network mount, a FIFO — is abandoned and the file skipped, so the sweep
-# can NEVER block on one file. Overridable via --read-timeout.
+from _lib.safe_read import MAX_TIMEOUT_S, safe_read_text  # noqa: E402
+
+# Per-file read timeout (s). The shared reader rejects special/offline files
+# before open; an unknown placeholder or stalled mount is abandoned at this
+# deadline. Overridable via --read-timeout.
 READ_TIMEOUT = 5.0
 
 # File suffixes worth scanning on a filesystem walk. Everything else is skipped.
@@ -146,6 +150,12 @@ _FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
 _INLINE_CODE_RE = re.compile(r"`+([^`\n]+?)`+")
 
 WARNINGS = []
+INCOMPLETE_SCANS = []
+
+
+def _incomplete(message):
+    WARNINGS.append(message)
+    INCOMPLETE_SCANS.append(message)
 
 
 # --------------------------------------------------------------------------- #
@@ -444,10 +454,12 @@ def git_grep_files(top, patterns, ref):
     try:
         r = _git(cmd, timeout=25)
     except subprocess.TimeoutExpired:
-        WARNINGS.append("git grep timed out (>25s) in " + abbrev(top) + " — skipped (large untracked tree?)")
+        _incomplete("git grep timed out (>25s) in " + abbrev(top)
+                    + " — skipped (large untracked tree?)")
         return set()
     if r.returncode not in (0, 1):  # 1 = no matches; >1 = real error
-        WARNINGS.append("git grep failed in " + abbrev(top) + (" @" + ref if ref else " (worktree)"))
+        _incomplete("git grep failed in " + abbrev(top)
+                    + (" @" + ref if ref else " (worktree)"))
         return set()
     files = set()
     prefix = (ref + ":") if ref else ""
@@ -461,9 +473,12 @@ def git_show(top, ref, relpath):
     try:
         r = _git(["-C", top, "show", ref + ":" + relpath], timeout=20)
     except subprocess.TimeoutExpired:
-        WARNINGS.append("git show timed out: %s:%s" % (ref, relpath))
+        _incomplete("git show timed out: %s:%s" % (ref, relpath))
         return None
-    return r.stdout if r.returncode == 0 else None
+    if r.returncode != 0:
+        _incomplete("git show failed: %s:%s" % (ref, relpath))
+        return None
+    return r.stdout
 
 
 def git_common_dir(top):
@@ -559,29 +574,14 @@ def _skip(path):
 # scanning                                                                     #
 # --------------------------------------------------------------------------- #
 def _read_text_bounded(path):
-    """Read a file's text, but NEVER block longer than READ_TIMEOUT seconds. A
-    cloud-sync placeholder, a stalled network mount, or a FIFO would otherwise
-    hang the entire sweep on a single file — the exact demand-paging hazard this
-    tool helps users escape. The read runs in a DAEMON thread; if it overruns we
-    abandon it (daemon → dies at process exit, never blocks teardown) and skip the
-    file with a loud warning. Cross-platform — no signal.alarm, works off the main
-    thread too (the parallel git pool calls this)."""
-    box = {}
-
-    def _read():
-        try:
-            box["text"] = Path(path).read_text()
-        except (OSError, UnicodeDecodeError):
-            box["text"] = None
-
-    t = threading.Thread(target=_read, daemon=True)
-    t.start()
-    t.join(READ_TIMEOUT)
-    if t.is_alive():
-        WARNINGS.append("read timed out (>%ss), skipped: %s (cloud placeholder / slow mount?)"
-                        % (READ_TIMEOUT, abbrev(str(path))))
+    """Use the shared regular-file boundary and surface every skipped read."""
+    result = safe_read_text(path, timeout=READ_TIMEOUT, max_bytes=1_000_000)
+    if not result.ok:
+        detail = (" (" + result.detail + ")") if result.detail else ""
+        _incomplete("safe read skipped [%s]%s: %s"
+                    % (result.status, detail, abbrev(str(path))))
         return None
-    return box.get("text")
+    return result.text
 
 
 def add_findings(findings, abspath, text, patterns, provenance, repo_label):
@@ -631,7 +631,10 @@ def scan_fs_root(root, patterns):
     findings = []
     if _under_cloud_sync(root):
         return {"path": abbrev(root), "kind": "fs(skipped: cloud-sync)", "ref": None}, findings
-    for dirpath, dirs, files in os.walk(root):
+    def walk_error(error):
+        _incomplete("filesystem walk failed: " + str(error))
+
+    for dirpath, dirs, files in os.walk(root, onerror=walk_error):
         dirs[:] = [d for d in dirs if d not in WALK_PRUNE]
         for fn in files:
             full = os.path.join(dirpath, fn)
@@ -648,6 +651,7 @@ def scan_fs_root(root, patterns):
 # main                                                                         #
 # --------------------------------------------------------------------------- #
 def build_report(args):
+    incomplete_start = len(INCOMPLETE_SCANS)
     old_abs = os.path.abspath(os.path.expanduser(args.old))
     new_abs = os.path.abspath(os.path.expanduser(args.new)) if args.new else None
     patterns = derive_patterns(old_abs)
@@ -713,22 +717,27 @@ def build_report(args):
         cj_path = os.path.abspath(os.path.expanduser(args.claude_json))
     elif not args.no_auto_discover:
         cj_path = str(HOME / ".claude.json")
-    if cj_path and os.path.isfile(cj_path):
+    if cj_path:
+        text_result = safe_read_text(cj_path, timeout=READ_TIMEOUT, max_bytes=1_000_000)
+        if text_result.status == "missing":
+            text_result = None
+    else:
+        text_result = None
+    if text_result is not None:
         claude_summary["path"] = abbrev(cj_path)
         claude_summary["present"] = True
-        try:
-            text = Path(cj_path).read_text()
-        except (OSError, UnicodeDecodeError):
-            text = None
+        text = text_result.text if text_result.ok else None
         if text is None:
             claude_summary["valid"] = False
+            _incomplete("safe read skipped [%s]: %s"
+                        % (text_result.status, abbrev(cj_path)))
         else:
             cj_findings, dk, sv, valid = classify_json(text, patterns)
             claude_summary["valid"] = valid
             claude_summary["dict_keys"] = dk
             claude_summary["string_values"] = sv
             if not valid:
-                WARNINGS.append("~/.claude.json did not parse — characterize it by hand before editing")
+                _incomplete("~/.claude.json did not parse — characterize it by hand before editing")
             for (ln, klass, reason) in cj_findings:
                 snippet = ""
                 if ln and 0 < ln <= len(text.splitlines()):
@@ -742,7 +751,8 @@ def build_report(args):
     counts = {"executed": 0, "doc-pointer": 0, "keep": 0}
     for f in findings:
         counts[f["klass"]] = counts.get(f["klass"], 0) + 1
-    verdict = "NO-GO" if counts["executed"] > 0 else "GO"
+    incomplete = _dedupe(INCOMPLETE_SCANS[incomplete_start:])
+    verdict = "NO-GO" if counts["executed"] > 0 or incomplete else "GO"
 
     return {
         "old": old_abs,
@@ -755,6 +765,7 @@ def build_report(args):
                    "doc_pointer": counts["doc-pointer"],
                    "keep": counts["keep"]},
         "warnings": list(WARNINGS),
+        "incomplete": incomplete,
         "verdict": verdict,
     }
 
@@ -802,7 +813,8 @@ def print_human(rep):
 
     print("\nVERDICT: " + rep["verdict"])
     if rep["verdict"] == "NO-GO":
-        print("  %d executed reference(s) still resolve the old path. Repoint them, then re-run." % rep["counts"]["executed"])
+        print("  %d executed reference(s); %d incomplete read(s). Fix/repoint, then re-run."
+              % (rep["counts"]["executed"], len(rep.get("incomplete", []))))
         print("  The symlink at the old path is doing real work — do NOT drop it yet.")
     else:
         print("  Zero executed references. Safe to drop the symlink:")
@@ -851,18 +863,35 @@ def read_manifest(config_dir):
     watch — clean no-op). Unparseable / wrong-shape → [] + a LOUD warning, never a
     silent blind spot."""
     path = manifest_path(config_dir)
-    if not os.path.isfile(path):
+    result = safe_read_text(path, timeout=READ_TIMEOUT, max_bytes=1_000_000)
+    if result.status == "missing":
         return []
+    if not result.ok:
+        WARNINGS.append("relocation manifest read skipped [%s]: %s"
+                        % (result.status, abbrev(path)))
+        return None
     try:
-        data = json.loads(Path(path).read_text())
-    except (OSError, ValueError):
+        data = json.loads(result.text)
+    except ValueError:
         WARNINGS.append("relocation manifest did not parse: " + abbrev(path)
                         + " — the watchdog is blind until it is fixed or removed")
-        return []
+        return None
     if not isinstance(data, list):
         WARNINGS.append("relocation manifest is not a JSON list: " + abbrev(path))
-        return []
-    return [e for e in data if isinstance(e, dict) and e.get("old") and e.get("new")]
+        return None
+    def valid_entry(entry):
+        if not isinstance(entry, dict):
+            return False
+        for key in ("old", "new"):
+            value = entry.get(key)
+            if not isinstance(value, str) or not value.strip() or "\x00" in value:
+                return False
+        return True
+
+    if not all(valid_entry(entry) for entry in data):
+        WARNINGS.append("relocation manifest contains an invalid entry: " + abbrev(path))
+        return None
+    return data
 
 
 def old_path_recreated(old_abs):
@@ -916,8 +945,10 @@ def run_watch(args):
     has an executed residual reference, a recreated old directory, or a missing
     new/vault root (fail-loud). Reuses build_report() — no second engine."""
     config_dir = args.config_dir
-    entries = read_manifest(config_dir)
-    executed_findings, recreated, missing_roots = [], [], []
+    manifest_entries = read_manifest(config_dir)
+    manifest_error = manifest_entries is None
+    entries = manifest_entries or []
+    executed_findings, recreated, missing_roots, incomplete = [], [], [], []
 
     for e in entries:
         old_abs = os.path.abspath(os.path.expanduser(e["old"]))
@@ -931,21 +962,25 @@ def run_watch(args):
         # residual scan via the SAME engine (mode 1). new=None when absent so discovery
         # never tries to walk a path that is not there.
         rep = build_report(_watch_args_for(args, old_abs, new_abs if os.path.isdir(new_abs) else None))
+        incomplete.extend(rep.get("incomplete", []))
         for f in rep["findings"]:
             if f["klass"] == "executed":
                 loc = f["path"] + ((":" + str(f["line"])) if f["line"] else "")
                 executed_findings.append(loc + ("  " + f["snippet"] if f["snippet"] else ""))
 
     executed_findings = _dedupe(executed_findings)
-    alarm = bool(executed_findings or recreated or missing_roots)
+    incomplete = _dedupe(incomplete)
+    alarm = bool(manifest_error or executed_findings or recreated or missing_roots or incomplete)
     payload = {
         "ts": time.time(),
         "verdict": "ALARM" if alarm else "OK",
         "entries": len(entries),
+        "manifest_error": manifest_error,
         "executed": len(executed_findings),
         "findings": executed_findings[:50],
         "recreated": _dedupe(recreated),
         "missing_roots": _dedupe(missing_roots),
+        "incomplete": incomplete,
         "warnings": _dedupe(list(WARNINGS)),
     }
     _write_watch_cache(config_dir, payload)
@@ -967,6 +1002,12 @@ def print_watch(payload):
         print("\nMISSING relocated vault root(s) — not where the manifest says (FAIL-LOUD):")
         for p in payload["missing_roots"]:
             print("  - " + p)
+    if payload.get("manifest_error"):
+        print("\nMANIFEST ERROR — relocation state exists but could not be read completely.")
+    if payload.get("incomplete"):
+        print("\nINCOMPLETE scan(s) — no healthy verdict may be published:")
+        for item in payload["incomplete"]:
+            print("  - " + item)
     print("\nEXECUTED residual reference(s) to an old path (%d):" % payload["executed"])
     if not payload["findings"]:
         print("  (none)")
@@ -986,7 +1027,7 @@ def run_watch_selftest():
     only, fictional paths, no network, no real ~/dev."""
     import shutil
     import tempfile
-    global WARNINGS
+    global INCOMPLETE_SCANS, WARNINGS
     failures = []
 
     def _case(name, setup, expect_alarm):
@@ -1003,6 +1044,7 @@ def run_watch_selftest():
             manifest = [{"old": old, "new": new, "symlink": os.path.islink(old), "at": "selftest"}]
             Path(os.path.join(cfg, "relocations.json")).write_text(json.dumps(manifest))
             WARNINGS = []
+            INCOMPLETE_SCANS = []
             args = SimpleNamespace(config_dir=cfg, root=[scan], dev_root=os.path.join(tmp, "nodev"),
                                    no_auto_discover=True, include_worktrees=False, claude_json=None)
             payload = run_watch(args)
@@ -1055,6 +1097,12 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true")
     # argparse exits 2 on a missing required arg / bad usage, which is our usage code.
     args = ap.parse_args(argv)
+    if (
+        not math.isfinite(args.read_timeout)
+        or args.read_timeout <= 0
+        or args.read_timeout > MAX_TIMEOUT_S
+    ):
+        ap.error(f"--read-timeout must be finite and within (0, {MAX_TIMEOUT_S:g}]")
     global READ_TIMEOUT
     READ_TIMEOUT = args.read_timeout
 
@@ -1087,4 +1135,10 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())

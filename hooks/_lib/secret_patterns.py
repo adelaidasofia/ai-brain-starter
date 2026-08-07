@@ -1,7 +1,7 @@
 """Shared secret-pattern registry.
 
 One module, used by every secret-detection / redaction layer:
-- `hooks/redact-bash-secrets.py` (PostToolUse Bash, alerts on detect)
+- `hooks/detect-secrets-in-bash-output.py` (PostToolUse Bash, alerts on detect)
 - `hooks/scrub-session-jsonl-secrets.py` (SessionEnd, rewrites JSONLs)
 - `hooks/scan-prior-sessions-for-secrets.py` (SessionStart, warns + auto-scrubs closed sessions)
 - Any standalone tool that imports `redact()` or `scan()`
@@ -300,6 +300,112 @@ def scan(text: str) -> list[tuple[str, int]]:
     return results
 
 
+# ---------------------------------------------------------------------------
+# Alert-layer context filter (PostToolUse hook ONLY — scan()/redact() untouched).
+#
+# Two documented tool-output shapes are content-addressed IDs, not credentials,
+# yet share the bare-64-hex shape with real secrets. The regex alone cannot
+# express them (they need the *command* for context), and the scrub / corpus /
+# SessionStart layers must stay aggressive (redacting an ID is harmless;
+# missing a secret is not). So the carve-out lives here as an explicit filter
+# applied only by detect-secrets-in-bash-output.py. Suppressed hits are still
+# audit-logged by the caller with a reason — observability is preserved.
+#
+# Added 2026-07-14 after a database-migration verification run fired 16 false
+# alerts in one session: 1× the container ID echoed on its own line by
+# `docker run -d` (the image digest on the neighboring line was already
+# skipped by the sha256: lookbehind above) and 15× drizzle migration
+# content-hashes from `SELECT id, hash, created_at FROM
+# drizzle.__drizzle_migrations` (psql rows `  1 | <64-hex> | <epoch-millis>`).
+# Security cry-wolf trains dismissal.
+
+# Docker lifecycle verbs whose STDOUT is by contract an ID/name echo.
+# `exec`, `inspect`, `logs`, and foreground `run` are deliberately absent:
+# their output is arbitrary program/config text that can contain a real
+# secret (e.g. `docker exec app printenv KEY` prints the value bare on a
+# line). `run` qualifies only when detached (-d / --detach / common -dit
+# bundles): detached stdout is exactly the new container ID.
+_DOCKER_ID_ECHO_CMD = re.compile(
+    r"\bdocker\s+(?:container\s+)?"
+    r"(?:create\b|start\b|stop\b|restart\b|kill\b|rm\b|wait\b|ps\b"
+    r"|run(?=[^|;&\n]*\s(?:-d|--detach|-dit|-itd|-dt|-td|-di|-id)\b)"
+    r")",
+    re.ASCII,
+)
+# A line that is nothing but one 64-hex token: the docker ID-echo shape, and
+# the single-column `SELECT hash FROM drizzle.__drizzle_migrations` shape.
+_BARE_HEX_LINE = re.compile(r"^\s*[A-Fa-f0-9]{64}\s*$", re.ASCII)
+# psql result-row shapes for drizzle.__drizzle_migrations output:
+#   `  1 | <hex> | 1782448308040`  (SELECT * / SELECT id, hash, created_at;
+#                                   tail also tolerates a cast timestamp)
+#   `hash | <hex>`                 (\x expanded display)
+_DRIZZLE_ROW_LINE = re.compile(
+    r"^\s*(?:\d+\s*\|\s*[A-Fa-f0-9]{64}\s*(?:\|\s*[\d\s:.T+-]*)?"
+    r"|hash\s*\|\s*[A-Fa-f0-9]{64})\s*$",
+    re.ASCII,
+)
+_DRIZZLE_CMD_MARKER = "__drizzle_migrations"
+_HEX_PATTERN_NAME = "hex-256bit-secret"
+
+
+def filter_tool_output_false_positives(
+    hits: list[tuple[str, int]], text: str, command: str
+) -> tuple[list[tuple[str, int]], list[tuple[str, int, str]]]:
+    """Alert-layer-only reclassification of hex-256bit-secret hits.
+
+    Given `scan(text)` results plus the Bash COMMAND that produced `text`,
+    suppress individual hex-256bit matches that are provably content-addressed
+    IDs in this command context:
+
+    - "docker-cli-id-echo": the command is a docker lifecycle invocation whose
+      stdout is by contract an ID echo, AND the match is a line consisting of
+      exactly one bare 64-hex token.
+    - "drizzle-migration-hash": the command queries __drizzle_migrations, AND
+      the match sits on a psql result-row line (or a bare single-column line).
+
+    Returns (remaining_hits, suppressed) where suppressed entries are
+    (pattern_name, suppressed_count, reason). Patterns other than
+    hex-256bit-secret always pass through untouched. A hex match whose line
+    does not match the expected shape keeps alerting (fail toward detection).
+    """
+    hex_entry = next((h for h in hits if h[0] == _HEX_PATTERN_NAME), None)
+    if hex_entry is None or not command:
+        return hits, []
+    docker_ctx = bool(_DOCKER_ID_ECHO_CMD.search(command))
+    drizzle_ctx = _DRIZZLE_CMD_MARKER in command
+    if not (docker_ctx or drizzle_ctx):
+        return hits, []
+
+    hex_regex = next(p.regex for p in PATTERNS if p.name == _HEX_PATTERN_NAME)
+    suppressed_counts: dict[str, int] = {}
+    remaining = 0
+    for m in hex_regex.finditer(text):
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        line_end = text.find("\n", m.end())
+        line = text[line_start: line_end if line_end != -1 else len(text)]
+        if docker_ctx and _BARE_HEX_LINE.match(line):
+            reason = "docker-cli-id-echo"
+        elif drizzle_ctx and (
+            _DRIZZLE_ROW_LINE.match(line) or _BARE_HEX_LINE.match(line)
+        ):
+            reason = "drizzle-migration-hash"
+        else:
+            remaining += 1
+            continue
+        suppressed_counts[reason] = suppressed_counts.get(reason, 0) + 1
+
+    if not suppressed_counts:
+        return hits, []
+    out_hits = [h for h in hits if h[0] != _HEX_PATTERN_NAME]
+    if remaining:
+        out_hits.append((_HEX_PATTERN_NAME, remaining))
+    suppressed = [
+        (_HEX_PATTERN_NAME, count, reason)
+        for reason, count in sorted(suppressed_counts.items())
+    ]
+    return out_hits, suppressed
+
+
 # Self-test (run `python3 -m hooks._lib.secret_patterns`)
 if __name__ == "__main__":
     SAMPLES = {
@@ -379,3 +485,39 @@ if __name__ == "__main__":
     if failures:
         raise SystemExit(f"\n{failures} FP-exclusion check(s) failed.")
     print("  OK: all FP exclusions behave as expected.")
+
+    # Alert-layer FP filter checks (added 2026-07-14; see
+    # filter_tool_output_false_positives above for the docker-run-detached +
+    # drizzle-migration-hash incident this closes — PostToolUse hook only,
+    # scan()/redact() themselves are untouched).
+    print("\nAlert-layer FP filter checks:")
+    _hx = "1" * 64
+    _drizzle_cmd = 'psql -c "SELECT id, hash, created_at FROM drizzle.__drizzle_migrations"'
+    AF_CASES = {
+        "docker-run-detached-id-echo": (
+            ([("hex-256bit-secret", 1)], _hx, "docker run -d --name x postgres:16"),
+            ([], [("hex-256bit-secret", 1, "docker-cli-id-echo")]),
+        ),
+        "drizzle-migration-hash-row": (
+            ([("hex-256bit-secret", 1)], "  1 | " + _hx + " | 1782448308040", _drizzle_cmd),
+            ([], [("hex-256bit-secret", 1, "drizzle-migration-hash")]),
+        ),
+        "export-secret-not-suppressed-in-drizzle-context": (
+            ([("hex-256bit-secret", 1)], "export SECRET=" + _hx, _drizzle_cmd),
+            ([("hex-256bit-secret", 1)], []),
+        ),
+        "no-context-still-fires": (
+            ([("hex-256bit-secret", 1)], _hx, "openssl rand -hex 32"),
+            ([("hex-256bit-secret", 1)], []),
+        ),
+    }
+    af_failures = 0
+    for label, (args, want) in AF_CASES.items():
+        got = filter_tool_output_false_positives(*args)
+        ok = got == want
+        print(f"  [{'OK' if ok else 'FAIL'}] {label}: got={got} want={want}")
+        if not ok:
+            af_failures += 1
+    if af_failures:
+        raise SystemExit(f"\n{af_failures} alert-layer FP filter check(s) failed.")
+    print("  OK: alert-layer FP filter behaves as expected.")

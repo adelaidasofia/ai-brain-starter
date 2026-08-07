@@ -1,6 +1,6 @@
 ---
 name: note-todos
-description: Extract action items from any non-meeting note (class notes, book notes, podcast notes, transcripts, panel writeups) and route them to the scope-correct to-do file with wikilinking and per-task owner tags. Generalization of meeting-todos. Trigger with /note-todos [filename-or-pattern]. For meetings, prefer /meeting-todos which carries the full meeting workflow cascade.
+description: 'Use when the user says /note-todos, asks to pull, extract, or file action items or to-dos from a non-meeting note (class notes, book notes, podcast notes, transcripts, panel writeups, strategy docs, action plans), or mentions tasks buried in a note that never reached a to-do list: unfiled checkboxes, orphan action items, ''what tasks are hiding in my notes''. For meeting notes prefer meeting-todos, which carries the full meeting workflow cascade.'
 argument-hint: "[filename, path, or keyword — omit to scan recent unprocessed notes]"
 ---
 

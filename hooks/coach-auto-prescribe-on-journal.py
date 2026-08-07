@@ -351,7 +351,9 @@ def main() -> int:
             if vroot:
                 try:
                     proc = subprocess.run(
-                        ["/usr/bin/python3", str(script),
+                        # sys.executable, not /usr/bin/python3: that absolute
+                        # path exists only on macOS/Linux.
+                        [sys.executable or "python3", str(script),
                          "--start", yesterday.isoformat(), "--end", yesterday.isoformat(),
                          "--vault-root", vroot, "--llm-model", "python"],
                         capture_output=True, text=True, timeout=30, check=False,

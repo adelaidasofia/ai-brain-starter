@@ -1,7 +1,7 @@
 ---
 type: skill
 name: resolver-query
-description: Read Meta/RESOLVER.md, parse rules and statuses, and answer a natural-language question by surfacing the matching rule(s). Trigger /resolver-query <natural-language-question>. Use when an operator wants to look up which rule applies to a query without reading the full RESOLVER.md by hand. Do NOT use for writing rules (that is synth-pr-to-sop or synth-thread-to-sop) or for rebuilding RESOLVER.md (that is resolver-build.py).
+description: 'Use when an operator asks which rule or policy governs a question — pricing exceptions, deploys, refunds, hiring — or wants to look up the matching rule in Meta/RESOLVER.md without reading the whole index by hand. Triggers: /resolver-query <question>, "which rule applies", "what''s our policy on X", "does a rule cover this". Not for writing or editing rules (read-only) and not for rebuilding RESOLVER.md (use resolver-build.py).'
 argument-hint: "<natural-language-question> [--vault-root PATH] [--limit N]"
 tool_access:
   - Read
@@ -91,7 +91,7 @@ Output is a JSON document on stdout with shape:
 
 ## Step 2: Read the matched rule
 
-If the match kind is `decisive`, the host session opens the rule's source file (`source_path`). If `ranked`, the host session presents the top candidates to the operator and lets them pick. If `none`, the host session tells the operator no rule applies and offers to draft one (which would route to `synth-thread-to-sop` or `synth-pr-to-sop`).
+If the match kind is `decisive`, the host session opens the rule's source file (`source_path`). If `ranked`, the host session presents the top candidates to the operator and lets them pick. If `none`, the host session tells the operator no rule applies and offers to draft one manually.
 
 ## Rules
 
@@ -103,7 +103,6 @@ If the match kind is `decisive`, the host session opens the rule's source file (
 ## Boundary
 
 - Adjacent skills:
-  - `/synth-pr-to-sop` and `/synth-thread-to-sop` write new rules.
   - `scripts/resolver-build.py` rebuilds `RESOLVER.md`.
   - `scripts/resolver-conflict-report.py` surfaces conflicts in JSON.
   - `scripts/resolver-branch-merge-prompt.py` drafts merge prompts.

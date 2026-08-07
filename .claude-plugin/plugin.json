@@ -3,10 +3,10 @@
   "version": "1.5.1",
   "description": "Set up or upgrade an AI-powered Obsidian vault with journaling, knowledge graphs, pattern recognition, and meeting workflows. Includes skills for daily journaling, weekly insights, graphify knowledge graphs, humanizer, and more.",
   "author": {
-    "name": "Adelaida Diaz-Roa",
-    "url": "https://github.com/adelaidasofia"
+    "name": "Mycelium AI",
+    "url": "https://github.com/mycelium-hq"
   },
-  "repository": "https://github.com/adelaidasofia/ai-brain-starter",
+  "repository": "https://github.com/mycelium-hq/ai-brain-starter",
   "license": "MIT",
   "keywords": [
     "obsidian",

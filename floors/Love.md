@@ -25,7 +25,7 @@ These are movements between floors, not floors themselves. The journal tags the 
 
 **[[Desire]] (15)** is the shadow of **Love (29)**.
 
-> 'I want from you' vs 'I give to you'
+> "I want from you" vs. "I give to you"
 
 Most "Love" people claim is actually [[Desire]]. The difference is whether you are still bracing.
 

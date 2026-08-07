@@ -25,6 +25,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# HOME alone does not sandbox ~ on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$REPO_ROOT/tests/integration/lib/sandbox_home.sh"
 HOOK="$REPO_ROOT/hooks/detect-closing-signal.py"
 if [ ! -f "$HOOK" ]; then
   echo "ERROR: $HOOK not found" >&2
@@ -48,7 +51,7 @@ run_hook() {
   local cwd="$1" sid="$2" stdin_json
   stdin_json=$(python3 -c "import json,sys; print(json.dumps({'prompt':sys.argv[1],'session_id':sys.argv[2],'cwd':sys.argv[3]}))" \
     "let's close this session" "$sid" "$cwd")
-  printf '%s' "$stdin_json" | env -u VAULT_ROOT HOME="$TMP" python3 "$HOOK" >/dev/null 2>&1 || true
+  printf '%s' "$stdin_json" | run_sandboxed "$TMP" env -u VAULT_ROOT python3 "$HOOK" >/dev/null 2>&1 || true
   echo "$TMP/.claude/.closing-signal-${sid}.json"
 }
 

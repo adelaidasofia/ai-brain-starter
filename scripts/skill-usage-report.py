@@ -10,6 +10,7 @@ Usage:
   python3 skill-usage-report.py --log-file /path/to/log.jsonl --report-file /path/to/report.md
 """
 
+import sys
 import argparse
 import json
 import os
@@ -253,4 +254,10 @@ def main():
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     main()

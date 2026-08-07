@@ -35,8 +35,21 @@
 # Options:
 #   --dry-run            print intended actions, change nothing
 #   --no-symlink         do NOT leave a symlink at the old path (default leaves one)
-#   --force              skip the soft gates (Obsidian-running, active-session).
-#                        target-exists and source-already-a-symlink stay FATAL.
+#   --force              skip the soft gates (Obsidian-running, active-session,
+#                        backup-first). target-exists and source-already-a-symlink
+#                        stay FATAL.
+#   --ensure-backup      if there is no surviving off-machine backup, STAND ONE UP
+#                        (vault-backup.sh setup + verify) BEFORE moving, then proceed
+#                        — so a non-technical user reaches a backed-up, relocated
+#                        vault in ONE step, without knowing --force or running
+#                        vault-backup.sh by hand. Fail-closed: if the stand-up does
+#                        not verify, the move is REFUSED (vault untouched). This is
+#                        what the SessionStart cloud-sync offer runs.
+#   --backup-dest <dir>  where --ensure-backup writes the backup archive (default:
+#                        <parent-of-vault>/ai-brain-backups — one file that survives
+#                        the move; for a cloud vault that sibling is off-machine).
+#   --backup-schedule <daily|none>
+#                        schedule the stood-up backup installs (default: daily).
 #   --config-dir <dir>   Claude Code config dir (default: $CLAUDE_CONFIG_DIR or ~/.claude)
 #   -h, --help           this help
 #
@@ -47,6 +60,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OLD="" ; NEW="" ; DRYRUN=0 ; FORCE=0 ; NOSYMLINK=0 ; MIGRATE_ONLY=0 ; SWEEP=0 ; DROP=0
+ENSURE_BACKUP=0 ; BACKUP_DEST="" ; BACKUP_SCHEDULE="daily"
 SWEEP_EXTRA=()
 CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 
@@ -55,6 +69,9 @@ while [ $# -gt 0 ]; do
     --dry-run|--dryrun) DRYRUN=1; shift;;
     --no-symlink) NOSYMLINK=1; shift;;
     --force) FORCE=1; shift;;
+    --ensure-backup) ENSURE_BACKUP=1; shift;;
+    --backup-dest) BACKUP_DEST="${2:?--backup-dest needs a path}"; shift 2;;
+    --backup-schedule) BACKUP_SCHEDULE="${2:?--backup-schedule needs daily|none}"; shift 2;;
     --config-dir) CONFIG_DIR="${2:?--config-dir needs a path}"; shift 2;;
     --migrate-claude-state) MIGRATE_ONLY=1; shift;;
     --sweep) SWEEP=1; shift;;
@@ -69,6 +86,24 @@ done
 say()  { printf '%s\n' "$*"; }
 warn() { printf 'WARN  %s\n' "$*" >&2; }
 die()  { printf 'relocate-vault: REFUSE — %s\n' "$1" >&2; exit "${2:-1}"; }
+
+# Obsidian-running probe, with a test seam so the negative-control suite can drive
+# BOTH outcomes deterministically on any host. RELOCATE_VAULT_OBSIDIAN:
+#   unset / auto -> real `pgrep -x Obsidian` probe — the production default;
+#                   behavior is IDENTICAL to before this seam existed.
+#   running      -> report Obsidian as running    (drives the refusal assertion).
+#   absent       -> report Obsidian as not running (lets the tests exercise the
+#                   OTHER soft gates on a dev box that has Obsidian open — the
+#                   normal state when developing an Obsidian-vault tool).
+# Mirrors the VAULT_BACKUP_SKIP_TIMEMACHINE / VAULT_BACKUP_CMD test seams already
+# used below: the default path runs the real check, so real safety is unchanged.
+obsidian_running() {
+  case "${RELOCATE_VAULT_OBSIDIAN:-auto}" in
+    running) return 0 ;;
+    absent)  return 1 ;;
+    *) command -v pgrep >/dev/null 2>&1 && pgrep -x Obsidian >/dev/null 2>&1 ;;
+  esac
+}
 
 # abspath/pathkey via python3 so the key transform matches Claude Code's JS
 # `cwd.replace(/[^a-zA-Z0-9]/g, "-")` for spaces, dots, slashes, and the ⚙️
@@ -203,6 +238,53 @@ PY
   fi
 }
 
+# ---- stand up a verified off-machine backup, THEN let the move proceed (MYC-2404) ---
+# The MYC-2382 gate REFUSES a backup-less move but only PRINTS the fix — a non-
+# technical user on a melting cloud-sync setup doesn't know --force and won't run
+# vault-backup.sh by hand, so they stay stuck on the very setup the offer meant to
+# rescue them from. --ensure-backup FULFILLS the SessionStart offer's "I'll stand
+# up a verified backup first" promise IN the mechanism: run vault-backup.sh setup
+# (snapshots immediately) then verify (proves it restores). FAIL-CLOSED — if either
+# step fails, die BEFORE the move so the vault is never touched. The caller RE-CHECKS
+# with check-vault-backup.py afterward, so a tool that lies about success can't slip
+# an unbacked move through. VAULT_BACKUP_CMD overrides the tool (test injection).
+ensure_backup_standup() {  # uses $OLD_ABS $BACKUP_DEST $BACKUP_SCHEDULE $DRYRUN $SCRIPT_DIR
+  local backup_cmd dest
+  backup_cmd="${VAULT_BACKUP_CMD:-$SCRIPT_DIR/vault-backup.sh}"
+  dest="${BACKUP_DEST:-$(dirname "$OLD_ABS")/ai-brain-backups}"
+  if [ ! -f "$backup_cmd" ]; then
+    die "--ensure-backup cannot stand up a backup — the vault-backup tool is missing ($backup_cmd). Restore it, or re-run with --force to move without a backup."
+  fi
+  if [ "$DRYRUN" = 1 ]; then
+    say "DRY  would: stand up + verify an off-machine backup BEFORE the move —"
+    say "DRY    bash \"$backup_cmd\" setup --vault \"$OLD_ABS\" --dest \"$dest\" --schedule \"$BACKUP_SCHEDULE\""
+    say "DRY    bash \"$backup_cmd\" verify --vault \"$OLD_ABS\""
+    return 0
+  fi
+  say "relocate-vault: --ensure-backup — standing up a verified off-machine backup BEFORE the move"
+  say "  · backup destination: $dest"
+  if ! bash "$backup_cmd" setup --vault "$OLD_ABS" --dest "$dest" --schedule "$BACKUP_SCHEDULE"; then
+    die "backup stand-up FAILED at 'setup' — NOT moving the vault (fail-closed; your vault is untouched).
+  Check the backup destination (disk reachable? space? permissions?), then re-run; or re-run with --force to move without a backup." 1
+  fi
+  if ! bash "$backup_cmd" verify --vault "$OLD_ABS"; then
+    die "backup stand-up FAILED at 'verify' — the snapshot did not restore, so it is not a trustworthy backup. NOT moving the vault (fail-closed; your vault is untouched).
+  Re-run once the backup verifies, or re-run with --force to move without a verified backup." 1
+  fi
+  # The auto stand-up produces an UNENCRYPTED archive (setup ran without --encrypt,
+  # which needs an interactive passphrase and would break the one-step flow). Say so
+  # LOUDLY: this path only runs when there is no Time Machine / pushed git-remote, so
+  # the archive is the only backup, and its default home is often a synced cloud
+  # folder — and a vault may hold private notes. Do not silently drop a plaintext
+  # copy of someone's brain into their cloud.
+  warn "relocate-vault: the stand-up backup is NOT encrypted — it may contain private notes,"
+  warn "  and now lives in: $dest (often a synced cloud folder)."
+  warn "  To encrypt it, re-run the backup with --encrypt and RECORD the passphrase OFF this"
+  warn "  machine (a password manager) — a keychain-only passphrase dies with the disk:"
+  warn "    bash \"$backup_cmd\" setup --vault \"$OLD_ABS\" --dest \"$dest\" --encrypt"
+  say "relocate-vault: backup stood up + verified — proceeding with the move."
+}
+
 # =============================================================================
 # state-only mode: the vault is already at the new path; just fix Claude history
 # =============================================================================
@@ -283,7 +365,7 @@ if [ -e "$NEW_ABS" ]; then die "target '$NEW_ABS' already exists (will not overw
 # Soft gates — skippable with --force.
 BACKUP_TOKEN=""
 if [ "$FORCE" != 1 ]; then
-  if command -v pgrep >/dev/null 2>&1 && pgrep -x Obsidian >/dev/null 2>&1; then
+  if obsidian_running; then
     die "Obsidian is running — quit it first (moving an open vault is unsafe), or pass --force"
   fi
   if [ -d "$OLD_ABS/.claude/worktrees" ]; then
@@ -306,21 +388,40 @@ if [ "$FORCE" != 1 ]; then
   # that survive — a vault-backup archive, Time Machine, a pushed git remote —
   # count here.
   backup_guard="$SCRIPT_DIR/check-vault-backup.py"
-  if [ -f "$backup_guard" ]; then
-    set +e
-    BACKUP_TOKEN="$(python3 "$backup_guard" --porcelain --ignore-cloud "$OLD_ABS" 2>/dev/null)"
-    brc=$?
-    set -e
-    if [ "$brc" != 0 ]; then
+  if [ ! -f "$backup_guard" ]; then
+    die "cannot verify a backup — the guard is missing ($backup_guard). Restore it, or re-run with --force to move without the check."
+  fi
+  set +e
+  BACKUP_TOKEN="$(python3 "$backup_guard" --porcelain --ignore-cloud "$OLD_ABS" 2>/dev/null)"
+  brc=$?
+  set -e
+  if [ "$brc" != 0 ]; then
+    if [ "$ENSURE_BACKUP" = 1 ]; then
+      # No surviving backup, but the caller asked us to STAND ONE UP. Do it, then
+      # RE-CHECK through the same single source of truth — never trust the stand-up's
+      # own exit code alone. A stand-up that "succeeds" but lands no archive must
+      # still refuse the move (fail-closed; no silent no-op). Dry-run only previews.
+      ensure_backup_standup
+      if [ "$DRYRUN" != 1 ]; then
+        set +e
+        BACKUP_TOKEN="$(python3 "$backup_guard" --porcelain --ignore-cloud "$OLD_ABS" 2>/dev/null)"
+        brc=$?
+        set -e
+        if [ "$brc" != 0 ]; then
+          die "backup stand-up reported success but no surviving backup is detectable (${BACKUP_TOKEN:-none}) — NOT moving the vault (fail-closed; your vault is untouched).
+  Check the backup destination, then re-run; or re-run with --force to move without the check." 1
+        fi
+      fi
+    else
       die "no verified off-machine backup of '$OLD_ABS' that survives this move (${BACKUP_TOKEN:-backup check failed}).
   Moving a vault with no backup is the one move you cannot undo if the disk dies mid-flight.
   A cloud-sync copy does NOT count here — this move takes the vault OUT of the sync folder, so that copy goes away too.
-  Stand up + verify a backup first (one command), then re-run:
+  Hands-off fix — stand up a verified backup AND move, in ONE step:
+    bash \"$0\" --ensure-backup \"$OLD_ABS\" \"$NEW_ABS\"
+  Or stand it up yourself first, then re-run this move:
     bash \"$SCRIPT_DIR/vault-backup.sh\" setup && bash \"$SCRIPT_DIR/vault-backup.sh\" verify
   Or move anyway, accepting the risk: re-run with --force."
     fi
-  else
-    die "cannot verify a backup — the guard is missing ($backup_guard). Restore it, or re-run with --force to move without the check."
   fi
 fi
 
@@ -329,8 +430,12 @@ if [ "$FORCE" = 1 ]; then
   warn "relocate-vault: --force — skipping the backup check. A vault is often your one"
   warn "  irreplaceable asset; stand up + verify an off-machine backup as soon as the move lands:"
   warn "    bash \"$SCRIPT_DIR/vault-backup.sh\" setup && bash \"$SCRIPT_DIR/vault-backup.sh\" verify"
-else
+  warn "  (or drop --force and add --ensure-backup to stand one up automatically BEFORE the move.)"
+elif [ "$brc" = 0 ]; then
   say "relocate-vault: verified off-machine backup present (${BACKUP_TOKEN}) — proceeding."
+else
+  # Reachable only under --dry-run --ensure-backup: no real backup yet, just previewing.
+  say "relocate-vault: (dry-run) a verified backup would be stood up before the move."
 fi
 say ""
 

@@ -12,6 +12,9 @@
 #      cp pre-commit-template.sh ~/.git-hooks/pre-commit
 #      chmod +x ~/.git-hooks/pre-commit
 #      git config --global core.hooksPath ~/.git-hooks
+#    ...and ship the strand guard alongside it (chained by this hook):
+#      cp guard-session-artifacts-on-default-branch.sh ~/.git-hooks/
+#      chmod +x ~/.git-hooks/guard-session-artifacts-on-default-branch.sh
 #
 # 2. Create your personal token list (the strings the hook should refuse to publish):
 #      cp scrub-personal-tokens.txt.example ~/.scrub-personal-tokens.txt
@@ -32,6 +35,15 @@
 #   SCRUB_PUBLIC=1 git commit -m "..."     # force public (run even if URL doesn't match)
 
 set -euo pipefail
+
+# --- Off-default-branch session-artifact strand guard (runs for every repo) ---
+# Refuses committing session-close artifacts while the checkout is parked off the
+# default branch, so they can't silently strand on a topic branch. Independent of
+# the scrub gate below; shipped alongside this hook (copied into ~/.git-hooks/).
+_HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ -x "${_HOOK_DIR}/guard-session-artifacts-on-default-branch.sh" ]]; then
+  "${_HOOK_DIR}/guard-session-artifacts-on-default-branch.sh" || exit 1
+fi
 
 PERSONAL_TOKENS_FILE="${HOME}/.scrub-personal-tokens.txt"
 PUBLIC_REPOS_FILE="${HOME}/.scrub-public-repos.txt"

@@ -49,11 +49,21 @@ re-homes that Claude state (copying it, so the old location stays a backup):
 
 ```bash
 # preview first (changes nothing)
-bash scripts/relocate-vault.sh ~/Desktop/MyVault ~/MyVault --dry-run
-# do it (quit Obsidian + close Claude sessions + have a verified off-machine backup first;
-# it REFUSES to move a backup-less vault. --force overrides the soft gates.)
+bash scripts/relocate-vault.sh --ensure-backup ~/Desktop/MyVault ~/MyVault --dry-run
+# do it — quit Obsidian + close Claude sessions first. --ensure-backup stands up AND
+# verifies an off-machine backup, THEN moves, in one step. Fail-closed: if the backup
+# can't be verified it refuses and leaves the vault untouched.
+bash scripts/relocate-vault.sh --ensure-backup ~/Desktop/MyVault ~/MyVault
+# already have a verified backup? the plain form moves once it confirms one exists
+# (it still REFUSES a backup-less vault unless you pass --force):
 bash scripts/relocate-vault.sh ~/Desktop/MyVault ~/MyVault
 ```
+
+`--ensure-backup` writes the archive to `<parent-of-your-vault>/ai-brain-backups` by
+default — for a cloud vault that sibling folder is off-machine, and a single daily
+archive syncs without the storm the churning `.git` tree causes. Send it to an
+external disk instead with `--backup-dest /Volumes/YourDrive`. This is exactly what
+the SessionStart cloud-sync offer runs for you, so you usually never type it by hand.
 
 **On Windows (PowerShell)** use the `.ps1` parity script — same behavior, same
 Claude-history migration, but it leaves a **junction** at the old path (needs no

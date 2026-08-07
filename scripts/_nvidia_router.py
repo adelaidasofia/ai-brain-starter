@@ -24,6 +24,7 @@ Raises NvidiaUnavailable if the key is missing or the endpoint errors.
 
 from __future__ import annotations
 
+import sys
 import json
 import os
 import re
@@ -193,6 +194,12 @@ def call_nvidia_json(
 
 if __name__ == "__main__":
     # Quick smoke test
+    # Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     import sys
     try:
         result = call_nvidia_text(

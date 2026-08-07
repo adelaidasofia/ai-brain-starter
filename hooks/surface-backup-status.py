@@ -52,9 +52,22 @@ CONF_PATH = Path(os.environ.get(
 DEFAULT_STALE_DAYS = 3.0
 VERIFY_STALE_DAYS = 30.0
 
-SETUP_CMD = "bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh setup"
-RUN_CMD = "bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh run"
-VERIFY_CMD = "bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh verify"
+# Platform-appropriate commands — on Windows the bash form is a dead end, so
+# point at vault-backup.ps1 (same setup/run/verify subcommands) by absolute
+# path (no ~ / $HOME / %USERPROFILE%: none expands in every Windows shell).
+if os.name == "nt":
+    _PS1 = Path.home() / ".claude" / "skills" / "ai-brain-starter" / "scripts" / "vault-backup.ps1"
+    _BACKUP_PREFIX = f'powershell -ExecutionPolicy Bypass -File "{_PS1}"'
+else:
+    _BACKUP_PREFIX = "bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh"
+SETUP_CMD = f"{_BACKUP_PREFIX} setup"
+RUN_CMD = f"{_BACKUP_PREFIX} run"
+VERIFY_CMD = f"{_BACKUP_PREFIX} verify"
+# The stale-snapshot message used to tell the user to "check the daily schedule
+# is still installed" — handing the human the exact check the product can now
+# make AND repair itself. A dead schedule is the single most likely reason
+# snapshots went stale, so name the command that fixes it. (MYC-3528)
+SCHEDULE_CMD = f"{_BACKUP_PREFIX} schedule"
 
 
 def _emit(ctx: str | None) -> int:
@@ -81,7 +94,13 @@ def _porcelain(repo: Path) -> str | None:
     try:
         out = subprocess.run(
             [sys.executable, str(DETECTOR), "--porcelain", str(repo)],
-            capture_output=True, text=True, timeout=30,
+            # encoding pinned, NOT text=True: the detector echoes the vault path,
+            # and a vault under a gear-emoji Meta folder decoded with a non-UTF-8
+            # locale raises UnicodeDecodeError here — the #313 cp1252 class, on
+            # the input side. This file was a pinned legacy row in
+            # scripts/utf8-subprocess-baseline.txt; the call is fixed rather than
+            # re-pinned, per that baseline's own instruction.
+            capture_output=True, encoding="utf-8", errors="replace", timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -91,7 +110,13 @@ def _porcelain(repo: Path) -> str | None:
 def _verify_age_days(repo: Path) -> float | None:
     """Days since the last verified restore for this vault, or None if never."""
     try:
-        conf = json.loads(CONF_PATH.read_text())
+        # utf-8-sig: tolerate a UTF-8 BOM. vault-backup.ps1 writes this config
+        # via Windows PowerShell 5.1 Set-Content -Encoding UTF8, which prepends
+        # one; plain read_text() raises "Unexpected UTF-8 BOM" (a ValueError),
+        # zeroing verify-age so a verified backup reads as never-verified. The
+        # sibling reader (check-vault-backup.py _read_conf) was fixed in #301;
+        # this direct reader is the same file's second consumer.
+        conf = json.loads(CONF_PATH.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     entry = (conf.get("vaults") or {}).get(str(repo))
@@ -160,8 +185,9 @@ def main() -> int:
         if age > stale_days:
             return _emit(
                 f"[backup] Last vault snapshot was {age:.1f} days ago "
-                f"(> {stale_days:.0f}d). Run `{RUN_CMD}` (or check the daily "
-                f"schedule is still installed)."
+                f"(> {stale_days:.0f}d). Take one now: `{RUN_CMD}`. The usual "
+                f"cause is the daily schedule no longer being loaded by the OS. "
+                f"This checks it and repairs it:\n      {SCHEDULE_CMD}"
             )
         v_age = _verify_age_days(repo)
         if v_age is None:
@@ -183,6 +209,17 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # UTF-8 console guard (the ai-brain-starter#313 cp1252 crash class). This hook
+    # prints emoji in its loudest message, so on a Windows console in a cp1252
+    # codepage the write itself raises and the backup warning is LOST — the one
+    # message that must never be the thing that goes quiet. This file previously
+    # sat in scripts/utf8-stdout-baseline.txt as a legacy exemption; the row is
+    # removed rather than re-pinned, per that baseline's own instruction.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     try:
         sys.exit(main())
     except Exception:

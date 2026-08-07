@@ -176,7 +176,7 @@ None are required. Pick the ones that match how you want to work.
 Phase 0 installed everything. This phase verifies nothing was skipped or failed.
 
 ### Verify all skills are present
-Run a quick check on every skill folder. All installs live in bootstrap: if anything below is missing, re-run `bash ~/.claude/skills/ai-brain-starter/bootstrap.sh` (Mac/Linux) or `pwsh ~/.claude/skills/ai-brain-starter/bootstrap.ps1` (Windows).
+Run a quick check on every skill folder. All installs live in bootstrap: if anything below is missing, re-run `bash ~/.claude/skills/ai-brain-starter/bootstrap.sh` (Mac/Linux) or `powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\skills\ai-brain-starter\bootstrap.ps1"` (Windows).
 - `ls ~/.claude/skills/graphify/SKILL.md`
 - `ls ~/.claude/skills/meeting-todos/SKILL.md`
 - `ls ~/.claude/skills/patterns/SKILL.md`

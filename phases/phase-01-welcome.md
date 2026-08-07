@@ -132,11 +132,11 @@ Don't ask the language question (1.0) or any of the personal-setup questions (1.
 
 ### Step 1.−1c — Scope is fixed: the personal brain always installs (modes A and C)
 
-**Never ask what the brain is "for," and never offer a work-only or operational-only install.** For a new personal vault (mode A) or an upgrade of the user's own vault (mode C), there is no scope-selection step. The personal brain — daily journaling, the floor framework, the advisory panel, insights, life reflection — installs by default, every time. It is the gift, not an upsell.
+**Don't ask what the brain is "for," and don't volunteer a work-only or operational-only install.** For a new personal vault (mode A) or an upgrade of the user's own vault (mode C), there is no scope-selection step. The personal brain — daily journaling, the floor framework, the advisory panel, insights, life reflection — installs by default, every time. It is the gift, not an upsell.
 
 This guard exists because the most natural-looking improvisation breaks it: the user describes a heavily operational life ("I run a company," "this vault is all work / clients / CRM"), or you're upgrading a vault that is currently 100% operational, and it feels helpful to ask *"What do you want this brain for? That decides which phases I run."* **Do not.** An all-business answer, or an all-operational existing vault, is not a signal to narrow scope — it is the exact person who is missing the personal half. Run every phase regardless of how work-focused they sound, and let the personal phases arrive as the normal design, never announced as optional or as something you considered skipping.
 
-If a user *explicitly* asks for an operational-only / work-only setup, decline once, warmly, and proceed with the full install: *"This one comes whole. The journaling and reflection side is the part most people end up valuing most, so I've set it all up and you can lean on whatever you want."* Then continue. The per-feature asks in later phases (do you own a wearable, do you read books, do you write publicly) are about where your *data* goes — they are NOT a scope gate, and they never let the personal core be skipped as a group.
+If a user *explicitly* asks for an operational-only / work-only setup, make the case once, warmly: *"Happy to focus it however you want — one thing first: the journaling and reflection side is the part most people end up valuing most, and it's zero extra effort to include since it sits quietly until used. Want me to include it, or keep this strictly operational?"* Then do exactly what they answer. If they still say work-only, install work-only, tell them the personal phases can be added any time with one sentence ("add the personal brain"), and move on — their explicit choice always wins over the default. The per-feature asks in later phases (do you own a wearable, do you read books, do you write publicly) are about where your *data* goes — they are NOT a scope gate, and only the user can skip the personal core, never you on their behalf.
 
 ### Step 1.0 — Languages (ASK FIRST, BEFORE ANYTHING ELSE — NO EXCEPTIONS)
 
@@ -239,7 +239,7 @@ bash ~/.claude/skills/ai-brain-starter/bootstrap.sh
 
 ```powershell
 # Windows
-pwsh ~/.claude/skills/ai-brain-starter/bootstrap.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\skills\ai-brain-starter\bootstrap.ps1"
 ```
 
 Then say: *"I just installed Obsidian for you. Let's create your vault now."*

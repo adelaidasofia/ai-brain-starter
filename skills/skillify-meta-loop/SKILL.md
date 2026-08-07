@@ -1,8 +1,8 @@
 ---
 name: skillify-meta-loop
-description: Convert any recurring bug, support question, client incident, or "I keep doing X manually" pattern into a durable skill via a 10-step checklist. Use when the same problem surfaces 2+ times, when a teammate or client reports an issue that anyone could hit, when a vault rule keeps getting violated despite being codified, or when manual work repeats. Adapted from garrytan/gbrain's skillify loop. Pairs with the permanent-fix principle: every recurring bug earns an automated guard in the same session.
+description: 'Use when a recurring bug, support question, client incident, or manual task surfaces 2+ times, when a codified rule keeps getting violated despite being written down, when a teammate or client hits an issue anyone could hit, or when delivery/setup friction repeats. Triggers: "skillify this", "this keeps happening", "we hit this last week too", "make a skill for X", "automate this", "every client hits this", "I keep doing X manually", "turn this into a skill".'
 source: github.com/garrytan/gbrain
-trigger: "skillify this" / "this keeps happening" / "we hit this last week too" / "make a skill for X" / "automate this" / "every client hits this"
+trigger: '"skillify this" / "this keeps happening" / "we hit this last week too" / "make a skill for X" / "automate this" / "every client hits this"'
 ---
 
 Bug → durable skill in 10 steps. The loop runs same-session, no queueing.

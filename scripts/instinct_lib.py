@@ -30,6 +30,7 @@ Design contracts (load-bearing — do not weaken without a regression test):
 
 from __future__ import annotations
 
+import sys
 import hashlib
 import os
 import re
@@ -415,6 +416,12 @@ def infer_domain(inst: Instinct) -> str:
 
 if __name__ == "__main__":
     # tiny smoke when run directly
+    # Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     import sys
     print("instinct_lib OK; current_project_id:", current_project_id())
     md = resolve_memory_dir(sys.argv[1] if len(sys.argv) > 1 else None)

@@ -10,7 +10,7 @@ aliases: [Vergüenza, "Floor 2", "Piso 2"]
 
 **Floor 2 · Low tier**
 
-'I'm such an idiot,' self-disgust, hiding.
+"I'm such an idiot," self-disgust, hiding.
 
 Part of the low tier: see [[Low Floors]].
 

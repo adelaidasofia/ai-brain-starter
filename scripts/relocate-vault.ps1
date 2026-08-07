@@ -84,11 +84,23 @@ function Say  { param([string]$m) Write-Host $m }
 function Warn { param([string]$m) Write-Host "WARN  $m" -ForegroundColor Yellow }
 function Die  { param([string]$m, [int]$code = 1) Write-Host "relocate-vault: REFUSE - $m" -ForegroundColor Red; exit $code }
 
+# Obsidian-running probe with a test seam (parity with the .sh sibling's
+# obsidian_running). Default is the real Get-Process probe, so production
+# behavior is unchanged. $env:RELOCATE_VAULT_OBSIDIAN: 'running' -> report
+# running, 'absent' -> report not running, unset/anything else -> real probe.
+function Test-ObsidianRunning {
+  switch ("$($env:RELOCATE_VAULT_OBSIDIAN)") {
+    "running" { return $true }
+    "absent"  { return $false }
+    default   { return [bool](Get-Process -Name Obsidian -ErrorAction SilentlyContinue) }
+  }
+}
+
 # ---- python (path-key transform + manifest, for byte-identical semantics) -----
 $script:PyExe = $null
 function Get-PyExe {
   if ($script:PyExe) { return $script:PyExe }
-  foreach ($n in @("python3", "python")) {
+  foreach ($n in @("py", "python", "python3")) {
     $c = Get-Command $n -ErrorAction SilentlyContinue
     if ($c) {
       try {
@@ -339,7 +351,7 @@ if (Test-Path -LiteralPath $NewAbs) { Die "target '$NewAbs' already exists (will
 
 # Soft gates - skippable with -Force.
 if (-not $Force) {
-  if (Get-Process -Name Obsidian -ErrorAction SilentlyContinue) {
+  if (Test-ObsidianRunning) {
     Die "Obsidian is running - quit it first (moving an open vault is unsafe), or pass -Force"
   }
   $wt = Join-Path $OldAbs ".claude/worktrees"

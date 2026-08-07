@@ -67,12 +67,18 @@ must_contain "$PHASE01" \
   "Scope is fixed: the personal brain always installs"
 must_contain "$PHASE01" \
   "phase-01-welcome.md no longer forbids asking what the brain is 'for'" \
-  "Never ask what the brain is"
+  "ask what the brain is"
 
-# 5. The warm decline-and-proceed line for an explicit ops-only request stays.
+# 5. An explicit ops-only request gets ONE warm pitch, then the user's answer
+#    wins. The old "decline once and proceed with the full install" contract
+#    overrode an explicit user choice — fresh model instances (correctly)
+#    refuse to run that, which killed entire installs. Pin the new contract.
 must_contain "$PHASE01" \
-  "phase-01-welcome.md is missing the decline-and-install-anyway line" \
-  "This one comes whole."
+  "phase-01-welcome.md is missing the pitch-once line for ops-only requests" \
+  "make the case once, warmly"
+must_contain "$PHASE01" \
+  "phase-01-welcome.md no longer honors an explicit ops-only choice" \
+  "their explicit choice always wins"
 
 if [ "$FAILED" -gt 0 ]; then
   echo "" >&2

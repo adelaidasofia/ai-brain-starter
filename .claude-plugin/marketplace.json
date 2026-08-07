@@ -2,8 +2,8 @@
   "$schema": "https://code.claude.com/schemas/marketplace.json",
   "name": "ai-brain-starter",
   "owner": {
-    "name": "Adelaida Diaz-Roa",
-    "url": "https://github.com/adelaidasofia"
+    "name": "Mycelium AI",
+    "url": "https://github.com/mycelium-hq"
   },
   "plugins": [
     {

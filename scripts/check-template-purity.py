@@ -26,6 +26,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+    except (AttributeError, ValueError):
+        pass
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "hooks"))
 

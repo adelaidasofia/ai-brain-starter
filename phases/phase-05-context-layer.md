@@ -2,6 +2,18 @@
 
 "Now I'm creating three small notes that let me orient myself in 10 seconds every session."
 
+> **Platform note — read before running any shell command in this phase.** The
+> file and folder operations below are written as Mac/Linux bash (`cp`, `mkdir -p`,
+> `chmod`). **On Windows those error** — `cp`/`chmod` don't exist and `mkdir -p`
+> isn't valid — and the vault silently ends up missing `⚙️ Meta/scripts`,
+> `⚙️ Meta/Sessions`, `⚙️ Meta/Decisions`, and the hook scripts. So on Windows,
+> perform the SAME operations with your native file tools instead: create each
+> folder, and write/copy each file, directly (no bash). The `.sh` scripts are
+> still written to disk — they run under Git Bash/WSL if present — and `chmod +x`
+> is a Mac/Linux-only no-op you skip on Windows. The end state must be identical
+> on every OS: the folders exist and every file is in place. Verify with a
+> directory listing before moving on.
+
 Create these files in the Meta/ folder:
 
 **00 Start Here.md:**
@@ -298,7 +310,7 @@ cat <<EOF
 EOF
 ```
 
-**Why per-worktree writes (the failure mode this design prevents):** if a user runs multiple Claude Code sessions in parallel worktrees, and each session follows the session-end cascade rule to write to the shared `Last Session.md` and `Decision Log.md`, the writes will race. Each session reads the file, constructs a new version with its entry, writes it back. Last write wins. Earlier sessions' entries are silently clobbered. The per-worktree split eliminates the race: unique filenames in `Sessions/` and `Decisions/` prevent contention at the write layer, and the aggregator scripts produce deterministic output from sorted input — so even concurrent aggregator runs can clobber each other without data loss, because they write the same bytes. Reported and fixed at [adelaidasofia/ai-brain-starter#5](https://github.com/adelaidasofia/ai-brain-starter/issues/5).
+**Why per-worktree writes (the failure mode this design prevents):** if a user runs multiple Claude Code sessions in parallel worktrees, and each session follows the session-end cascade rule to write to the shared `Last Session.md` and `Decision Log.md`, the writes will race. Each session reads the file, constructs a new version with its entry, writes it back. Last write wins. Earlier sessions' entries are silently clobbered. The per-worktree split eliminates the race: unique filenames in `Sessions/` and `Decisions/` prevent contention at the write layer, and the aggregator scripts produce deterministic output from sorted input — so even concurrent aggregator runs can clobber each other without data loss, because they write the same bytes. Reported and fixed at [mycelium-hq/ai-brain-starter#5](https://github.com/mycelium-hq/ai-brain-starter/issues/5).
 
 **Companion scripts** (Phase 5 also installs these — see `scripts/aggregate-sessions.py` and `scripts/aggregate-decisions.py` in this repo):
 

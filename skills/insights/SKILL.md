@@ -1,6 +1,6 @@
 ---
 name: insights
-description: Weekly and monthly journal insights -- pattern recognition, floor trends, life coach pushback, therapist observations, and advisory panel thoughts. Use /weekly for the current calendar week, /monthly for the current calendar month. Do NOT use for daily journal entries (use daily-journal), cross-session pattern extraction (use patterns), or operational reviews.
+description: Use when the user types /weekly or /monthly, asks for a weekly or monthly journal review or retrospective, asks 'how was my week' or 'how was my month', or wants trends, anomalies, or patterns across recent journal entries. Also fires when regenerating an insight report for a past week or month. NOT for writing today's entry (use daily-journal), cross-session pattern extraction (use patterns), or operational/team reviews.
 argument-hint: "[week or month -- e.g. 'this week', 'last month', or leave blank for default]"
 ---
 
@@ -24,7 +24,7 @@ Journal entries are in: `[VAULT_PATH]/Journals/`
 **DO NOT grep thousands of files.** Use the journal index instead.
 
 ### Step 0: Load the journal index
-Read `[VAULT_PATH]/Meta/journal-index.json`. Structure: `{"total": N, "last_updated": "YYYY-MM-DD", "entries": [{file, date, floor, floor_level}, ...]}`. Access entries via `idx["entries"]`, then filter by `entry["date"]`.
+Read `[VAULT_PATH]/⚙️ Meta/journal-index.json` (or `[VAULT_PATH]/Meta/journal-index.json` on vaults without an emoji-prefixed Meta — the same folder `build-journal-index.py` writes to). Structure: `{"total": N, "last_updated": "YYYY-MM-DD", "entries": [{file, date, floor, floor_level}, ...]}`. Access entries via `idx["entries"]`, then filter by `entry["date"]`.
 
 If the index doesn't exist or is more than 7 days old, rebuild it first:
 ```bash
@@ -34,7 +34,7 @@ If the index doesn't exist or is more than 7 days old, rebuild it first:
 ### Step 1: Filter entries by date range
 From `idx["entries"]`, filter where `entry["date"]` starts with the target YYYY-MM (monthly) or falls within the target Mon-Sun range (weekly).
 
-**Floor counting:** Some entries tag multiple floors (stored as a list, e.g. `[Courage, Fear, Love]`). When computing floor distribution, EXPAND multi-floor entries: if an entry tags 3 floors, count +1 for each. Do NOT count the list as a single item. Verify by running a Python script against the index rather than hand-counting.
+**Floor counting — primary vs. arc.** Each entry has one primary `floor` (where it landed). Entries that moved also carry `floor_arc`, the ordered path of floors they passed through. Compute BOTH views and name which one a number is: (a) **landed-floor distribution** counts the primary `floor` once per entry; (b) **floors-touched distribution** expands `floor_arc` — count +1 for every floor in the arc, and an entry with no arc contributes just its primary floor. Do NOT collapse an arc to a single item, and treat a legacy list-form `floor: [A, B, C]` the same way (expand it, never count as one). Verify by running a Python script against the index, never hand-counting.
 
 ### Step 2: Read ONLY the matching files
 Read the full content of each matching file. Do NOT read files outside the date range. With the index, you're reading 5-15 files instead of searching the entire vault.
@@ -204,6 +204,21 @@ If `health_lab_panel(today)` returns ANY marker with `status: low` or `status: h
 #### Voice profile
 
 Use the `curious` register: observation + question. Do NOT use `clinical` for this section even though the data is clinical. The reader is reading their own life, not a chart review. The data is the input; the question is the load-bearing artifact.
+
+### 0e. Movement report (transitions, loops, resilience direction, ropes, doors)
+
+**A floor is a point; a period of floors is a vector field.** This section reads the movement frontmatter the daily-journal skill records (`floor_yesterday`, `floor_arc`, `moved_because`, `body_check`, `rope`, `door`, `door_prev`) and reports on motion, not position. If fewer than ~10 entries carry these fields yet, write one line ("movement data is still thin — [X] entries carry it") and report only what's real. Never fabricate transitions from entries that lack the fields.
+
+**Compute (by script against the index/frontmatter, never hand-counted):**
+
+1. **Transition pairs (the elevators)** — the recurring floor→floor movements for THIS user, pooled from two sources: (a) BETWEEN entries — consecutive entries and `floor_yesterday` where present; (b) WITHIN an entry — every adjacent pair in `floor_arc` (an arc `[Fear, Frustration, Hope]` yields Fear→Frustration and Frustration→Hope). Pool both, then surface the top 2-3: "Your Fear goes to Frustration (4 of 5 times), not to Shame. That's your wiring — the generic map doesn't apply to you." These transitions ARE the elevators the framework points at — name the single most common movement for the period ("your most common movement this month was Fear → Frustration").
+2. **Loop detection** — a 2-3 floor cycle appearing 3+ times in the period (or vs. baseline months). Cross-reference each loop with people mentions, topics, and calendar position (same week of month? same season? cycle-phase if health data exists). Name the loop AND its likely mechanism class: protective (guarding a worse floor underneath), structural (same person/context keeps rebuilding it), or physiological (calendar/cycle-coupled). The mechanism matters more than the floors: loops need the mechanism addressed, not the floor's generic "way out."
+3. **Resilience direction (not just speed)** — for each low-floor dip (floor ≤ 18 after a higher entry): where did the next 1-3 entries land? Above the pre-dip baseline, back at it, or at a recurring stuck floor? Fast-back-to-stuck is reactivity, not resilience — the stopwatch can't tell them apart, the direction can. Report the period's bounces and, monthly, the trend: "Your bounces this quarter land on Willingness; in March they landed back on Resignation. That's the single most important line in this report."
+4. **Body-attribution rate** — of the period's low-floor entries, what fraction had 2+ "no" values in `body_check`? "5 of your 7 low-floor days were underslept days. Before working on the psychology, protect the sleep."
+5. **Rope inventory** — aggregate `rope:` values across all time (not just the period). These are the user's proven handholds. Surface as a short list in the report AND append new ropes to the relevant floor notes' Personal Patterns: "What has actually pulled you up: the dogs (6×), walking (4×), calling [person] (2×)."
+6. **Door completion rate** — doors set vs. `door_prev: done`. This is the insight-vs-action gauge: a high floor-naming accuracy with a low door rate means the journal is producing articulate stuckness. Say so directly (coach voice): "You named the floor correctly 12 times and walked through the door 3 times. The map is not the walking."
+
+**Banned shapes:** transition claims from non-consecutive entries presented as consecutive; calling a fast return to a low baseline "resilient"; prescribing a floor's generic way-out for a loop without naming the loop's mechanism; padding this section when the data is thin.
 
 ### 1. The week/month at a glance (DEMOTED — appendix-level)
 - How many entries (and any gaps, gaps often mean good stretches)

@@ -1,10 +1,12 @@
 ---
 name: ingest-github
-description: Pulls recent activity (merged PRs, issues, commits) from a GitHub repository into the vault as queryable markdown. Use when the user says /ingest-github <owner/repo> [--days N], or asks to ingest, capture, sync, or pull a GitHub repo into the vault. Writes one file per repo per day to External Inputs/GitHub/<owner-repo>/<date>.md. Idempotent: re-running on the same day overwrites cleanly. Do NOT use for opening PRs, creating issues, or non-GitHub sources.
+description: Use when the user says /ingest-github <owner/repo> [--days N], or asks to ingest, capture, sync, pull, mirror, or import a GitHub repo's recent activity (merged PRs, issues, commits) into the vault, second brain, or knowledge graph, or wants repo history queryable by graphify or External Inputs refreshed. Not for opening PRs, creating issues, one-off PR diff reads, or non-GitHub sources (Slack, Notion, email have their own ingest-* connectors).
 argument-hint: "<owner/repo> [--days N]"
 ---
 
 # ingest-github: GitHub-to-vault connector
+
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). If a path does not resolve, name the missing file and stop — never guess another location.
 
 Ingests recent GitHub repository activity into the vault as markdown the graphify pipeline can read and the rest of the AI Brain Starter substrate (decision log, session-close cascade, hooks) can act on.
 
@@ -48,7 +50,7 @@ If the MCP is connected but the token lacks repo read scope, the call returns 40
 
 ## Invocation
 
-The skill is a thin orchestrator. The actual normalization runs in Python at `~/.claude/skills/ingest-github/ingest.py` (or the public-repo path). The skill assembles the GitHub MCP tool calls, hands the raw payloads to `ingest.py` as JSON on stdin, and the script writes the file.
+The skill is a thin orchestrator. The actual normalization runs in Python at `{SKILL_DIR}/ingest.py`. The skill assembles the GitHub MCP tool calls, hands the raw payloads to `ingest.py` as JSON on stdin, and the script writes the file.
 
 When invoked:
 

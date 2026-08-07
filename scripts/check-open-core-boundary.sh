@@ -70,7 +70,7 @@ done < <(git ls-files skills/ | awk -F'/' '{print $1"/"$2}' | sort -u | grep -v 
 # OR:        a SKILL.md at its root                        — skills-pack shape
 #
 # Standard non-pack dirs (never need to be in the allowlist):
-STANDARD_DIRS=".agents .claude-plugin .github .git commands docs floors for-teams git-hooks hooks meeting-todos para-equipos phases scripts services skills templates tests themes"
+STANDARD_DIRS=".agents .claude-plugin .github .git commands docs floors for-teams git-hooks hooks meeting-todos para-equipos phases scripts services skills templates tests themes vendor"
 
 while IFS= read -r top_dir; do
   # Skip dot-prefixed dirs

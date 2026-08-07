@@ -10,15 +10,27 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Required status check → must also run on the merge queue's predicted merge
+  # state, or the queue waits on a check that never posts (MYC-3418).
+  merge_group:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  # A superseded push to the same PR cancels the in-flight run instead of
+  # billing it to completion. Scoped to pull_request ONLY: push / schedule runs
+  # are never cancelled (and if a merge queue is ever wired here, cancelling a
+  # queued group would deadlock it). Added by MYC-3180 after ci-cost-audit.py
+  # flagged this workflow as billing every superseded push in full.
+  group: open-core-boundary-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   boundary:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Check open-core boundary (ADR-0001)
         run: bash scripts/check-open-core-boundary.sh

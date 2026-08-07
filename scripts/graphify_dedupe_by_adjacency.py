@@ -46,6 +46,7 @@ test set. Filtered out a known false-positive case (two unrelated concepts
 sharing 5 neighbors at jaccard 1.0) via the label overlap guard.
 """
 
+import sys
 import argparse
 import json
 import shutil
@@ -325,4 +326,10 @@ def main():
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     main()

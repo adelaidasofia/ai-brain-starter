@@ -23,6 +23,22 @@
 
 set -uo pipefail
 
+# --- ai-brain-starter: shim-safe PATH (strip refuse-shims) ----------------
+# Some machines carry a python3/python PATH shim (e.g. trailofbits
+# modern-python) that exit-1s on bare invocation. It sits FIRST on PATH, so the
+# `command -v python3` below would otherwise resolve the shim and every close
+# aggregator would silently no-op. Drop any */hooks/shims dir from PATH so bare
+# python calls here (and, via export, in children) hit a real python.
+if [ "${PATH#*/hooks/shims}" != "$PATH" ]; then
+  _abs_new=""; _abs_oifs=$IFS; IFS=:
+  for _abs_d in $PATH; do
+    case $_abs_d in */hooks/shims|*/hooks/shims/) ;; *) _abs_new=${_abs_new:+$_abs_new:}$_abs_d ;; esac
+  done
+  IFS=$_abs_oifs; PATH=$_abs_new; export PATH
+  unset _abs_new _abs_d _abs_oifs
+fi
+# --------------------------------------------------------------------------
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VAULT="${VAULT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 export VAULT_ROOT="$VAULT"

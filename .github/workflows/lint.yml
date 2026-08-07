@@ -1,35 +1,125 @@
 name: lint
 
-# Two kinds of check live here:
+# TWO jobs, deliberately.
 #
-#   1. Pure-lint jobs (below): bash syntax, shellcheck (shell static analysis),
-#      PowerShell parse, UTF-8 BOM on .ps1, no em dashes in .ps1, JSON validity,
-#      private-context tokens, phase-doc references, and the no-remote-pipe-install
-#      guard.
+#   1. `lint` - every static check, guard and negative control, as sequential
+#      steps in ONE job sharing ONE runner and ONE checkout.
+#   2. `ci` - the unit/type gate (`bash scripts/ci.sh`). Kept SEPARATE on
+#      purpose: it is the substantive test gate and the one most likely to
+#      become a required context, and a required gate folded in as a step
+#      becomes silently deletable. It also pins Python 3.9 (the PEP 604 crash
+#      class), which the 3.12 the phase-doc linter needs cannot share.
 #
-#   2. The unit/type gate: the `ci` job, which runs `bash scripts/ci.sh`. That
-#      script is the SINGLE source of truth for the unit/type gate - it runs
-#      (a) py_compile over every tracked *.py under Python 3.9 (the PEP 604
-#      `X | None` crash class) and (b) the 8 named tests in tests/integration/.
-#      The local pre-push gate (~/.local/bin/ci-test) runs the SAME
-#      `bash scripts/ci.sh`, so CI and the laptop gate cannot drift.
+# Why one job and not fourteen (MYC-3419). GitHub bills per JOB, rounded UP to a
+# whole minute, times the runner multiplier - never per workflow. These checks
+# take about a second each, so fourteen parallel jobs billed fourteen minutes for
+# roughly thirty seconds of work. Measured over 40 real runs before this change:
+# `lint` was 74 billed minutes across 69 jobs (50% of this repo's entire Actions
+# bill), of which 58 minutes were pure one-minute-floor rounding, not compute.
+# That is the exact anti-pattern scripts/ci-cost-audit.py reports, and the
+# utf8-console-guard job had already been folding checks in for this reason;
+# this applies the same rule to the whole file.
 #
-# Runs on every push and PR. No untrusted user input is used in any run: command.
+# Steps are ordered CHEAPEST-FIRST so a fast failure fails fast, and the only
+# step that installs anything (ruff) sits last so a trivial lint break never
+# pays for it. Each step keeps its own `name:`, so a failure still names the
+# exact check in the job log.
+#
+# Adding a check: add a STEP here, not a job. A new job costs a full billed
+# minute before it does any work.
+#
+# Runs on every push and PR. No untrusted user input is used in any run: command
+# - the one repository-controlled value (github.base_ref) is bound to an env var
+# and referenced as "$BASE_REF", never interpolated into the shell.
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  # A required status check MUST also run inside the merge queue (MYC-3418).
+  # The queue exists to validate the PREDICTED merge; a required context with no
+  # `merge_group:` trigger never posts there, so the queue waits forever for a
+  # check that will never arrive. Both jobs in this file are required contexts.
+  # Pairs with the `cancel-in-progress` guard below, which already refuses to
+  # cancel a merge_group run — a cancelled run never reports either.
+  merge_group:
   workflow_dispatch:
 
+concurrency:
+  # A superseded push to the same PR cancels the in-flight run instead of
+  # billing it to completion. Scoped to pull_request ONLY: push / schedule runs
+  # are never cancelled (and if a merge queue is ever wired here, cancelling a
+  # queued group would deadlock it). Added by MYC-3180 after ci-cost-audit.py
+  # flagged this workflow as billing every superseded push in full.
+  group: lint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  shell:
-    name: bash syntax (.sh)
+  lint:
+    name: lint (static checks + guards)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
-      - name: bash -n every .sh
+      # fetch-depth: 0 because the private-context step diffs against the base
+      # branch. ONE full checkout for the whole job replaces fourteen shallow
+      # ones, so this is cheaper than it looks.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # ---- instant checks first (byte / JSON scans, no tooling) -------------
+
+      - name: JSON validity (hooks.json, *.mcp.json)
+        run: |
+          set -e
+          fail=0
+          while IFS= read -r f; do
+            if ! python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" 2>err; then
+              echo "::error file=$f::invalid JSON"
+              cat err | sed "s|^|  |"
+              fail=1
+            fi
+          done < <(find . \( -name 'hooks.json' -o -name '*.mcp.json' \) -not -path './.git/*')
+          exit $fail
+
+      - name: UTF-8 BOM on .ps1 (Windows PS 5.1 fix)
+        run: |
+          set -e
+          fail=0
+          while IFS= read -r f; do
+            head=$(head -c 3 "$f" | od -An -tx1 | tr -d ' \n')
+            if [ "$head" != "efbbbf" ]; then
+              echo "::error file=$f::missing UTF-8 BOM (Windows PowerShell 5.1 will crash on non-ASCII bytes). Fix: prepend the bytes EF BB BF to the file."
+              fail=1
+            fi
+          done < <(find . -name '*.ps1' -not -path './.git/*')
+          exit $fail
+
+      # Em dashes in bash are stylistic. Em dashes in .ps1 are technical: they were the
+      # exact byte that crashed the Windows PowerShell 5.1 parser before the BOM fix.
+      # Even with BOM, keeping .ps1 ASCII-clean is defense-in-depth against the next
+      # time someone saves a file without BOM.
+      - name: no em dashes in .ps1 (Windows PS 5.1 hazard)
+        run: |
+          set -e
+          fail=0
+          while IFS= read -r f; do
+            if grep -n $'\xe2\x80\x94' "$f" >/dev/null 2>&1; then
+              echo "::error file=$f::contains em dash. Replace with ASCII hyphen or comma. Em dashes break Windows PowerShell 5.1 parsing if the BOM is ever lost."
+              grep -n $'\xe2\x80\x94' "$f" | head -5 | sed "s|^|  |"
+              fail=1
+            fi
+          done < <(find . -name '*.ps1' -not -path './.git/*')
+          exit $fail
+
+      # NOTE: ubuntu-latest ships bash 5.x, so this proves MODERN-bash syntax
+      # only. It is structurally blind to constructs that parse on 5.x and fail
+      # on bash 3.2 -- see the `bash32-syntax` job below, which is the half of
+      # this gate that runs on the bash every stock Mac actually has.
+      - name: bash syntax (.sh, modern bash)
         run: |
           set -e
           fail=0
@@ -42,46 +132,184 @@ jobs:
           done < <(find . -name '*.sh' -not -path './.git/*' -not -path './node_modules/*')
           exit $fail
 
-  shellcheck:
-    name: shellcheck (.sh, -S warning)
-    runs-on: ubuntu-latest
-    # `bash -n` (the `shell` job) is syntax-only. shellcheck adds the portability /
-    # quoting / correctness layer over every tracked *.sh: BSD-only flags, unquoted
-    # expansions (SC2086), unset vars, exit codes masked by a pipe. A real GNU-vs-BSD
-    # `stat -c` / `stat -f` mtime bug once passed macOS-local + `bash -n` and only
-    # failed on the ubuntu runner; this job catches that class. scripts/shellcheck.sh
-    # is the SINGLE
-    # source of truth - scripts/ci.sh runs the SAME script locally so the laptop
-    # pre-push gate and CI cannot drift. The severity gate starts at error + warning
-    # (info/style excluded) to match the real ship/hold boundary, not the strictest
-    # possible signal. No untrusted user input is referenced in any run: command.
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
-      - name: ensure shellcheck present
-        run: command -v shellcheck >/dev/null || { sudo apt-get update && sudo apt-get install -y shellcheck; }
-      - name: run the canonical shellcheck gate
-        run: bash scripts/shellcheck.sh
+      # ---- repo guards (stdlib / small scripts) -----------------------------
 
-  meta-resolution:
-    name: no naive Meta glob (resolve via _meta_resolver)
-    runs-on: ubuntu-latest
-    # The vault Meta folder must be resolved through scripts/_meta_resolver.py,
-    # never a sort-order `for c in "$VAULT"/*Meta` glob - plain "Meta" (machine
-    # memory) sorts before the emoji "⚙️ Meta" (human memory), so the naive glob
-    # silently writes human session/traffic data into the machine folder
-    # (ai-brain-starter#176). This guard fails a PR that reintroduces it.
-    # No untrusted user input is referenced in any run: command.
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
-      - name: run the meta-resolution guard
+      # The vault Meta folder must be resolved through scripts/_meta_resolver.py,
+      # never a sort-order `for c in "$VAULT"/*Meta` glob - plain "Meta" (machine
+      # memory) sorts before the emoji Meta (human memory), so the naive glob
+      # silently writes human session/traffic data into the machine folder
+      # (ai-brain-starter#176). This guard fails a PR that reintroduces it.
+      - name: no naive Meta glob (resolve via _meta_resolver)
         run: bash scripts/check-meta-resolution.sh
 
-  powershell:
-    name: PowerShell parse (.ps1)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
-      - name: pwsh ParseFile every .ps1
+      # The twin of the check above, for the OTHER globally-exported handle that
+      # silently redirects vault code. VAULT_ROOT names exactly ONE vault, so a
+      # naive read fails two ways and both are silent: UNSET it defaults to
+      # ~/vault, so a guard is inert on every vault not literally named "vault";
+      # SET it overrides the vault the caller actually meant, so a hook checks
+      # the wrong vault and skips the file it exists for. Shipped that way in
+      # hooks/validate-handoff-frontmatter.py and was inert on every install
+      # (#375/#404) - two unrelated users had already hand-patched it identically.
+      # Self-test first (cheap, and proves the guard still bites), then the tree.
+      - name: naive VAULT_ROOT read negative controls (the guard must still bite)
+        run: python3 scripts/check-vault-root-reads.py --self-test
+
+      - name: no naive VAULT_ROOT reads (resolve via _resolve_vault_root)
+        run: python3 scripts/check-vault-root-reads.py
+
+      # Same SILENT-NO-OP family: hooks.json wires several hooks by their
+      # ~/.claude/hooks/ path behind a `[ -f <path> ] &&` guard. The guard is
+      # correct at runtime (a deleted optional hook should be silent) and lethal
+      # at install time - a hook nobody ever COPIED there looks exactly like one
+      # the user turned off. pre-write-settings-lint.py, lint-claude-settings.py
+      # and check-claude-code-version.sh shipped that way: wired in 11 places on
+      # a real settings.json, on disk 0 times, and reported OK by the installer's
+      # own verification (it only inspects ABS-owned commands, and they were not
+      # owned). This asserts every such reference has exactly one deploy route.
+      - name: every ~/.claude/hooks reference has a deploy route
+        run: python3 scripts/check-home-hook-deploy.py
+
+      # The mirror image of the check above: that one starts from a wired
+      # reference and asks whether anything deploys it; this starts from a
+      # shipped hooks/*.py and asks whether anything WIRES it. A hook wired in
+      # no activation channel is dormant on every install while the docs call it
+      # active - MYC-1017, MYC-1031, and MYC-782 / #371 all shipped that way.
+      # Also asserts every hook we wire is installer-OWNED, without which a
+      # re-install duplicates a hand-wired copy instead of replacing it.
+      - name: hook-activation negative controls (a dormant guard must go RED)
+        run: python3 scripts/check-hook-activation.py --selftest
+
+      - name: every shipped hook is wired, and every wired hook is owned
+        run: python3 scripts/check-hook-activation.py
+
+      # The READ half of the UTF-8 console guard below. That one fails a CLI that
+      # PRINTS non-ASCII without reconfiguring stdout; this fails one that READS a
+      # child's output with text=True and no encoding=, so the decode uses the
+      # console code page. Every child here prints a vault path, every vault path
+      # carries the gear emoji, and its 0x8F byte is unmapped in cp1252 -- so
+      # subprocess.run() raises before the caller sees a byte. Shipped twice:
+      # #313 (write side) and #430 (read side: the installer reported "could NOT
+      # link Claude Code memory into the vault" on machines where it was fine).
+      # Self-test first (cheap, proves the guard still bites), then the tree.
+      - name: subprocess decode negative controls (the guard must still bite)
+        run: python3 scripts/check-utf8-subprocess.py --self-test
+
+      - name: no locale-decoded subprocess output (pin encoding="utf-8")
+        run: python3 scripts/check-utf8-subprocess.py
+
+      # Phase docs distinguish between two kinds of `scripts/foo.sh` references:
+      #
+      #   1. Backticked relative paths like `scripts/foo.sh` -> should exist in the repo.
+      #      Used for "copy this from `scripts/foo.sh` in this repo" instructions.
+      #   2. Vault-write paths like `[VAULT_PATH]/<gear> Meta/scripts/foo.sh` -> a file
+      #      Claude WRITES to the user's vault, not something that exists in the repo.
+      #
+      # We only enforce category 1: backticked, repo-relative, no [VAULT_PATH] prefix,
+      # no `<VAULT>` prefix, no leading slash, no `~/`.
+      - name: phase docs reference real repo files
+        run: |
+          set -e
+          fail=0
+          # Match: `scripts/foo.sh` (backtick + scripts/ + path + ext + backtick)
+          while IFS=: read -r file linenum content; do
+            # Extract every backticked scripts/... reference on this line
+            echo "$content" | grep -oE '`scripts/[A-Za-z0-9_./-]+\.(sh|ps1|py|plist)`' | while IFS= read -r match; do
+              ref=$(echo "$match" | tr -d '`')
+              if [ ! -f "$ref" ]; then
+                echo "::error file=$file,line=$linenum::backticked reference $match points to missing file $ref"
+                fail=1
+                echo "1" > /tmp/lint-ref-fail
+              fi
+            done
+          done < <(grep -rn -E '`scripts/[A-Za-z0-9_./-]+\.(sh|ps1|py|plist)`' phases/ 2>/dev/null || true)
+          [ -f /tmp/lint-ref-fail ] && exit 1 || exit 0
+
+      # Catches the bug class from the May 2026 install-UX incident: the README
+      # told the installing assistant to run `bash <(curl -fsSL .../bootstrap.sh)`.
+      # Piping un-reviewed remote code into a shell trips the Claude Code auto-mode
+      # classifier on every install; a cautious model then surfaces the block to
+      # the user as a wall of warnings, and one model fabricated a prompt-injection
+      # alert on top of it. The canonical install is now: clone the public repo,
+      # then run the local script. This step fails if any install-facing file
+      # reintroduces a remote-pipe-to-shell pattern.
+      - name: install docs never pipe remote code into a shell
+        run: |
+          set -e
+          fail=0
+          pattern='bash <\(curl|(curl|wget)[^|]*\| *(bash|sh)|\| *iex'
+          while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            if matches=$(grep -nE "$pattern" "$f" 2>/dev/null); then
+              echo "::error file=$f::install docs must not pipe remote code into a shell; use 'git clone' then run the local script"
+              echo "$matches" | head -5 | sed 's|^|  |'
+              fail=1
+            fi
+          done < <(find README.md bootstrap.sh bootstrap.ps1 phases -type f \( -name '*.md' -o -name '*.sh' -o -name '*.ps1' \))
+          exit $fail
+
+      # A vault script that print()s non-ASCII from a runnable CLI crashes on a
+      # Windows cp1252 console with UnicodeEncodeError; the caller captures the empty
+      # output and misreads it as failure (ai-brain-starter#313: sync-vault-scripts.ps1
+      # read it as "no Meta folder" and fell back to a manual copy). PR #313 fixed the
+      # two files that had already broken; scripts/check-utf8-stdout.py fails a
+      # runnable scripts/*.py or hooks/*.py CLI that writes non-ASCII to the console
+      # without the 5-line stdout/stderr UTF-8 reconfigure guard, so the class cannot
+      # recur. (This comment used to say "ANY runnable vault CLI"; that was false -
+      # hooks/ was outside the scan entirely until MYC-3530, which widened the scope
+      # and content-pinned the 78 pre-existing violations it exposed.)
+      # scripts/ci.sh runs the SAME checker locally (the `ci-test` pre-push gate),
+      # so CI and the laptop gate cannot drift.
+      - name: UTF-8 console guard (no cp1252 print crash)
+        run: python3 scripts/check-utf8-stdout.py
+
+      # Proves the CI-spend auditor still fires on a workflow with no concurrency
+      # group, a merge-queue-deadlocking cancel-in-progress, and an ungated macOS
+      # runner - and still stays quiet on a well-formed one. An auditor that
+      # silently stopped detecting would let a client install drift back into an
+      # unbounded Actions bill behind a green check.
+      - name: ci-cost-audit negative controls (the auditor must still bite)
+        run: python3 scripts/ci-cost-audit.py --self-test
+
+      # Dogfood: the substrate passes the audit it ships. Advisory findings are
+      # allowed; `high` is not.
+      - name: ci-cost-audit runs clean against this repo's own workflows
+        run: python3 scripts/ci-cost-audit.py --fail-on high
+
+      # The live half runs on a schedule (release-drift-heartbeat.yml), so a PR can
+      # silently break its decision logic and nothing reds until the next cron - and
+      # a drift alarm that stopped alarming looks exactly like a repo with no drift.
+      # This runs the pure-logic negative controls on every PR: real drift past the
+      # grace window must RED, and the normal bump-then-cut window must stay quiet.
+      - name: shipped-version-drift negative controls (the alarm must still bite)
+        run: python3 scripts/check-shipped-version-drift.py --self-test
+
+      # MYC-3246: a hook shipped registered, on disk, and 8/8 green - and mute,
+      # because it wrote to stderr while its own wiring ends in `2>/dev/null`. Its
+      # per-hook tests could not see it (the harness merged stderr with `2>&1`), so
+      # only a check that reads the WIRING catches the class.
+      - name: hook emission-channel negative controls (a mute guard must go RED)
+        run: python3 scripts/check-hook-emission-channel.py --self-test
+
+      # The live half: scans hooks.json against hooks/ on this tree. Verified to red
+      # on c8da71f (the commit that shipped the mute hook) and stay green after the
+      # fix - a real before/after fixture, not a synthetic one.
+      - name: every wired hook can actually reach a reader
+        run: python3 scripts/check-hook-emission-channel.py
+
+      # We ship hookify rule templates for people to copy onto the OFFICIAL plugin
+      # (anthropics/claude-code -> plugins/hookify). That engine returns False for an
+      # operator it does not implement and None for a field it cannot resolve, so a
+      # template using a capability it lacks loads fine and SILENTLY NEVER FIRES -
+      # protection that is not actually there. This gate fails loud instead.
+      - name: hookify templates evaluable by the official engine
+        run: python3 -S scripts/check-hookify-template-capabilities.py
+
+      - name: hookify capability gate negative controls
+        run: bash tests/integration/test_hookify_template_capabilities.sh
+
+      # ---- heavier toolchains (still preinstalled on the runner) ------------
+
+      - name: PowerShell parse (.ps1)
         shell: pwsh
         run: |
           $fail = 0
@@ -100,91 +328,45 @@ jobs:
           }
           if ($fail) { exit 1 }
 
-  bom:
-    name: UTF-8 BOM on .ps1 (Windows PS 5.1 fix)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
-      - name: every .ps1 must start with EF BB BF
-        run: |
-          set -e
-          fail=0
-          while IFS= read -r f; do
-            head=$(head -c 3 "$f" | od -An -tx1 | tr -d ' \n')
-            if [ "$head" != "efbbbf" ]; then
-              echo "::error file=$f::missing UTF-8 BOM (Windows PowerShell 5.1 will crash on non-ASCII bytes). Fix: prepend the bytes EF BB BF to the file."
-              fail=1
-            fi
-          done < <(find . -name '*.ps1' -not -path './.git/*')
-          exit $fail
+      # `bash syntax` above is syntax-only. shellcheck adds the portability /
+      # quoting / correctness layer over every tracked *.sh: BSD-only flags,
+      # unquoted expansions (SC2086), unset vars, exit codes masked by a pipe. A
+      # real GNU-vs-BSD `stat -c` / `stat -f` mtime bug once passed macOS-local +
+      # `bash -n` and only failed on the ubuntu runner; this catches that class.
+      # scripts/shellcheck.sh is the SINGLE source of truth - scripts/ci.sh runs
+      # the SAME script locally so the laptop pre-push gate and CI cannot drift.
+      # The severity gate starts at error + warning (info/style excluded) to match
+      # the real ship/hold boundary, not the strictest possible signal.
+      - name: ensure shellcheck present
+        run: command -v shellcheck >/dev/null || { sudo apt-get update && sudo apt-get install -y shellcheck; }
 
-  no-em-dash-ps1:
-    name: no em dashes in .ps1 (Windows PS 5.1 hazard)
-    runs-on: ubuntu-latest
-    # Em dashes in bash are stylistic. Em dashes in .ps1 are technical: they were the
-    # exact byte that crashed the Windows PowerShell 5.1 parser before the BOM fix.
-    # Even with BOM, keeping .ps1 ASCII-clean is defense-in-depth against the next
-    # time someone saves a file without BOM.
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
-      - name: scan .ps1
-        run: |
-          set -e
-          fail=0
-          while IFS= read -r f; do
-            if grep -n $'\xe2\x80\x94' "$f" >/dev/null 2>&1; then
-              echo "::error file=$f::contains em dash. Replace with ASCII hyphen or comma. Em dashes break Windows PowerShell 5.1 parsing if the BOM is ever lost."
-              grep -n $'\xe2\x80\x94' "$f" | head -5 | sed "s|^|  |"
-              fail=1
-            fi
-          done < <(find . -name '*.ps1' -not -path './.git/*')
-          exit $fail
+      - name: shellcheck (.sh, -S warning)
+        run: bash scripts/shellcheck.sh
 
-  json:
-    name: JSON validity (hooks.json, *.mcp.json)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
-      - name: validate
-        run: |
-          set -e
-          fail=0
-          while IFS= read -r f; do
-            if ! python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" 2>err; then
-              echo "::error file=$f::invalid JSON"
-              cat err | sed "s|^|  |"
-              fail=1
-            fi
-          done < <(find . \( -name 'hooks.json' -o -name '*.mcp.json' \) -not -path './.git/*')
-          exit $fail
+      # ---- PR-scoped ---------------------------------------------------------
 
-  privacy:
-    name: private-context tokens (PR-scoped)
-    runs-on: ubuntu-latest
-    # Mirrors the maintainer's write-time hookify guard so that PRs from
-    # contributors (who do not run that hookify locally) cannot land tokens
-    # the repo treats as private context. Scoped to files CHANGED in the PR,
-    # not the full tree, because pre-existing committed content has already
-    # passed hookify on every prior write. Pushes to main skip this job
-    # (the maintainer's local hookify catches direct pushes; only external
-    # contributions need CI gating).
-    #
-    # Pattern matches the hookify rule at hookify.no-personal-in-starter.local.md.
-    # Each token uses a single-char character class on its first letter so this
-    # workflow's own source does not match that hookify rule when written.
-    #
-    # Security note: github.base_ref is bound to an env var per the SAFE pattern
-    # in https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
-        with:
-          fetch-depth: 0
-      - name: fetch base branch
+      # Mirrors the maintainer's write-time hookify guard so that PRs from
+      # contributors (who do not run that hookify locally) cannot land tokens the
+      # repo treats as private context. Scoped to files CHANGED in the PR, not the
+      # full tree, because pre-existing committed content has already passed
+      # hookify on every prior write. Pushes to main skip these two steps (the
+      # maintainer's local hookify catches direct pushes; only external
+      # contributions need CI gating).
+      #
+      # Pattern matches the hookify rule at hookify.no-personal-in-starter.local.md.
+      # Each token uses a single-char character class on its first letter so this
+      # workflow's own source does not match that hookify rule when written.
+      #
+      # Security note: github.base_ref is bound to an env var per the SAFE pattern
+      # in https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+      - name: fetch base branch (for the private-context scan)
+        if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
         run: git fetch origin "$BASE_REF" --depth=50
-      - name: scan added lines only
+
+      - name: private-context tokens (PR-scoped)
+        if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
@@ -222,69 +404,85 @@ jobs:
           fi
           echo "Private-context scan passed (added lines only)."
 
-  references:
-    name: phase docs reference real repo files
-    runs-on: ubuntu-latest
-    # Phase docs distinguish between two kinds of `scripts/foo.sh` references:
-    #
-    #   1. Backticked relative paths like `scripts/foo.sh` -> should exist in the repo.
-    #      Used for "copy this from `scripts/foo.sh` in this repo" instructions.
-    #   2. Vault-write paths like `[VAULT_PATH]/<gear> Meta/scripts/foo.sh` -> a file
-    #      Claude WRITES to the user's vault, not something that exists in the repo.
-    #
-    # We only enforce category 1: backticked, repo-relative, no [VAULT_PATH] prefix,
-    # no `<VAULT>` prefix, no leading slash, no `~/`.
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
-      - name: scan repo-relative backticked references
-        run: |
-          set -e
-          fail=0
-          # Match: `scripts/foo.sh` (backtick + scripts/ + path + ext + backtick)
-          while IFS=: read -r file linenum content; do
-            # Extract every backticked scripts/... reference on this line
-            echo "$content" | grep -oE '`scripts/[A-Za-z0-9_./-]+\.(sh|ps1|py|plist)`' | while IFS= read -r match; do
-              ref=$(echo "$match" | tr -d '`')
-              if [ ! -f "$ref" ]; then
-                echo "::error file=$file,line=$linenum::backticked reference $match points to missing file $ref"
-                fail=1
-                echo "1" > /tmp/lint-ref-fail
-              fi
-            done
-          done < <(grep -rn -E '`scripts/[A-Za-z0-9_./-]+\.(sh|ps1|py|plist)`' phases/ 2>/dev/null || true)
-          [ -f /tmp/lint-ref-fail ] && exit 1 || exit 0
+      # ---- last: the only step that installs anything ------------------------
 
-  no-remote-pipe-install:
-    name: install docs never pipe remote code into a shell
-    runs-on: ubuntu-latest
-    # Catches the bug class from the May 2026 install-UX incident: the README
-    # told the installing assistant to run `bash <(curl -fsSL .../bootstrap.sh)`.
-    # Piping un-reviewed remote code into a shell trips the Claude Code auto-mode
-    # classifier on every install; a cautious model then surfaces the block to
-    # the user as a wall of warnings, and one model fabricated a prompt-injection
-    # alert on top of it. The canonical install is now: clone the public repo,
-    # then run the local script. This job fails if any install-facing file
-    # reintroduces a remote-pipe-to-shell pattern. No untrusted user input is
-    # referenced in any run: command.
+      # The Phase 2 plugin installer and the Phase 10a graph-config block are
+      # `python3` heredocs / python fences INSIDE Markdown. The `ci` job's
+      # py_compile only lints tracked *.py, and py_compile cannot catch an
+      # undefined name (a runtime NameError) anyway - so a bare `VAULT_DIR` typo
+      # shipped and crashed the installer on every platform (2026-07-07).
+      # windows-install.yml runs bootstrap.ps1 end-to-end but stubs Obsidian and
+      # never executes these blocks, so it did not catch it either. This extracts
+      # every Python block from phases/*.md and runs the undefined-name check
+      # (ruff F821) over each. ruff is installed WITHOUT a `|| true` fallback: if
+      # it cannot install, the step fails closed (a silent skip would make the gate
+      # vacuous exactly when the linter is missing).
+      - name: install ruff (the undefined-name linter this gate needs)
+        run: pipx install ruff || python3 -m pip install --user ruff
+
+      - name: phase-doc Python (no undefined names / F821)
+        run: python3 scripts/check-phase-python.py
+
+  bash32-syntax:
+    name: bash 3.2 syntax (macOS /bin/bash)
+    runs-on: macos-latest
+    # macOS ships bash 3.2.57 at /bin/bash -- the last GPLv2 release -- and that
+    # is the ONLY bash on an unmodified Mac. This repo's install path is a
+    # supported dev environment there, so every .sh here has to PARSE under it.
+    #
+    # Why this cannot be a step in the `lint` job: that job runs on
+    # ubuntu-latest, whose bash is 5.x. Bash 5 parses constructs 3.2 rejects, so
+    # the existing `bash syntax` step is green by construction on exactly the
+    # class of bug this job exists to catch, and shellcheck does not flag it
+    # either (verified: clean at -S warning on the file that was broken).
+    #
+    # The class, concretely: bash 3.2 parses a heredoc BODY as shell text while
+    # scanning for the closing paren of an enclosing "$(...)", ignoring the
+    # <<'EOF' quoting that makes the body literal everywhere else. An odd number
+    # of ' characters in that body -- ordinary in Python, e.g. a `["\']`
+    # character class -- opens a quote that never closes, and the WHOLE FILE
+    # dies with "unexpected EOF while looking for matching `)'". Not the one
+    # line: every assertion in it. tests/integration/test_rm_rf_vault_target.sh
+    # was unrunnable on any stock Mac this way while CI stayed green.
+    #
+    # Fix when this fails: write the heredoc to a file first, then run the file,
+    # so the heredoc is not nested inside a command substitution.
+    #
+    # Syntax-only (`-n`). Running the suite on macOS is a separate, larger
+    # question; parsing is the cheap floor, and it is the floor that broke.
+    # No untrusted user input is referenced in any run: command.
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
-      - name: scan install surfaces
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: confirm this runner really is bash 3.2
+        # A positive control on the GATE itself. If GitHub ever ships a modern
+        # /bin/bash on macos-latest, this job would keep passing while proving
+        # nothing -- the exact silent-no-op shape the repo bans. Fail loudly
+        # instead, so the gate cannot quietly stop being a gate.
+        run: |
+          set -e
+          ver="$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}"')"
+          /bin/bash --version | head -1
+          if [ "$ver" != "3" ]; then
+            echo "::error::/bin/bash on this runner is major version $ver, not 3."
+            echo "::error::This job exists to prove bash 3.2 compatibility and can no longer do so."
+            echo "::error::Re-point it at a real 3.2 (or retire it deliberately) - do not leave it green and vacuous."
+            exit 1
+          fi
+      - name: bash 3.2 syntax (.sh)
         run: |
           set -e
           fail=0
-          pattern='bash <\(curl|(curl|wget)[^|]*\| *(bash|sh)|\| *iex'
           while IFS= read -r f; do
-            [ -f "$f" ] || continue
-            if matches=$(grep -nE "$pattern" "$f" 2>/dev/null); then
-              echo "::error file=$f::install docs must not pipe remote code into a shell; use 'git clone' then run the local script"
-              echo "$matches" | head -5 | sed 's|^|  |'
+            if ! /bin/bash -n "$f" 2>err; then
+              echo "::error file=$f::/bin/bash -n (3.2) failed - parses on bash 5, not on macOS's stock bash"
+              sed "s|^|  |" err
               fail=1
             fi
-          done < <(find README.md bootstrap.sh bootstrap.ps1 phases -type f \( -name '*.md' -o -name '*.sh' -o -name '*.ps1' \))
+          done < <(find . -name '*.sh' -not -path './.git/*' -not -path './node_modules/*')
           exit $fail
 
   ci:
-    name: ci gate (py_compile + integration tests)
+    name: ci gate (py_compile + unit + integration tests)
     runs-on: ubuntu-latest
     # The repo's unit/type gate, consolidated into ONE command - scripts/ci.sh -
     # so this workflow and the local pre-push gate (~/.local/bin/ci-test, which
@@ -301,10 +499,15 @@ jobs:
     # py_compile check, a git identity (the tests create temp repos and commit),
     # and ruff so test_session_coordination_guards exercises the F821 block path
     # (it fails open and stays green when ruff is absent).
+    #
+    # Deliberately NOT folded into the `lint` job above: this is the substantive
+    # test gate and the one most likely to become a required context, and a
+    # required gate folded in as a step becomes silently deletable. It also pins
+    # Python 3.9, which the 3.12 phase-doc linter cannot share.
     # No untrusted user input is referenced in any run: command.
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.9"
       - name: configure git identity (integration tests create temp repos)

@@ -4,7 +4,7 @@
 # Walks ~/.claude/ and the ai-brain-starter skill folders looking for
 # *.bak-YYYY-MM-DD-HHMM files, lists them, and offers to restore each.
 #
-# Closes adelaidasofia/ai-brain-starter#2 — bootstrap: --restore mode.
+# Closes mycelium-hq/ai-brain-starter#2 — bootstrap: --restore mode.
 #
 # Usage:
 #   bash scripts/bootstrap-restore.sh                # interactive

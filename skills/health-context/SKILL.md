@@ -1,6 +1,6 @@
 ---
 name: health-context
-description: Auto-fires when the daily-journal, coaching, advisory-panel, patterns, or insights skills run. Pulls health context (HRV, sleep, recovery) from the health-mcp DuckDB and folds it into the active skill's prompt. Use when user invokes /journal, /coaching, /panel, /patterns, /weekly, /monthly, or any skill that benefits from biometric context. Read-only with respect to the vault. Skip silently if health-mcp is not registered or has no data.
+description: 'Use when a host skill that benefits from biometric context runs: daily-journal (/journal), coaching, advisory-panel (/panel), patterns, or insights (/weekly, /monthly). Also use when the user asks how HRV, sleep, recovery, resting heart rate, steps, or workouts relate to a journal entry, coaching window, decision, pattern, or weekly review. Companion layer, never standalone. Setup: health-setup. Data import: ingest-health. Sync diagnostics: health-doctor.'
 ---
 
 # health-context, biometric context for substrate skills

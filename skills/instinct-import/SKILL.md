@@ -1,10 +1,12 @@
 ---
 name: instinct-import
-description: Import a portable YAML instinct pack into this vault with confidence-gated merge — a higher-confidence import updates the local instinct, an equal-or-lower one is skipped, and a brand-new one lands in inherited/. Part of the Instinct Engine. Do NOT use to author memories by hand (just write the file).
+description: 'Use when bringing a teammate''s, another machine''s, or another harness''s instincts into this vault: the user runs /instinct-import, shares a portable YAML instinct pack (PACK.yaml), or asks to merge, adopt, sync, or inherit shared instincts. Confidence-gated so local instincts are never clobbered. Part of the Instinct Engine; pairs with instinct-export. Do NOT use to author memories by hand (just write the file).'
 trigger: /instinct-import
 ---
 
 # /instinct-import — portable instinct pack in (confidence-gated)
+
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). Shared starter files live at the repo root two levels up: `{SKILL_DIR}/../..`. If a path does not resolve, name the missing file and stop — never guess another location.
 
 Merges another harness's or teammate's instinct pack into your vault WITHOUT
 clobbering your own hard-won instincts. The merge rule is confidence-gated.
@@ -15,13 +17,13 @@ Equal-or-lower-confidence import is skipped." Reimplemented clean.
 ## Always dry-run first
 
 ```bash
-python3 ~/.claude/skills/ai-brain-starter/scripts/instinct.py import PACK.yaml --dry-run
+python3 "{SKILL_DIR}/../../scripts/instinct.py" import PACK.yaml --dry-run
 ```
 
 Read the planned `add` / `update` / `skip` lines. Then apply:
 
 ```bash
-python3 ~/.claude/skills/ai-brain-starter/scripts/instinct.py import PACK.yaml
+python3 "{SKILL_DIR}/../../scripts/instinct.py" import PACK.yaml
 ```
 
 ## Merge rules

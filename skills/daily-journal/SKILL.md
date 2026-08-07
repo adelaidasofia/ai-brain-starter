@@ -1,6 +1,6 @@
 ---
 name: daily-journal
-description: Daily journal interview and entry creator. Use this when the user wants to journal, do a daily check-in, or says /journal. Interviews the user conversationally, identifies their High-Rise floor, and saves the entry as an Obsidian note. Do NOT use for meeting notes (use meeting-todos), weekly/monthly reviews (use insights), or pattern analysis (use patterns).
+description: Use when the user wants to journal, do a daily or end-of-day check-in, reflect on or vent about their day, brain-dump feelings, log what happened today, or says /journal. Also fires for quick one-line captures and a second session the same day (resumes that day's entry). Not for meeting notes (use meeting-todos), morning priorities (use rise), weekly/monthly reviews (use insights), or cross-entry pattern analysis (use patterns).
 ---
 
 # Daily Journal — Interview & Log
@@ -37,6 +37,17 @@ Why: most people open `/journal`, type what happened, and leave. If the entry on
 **Graceful exit — applies at every step after the first save.** If the user signals done ("that's it," "save it," "I'm good," "no panel tonight"), goes quiet, or declines to continue at any point: **finalize the existing file in place and stop.** Flush any messages they typed since the last save into the verbatim appendix, do a quick floor re-check on the fuller picture, run the light idea/to-do scans (Steps 8/8.5) on whatever exists, and confirm what you saved. Never hold the entry hostage to the panel or any later step. Re-prompt at most once. The entry already exists — your job from here is only to keep it current and let them go.
 
 This contract overrides any older "save only at the end" language anywhere below. Where a later step says to save at the end, read it as "update the already-saved file."
+
+## Crisis protocol (Tier 2 safety override — overrides every step below)
+
+This is the full definition of the "crisis-tier override" / "hold-voice protocol" referenced throughout this file, aligned with the `/rise` Tier 2 safety override. If at ANY point the user's language flips to total-self statements ("I'm worthless", "I hate myself"), somatic dysregulation ("can't breathe", "drowning"), acute grief, or crisis ideation ("I want to disappear", not wanting to be alive):
+
+1. **Stop the mechanics.** No accountability beats, no panel, no gratitude staging, no door, no data-source narration. Drop the interview structure and stay with them — witness first, plain warm language, no rushing to fix.
+2. **Ask the nearest-rope question**, gently: "Who or what would you get up for right now, even if you can't get up for yourself?" A dog, a person, a plant, a promise all count. Don't push past a non-answer.
+3. **Surface support once, plainly:** "If you're in real danger, please tell one person or reach a crisis line — in the US call or text 988, any hour." Adapt to the user's country if known. Say it once; don't repeat it every message.
+4. **The capture-first save still happens** — their words verbatim, floor tagged from what you heard, no panel section. Tell them it's saved. Enrichment can wait for another day.
+
+When in doubt about whether this applies, err toward applying it.
 
 ## Standing Rules — Panel Behavior (applies throughout the interview)
 
@@ -143,7 +154,26 @@ One calendar day = ONE journal entry that grows across sessions (an afternoon ch
 
 ### Step 0: Pull data sources per opt-in config (ALWAYS — config-gated)
 
-**0-pre. Read the journal config (mandatory).** Look for `⚙️ Meta/journal-config.md` (or `Meta/journal-config.md` if the vault doesn't use emoji-prefixed Meta). Parse the `data_sources:` frontmatter block.
+**0-RUN. Run the preflight FIRST — this is the literal first tool call of every `/journal`, before the opener. Non-negotiable.**
+
+```
+python3 "⚙️ Meta/scripts/journal-preflight.py"
+```
+
+(or `Meta/scripts/journal-preflight.py` if the vault doesn't use emoji-prefixed Meta.) It auto-spans since the last entry, pulls every SCRIPT source into ONE digest — messages (WhatsApp direct + groups + iMessage, whole gap, FAMILY/PARTNER threads surfaced first with ⭐), RescueTime (per day), close-cascade journal seeds (Session Captures), today's activity, the email triage digest, and the on-disk Slack export — and writes a marker at `⚙️ Meta/.journal-context/<date>.json`. It cannot call MCP, so it prints the exact MCP pulls you MUST make yourself right after — make EVERY one it lists:
+
+1. **Calendar** — `cal_list_events(time_min, time_max)` for the window; fold meetings + attendees into `## Today`.
+2. **Email (fresh, relational)** — `gmail_search` each account since the last entry; surface FAMILY / friends / commitments, not just the (often stale) triage digest the preflight already read.
+3. **Slack (fresh)** — `slack` search/read recent DMs + #daily-updates since the last entry.
+4. **Health** (only if `body_health: on`) — latest `🏠 Home/Health Pattern Report *.md` + yesterday's `## Body track`; or run `regenerate-health-pattern-report.py` if the phone synced.
+
+Read the ⭐ FAMILY / PARTNER threads BEFORE the work chatter — that is the part most worth journaling (2026-07-07: the model buried the user's sister flying in under dev messages).
+
+**Be the executive assistant, not a transcriber.** The preflight prints a `★ PROBE` list — threads with relational or emotional weight the user may NOT bring up on their own. During the interview (Step 2), actively draw those out: *"You haven't mentioned [X] — tell me about that,"* *"What happened with [Y]?"* You have all their context across every account; use it to ask the question they didn't know they needed. The preflight also drops dev/CI/ticket noise from the close-cascade seeds (kept: `[emotional]` + brainstorm/belief/writing) — the user does not want engineering chatter in their journal. Compressed threads keep only family/partner + heavy-emotion in full; the rest are one-liners with the raw on disk — drill into a specific raw thread file ONLY if the interview goes deep on it (lazy depth = token-cheap).
+
+Do NOT ask the opener until the preflight ran AND every MCP pull it listed is done. A contextless journal — no calendar, no messages, no activity — is the exact failure this kills (2026-07-07 incident: the model skipped Step 0 and the user had to ask "why didn't you pull everything?"). If a fetcher isn't installed on this vault, the preflight says so and you proceed honestly with what it got — but you STILL run it. At save time the entry frontmatter MUST carry a `context_sources:` block naming every source folded in; `warn-journal-saved-without-context.py` fires if a journal is written for a day whose preflight marker is missing.
+
+**0-pre. Read the journal config (mandatory).** Look for `⚙️ Meta/journal-config.md` (or `Meta/journal-config.md` if the vault doesn't use emoji-prefixed Meta). Parse the `data_sources:` frontmatter block, and read `filename_format:` (`descriptive` | `date` | `date-title`; default `descriptive` when absent or the file doesn't exist yet) — apply it at every save (Steps 1.5 and 7).
 
 If the file does not exist, copy `templates/journal-config.md` from this skill's repo into the vault and ask the user once:
 
@@ -240,6 +270,8 @@ This is non-negotiable when a morning entry exists: the evening journal MUST clo
 
 ### Step 1: Open with a warm, casual check-in
 
+**Door check first (if the previous entry set one):** If the most recent journal entry's frontmatter has a `door:` (the one small action they committed to at close), close that loop before anything else: "Yesterday you said you'd [door]. Did it happen?" Record the answer as `door_prev: done | partial | skipped` for today's frontmatter. No moralizing on a skip — data and continuity, not discipline. Skip silently if no previous door exists. (This composes with the `/rise` pairing below — door check first, then the morning-priorities opener.)
+
 **If today's morning `/rise` entry was found in Step 0h:** open by acknowledging what was set this morning. Pattern:
 
 > "How was today? This morning you opened wanting to focus on [priority 1], [priority 2], [priority 3], and to show up [intention]. How did that land?"
@@ -270,7 +302,7 @@ Capture their answer. After saving the journal entry (Step 9), update the weekly
 - **Floor tag + `## Concepts`:** best-effort from the current content.
 - **No `## Panel dialogue` section yet** — it is added at enrichment (Step 7) only if the panel actually runs. A captured-and-abandoned entry simply has no panel section, and that is a valid, complete entry.
 
-**Save it the same way Step 7 saves** (Bash `cat` heredoc into the monthly subfolder, then verify the file exists — never fail silently). Pick the filename now from the initial content using Step 7's descriptive-title rule. You may refine the filename later ONLY if the day's theme clearly shifts — rename in place, never create a second file.
+**Save it the same way Step 7 saves** (Bash `cat` heredoc into the monthly subfolder, then verify the file exists — never fail silently). Pick the filename now from the initial content using Step 7's filename rule (honoring `filename_format` from the config). You may refine the filename later ONLY if the day's theme clearly shifts — rename in place, never create a second file.
 
 **Don't announce the save as a production.** A light "Got it — saved." is enough, then flow into Step 2. The floor under them is already there; they don't need to feel the mechanics.
 
@@ -400,6 +432,10 @@ Listen for texture in the answer — "kind of," "until I got tired," "yes early,
 
 ### Step 4: Identify the floor
 
+**Body-first check (before accepting the story):** Low floors usually arrive body-first, story-second — the mind manufactures a plausible cause after the fact. Before treating a low floor as being about the conversation/person/project the user is blaming, check four things: sleep, food, movement, sunlight. Use the data already pulled (Step 0g body track, RescueTime, yesterday's entry) before asking — infer, don't interrogate; ask only for the gaps. Record as `body_check` frontmatter (four y/n values). If two or more are "no," name it gently: "Before we decide this is about [story] — you're underslept and haven't eaten. Some of this floor might be body, not story." The floor is still real either way; this changes the prescription, not the validity.
+
+**Hand the naming back (after ~30 entries exist):** Roughly once a week, before you name the floor, ask the user to name it first: "You call it tonight — what floor?" Confirm or gently offer an alternative. The skill's job is to train the muscle, not become it.
+
 Based on everything they said, identify the PRIMARY floor:
 
 **Low Floors (1-18) — Reactive:**
@@ -457,7 +493,31 @@ Based on everything they said, identify the PRIMARY floor:
 - Desire (15) / Love (29): "I want from you" vs "I give to you"
 - Pride (18) / Confidence: "I need you to see me" vs "I see myself"
 
-When tagging, use array format: `floor: [Grief, Love]` means dominant Grief with Love also present. First element = dominant.
+**Shadow-twin probe (mandatory when the floor you're about to tag has a twin):** Mislabeling is the #1 way people stay stuck — Resignation *feels* like Acceptance from the inside. Before tagging Acceptance, Neutrality, Peace, or confident Pride, ask ONE distinguishing question:
+- Acceptance vs Resignation: "If this could change tomorrow, would you want it to?" (Wanting change but not believing in it = Resignation.)
+- Neutrality vs Apathy: "Are you unattached, or checked out?" (Would good news land? If nothing would land, it's Apathy.)
+- Peace vs Boredom: "Nothing needs to change, or nothing matters?"
+- Confidence vs Pride: "Would this still feel good if nobody ever found out?"
+Tag what the answer reveals, not what the user first claimed. If a correction happened, note it in the entry — the mislabel itself is signal for `/patterns`.
+
+**Movement capture (feeds /insights and /patterns):** Look up the previous entry's floor (journal-index or the file) and record `floor_yesterday` plus, when the floor changed or notably held, one `moved_because` value:
+- `body` — sleep, food, cycle, illness, weather drove it
+- `witness` — being seen/unseen, honest conversation, isolation
+- `rupture` — trust broken, loss, the source of a high floor becoming the wound
+- `rope` — pulled up by love pointed outward (someone/something that needed them)
+- `role` — a context reassigned them their old floor (family, old job, certain room)
+- `story` — an actual event/insight/decision did it
+If they moved UP from a low floor, also capture `rope:` — what specifically pulled them (the dog, the person, the promise). Over months this builds the user's personal rope inventory: what reliably works for THEM when nothing else does.
+
+**Tag the primary floor — then, only if the day moved, the arc.** Set `floor:` to the single primary floor (where the entry *landed*) and `floor_level:` to its tier. Naming one base floor is deliberate, not a limitation: it is the move that reduces the charge, and it keeps the long-run dataset clean. Then, ONLY when the day moved from one floor to another, add `floor_arc:` — the floors moved through, in order, ending on the primary:
+
+```yaml
+floor: <primary floor>
+floor_level: <Low | Middle | High>
+floor_arc: [<floor>, <floor>, <primary floor>]   # optional — ordered path through the day, last element = floor
+```
+
+The arc is the point: the elevators are the lesson, the floors are just where the door opens, so a path like Fear → Frustration → Hope carries more than any single endpoint. `floor_arc` already holds both the other floors that were present and the order they came in — there is no separate "floors present" list. Keep capture frictionless: **always** ask the one primary-floor question; **offer the arc only when the person signals the day moved** ("started rough, ended okay"); **never prompt for it on a still day** — just omit it. For an elevator emotion (Nostalgia = Grief + Love), tag the floor you land on as `floor` and, if it clarifies things, record the blend as `floor_arc`. (Legacy entries may carry `floor: [A, B]`; that still reads, but new entries use a single `floor` plus an optional `floor_arc`.)
 
 ### Step 5: Advisory Panel Dialogue
 
@@ -529,6 +589,18 @@ Wait for explicit confirmation, then update the file (Step 7). Showing panel con
 
 **If the panel did NOT run** (user opted out, disengaged, or asked to wrap): there is nothing new to show. The captured entry stands as-is, without a panel section. Skip straight to confirming what was saved. **The entry is never held hostage to the panel** — "save only after the panel" is the exact failure mode this skill was rebuilt to kill.
 
+### Step 6.5: The door (map + door, never map alone)
+
+Naming a floor without pairing it to an action produces articulate stuck people — insight feels like progress and becomes its favorite disguise. Before finalizing, offer ONE small, concrete, physically doable action matched to where they are, and get a when:
+
+- **Low floors:** body-first or witness-first, never "think about it." A walk before a specific time, protein at breakfast, phone in the other room tonight, one honest sentence texted to one named person, ten minutes of sunlight before 10am.
+- **Middle floors:** one small brave action (the Courage mechanism) — send the thing, ask the thing, book the thing. Small and dated beats big and vague.
+- **High floors:** protect or extend it — give something away before feeling ready, write down what produced this so it's findable later, rest without earning it.
+
+**The Maté guard (check before prescribing):** some floors deserve time, not exits. Fresh Grief, real Anger at something genuinely wrong, a rupture days old — moving off too fast is suppression wearing resilience's clothes. If the floor is recent and proportionate to a real event, the door is a *container*, not an exit: "ten uninterrupted minutes to feel this fully," "tell one person what happened," "no big decisions until Thursday." Ask yourself: does this floor need a way out, or more time? Prescribe accordingly.
+
+One door only. Write it to frontmatter as `door:` (action + when). Tomorrow's session opens by checking it (Step 1 door check). If the user declines or the session is a quick capture-and-bail, save without one — never force it, never let it block the save. The door is distinct from Step 8.5 to-dos: to-dos are tasks the day surfaced; the door is the one floor-matched move for tomorrow.
+
 ### Step 7: Finalize the entry (in-place update of the file from Step 1.5)
 
 **This is an UPDATE, not a fresh create.** The file already exists from the capture-first save. Rewrite it in place with the finalized floor, the enriched body, the full verbatim appendix (every message to date), the accountability line, the `## Today` section, and — only if the panel ran — the `## Panel dialogue` section. Never create a second file for the same session. If you refined the filename to match the day's theme, rename in place (e.g. `mv`) rather than leaving a stale duplicate. Everything below is the finalized shape the file should end up in.
@@ -539,19 +611,23 @@ Wait for explicit confirmation, then update the file (Step 7). Showing panel con
 - Write: `cat > "/full/path/file.md" << 'EOF' ... EOF`
 - Read/verify: `cat "/full/path/file.md"` or `ls -la "/full/path/file.md"`
 
-**Filename format:** Create a descriptive title from the content (5-8 words, Title Case), like:
-- "Ranch Weekend Dad Health Worries.md"
-- "Great Team Meeting Feeling Momentum.md"
-- "Mom Visit Kept Cool This Time.md"
+**Filename format:** Honor `filename_format` from `journal-config.md` (read at Step 0-pre; default `descriptive`):
+- **`descriptive`** (default): a 5-8 word Title Case summary of the content, e.g. "Ranch Weekend Dad Health Worries.md", "Great Team Meeting Feeling Momentum.md", "Mom Visit Kept Cool This Time.md".
+- **`date`**: the entry's date, `YYYY-MM-DD.md` (e.g. "2026-04-11.md").
+- **`date-title`**: date prefix + a short 2-4 word title, e.g. "2026-04-11 Ranch Weekend.md".
+
+If the vault's `CLAUDE.md` states a filename rule, it wins — `filename_format` should already match it; if they ever disagree, follow `CLAUDE.md`.
 
 **Entry format:**
 
 ```markdown
 ---
 creationDate: YYYY-MM-DDTHH:MM
-floor: Primary              # single floor name (or [Primary, Secondary] for elevator emotions) — this is the EVENING floor
+floor: Primary              # single floor name — where the entry LANDED (this is the EVENING floor)
 floor_level: Low | Middle | High
+# floor_arc: [FloorA, FloorB, Primary]   # OPTIONAL — ordered path through the day, last element = floor. Add ONLY when the day moved; omit on a still day.
 entry_status: captured | enriched   # captured = saved at first touch (Step 1.5); enriched = the interview/panel ran
+context_sources: [messages, rescuetime, session_captures, todays_activity, calendar, body_health]   # REQUIRED — every Step-0 source actually folded into this entry (drop any that were off/unavailable, but name what you pulled). Absent => warn-journal-saved-without-context.py fires.
 # Morning pairing fields — ONLY include if a /rise entry was found in Step 0h:
 # floor_morning: <Floor at sunrise from /rise frontmatter>
 # floor_morning_level: Low | Middle | High
@@ -559,6 +635,13 @@ entry_status: captured | enriched   # captured = saved at first touch (Step 1.5)
 # priorities_landed: ["landed" | "partial" | "dropped", ...]        # parallel array, same length, status per priority
 # intention_planned: "<intention sentence from morning /rise>"
 # intention_held: held | partial | missed
+# Movement fields (Step 4 movement capture + Step 6.5 door):
+floor_yesterday: <previous entry's primary floor>   # omit if no previous entry
+moved_because: body | witness | rupture | rope | role | story   # omit if unknown
+body_check: {slept: y|n, ate: y|n, moved: y|n, sunlight: y|n}
+# rope: "<what pulled them up>"      # ONLY when they moved up from a low floor
+# door: "<one small action + when>"  # from Step 6.5 — omit if declined
+# door_prev: done | partial | skipped  # previous entry's door status — omit if none existed
 gym: true | false
 gym_week: X                 # count for this week
 sleep_time: "HH:MM"

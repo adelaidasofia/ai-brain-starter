@@ -1,6 +1,6 @@
 ---
 name: coach
-description: Longevity + fitness coach. Issues a daily workout prescription that reads from health-mcp (recovery, sleep, cycle phase, somatic state, lab status) and pairs with today's Floor (emotional state) from journal frontmatter. Tracks progressive overload per-lift. Programs deload every 4th week. Drops weekly plan into Google Calendar. Use when user says /coach, /coach today, /coach week, /coach profile, /coach log, asks "what should I do today", asks for a workout, asks for a longevity plan, or asks how to train. Pairs with health-context (already auto-fires) and insights (already body-track wired). The substrate's longevity-coach surface.
+description: Use when the user says /coach (today, week, month, profile, log), asks what to do today for training, asks for a workout, weekly training plan, or longevity plan, wants to log a finished workout or check lift progression (PR, plateau, deload), or a scheduled morning task fires to drop today's workout into the calendar. NOT for importing health data (use ingest-health/health-setup), raw biometric queries without a prescription, or emotional/life coaching (use coaching).
 ---
 
 # coach, the longevity + fitness coach

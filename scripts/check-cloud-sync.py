@@ -29,6 +29,12 @@ from pathlib import Path
 
 # detect_cloud_sync lives in the shared worktree-safety lib. Resolve it whether
 # this script runs from the repo (hooks/_lib) or the deployed skill dir.
+# Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+    except (AttributeError, ValueError):
+        pass
 _HERE = Path(__file__).resolve().parent
 for _cand in (_HERE.parent / "hooks", _HERE.parent):
     if (_cand / "_lib" / "worktree_safety.py").is_file():

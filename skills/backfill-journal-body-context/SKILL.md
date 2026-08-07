@@ -1,6 +1,6 @@
 ---
 name: backfill-journal-body-context
-description: Walks every daily journal entry in a date range (default this year) and appends a "Body track" section BELOW the original verbatim content. Pulls health-mcp data for each date (HRV, RHR, sleep, cycle phase, lab status, recovery/sleep/strain scores) and weaves a Floor-paired interpretation. Idempotent (skips entries that already have the section). Use when user says /backfill-journal-body-context, asks to enrich journals with body data, says "backfill my journals with health" or wants existing journal entries paired with their Apple Health / Oura / Fitbit data retroactively.
+description: Use when the user says /backfill-journal-body-context, wants existing daily journal entries enriched with body data retroactively (HRV, sleep, recovery, cycle phase, labs), says 'backfill my journals with health', wants Apple Health / Oura / Fitbit / Whoop history paired with past journals, or just ran /health-setup with a historical import. Not for brand-new entries (daily-journal covers those) or for editing journal text.
 ---
 
 # backfill-journal-body-context
@@ -22,7 +22,7 @@ Do NOT use for:
 ## How it works
 
 1. Determine the date range. Default: `--year <current-year>` (Jan 1 to today).
-2. Find journal entries in that range using `[VAULT_PATH]/Meta/journal-index.json` (rebuild if stale).
+2. Find journal entries in that range using `[VAULT_PATH]/⚙️ Meta/journal-index.json` (or `Meta/journal-index.json` on non-emoji vaults; rebuild if stale).
 3. For each entry:
    - Read the file
    - Check if it already has a `## Body track (health-mcp, backfilled YYYY-MM-DD)` section — if yes, skip (idempotent)
@@ -117,7 +117,7 @@ When invoked:
 2. Sanity checks:
    - health-mcp must be registered. If not, abort with setup instructions.
    - Run `health_status()` to confirm there's biometric data in the DuckDB. If the count is zero, abort and suggest `/health-setup` first.
-   - The vault must have a `Meta/journal-index.json` and a journal folder. Rebuild the index if stale.
+   - The vault must have a `⚙️ Meta/journal-index.json` (or `Meta/journal-index.json` on non-emoji vaults) and a journal folder. Rebuild the index if stale.
 
 3. Run the script:
    ```

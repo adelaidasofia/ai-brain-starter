@@ -10,15 +10,15 @@ aliases: [Apatía, "Floor 5", "Piso 5"]
 
 **Floor 5 · Low tier**
 
-'nothing matters,' checked out, numb.
+"nothing matters," checked out, numb.
 
 Part of the low tier: see [[Low Floors]].
 
 ## Shadow twin
 
-**Apathy (5)** is the shadow of **[[Neutrality]] (21)**.
+**Apathy (5)** is the shadow of [[Neutrality]] (21).
 
-> 'I don't care' vs 'I'm not attached'
+> "I don't care" vs. "I'm not attached"
 
 When Apathy shows up easily, check whether [[Neutrality]] is what you actually mean. The difference is whether you are still bracing.
 

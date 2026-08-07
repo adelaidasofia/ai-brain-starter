@@ -23,6 +23,7 @@ Importable + runnable:
 
 from __future__ import annotations
 
+import sys
 import os
 import re
 from pathlib import Path
@@ -101,6 +102,12 @@ def memory_dir_for(vault: str | os.PathLike, *, must_exist: bool = False) -> Pat
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     import sys
 
     if len(sys.argv) != 2:

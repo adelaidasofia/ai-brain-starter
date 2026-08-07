@@ -91,7 +91,7 @@ function Invoke-OrDry { param([string]$What, [scriptblock]$Action)
 $script:PyExe = $null
 function Get-PyExe {
   if ($script:PyExe) { return $script:PyExe }
-  foreach ($n in @("python3", "python")) {
+  foreach ($n in @("py", "python", "python3")) {
     $c = Get-Command $n -ErrorAction SilentlyContinue
     if ($c) {
       try {

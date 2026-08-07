@@ -140,16 +140,15 @@ def _warn_for_root(root: Path, session_id: str):
 
     _, head, _ = _run(["git", "-C", str(root), "log", "-1", "--format=%h %cs (%cr)"])
     msg = (
-        f"⚠ STALE BARE CHECKOUT: {root} is {behind} commit(s) behind {ref} "
-        f"(HEAD {head}). This working tree is NOT current — reading its files as "
-        f"'the live state' is the STALE-BARE-CHECKOUT-READ class (MYC-670 near-miss).\n"
-        f"Before editing OR trusting any file here:\n"
-        f"  • work in a fresh worktree (bases on origin/main):\n"
-        f"      claude-dev-worktree start {root.name} <slug>\n"
-        f"  • or read canonical state directly:\n"
+        f"Heads up: {root} is {behind} commit(s) behind {ref} (HEAD {head}), so "
+        f"the files on disk here may not reflect the latest version. Before "
+        f"editing or relying on a file in this checkout, either:\n"
+        f"  • bring it up to date (safe, refuses if it can't fast-forward):\n"
+        f"      git -C {root} pull --ff-only\n"
+        f"  • or read the up-to-date version directly without touching the tree:\n"
         f"      git -C {root} show {ref}:<path>\n"
         f"      git -C {root} grep <pat> {ref} -- <path>\n"
-        f"Do NOT treat {root.name}'s working tree as the canonical artifact. "
+        f"Until then, don't treat {root.name}'s working tree as current. "
         f"Bypass: STALE_CHECKOUT_BYPASS=1"
     )
     log_fire("warn-stale-dev-checkout", status="warned", repo=root.name, behind=behind)

@@ -1,11 +1,13 @@
 ---
 name: second-brain-mapping
-description: Unified vault-mapping pipeline. Extracts structured metadata from every typed file in your vault (books, meetings, people, articles, goals, etc.), optionally runs knowledge-graph extraction, applies wikilinks, and surfaces cross-type insights you can't see from any single file. Zero LLM cost per run for metadata + insights. Use whenever you want to "map your second brain", refresh your vault's queryable index, or discover cross-doc patterns.
+description: 'Use when the user wants to map or remap their second brain, refresh the vault''s queryable metadata index, extract structured frontmatter from typed notes (books, meetings, people, journals, goals), fill wikilink gaps, or surface cross-type insights and patterns no single file shows. Triggers: /second-brain-mapping, "map my second brain", "make my vault queryable", "refresh vault metadata", stale or sparse Dataview fields. Not for single-file reads or querying an existing graph (use graphify).'
 trigger: /second-brain-mapping
 argument-hint: "[--metadata-only | --insights-only | --dry-run | --sample [N] | --force | --type <name>]"
 ---
 
 # /second-brain-mapping
+
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). Shared starter files live at the repo root two levels up: `{SKILL_DIR}/../..`. If a path does not resolve, name the missing file and stop — never guess another location.
 
 Your vault is a database. This skill makes it queryable.
 
@@ -101,9 +103,22 @@ State file format (JSON):
 
 `null` means never completed OR killed mid-run. A timestamp means last successful completion.
 
+**A stamp is NOT proof the artifact still exists.** `graphify-out/` is gitignored (a large, regenerable derived artifact should not bloat the repo). Untracked means it can vanish to ANY filesystem operation — a folder move, `git clean`, a disk cleanup — with zero trace, while this state file still says `phase_2_graphify: <date>`. The stamp then lies. Before honoring the graph-dependent stamps, PROBE THE FILE:
+
+```bash
+python3 "$(vault-root)/scripts/graph-liveness-check.py" --heal
+```
+
+- Exit `0` → graph present (or never built) — proceed normally.
+- Exit `3` (`LOST`) → the graph is GONE despite a stamp. `--heal` has already nulled `phase_2_graphify` + `phase_3_wikilinks` so the decision rule below rebuilds them. Tell the user loudly: the graph was lost, the source is intact, rebuilding. NEVER skip Phase 2/3 on a stamp the liveness check just invalidated.
+- Exit `4` (`STALE`) → graph older than the freshness window; recommend a refresh.
+
+Bug class STAMP-GREEN-WHILE-ARTIFACT-GONE. The recency check probes the leaf (the file), never the proxy (the timestamp).
+
 **Decision rule:**
 - If `--force` flag: run everything regardless.
 - Else for each phase: if stamp < 4 hours old AND not null → skip (report "Phase X: skipped, ran Y ago"). If stamp is null OR > 4 hours old → run it. Phase 2 (graphify) always confirms before running regardless of stamp.
+- **Phase 2/3 stamps are only honored if the liveness check above reported the graph present.** A `LOST` graph forces a rebuild regardless of stamp age — the artifact, not the timestamp, is the source of truth.
 - Report the plan BEFORE running: "Will run: Phase 3 (null), Phase 4 (>4h). Skipping: Phase 1 (1h ago). OK? y/N"
 
 After each phase succeeds, update its stamp with the current ISO-8601 timestamp. If a phase is killed or errors, leave the stamp untouched so next run sees it as incomplete.
@@ -159,22 +174,24 @@ for fp in glob.glob(os.path.join(vault, "**", "*.md"), recursive=True):
 input_tok = int(total_words * 1.3 * 0.15)   # after dedupe + cache + preextract
 output_tok = int(input_tok * 0.12)
 
-# Sonnet 4.6 public pricing (as of 2025): $3/M input, $15/M output
-cost_usd = (input_tok / 1_000_000) * 3 + (output_tok / 1_000_000) * 15
-
-# Incremental run (cache warm): roughly 10% of cold-start
-cold_cost = cost_usd
-warm_cost = cost_usd * 0.10
+# The TOKEN estimate is real. The DOLLAR cost depends on how graphify is routed.
+# Default in an ai-brain-starter install: semantic extraction runs via SUBAGENTS on
+# your Claude subscription (Max/Pro), and ~80% of edges come from zero-LLM
+# deterministic passes (AST + typed-edge frontmatter/wikilink extraction). So the
+# marginal DOLLAR cost is ~$0. The figure below is the paid-API-EQUIVALENT — only
+# meaningful for users who run graphify on metered API billing, NOT a subscription.
+api_cost = (input_tok / 1_000_000) * 3 + (output_tok / 1_000_000) * 15  # Sonnet public $/M
+warm_cost = api_cost * 0.10  # incremental run, cache warm
 
 existing = pathlib.Path("graphify-out/graph.json").exists()
 mode = "incremental (cache warm)" if existing else "cold start (no cache yet)"
-est_cost = warm_cost if existing else cold_cost
+est_api = warm_cost if existing else api_cost
 
 print(f"Corpus:   {total_files:,} files · ~{total_words:,} words")
 print(f"Mode:     {mode}")
 print(f"Tokens:   ~{input_tok:,} input · ~{output_tok:,} output (estimate)")
-print(f"Cost:     ~${est_cost:.2f} at Sonnet 4.6 public pricing")
-print(f"          (cold start would be ~${cold_cost:.2f}; incremental ~${warm_cost:.2f})")
+print(f"Dollars:  ~$0 on a Max/Pro subscription (subagent-routed — the default here)")
+print(f"          Paid-API-equivalent (metered billing only): ~${est_api:.2f}")
 PY
 
 stat -f "%Sm" "$(pwd)/graphify-out/graph.json" 2>/dev/null || echo "Last graph: none yet"
@@ -182,9 +199,9 @@ stat -f "%Sm" "$(pwd)/graphify-out/graph.json" 2>/dev/null || echo "Last graph: 
 
 Then ask: **"Run graphify on this corpus? y/N"**
 
-If yes, invoke `/graphify --update`. Read `~/.claude/skills/graphify/SKILL.md` first. On success, stamp `phase_2_graphify`.
+If yes, invoke `/graphify --update`. Read the graphify skill's own SKILL.md first (`{SKILL_DIR}/../graphify/SKILL.md` — sibling skill folder, resolves in both local and served installs). On success, stamp `phase_2_graphify`.
 
-**Pricing caveat:** the cost estimate uses public Sonnet rates and graphify's typical compression ratio. Actual cost depends on cache hit rate, chunk granularity, and whether `--mode deep` is used. Treat the number as an order-of-magnitude guide, not a quote.
+**Cost framing (do not misquote):** the token estimate is real, but on a Claude Max/Pro subscription graphify's semantic extraction runs through subagents (no per-token dollar charge) and ~80% of edges come from zero-LLM deterministic passes — so the marginal dollar cost is effectively **$0**. Only quote dollars if the user is on metered API billing. Never let a paid-API figure talk a subscription user out of a rebuild — that inverts the whole point of maximum context.
 
 ### Step 4 — Phase 3: wikilinks
 

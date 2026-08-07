@@ -195,7 +195,7 @@ A new rule fires automatically when the user signals the session is ending — "
 1. **Scan the conversation** for everything worth preserving — decisions, personal context, team/business context, new facts, workflow learnings, ideas, improvements to the AI brain setup itself.
 2. **Categorize** each item: personal stuff → personal vault; team/business stuff → team vault if one exists; AI brain setup improvements → file as a GitHub issue (next step).
 3. **Write to the right vault** automatically. Don't ask the user where things go — figure it out from the existing folder structure. Personal context goes to `Last Session.md`, `Decision Log.md`, or a journal entry. Team context goes to the team vault's equivalent files. Never let personal stuff leak into the team vault — when ambiguous, default to personal. The team vault stays clean.
-4. **For repo improvements:** draft a GitHub issue and offer to file it. Title + context + suggested fix + reporter info. Show it to the user. If they say yes, run `gh issue create --repo adelaidasofia/ai-brain-starter --title ... --body ...` automatically. If `gh` isn't authenticated, walk them through the one-time `gh auth login`. If they say no, save the draft to `<vault>/💡 Improvement Ideas.md` for later review.
+4. **For repo improvements:** draft a GitHub issue and offer to file it. Title + context + suggested fix + reporter info. Show it to the user. If they say yes, run `gh issue create --repo mycelium-hq/ai-brain-starter --title ... --body ...` automatically. If `gh` isn't authenticated, walk them through the one-time `gh auth login`. If they say no, save the draft to `<vault>/💡 Improvement Ideas.md` for later review.
 5. **Update Last Session.md** with a one-paragraph summary so the next session starts with full context.
 6. **Confirm with the user** in plain language what was saved and where. Then say goodbye.
 
@@ -264,12 +264,12 @@ Two new files at the repo root: a Mac/Linux bash bootstrap and a Windows PowerSh
 
 **Mac and Linux:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/adelaidasofia/ai-brain-starter/main/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mycelium-hq/ai-brain-starter/main/bootstrap.sh | bash
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/adelaidasofia/ai-brain-starter/main/bootstrap.ps1 | iex
+irm https://raw.githubusercontent.com/mycelium-hq/ai-brain-starter/main/bootstrap.ps1 | iex
 ```
 
 Both scripts install **the entire stack** from scratch:
@@ -368,7 +368,7 @@ After this session, here's what onboarding looks like for a brand-new team membe
 # 1. Install Claude Code (one-time, follow the prompts at https://claude.ai/code)
 # 2. Open the shared vault folder (Google Drive, OneDrive, etc.) on your machine
 # 3. Run the bootstrap (one command, ~5 minutes)
-curl -fsSL https://raw.githubusercontent.com/adelaidasofia/ai-brain-starter/main/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mycelium-hq/ai-brain-starter/main/bootstrap.sh | bash
 
 # 4. Open Claude Code in the shared folder
 cd "<path to the shared vault>"

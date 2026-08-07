@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # detect-partial-installs.sh — scan for half-installed components.
 #
-# Closes adelaidasofia/ai-brain-starter#4 — bootstrap: detect partially-installed
+# Closes mycelium-hq/ai-brain-starter#4 — bootstrap: detect partially-installed
 # graphify (missing scripts/ subfolder) and offer to refresh.
 #
 # Generalizes to any of the bundled skills + key infrastructure:
@@ -109,31 +109,37 @@ check_json_config() {
   fi
 }
 
-check_vault_aggregators() {
+check_vault_scripts() {
   local vault="$1"
   if [[ ! -d "$vault" ]]; then
     return
   fi
-  # Auto-detect Meta folder via the shared resolver (prefers the variant
-  # containing a known subfolder, so a machine "Meta/" can't shadow "⚙️ Meta/").
-  local meta=""
-  meta="$(python3 "$SCRIPT_DIR/_meta_resolver.py" "$vault" scripts Decisions 2>/dev/null || true)"
-  [[ -z "$meta" ]] && [[ -d "$vault/Meta" ]] && meta="$vault/Meta"
-  if [[ -z "$meta" ]]; then
-    add_issue "info" "vault-meta" "no Meta folder found in $vault (vault may not be set up yet)" "(run /setup-brain)"
+  # Delegate to sync-vault-scripts.sh in --dry-run so the manifest of which
+  # scripts a vault needs lives in ONE place (no drift between detector and
+  # syncer), and so meta-folder resolution is the deterministic decorated-first
+  # one the syncer uses (not a naive *Meta glob that picks plain "Meta" first).
+  local sync
+  sync="$SCRIPT_DIR/sync-vault-scripts.sh"
+  [[ -f "$sync" ]] || sync="$HOME/.claude/skills/ai-brain-starter/scripts/sync-vault-scripts.sh"
+  if [[ ! -f "$sync" ]]; then
     return
   fi
-  for script in "aggregate-sessions.py" "aggregate-decisions.py"; do
-    if [[ ! -f "$meta/scripts/$script" ]]; then
-      add_issue "warn" "vault-aggregator" "$script missing from $meta/scripts/" "cp ~/.claude/skills/ai-brain-starter/scripts/$script '$meta/scripts/'"
-    fi
-  done
+  local out n_create n_update
+  out="$(bash "$sync" --vault "$vault" --dry-run 2>/dev/null)"
+  n_create="$(printf '%s\n' "$out" | sed -n 's/^Created:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)"
+  n_update="$(printf '%s\n' "$out" | sed -n 's/^Updated:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)"
+  n_create="${n_create:-0}"; n_update="${n_update:-0}"
+  if [[ "$n_create" -gt 0 || "$n_update" -gt 0 ]]; then
+    add_issue "warn" "vault-scripts" \
+      "$((n_create + n_update)) vault script(s) missing or stale in $vault (re-sync from the repo)" \
+      "bash '$sync' --vault '$vault'"
+  fi
 }
 
 check_ai_brain_starter() {
   local skill_dir="$HOME/.claude/skills/ai-brain-starter"
   if [[ ! -d "$skill_dir" ]]; then
-    add_issue "warn" "ai-brain-starter" "ai-brain-starter skill not installed at $skill_dir" "git clone https://github.com/adelaidasofia/ai-brain-starter.git '$skill_dir'"
+    add_issue "warn" "ai-brain-starter" "ai-brain-starter skill not installed at $skill_dir" "git clone https://github.com/mycelium-hq/ai-brain-starter.git '$skill_dir'"
     return
   fi
   if [[ ! -f "$skill_dir/SKILL.md" ]]; then
@@ -170,7 +176,7 @@ check_json_config "$HOME/.claude/settings.local.json" "claude-settings-local"
 check_json_config "$HOME/.claude/.mcp.json" "mcp-config"
 
 if [[ -n "$VAULT_ROOT" ]]; then
-  check_vault_aggregators "$VAULT_ROOT"
+  check_vault_scripts "$VAULT_ROOT"
 fi
 
 # === output ===
@@ -209,7 +215,16 @@ else
   done
 
   if [[ "$AUTO_FIX" -eq 1 ]]; then
-    echo "--auto-fix not yet implemented; run the suggested Fix commands manually."
+    # The one fix we can apply safely + idempotently is the vault-script sync
+    # (it backs up any local edit to <file>.bak before overwriting). Everything
+    # else stays a manual suggestion.
+    sync_script="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/sync-vault-scripts.sh"
+    [[ -f "$sync_script" ]] || sync_script="$HOME/.claude/skills/ai-brain-starter/scripts/sync-vault-scripts.sh"
+    if [[ -n "$VAULT_ROOT" && -f "$sync_script" ]]; then
+      echo "--fix: syncing vault scripts into $VAULT_ROOT (local edits backed up to .bak first)..."
+      bash "$sync_script" --vault "$VAULT_ROOT" || true
+    fi
+    echo "--fix: any remaining issues above must be applied manually (see each 'Fix:' line)."
   fi
 fi
 

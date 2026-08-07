@@ -411,7 +411,7 @@ def fence_text(text: str) -> str:
 
 def truncate_body(text: str, limit: int = 500, marker: str = "\n\n[...truncated]") -> str:
     """Truncate to `limit` chars and append a marker if anything was cut.
-    Used by ingest-gmail to cap PII volume.
+    Used by the ingest connectors to cap PII volume.
     """
     if not text:
         return "_(body unavailable)_"
@@ -434,8 +434,8 @@ def slugify(value: str, fallback: str = "unknown") -> str:
 
 
 def slugify_unicode(title: str, fallback: str = "unknown", max_len: int = 60) -> str:
-    """Slugify that preserves unicode word characters. Used by ingest-notion
-    where root titles may contain accented characters that we want to keep.
+    """Slugify that preserves unicode word characters. Used where source
+    titles may contain accented characters that we want to keep.
     """
     if not title or not title.strip():
         return fallback

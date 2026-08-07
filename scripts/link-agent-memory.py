@@ -56,11 +56,77 @@ def _say(msg: str, quiet: bool) -> None:
         print(msg)
 
 
+def _is_link(p: Path) -> bool:
+    """True for a symlink OR a Windows directory junction.
+
+    Path.is_symlink() is False for a junction, so every is_symlink() check here
+    would misread a correctly-junctioned Windows install as an ordinary
+    directory — re-running would then "migrate" the vault's own files into
+    themselves and rename the link out of the way. Junctions are reparse
+    points, so ask the filesystem attribute directly.
+    """
+    try:
+        if p.is_symlink():
+            return True
+        if os.name != "nt":
+            return False
+        import stat as _stat
+        attrs = getattr(os.lstat(p), "st_file_attributes", 0)
+        return bool(attrs & _stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def _same_target(link: Path, target: Path) -> bool:
     try:
-        return link.is_symlink() and Path(os.path.realpath(link)) == Path(os.path.realpath(target))
+        return _is_link(link) and Path(os.path.realpath(link)) == Path(os.path.realpath(target))
     except OSError:
         return False
+
+
+def _link_dir(link: Path, target: Path) -> str:
+    """Point `link` at directory `target`. Returns the mechanism used.
+
+    Windows refuses os.symlink() with WinError 1314 ("a required privilege is
+    not held by the client") unless the process is elevated or Developer Mode
+    is on — neither is true for a normal user double-clicking an installer. The
+    memory link is the step that makes "your brain lives in your vault" true,
+    so failing there strands every future memory in ~/.claude, invisible in
+    Obsidian. Reported from a Windows 11 install.
+
+    A directory JUNCTION needs no privilege, is resolved by os.path.realpath(),
+    and reads/writes through transparently — everything this link is for. It is
+    local-volume and directory-only, which is exactly this use case. Symlink is
+    still preferred (it works on POSIX and on a Developer Mode box, and it
+    survives a target that does not exist yet); the junction is the fallback.
+    """
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return "symlink"
+    except OSError:
+        if os.name != "nt":
+            raise
+        import subprocess
+        # cmd.exe writes localized output in the OEM code page; we only care
+        # about the exit status, and _same_target verifies the real outcome.
+        proc = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        if proc.returncode != 0 or not _is_link(link):
+            raise SystemExit(
+                f"link-agent-memory: could not link {link} -> {target}.\n"
+                f"  os.symlink needs admin or Developer Mode on Windows, and the\n"
+                f"  junction fallback (mklink /J) also failed"
+                + (f": {proc.stdout.strip() or proc.stderr.strip()}" if (proc.stdout or proc.stderr) else "")
+                + "\n  Without this link your Claude Code memory stays in ~/.claude "
+                  "instead of your vault.\n"
+                  "  Fix: enable Developer Mode (Settings > System > For developers), "
+                  "or run\n"
+                  f'    cmd /c mklink /J "{link}" "{target}"\n'
+                  "  from an Administrator prompt, then re-run this script."
+            )
+        return "junction"
 
 
 def _migrate_contents(src_dir: Path, dst_dir: Path, *, dry_run: bool, quiet: bool) -> int:
@@ -118,11 +184,12 @@ def link_agent_memory(vault: str, *, dry_run: bool = False, quiet: bool = False)
         _say(f"✓ already linked: {mem} -> {agent_mem}", quiet)
         return mem
 
-    # A symlink pointing somewhere ELSE -> do not clobber; fail loud.
-    if mem.is_symlink():
+    # A link pointing somewhere ELSE -> do not clobber; fail loud. Covers a
+    # Windows junction too, which is not a symlink as far as Python is concerned.
+    if _is_link(mem):
         current = os.path.realpath(mem)
         raise SystemExit(
-            f"link-agent-memory: {mem} is already a symlink to {current}, not the vault's "
+            f"link-agent-memory: {mem} is already a link to {current}, not the vault's "
             f"Agent Memory ({agent_mem}). Refusing to clobber. Resolve by hand."
         )
 
@@ -141,7 +208,7 @@ def link_agent_memory(vault: str, *, dry_run: bool = False, quiet: bool = False)
         return mem
 
     proj_dir.mkdir(parents=True, exist_ok=True)
-    mem.symlink_to(agent_mem, target_is_directory=True)
+    how = _link_dir(mem, agent_mem)
 
     # Verify — a wrong-key / failed link is a silent brain-loss bug. Fail loud.
     if not _same_target(mem, agent_mem):
@@ -149,7 +216,7 @@ def link_agent_memory(vault: str, *, dry_run: bool = False, quiet: bool = False)
             f"link-agent-memory: VERIFY FAILED — {mem} does not resolve to {agent_mem}. "
             f"Memory would NOT reach the vault. Aborting."
         )
-    _say(f"✓ linked: {mem} -> {agent_mem}", quiet)
+    _say(f"✓ linked ({how}): {mem} -> {agent_mem}", quiet)
     _say("  Claude Code's memory now lives in your vault (visible in Obsidian, tracked by git).", quiet)
     return mem
 
@@ -165,4 +232,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     raise SystemExit(main())

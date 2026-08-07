@@ -13,44 +13,53 @@ at the vault and burns disk. This module is the safe-cleanup core shared by:
   - enforce-worktree-cap.py       (SessionStart: bound the total, reclaim-then-allow)
   - worktree-footprint-signal.py  (SessionStart: observe before it bloats)
 
-The recoverability guarantee
-----------------------------
-A worktree directory is safe to delete iff every file in it is recoverable:
+The recovery-content boundary
+-----------------------------
+The lifecycle behavior in this module predates the cloud-safe reader. This
+module does not claim to solve exclusion against a concurrent writer. It does
+guarantee that recovery classification never performs an unbounded content read:
 
   * COMMITTED work       -> preserved by the branch ref (`git worktree remove`
                             keeps the `claude/<slug>` branch; only the working
                             directory is deleted).
-  * content already in git -> recoverable from the object DB. Worktrees SHARE
-                            the main repo's object store, so `git hash-object`
-                            + `git cat-file --batch-check` is a DEFINITIVE test
-                            of "is this exact content stored anywhere in git?"
+  * content already in git -> bytes are read once through `safe_read`, hashed
+                            locally, then checked with `git cat-file`; Git never
+                            reopens a candidate path.
   * genuinely-unsaved    -> content that hashes to a blob NOT in the object DB.
                             We SNAPSHOT these to the main repo before deletion.
 
-`unrecoverable_content()` returns exactly the genuinely-unsaved set. It fails
-SAFE: on any git hiccup it returns the whole candidate list (over-preserve),
-never the empty set. This is what lets cleanup be aggressive without ever
-losing work — verified on a 102-worktree / 1.29M-file backlog where exactly
-one un-snapshotted file existed across all worktrees and the test caught it.
+An offline placeholder, special file, timeout, oversize file, or Git hiccup is
+uncertainty and therefore makes the existing caller refuse cleanup. Strong
+atomic deletion still requires an upstream writer lease / pre-create contract.
 
 Portable: no hardcoded paths; resolves the repo from cwd / CLAUDE_PROJECT_DIR.
 Pure stdlib.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+from datetime import datetime
 import shutil
 import sqlite3
 import subprocess
 import time
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
-# Canonical snapshot location — MUST match snapshot-pending-work-on-stop.py and
+from .safe_read import safe_read_bytes, safe_read_text
+
+# Canonical reaper-artifact locations, relative to the VAULT ROOT (never to the
+# repo being reaped) — MUST match snapshot-pending-work-on-stop.py and
 # surface-orphan-worktree-snapshots.py so orphan-surfacing + weekly prune find
-# snapshots written here. Falls back to a dot-dir for non-vault repos.
+# snapshots written here. Both of those resolve an ABSOLUTE vault path, so the
+# helpers below do too. When no vault can be identified, artifacts go to a
+# machine-local dir under ~/.claude — never into `main_repo`.
 SNAPSHOT_REL = "⚙️ Meta/Worktree Snapshots"
-SNAPSHOT_REL_FALLBACK = ".worktree-snapshots"
+SNAPSHOT_REL_FALLBACK = "worktree-snapshots"
+CLEANUP_LOG_REL = "⚙️ Meta/logs/worktree-cleanup.log"
 WORKTREES_SEG = ".claude/worktrees"
 
 # Heavy machine-exhaust dirs: never counted as "work" for idle detection.
@@ -61,6 +70,11 @@ EXHAUST = {
 }
 
 GIT_TIMEOUT = 120
+RECOVERY_READ_TIMEOUT_S = 5.0
+RECOVERY_MAX_FILE_BYTES = 64 * 1024 * 1024
+RECOVERY_MAX_TOTAL_BYTES = 128 * 1024 * 1024
+RECOVERY_MAX_CANDIDATES = 5_000
+RECOVERY_SCAN_DEADLINE_S = 30.0
 
 
 def find_main_repo(cwd: Path | None = None) -> Path | None:
@@ -117,12 +131,119 @@ def current_worktree(cwd: Path | None = None) -> tuple[Path, str] | None:
     return Path(head + marker + slug), slug
 
 
+def vault_root_or_none(main_repo: Path) -> Path | None:
+    """The vault this machine writes session artifacts to, or None if we cannot
+    identify one CONFIDENTLY.
+
+    NEVER returns `main_repo` or anything inside it. Reaper artifacts (the cleanup
+    log, snapshots of unsaved work) describe activity ACROSS repos and must not be
+    written into whichever repo is being reaped: a broad `git add` then stages vault
+    artifacts into a product repo. Measured 2026-07-23 on one machine: 8 repos
+    contaminated this way, two with files already staged for commit.
+
+    `resolve_vault_root()` alone is NOT sufficient here — its documented last resort
+    is `cwd`, which for these hooks is routinely a product repo. Its answer is
+    therefore accepted only when it independently looks like a vault AND is not the
+    repo being reaped.
+    """
+    try:
+        repo = main_repo.expanduser().resolve()
+    except OSError:
+        return None
+
+    candidates: list[Path] = []
+    # vault-root-ok: read raw, then fed to resolve_vault_root() below as its env
+    # argument (the sanctioned cascade call). The raw value is ALSO tried first
+    # because this helper must not inherit that resolver's two fallbacks: it
+    # returns `cwd` when nothing else matches, and it prefers any ancestor repo
+    # declaring its own close cascade. For a reaper the cwd IS routinely the
+    # product repo being reaped, and reaping a vault-shaped repo (this one,
+    # mycelium-vault) would resolve to that repo rather than the user's vault.
+    # Every candidate is still validated below (must look like a vault, must not
+    # be the reaped repo), so a wrong env value is rejected, not trusted.
+    env = os.environ.get("VAULT_ROOT")
+    if env:
+        candidates.append(Path(env))
+    try:  # optional: absent in a partial install, and this must never be fatal
+        from .vault_root import resolve_vault_root
+
+        candidates.append(resolve_vault_root(Path.cwd(), env))
+    except Exception:
+        pass
+
+    for cand in candidates:
+        try:
+            c = cand.expanduser().resolve()
+        except OSError:
+            continue
+        if c == repo or repo in c.parents:
+            continue  # the repo being reaped, or inside it — the exact bug
+        if (c / "⚙️ Meta").is_dir():
+            return c
+    return None
+
+
+def artifact_base(main_repo: Path) -> tuple[Path, bool]:
+    """(base directory for reaper artifacts, whether it is vault-shaped).
+
+    `WORKTREE_ARTIFACT_ROOT` overrides everything. That env var exists for TESTS:
+    these helpers now resolve to the caller's REAL vault, so a suite that builds a
+    throwaway repo and calls snapshot_dir_for() would write its fixtures into the
+    user's actual vault. Before this module took an absolute path, such a suite was
+    contained by accident — the old repo-relative join kept fixtures inside the temp
+    repo. Making the path correct for production therefore REMOVED that containment,
+    and a real run of the recovery suite deposited `regular/UNSAVED.md` and
+    `mode-window/secret.bin` into a live vault before this seam was added.
+    """
+    override = os.environ.get("WORKTREE_ARTIFACT_ROOT")
+    if override:
+        return Path(override).expanduser(), True
+    vault = vault_root_or_none(main_repo)
+    if vault is not None:
+        return vault, True
+    return Path.home() / ".claude", False
+
+
 def snapshot_dir_for(main_repo: Path) -> Path:
-    """Canonical snapshot root for this repo (vault dir if present, else dot-dir)."""
-    vault_meta = main_repo / SNAPSHOT_REL
-    if (main_repo / "⚙️ Meta").is_dir() or vault_meta.exists():
-        return vault_meta
-    return main_repo / SNAPSHOT_REL_FALLBACK
+    """Canonical snapshot root — the vault when identifiable, else machine-local.
+
+    Always ABSOLUTE and always OUTSIDE `main_repo`. A snapshot exists to survive the
+    destruction of the worktree it came from, so storing it inside the repo being
+    reaped is self-defeating.
+
+    This previously returned `main_repo / SNAPSHOT_REL` whenever `main_repo/"⚙️ Meta"`
+    merely EXISTED — treating a directory name as proof the repo was the vault. That
+    inference was false, and it CASCADED: the sibling cleanup-log writer created
+    `⚙️ Meta/logs/` inside every product repo it reaped, which then made this sniff
+    answer "vault!" for those repos, so snapshots of UNSAVED WORK began landing
+    in-repo. The old dot-dir fallback was no safer — `.worktree-snapshots` was
+    gitignored in none of the repos checked; it was simply losing to `⚙️ Meta`.
+    """
+    base, is_vault = artifact_base(main_repo)
+    return base / SNAPSHOT_REL if is_vault else base / SNAPSHOT_REL_FALLBACK
+
+
+def cleanup_log_path(main_repo: Path) -> Path:
+    """Absolute path of the shared worktree-cleanup log. Never inside `main_repo`."""
+    base, is_vault = artifact_base(main_repo)
+    return base / CLEANUP_LOG_REL if is_vault else base / "logs" / "worktree-cleanup.log"
+
+
+def append_cleanup_log(main_repo: Path, msg: str) -> None:
+    """Append one line to the shared cleanup log. Best-effort, never fatal.
+
+    ONE log now collects every repo's reaping, so the repo name travels IN the line
+    rather than in the file's location — which is what made a repo-relative path look
+    reasonable in the first place.
+    """
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        path = cleanup_log_path(main_repo)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"[{ts}] [{main_repo.name}] {msg}\n")
+    except OSError:
+        pass
 
 
 def git(repo: Path, args: list[str], timeout: int = GIT_TIMEOUT) -> subprocess.CompletedProcess:
@@ -132,17 +253,24 @@ def git(repo: Path, args: list[str], timeout: int = GIT_TIMEOUT) -> subprocess.C
     )
 
 
-def list_worktrees(repo: Path) -> list[Path]:
-    """Registered worktree paths (excluding the main checkout)."""
-    try:
-        out = git(repo, ["worktree", "list", "--porcelain"])
-    except (subprocess.TimeoutExpired, OSError):
-        return []
-    paths = [
-        Path(l[len(b"worktree "):].decode("utf-8", "replace"))
-        for l in out.stdout.splitlines()
-        if l.startswith(b"worktree ")
+def _parse_worktree_porcelain(payload: bytes) -> list[Path]:
+    """Raw paths from ``git worktree list --porcelain -z``."""
+    return [
+        Path(os.fsdecode(field[len(b"worktree "):]))
+        for field in payload.split(b"\x00")
+        if field.startswith(b"worktree ")
     ]
+
+
+def list_worktrees(repo: Path) -> list[Path] | None:
+    """Registered worktree paths, or None when Git cannot prove the set."""
+    try:
+        out = git(repo, ["worktree", "list", "--porcelain", "-z"])
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if out.returncode != 0:
+        return None
+    paths = _parse_worktree_porcelain(out.stdout)
     repo_r = repo.resolve()
     return [p for p in paths if p.resolve() != repo_r]
 
@@ -185,58 +313,171 @@ def is_idle(path: Path, idle_min: int = 60) -> bool:
     return True
 
 
-def dirty_files(worktree: Path) -> list[Path]:
-    """Absolute paths of uncommitted/untracked files in the worktree."""
+def _parse_status_porcelain(worktree: Path, payload: bytes) -> list[Path]:
+    """Paths from ``git status --porcelain -z`` with byte-preserving decode."""
+    entries = payload.split(b"\x00")
+    paths: list[Path] = []
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        if len(entry) >= 4 and entry[3:]:
+            paths.append(worktree / os.fsdecode(entry[3:]))
+            # In -z mode a rename/copy has a second raw source-path field with
+            # no XY prefix. It carries no remaining inode and must not be parsed
+            # as another status record.
+            if b"R" in entry[:2] or b"C" in entry[:2]:
+                index += 1
+        index += 1
+    return paths
+
+
+def dirty_files(worktree: Path) -> list[Path] | None:
+    """Dirty paths, or None when Git cannot prove the set."""
     try:
         out = subprocess.run(
-            ["git", "-C", str(worktree), "status", "--porcelain", "-z"],
+            [
+                "git", "-C", str(worktree), "status", "--porcelain", "-z",
+                "--untracked-files=all",
+            ],
             capture_output=True, timeout=60,
         )
     except (subprocess.TimeoutExpired, OSError):
-        return []
+        return None
     if out.returncode != 0:
-        return []
-    res: list[Path] = []
-    for e in out.stdout.split(b"\x00"):
-        if len(e) < 4:
-            continue
-        rel = e[3:].decode("utf-8", "replace")
-        if rel:
-            res.append(worktree / rel)
-    return res
+        return None
+    return _parse_status_porcelain(worktree, out.stdout)
 
 
-def unrecoverable_content(repo: Path, files: list[Path]) -> list[Path]:
-    """Subset of `files` whose exact content is NOT in the repo object DB.
+@dataclass
+class _RecoveryScan:
+    unique: list[tuple[Path, bytes, int]]
+    unsafe: list[tuple[Path, str]]
+    recoverable: int
 
-    Definitive recoverability test (worktrees share the object store). Fails
-    SAFE: on any hiccup returns the whole candidate list (over-preserve).
-    """
-    files = [f for f in files if f.is_file()]
-    if not files:
-        return []
-    try:
-        hp = subprocess.run(
-            ["git", "-C", str(repo), "hash-object", "--stdin-paths"],
-            input="\n".join(str(f) for f in files).encode(),
-            capture_output=True, timeout=300,
+
+def _blob_hash(data: bytes, object_format: str) -> str:
+    digest = hashlib.new(object_format)
+    digest.update(b"blob " + str(len(data)).encode("ascii") + b"\x00" + data)
+    return digest.hexdigest()
+
+
+def _recovery_scan(repo: Path, files: list[Path]) -> _RecoveryScan:
+    """Bounded-read candidates once, then classify their local blob hashes."""
+    reads: list[tuple[Path, bytes, int]] = []
+    unsafe: list[tuple[Path, str]] = []
+    missing = 0
+    total = 0
+    started = time.monotonic()
+    if len(files) > RECOVERY_MAX_CANDIDATES:
+        return _RecoveryScan([], [(files[0], "candidate-cap")], 0)
+    for file in files:
+        if time.monotonic() - started > RECOVERY_SCAN_DEADLINE_S:
+            unsafe.append((file, "scan-deadline"))
+            break
+        remaining_total = RECOVERY_MAX_TOTAL_BYTES - total
+        if remaining_total <= 0:
+            unsafe.append((file, "recovery-total-cap"))
+            break
+        per_file_limit = min(RECOVERY_MAX_FILE_BYTES, remaining_total)
+        result = safe_read_bytes(
+            file,
+            timeout=RECOVERY_READ_TIMEOUT_S,
+            max_bytes=per_file_limit,
         )
-        hashes = hp.stdout.decode().split()
-        if hp.returncode != 0 or len(hashes) != len(files):
-            return files
+        if result.status == "missing":
+            missing += 1
+            continue
+        if not result.ok:
+            unsafe.append((file, result.status))
+            if result.status == "too-large" and per_file_limit < RECOVERY_MAX_FILE_BYTES:
+                break
+            continue
+        data = result.data or b""
+        if len(data) > remaining_total:
+            unsafe.append((file, "recovery-total-cap"))
+            break
+        total += len(data)
+        reads.append((file, data, result.mode if result.mode is not None else 0o600))
+    if not reads:
+        return _RecoveryScan([], unsafe, missing)
+    try:
+        fmt = git(repo, ["rev-parse", "--show-object-format"], timeout=15)
+        object_format = fmt.stdout.decode("ascii", "replace").strip()
+        if fmt.returncode != 0 or object_format not in {"sha1", "sha256"}:
+            raise ValueError("unknown git object format")
+        hashes = [_blob_hash(data, object_format) for _path, data, _mode in reads]
         cp = subprocess.run(
             ["git", "-C", str(repo), "cat-file", "--batch-check"],
-            input="\n".join(hashes).encode(),
-            capture_output=True, timeout=300,
+            input=("\n".join(hashes) + "\n").encode("ascii"),
+            capture_output=True,
+            timeout=60,
         )
+        if cp.returncode != 0:
+            raise OSError("git cat-file failed")
         present: dict[str, bool] = {}
-        for line in cp.stdout.decode().splitlines():
+        for line in cp.stdout.decode("ascii", "replace").splitlines():
             parts = line.split()
             if len(parts) >= 2:
                 present[parts[0]] = parts[1] != "missing"
-        return [f for f, h in zip(files, hashes) if not present.get(h, False)]
-    except (subprocess.TimeoutExpired, OSError):
-        return files
+        unique = [
+            (path, data, mode)
+            for (path, data, mode), digest in zip(reads, hashes)
+            if not present.get(digest, False)
+        ]
+        return _RecoveryScan(
+            unique,
+            unsafe,
+            missing + len(reads) - len(unique),
+        )
+    except (ValueError, OSError, subprocess.TimeoutExpired):
+        return _RecoveryScan(reads, unsafe, missing)
+
+
+def unrecoverable_content(repo: Path, files: list[Path]) -> list[Path]:
+    """Paths unique to the worktree plus every path unsafe to bounded-read."""
+    scan = _recovery_scan(repo, files)
+    return [path for path, _data, _mode in scan.unique] + [
+        path for path, _why in scan.unsafe
+    ]
+
+
+def _write_recovery_copy(dst: Path, data: bytes, source_mode: int) -> bool:
+    """Atomically write bounded bytes; private content is never briefly public."""
+    temp: Path | None = None
+    fd: int | None = None
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        temp = dst.with_name(
+            f".{dst.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}"
+        )
+        fd = os.open(
+            str(temp),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        with os.fdopen(fd, "wb") as stream:
+            fd = None  # the stream owns it now
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+            if hasattr(os, "fchmod"):
+                os.fchmod(stream.fileno(), source_mode & 0o7777)
+            else:  # Windows: the temp is already restrictive; chmod is best-effort.
+                os.chmod(temp, source_mode & 0o7777)
+        os.replace(temp, dst)
+        return True
+    except OSError:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if temp is not None:
+            try:
+                temp.unlink()
+            except OSError:
+                pass
+        return False
 
 
 def snapshot_unrecoverable(main_repo: Path, worktree: Path, slug: str) -> tuple[int, int, bool]:
@@ -247,23 +488,22 @@ def snapshot_unrecoverable(main_repo: Path, worktree: Path, slug: str) -> tuple[
     refuse to delete the worktree.
     """
     files = dirty_files(worktree)
-    uniq = unrecoverable_content(main_repo, files)
-    recoverable = len(files) - len(uniq)
+    if files is None:
+        return 0, 0, False
+    scan = _recovery_scan(main_repo, files)
+    recoverable = scan.recoverable
     snap_root = snapshot_dir_for(main_repo) / slug
     snapped = 0
-    all_safe = True
-    for src in uniq:
+    all_safe = not scan.unsafe
+    for src, data, mode in scan.unique:
         try:
             rel = src.relative_to(worktree)
         except ValueError:
             all_safe = False
             continue
-        dst = snap_root / rel
-        try:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
+        if _write_recovery_copy(snap_root / rel, data, mode):
             snapped += 1
-        except OSError:
+        else:
             all_safe = False
     return snapped, recoverable, all_safe
 
@@ -289,7 +529,10 @@ def list_orphan_dirs(main_repo: Path) -> list[Path]:
     wt_dir = main_repo / WORKTREES_SEG
     if not wt_dir.is_dir():
         return []
-    registered = {p.resolve() for p in list_worktrees(main_repo)}
+    worktrees = list_worktrees(main_repo)
+    if worktrees is None:
+        return []  # unknown registration state can never authorize orphan reclaim
+    registered = {p.resolve() for p in worktrees}
     orphans: list[Path] = []
     try:
         for c in sorted(wt_dir.iterdir()):
@@ -307,12 +550,16 @@ def _gitfile_target(orphan: Path) -> Path | None:
     copies it verbatim, so it still points at the OLD location's gitdir.
     """
     gitfile = orphan / ".git"
-    try:
-        if not gitfile.is_file():
-            return None
-        txt = gitfile.read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
+    result = safe_read_text(
+        gitfile,
+        timeout=RECOVERY_READ_TIMEOUT_S,
+        max_bytes=64 * 1024,
+        errors="replace",
+        skip_binary=True,
+    )
+    if not result.ok:
         return None
+    txt = (result.text or "").strip()
     if not txt.startswith("gitdir:"):
         return None
     target = txt[len("gitdir:"):].strip()
@@ -347,45 +594,59 @@ def _is_relocation_orphan(orphan: Path, main_repo: Path) -> bool:
         return True  # external: points at a different/foreign .git tree
 
 
+def _bounded_recovery_files(root: Path) -> list[Path] | None:
+    """Enumerate a disconnected tree with count/deadline bounds and no reads."""
+    files: list[Path] = []
+    pending = [root]
+    started = time.monotonic()
+    while pending:
+        if time.monotonic() - started > RECOVERY_SCAN_DEADLINE_S:
+            return None
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if time.monotonic() - started > RECOVERY_SCAN_DEADLINE_S:
+                        return None
+                    if entry.is_dir(follow_symlinks=False):
+                        if entry.name not in EXHAUST:
+                            pending.append(Path(entry.path))
+                        continue
+                    if entry.name in EXHAUST:
+                        continue
+                    files.append(Path(entry.path))
+                    if len(files) > RECOVERY_MAX_CANDIDATES:
+                        return None
+        except OSError:
+            return None
+    return files
+
+
 def _reclaim_disconnected_orphan(main_repo: Path, orphan: Path, slug: str) -> tuple[str, int]:
     """Reclaim a relocation-orphan whose own git metadata is unusable.
 
     A worktree is a checkout of commits in the MAIN repo's shared object store,
-    so `unrecoverable_content(main_repo, ...)` stays a definitive recoverability
-    oracle even when the orphan's `.git` pointer is dead. Snapshot the
-    genuinely-unique files (uncommitted work that survived the move), then remove.
-    Fails SAFE: never deletes a file whose content isn't provably in the object DB
-    (unrecoverable_content over-preserves on any hiccup), and never removes the
-    dir if any unique file could not be copied out first.
+    so bounded local blob hashing can still classify content when the orphan's
+    `.git` pointer is dead. Snapshot the currently observed unique bytes, then
+    preserve the existing lifecycle behavior. This content boundary fails closed
+    on read/Git uncertainty; it does not provide concurrent-writer exclusion.
     """
-    files: list[Path] = []
-    try:
-        for root, dirs, fs in os.walk(orphan):
-            dirs[:] = [d for d in dirs if d not in EXHAUST]
-            for f in fs:
-                if f in EXHAUST:  # skip the .git pointer file, .DS_Store, etc.
-                    continue
-                files.append(Path(root) / f)
-    except OSError:
+    files = _bounded_recovery_files(orphan)
+    if files is None:
         return ("kept-unsafe", 0)
-    uniq = unrecoverable_content(main_repo, files)
+    scan = _recovery_scan(main_repo, files)
     snap_root = snapshot_dir_for(main_repo) / slug
     snapped = 0
-    all_safe = True
-    for src in uniq:
-        if not src.is_file():
-            continue
+    all_safe = not scan.unsafe
+    for src, data, mode in scan.unique:
         try:
             rel = src.relative_to(orphan)
         except ValueError:
             all_safe = False
             continue
-        dst = snap_root / rel
-        try:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
+        if _write_recovery_copy(snap_root / rel, data, mode):
             snapped += 1
-        except OSError:
+        else:
             all_safe = False
     if not all_safe:
         return ("kept-unsafe", snapped)
@@ -406,25 +667,28 @@ def reclaim_orphan_dir(main_repo: Path, orphan: Path, idle_min: int = 60) -> tup
       * idle gate: a dir touched < idle_min ago is left (a live/paused session).
       * `git -C <orphan> status` decides recoverability cheaply (uses the index):
           - clean       → rm (every file is committed/recoverable from a branch)
-          - dirty       → snapshot ONLY the dirty set (small; definitive object-DB
-                          recoverability test) then rm iff every unsaved file was
+          - dirty       → snapshot ONLY the dirty set (small; bounded object-DB
+                          content classification) then rm iff every unsaved file was
                           safely copied.
           - git errors  → the dir is disconnected from git. If its `.git` pointer
                           is dangling/external (the vault-RELOCATION copied-checkout
                           class that let `.claude/worktrees` reach 100k+ files), the
-                          MAIN repo's object DB is still a definitive recoverability
-                          oracle: snapshot the genuinely-unique files, then remove.
+                          MAIN repo's object DB can still classify the bounded-read
+                          bytes: snapshot the currently unique files, then remove.
                           Otherwise (unknown provenance) KEEP + report `kept-dangling`.
 
-    Unlike the bash prune's section-2 (`rm -rf` with no snapshot), this can lose
-    nothing: the only dirs deleted are clean checkouts or dirs whose unsaved
-    files were copied out first.
+    This is safer than the old blind `rm -rf`, but it is not an atomic writer
+    lease. Strong exclusion remains a runtime/upstream lifecycle dependency.
     """
     slug = orphan.name
     if not is_idle(orphan, idle_min):
         return ("kept-active", 0)
     try:
-        st = git(orphan, ["status", "--porcelain", "-z"], timeout=60)
+        st = git(
+            orphan,
+            ["status", "--porcelain", "-z", "--untracked-files=all"],
+            timeout=60,
+        )
         status_rc = st.returncode
     except (subprocess.TimeoutExpired, OSError):
         status_rc = -1
@@ -435,30 +699,21 @@ def reclaim_orphan_dir(main_repo: Path, orphan: Path, idle_min: int = 60) -> tup
         if _is_relocation_orphan(orphan, main_repo):
             return _reclaim_disconnected_orphan(main_repo, orphan, slug)
         return ("kept-dangling", 0)
-    dirty = [
-        orphan / e[3:].decode("utf-8", "replace")
-        for e in st.stdout.split(b"\x00")
-        if len(e) >= 4 and e[3:]
-    ]
+    dirty = _parse_status_porcelain(orphan, st.stdout)
     snapped = 0
     if dirty:
-        uniq = unrecoverable_content(main_repo, dirty)
+        scan = _recovery_scan(main_repo, dirty)
         snap_root = snapshot_dir_for(main_repo) / slug
-        all_safe = True
-        for src in uniq:
-            if not src.is_file():
-                continue
+        all_safe = not scan.unsafe
+        for src, data, mode in scan.unique:
             try:
                 rel = src.relative_to(orphan)
             except ValueError:
                 all_safe = False
                 continue
-            dst = snap_root / rel
-            try:
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst)
+            if _write_recovery_copy(snap_root / rel, data, mode):
                 snapped += 1
-            except OSError:
+            else:
                 all_safe = False
         if not all_safe:
             return ("kept-unsafe", snapped)
@@ -596,11 +851,14 @@ def obsidian_vault_paths(config_path: str | Path | None = None) -> list[Path]:
     Schema: {"vaults": {"<id>": {"path": "<abs>", "open": bool, ...}, ...}}.
     """
     cfg = _obsidian_config_path(config_path)
-    if cfg is None or not cfg.is_file():
+    if cfg is None:
+        return []
+    result = safe_read_text(cfg, timeout=2.0, max_bytes=1_000_000)
+    if not result.ok:
         return []
     try:
-        data = json.loads(cfg.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        data = json.loads(result.text or "")
+    except ValueError:
         return []
     vaults = data.get("vaults") if isinstance(data, dict) else None
     if not isinstance(vaults, dict):
@@ -653,9 +911,12 @@ def live_session_cwds(main_repo: Path, grace_min: int = 35) -> set[str] | None:
     liveness" (never interpret a missing lock as "no sessions are live → reap all").
     """
     lock = main_repo / SESSION_LOCK_REL
+    result = safe_read_text(lock, timeout=2.0, max_bytes=1_000_000)
+    if not result.ok:
+        return None
     try:
-        data = json.loads(lock.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        data = json.loads(result.text or "")
+    except ValueError:
         return None
     sessions = data.get("sessions") if isinstance(data, dict) else None
     if not isinstance(sessions, dict):

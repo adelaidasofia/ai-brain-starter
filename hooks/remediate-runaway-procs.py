@@ -127,6 +127,11 @@ def main() -> int:
     if os.environ.get("RUNAWAY_REMEDIATE_BYPASS") == "1":
         return _emit(None)
 
+    # POSIX-only mechanism (`ps` + SIGKILL). On Windows there is nothing safe
+    # to reap this way — exit silently rather than error on every session.
+    if os.name != "posix":
+        return _emit(None)
+
     names = {
         n.strip()
         for n in os.environ.get("RUNAWAY_PROC_NAMES", "yes").split(",")

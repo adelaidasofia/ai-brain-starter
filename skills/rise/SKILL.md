@@ -1,6 +1,6 @@
 ---
 name: rise
-description: Use when the user says /rise, "good morning", "let's start the day", or wants their morning consciousness routine. Identifies the Floor from natural-language check-in (does NOT ask the user to name a floor), runs body movement scaled to cycle phase or feeling, recommends top 1-3 priorities from configured to-do files, derives a daily intention. Pairs with /journal at night for accountability. Do NOT use for evening reflection (use /journal), pattern detection (use /patterns), or workout prescription (use /coach for the full session — /rise only handles the post-wake body wake-up flow).
+description: Use when the user says /rise, "good morning", "buenos días", "let's start the day", "morning routine", "morning check-in", wants their morning consciousness routine, or asks to set the day's priorities or intention first thing after waking. Pairs with /journal at night. NOT for evening reflection (use /journal), pattern detection (use /patterns), or workout prescription (use /coach; /rise covers only the post-wake body wake-up flow).
 ---
 
 # /rise — Morning Consciousness Routine

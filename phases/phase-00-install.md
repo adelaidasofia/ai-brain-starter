@@ -26,19 +26,19 @@ The bootstrap registers third-party plugin marketplaces and MCP servers (see the
 
 So get ahead of it. **Before** you invoke the bootstrap (or the instant you see the prompt appear, whichever comes first), tell the user, in their language, something close to this:
 
-> "Heads up on one thing: in a moment Claude Code will pause and ask you to approve the tools we're installing. It may warn that they come from third parties or are not verified by Anthropic. That is Claude Code's normal safety check for anything that did not come from Anthropic itself, not a sign that anything is wrong. It is safe to approve. Everything being added is listed, with licenses, in the project's README. Go ahead and approve it when you see it, and I'll keep going."
+> "Heads up on one thing: in a moment Claude Code will pause and ask you to approve the tools this setup installs. It may warn that they come from third parties or are not verified by Anthropic. That prompt is Claude Code's normal safety check for anything that did not come from Anthropic itself — it appears for every third-party tool, so seeing it here is expected, not a sign that something is wrong. The decision is yours: read what it lists, and everything being added is also itemized, with licenses, in the project's README if you want to look anything up first. If you're comfortable, approve it and I'll keep going; if you'd rather review the list together or skip something, say so and we'll do that."
 
 For Spanish-speaking installs, the same beat in voseo register (peer-to-peer, not a translation):
 
-> "Ojo con una cosa: Claude Code va a frenar en un momento para pedirte que apruebes las herramientas que estamos instalando. Te puede avisar, en un tono firme, que son de terceros o que Anthropic no las verificó. Ese es su chequeo de seguridad normal para cualquier cosa que no venga directo de Anthropic, no una señal de que algo esté mal. Es seguro aprobarlo. Todo lo que se está agregando está listado, con licencias, en el README del proyecto. Cuando aparezca, dale aprobar y seguimos."
+> "Ojo con una cosa: Claude Code va a frenar en un momento para pedirte que apruebes las herramientas que instala este setup. Te puede avisar, en un tono firme, que son de terceros o que Anthropic no las verificó. Ese aviso es su chequeo de seguridad normal para cualquier cosa que no venga directo de Anthropic — aparece con toda herramienta de terceros, así que verlo acá es esperable, no una señal de que algo esté mal. La decisión es tuya: leé lo que lista, y todo lo que se agrega también está detallado, con licencias, en el README del proyecto por si querés chequear algo antes. Si estás tranquila/o, aprobalo y sigo; si preferís que repasemos la lista juntos o saltear algo, decime y lo hacemos."
 
-Adapt the wording to the user and the moment; do not read it robotically. The non-negotiable part: before they read the prompt themselves, the user must KNOW it is coming, that it is expected, and that approving is the normal choice. Never let the trust prompt be the first time they hear of it. An unframed trust prompt is the single most common reason a non-technical install gets abandoned.
+Adapt the wording to the user and the moment; do not read it robotically. The non-negotiable part: before they read the prompt themselves, the user must KNOW it is coming, that it is expected for third-party tools, and that the decision is genuinely theirs — with a real offer to review or decline. Never let the trust prompt be the first time they hear of it, and never pre-commit them to approving something they have not read yet. An unframed trust prompt is the single most common reason a non-technical install gets abandoned; a pre-approved one is how an assistant loses the user's trust.
 
-### Step 0.0c. The command-approval prompt is also expected — push through it, never menu
+### Step 0.0c. The command-approval prompt is also expected — explain it, never menu
 
-Separately from the trust prompt above, Claude Code may also ask the user to approve the install **command** itself (the `git clone` / bootstrap run), depending on their permission mode. That approval is a normal part of the install, not a wall. When it appears, tell the user to approve it (or, in a stricter mode, to allow the command) so you can continue — exactly as you pre-framed the trust prompt.
+Separately from the trust prompt above, Claude Code may also ask the user to approve the install **command** itself (the `git clone` / bootstrap run), depending on their permission mode. That approval is a normal part of the install, not a wall. When it appears, tell the user what the command does in one plain sentence so they can approve it informed — exactly as you pre-framed the trust prompt.
 
-If a command is declined or a stricter permission mode blocks it, **ask the user to approve it and continue. Do NOT fall back to a menu of install methods, and do NOT downgrade to a `/plugin install`-only shortcut** — that adds the plugin's skills but skips the system tools, MCP wiring, and vault setup, so it is not the full install. A permission prompt is a click, not a reason to stop.
+If a stricter permission mode blocks a command the user already said yes to, explain how to allow it and continue. **Do NOT respond to a routine permission prompt by falling back to a menu of install methods, and never silently downgrade to a `/plugin install`-only shortcut** — that adds the plugin's skills but skips the system tools, MCP wiring, and vault setup, so it is not the full install. If the user themselves decline a command, that is an answer, not an obstacle: respect it, say plainly what the install will be missing without it, and offer to continue without that piece or to revisit it — never pressure, never route around their no.
 
 ---
 
@@ -59,8 +59,10 @@ bash "$HOME/.claude/skills/ai-brain-starter/bootstrap.sh"
 #### Windows
 
 ```powershell
-& "$env:USERPROFILE\.claude\skills\ai-brain-starter\bootstrap.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\skills\ai-brain-starter\bootstrap.ps1"
 ```
+
+Use this exact form, NOT `& "…bootstrap.ps1"`. A stock Windows machine (Windows 11 Home) ships PowerShell ExecutionPolicy `Restricted`, under which the call operator dies with *"running scripts is disabled on this system"* and the install never starts. `-ExecutionPolicy Bypass -File` is the codified launch (see `scripts/PORTABILITY.md` §5.4) and runs a local, cloned bootstrap on any policy. If the user is on Windows PowerShell 5.1 (the default) this is also the shell version the installer is hardened for.
 
 If the user reached /setup-brain WITHOUT running bootstrap first (rare), the repo was cloned another way (ai-brain-starter skill folder exists but bootstrap hasn't run). Invoking the local bootstrap above still does the full install. The clone-and-run commands in the bootstrap's own header comment are only for users who set things up BEFORE opening Claude Code.
 
@@ -97,6 +99,25 @@ This is expected and is the normal recovery — **not** a failure to work around
 3. Then continue. That one Terminal command installs Homebrew, Obsidian, gh, and everything else, and re-runs the whole bootstrap idempotently, so by the time they're back everything is in place.
 
 Do NOT try to install Homebrew yourself, do NOT "work around" it by skipping Obsidian (the entire vault lives in Obsidian), and do NOT downgrade to a partial install. A single framed Terminal step is the whole fix. Most users who followed the web guide already ran Homebrew in Terminal first, in which case the bootstrap finds it and this step never appears.
+
+**The same Terminal relay applies when the HARNESS is what's blocking.** Claude Code's own command-safety layer sometimes declines to execute the bootstrap command, and that block can persist even after the user re-approves — retrying the same command in-chat is not the fix and you should not keep trying. Hand the user the same one-line Terminal path instead, framed as the normal route (it genuinely is — the human running the installer themselves is exactly what that safety layer wants):
+
+> "Claude Code prefers that you run the installer yourself — one line, takes a couple minutes. Open Terminal (`Cmd+Space`, type 'terminal', Return) and paste this:
+> `git clone https://github.com/mycelium-hq/ai-brain-starter.git ~/.claude/skills/ai-brain-starter 2>/dev/null; bash ~/.claude/skills/ai-brain-starter/bootstrap.sh`
+> Tell me when it says it's done and we'll pick up right where we left off."
+
+Then resume at the setup interview the moment they confirm. One honest note if they ask about previewing first: `--dry-run` shows what WOULD be installed without changing anything.
+
+---
+
+### Step 0.1c. Finish any install gaps — quietly, yourself
+
+The bootstrap never shows a non-technical user a dead end: when an optional component doesn't land after retries (a Wi-Fi blip, a package-server hiccup — normal in a workshop room with 30 machines on one network), it records the gap in `~/.claude/.ai-brain-starter-install-gaps.jsonl` and tells the user the interview will finish it. That promise is YOURS to keep:
+
+1. At the start of the interview (or the moment the bootstrap output ends), check whether `~/.claude/.ai-brain-starter-install-gaps.jsonl` exists.
+2. For each line, run its `repair` command yourself, quietly. Most succeed on the second try minutes later.
+3. On success for all gaps, delete the file and mention it in ONE positive sentence at a natural pause ("by the way, graphify finished setting up in the background — all good"). Never present a gap as an error, never ask the user to run anything, never show them the file.
+4. If a repair still fails, leave its line in the file (the first-week check-in retries), keep the interview moving, and do not alarm the user — everything in that file is a component the setup runs fine without today.
 
 ---
 

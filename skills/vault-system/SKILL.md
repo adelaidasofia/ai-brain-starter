@@ -1,6 +1,6 @@
 ---
 name: vault-system
-description: Use for VAULT META-MAINTENANCE — the second brain itself as a system. Knowledge-graph build + query, second-brain metadata mapping, vault self-diagnose, drift detection, rule extraction, journal backfill, vault type setup, memory consolidation, Obsidian tooling (CLI / Bases / Markdown / JSON Canvas). Triggers include "rebuild the knowledge graph", "second-brain map", "diagnose the vault", "vault audit", "drift detection", "extract rules from vault", "backfill journals", "setup vault types", "consolidate memory", "obsidian cli", "vault hygiene". For QUERYING the vault to answer a question, use the graph-query tools directly. For daily journaling / coaching / pattern detection, use those skills, not this one.
+description: 'Use when maintaining the vault ITSELF as a system, not its content: knowledge-graph build/rebuild/query (graphify), second-brain mapping, vault diagnose/audit/hygiene, drift detection, extract rules from vault, backfill journals, setup vault types, consolidate memory (index over cap), Obsidian tooling (CLI/Bases/Markdown/JSON Canvas), vault bloat or Obsidian slow. Answering questions FROM the graph, use graph-query tools; daily journal/coaching/pattern detection, use those skills.'
 trigger: /vault-system
 ---
 
@@ -24,7 +24,7 @@ This is the SUBSTRATE layer. It maintains what every other skill uses.
 | Typed-file metadata extraction (books, meetings, people, articles, goals) | `second-brain-mapping` |
 | Vault self-check (CLAUDE.md / Meta folder / skills / hooks / MCPs / journal index) | `diagnose` |
 | Files edited many times in a short window (drift hotspot) | a drift-detection pass → a Drift Audit note |
-| Recurring corruption pattern needs codification | `extract-rules-from-vault` → new rule file |
+| Recurring corruption pattern needs codification | codify it into a new rule file in your rules dir |
 | Journals missing body / frontmatter context | `backfill-journal-body-context` |
 | Vault types not yet set up (new vault or refresh) | `setup-vault-types` |
 | Memory index getting long (truncation cliff) | `consolidate-memory` |
@@ -58,7 +58,7 @@ If unclear → ask ONE question. Don't guess.
 - Drift detection (files edited many times in 30d) → a drift-detection pass → a Drift Audit note
 
 ### Rule extraction + memory
-- Extract recurring patterns into a CLAUDE.md rule / rules file → `extract-rules-from-vault`
+- Extract recurring patterns into a CLAUDE.md rule / rules file → codify manually into a new rule file
 - Consolidate memory files (merge duplicates, prune the index) → `consolidate-memory`
 
 ### Journal hygiene

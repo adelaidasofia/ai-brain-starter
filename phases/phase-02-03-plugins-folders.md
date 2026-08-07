@@ -8,7 +8,7 @@ Then run this Python helper, substituting `[VAULT_PATH]` with the actual vault p
 
 ```bash
 python3 - <<'PY'
-import json, os, sys, urllib.request, zipfile, io, shutil
+import json, sys, urllib.request, zipfile, io, shutil
 from pathlib import Path
 
 VAULT = Path("[VAULT_PATH]")
@@ -86,13 +86,13 @@ cp_file = OBSIDIAN_DIR / "community-plugins.json"
 existing = []
 if cp_file.exists():
     try:
-        existing = json.loads(cp_file.read_text())
+        existing = json.loads(cp_file.read_text(encoding="utf-8"))
     except Exception:
         existing = []
 for pid in installed:
     if pid not in existing:
         existing.append(pid)
-cp_file.write_text(json.dumps(existing, indent=2))
+cp_file.write_text(json.dumps(existing, indent=2), encoding="utf-8")
 
 # Configure app.json — sort files by most recently modified (newest first).
 # Merge with existing settings so we don't clobber anything the user already set.
@@ -100,7 +100,7 @@ app_file = OBSIDIAN_DIR / "app.json"
 app_settings = {}
 if app_file.exists():
     try:
-        app_settings = json.loads(app_file.read_text())
+        app_settings = json.loads(app_file.read_text(encoding="utf-8"))
     except Exception:
         app_settings = {}
 app_settings.setdefault("fileSortOrder", "byModifiedTime")
@@ -127,16 +127,17 @@ machinery_excludes = [
 existing_filters = app_settings.get("userIgnoreFilters") or []
 app_settings["userIgnoreFilters"] = list(dict.fromkeys(existing_filters + machinery_excludes))
 
-app_file.write_text(json.dumps(app_settings, indent=2))
+app_file.write_text(json.dumps(app_settings, indent=2), encoding="utf-8")
 
 # Write sortspec.md for custom-sort plugin — sorts ALL folders by the most
 # recently modified file inside them recursively (newest first).
 # Uses "advanced recursive modified" which traverses the full folder tree,
 # so folders bubble up based on the newest note anywhere inside them.
-sortspec_file = VAULT_DIR / "sortspec.md"
+sortspec_file = VAULT / "sortspec.md"
 if not sortspec_file.exists():
     sortspec_file.write_text(
-        "---\nsorting-spec: |\n  target-folder: /*\n  > advanced recursive modified\n---\n"
+        "---\nsorting-spec: |\n  target-folder: /*\n  > advanced recursive modified\n---\n",
+        encoding="utf-8",
     )
     print("sortspec.md created — folders will sort by most recently modified note (recursive).")
 else:
@@ -148,7 +149,7 @@ else:
 # here skips that manual step entirely.
 custom_sort_data = PLUGINS_DIR / "custom-sort" / "data.json"
 if "custom-sort" in installed and not custom_sort_data.exists():
-    custom_sort_data.write_text(json.dumps({"suspended": False}, indent=2))
+    custom_sort_data.write_text(json.dumps({"suspended": False}, indent=2), encoding="utf-8")
     print("custom-sort pre-activated (suspended: false written to data.json).")
 
 print(f"\nDone. Installed {len(installed)}/{len(PLUGINS)} plugins.")

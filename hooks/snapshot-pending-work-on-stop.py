@@ -113,7 +113,7 @@ def main() -> int:
         return 0
 
     cwd = Path.cwd().resolve()
-    cwd_str = str(cwd)
+    cwd_str = str(cwd).replace("\\", "/")  # marker must match Windows paths too
     if "/.claude/worktrees/" not in cwd_str:
         return 0
 

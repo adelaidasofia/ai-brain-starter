@@ -45,7 +45,7 @@ Cut to Claude Code app, fresh session, empty input.
 Show the prompt being pasted from clipboard:
 
 ```
-Please set up my AI Brain Starter end-to-end in this session. Clone https://github.com/adelaidasofia/ai-brain-starter.git into ~/.claude/skills/ai-brain-starter (git pull if it already exists), run bash ~/.claude/skills/ai-brain-starter/bootstrap.sh, then start the setup interview by running the setup-brain skill. Keep going through every phase without stopping. I shouldn't have to type any commands between steps.
+Please set up my AI Brain Starter end-to-end in this session. Clone https://github.com/mycelium-hq/ai-brain-starter.git into ~/.claude/skills/ai-brain-starter (git pull if it already exists), run bash ~/.claude/skills/ai-brain-starter/bootstrap.sh, then start the setup interview by running the setup-brain skill. Keep going through every phase without stopping. I shouldn't have to type any commands between steps.
 ```
 
 Hit return. Don't narrate during clone.
@@ -88,7 +88,7 @@ Show:
 
 End card:
 
-> **github.com/adelaidasofia/ai-brain-starter**
+> **github.com/mycelium-hq/ai-brain-starter**
 > *Read the Reliability Manifesto. Install yours.*
 
 ---

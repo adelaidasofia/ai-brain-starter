@@ -1,6 +1,6 @@
 ---
 name: health-doctor
-description: Observability surface for the health-mcp auto-trigger chain. Shows freshness of every data source (Apple Health, Oura, Fitbit, labs), last coach prescription + completion, missed-day count, lab status flags, and which auto-trigger hooks are installed. Use when user says /health doctor, /health status, asks "is the auto-chain working", "when was the last sync", "did the coach prescribe today", or wants to debug why a prescription didn't appear in calendar.
+description: Use when the user runs /health doctor or /health status, asks whether the health auto-chain is working, when the last Oura, Fitbit, Apple Health, or labs sync happened, whether the coach prescribed today, why a workout or prescription didn't appear in the calendar, why wearable data looks stale or missing, whether an out-of-range lab marker needs a re-test, or wants to confirm health-mcp hook wiring after first-time setup.
 ---
 
 # health-doctor

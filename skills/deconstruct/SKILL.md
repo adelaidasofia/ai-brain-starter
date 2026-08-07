@@ -1,6 +1,6 @@
 ---
 name: deconstruct
-description: First-principles analyst. Surfaces hidden assumptions, finds foundational truths, rebuilds from scratch, identifies the high-leverage move.
+description: 'Use when a decision or strategy rests on unexamined convention: the user says ''that''s how it''s done'', ''best practice'', or ''everyone does it this way'', copies a competitor, or feels stuck in a pricing model, business model, roadmap, hiring process, or career path they can''t justify from scratch. Also use on any high-stakes decision (stakes: high) before commit, or when the user types /deconstruct or asks to question assumptions or reason from first principles.'
 trigger: /deconstruct
 ---
 

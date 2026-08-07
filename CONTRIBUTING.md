@@ -6,7 +6,7 @@ Thanks for wanting to help. This project is run by one person — here's how to 
 
 ## Found a bug?
 
-Open a [GitHub issue](https://github.com/adelaidasofia/ai-brain-starter/issues) and describe:
+Open a [GitHub issue](https://github.com/mycelium-hq/ai-brain-starter/issues) and describe:
 - What you were trying to do
 - What happened instead
 - Your setup (Mac / Windows / Linux, Obsidian version)

@@ -11,7 +11,7 @@
 #     Code and paste the setup prompt. Detection is via $CLAUDE_CODE_ENTRYPOINT.
 #
 # Usage (clone the repo first, then run the local script; do not curl-pipe):
-#     git clone https://github.com/adelaidasofia/ai-brain-starter ~/.claude/skills/ai-brain-starter
+#     git clone https://github.com/mycelium-hq/ai-brain-starter ~/.claude/skills/ai-brain-starter
 #     bash ~/.claude/skills/ai-brain-starter/bootstrap.sh
 #
 # What it installs:
@@ -116,7 +116,7 @@
 
 set -euo pipefail
 
-REPO_URL="https://github.com/adelaidasofia/ai-brain-starter.git"
+REPO_URL="https://github.com/mycelium-hq/ai-brain-starter.git"
 SKILL_DIR="$HOME/.claude/skills/ai-brain-starter"
 DRY_RUN=0
 # Corporate / hardened install profile (surfaced by an enterprise security
@@ -144,7 +144,7 @@ BACKUPS=()
 CLEANED=()
 
 # === Forensics: persistent log file ===
-# Closes adelaidasofia/ai-brain-starter#3 — every bootstrap run writes a
+# Closes mycelium-hq/ai-brain-starter#3 — every bootstrap run writes a
 # timestamped log to ~/.claude/.bootstrap.log (rotated when >5MB). When something
 # breaks weeks later, the log is the forensic source of truth.
 BOOTSTRAP_LOG="$HOME/.claude/.bootstrap.log"
@@ -170,7 +170,7 @@ for arg in "$@"; do
     --profile=*)
       echo "WARNING: unknown --profile '${arg#*=}' (expected: corporate). Ignoring." >&2 ;;
     --restore)
-      # Closes adelaidasofia/ai-brain-starter#2 — auto-restore from .bak files
+      # Closes mycelium-hq/ai-brain-starter#2 — auto-restore from .bak files
       RESTORE_SCRIPT="$SKILL_DIR/scripts/bootstrap-restore.sh"
       if [[ ! -f "$RESTORE_SCRIPT" ]]; then
         # Fallback: maintainer location
@@ -210,7 +210,7 @@ for arg in "$@"; do
         exit 2
       fi ;;
     --install-hooks-user-level)
-      # Closes adelaidasofia/ai-brain-starter#6 — install hooks at user level
+      # Closes mycelium-hq/ai-brain-starter#6 — install hooks at user level
       # so they fire universally, including inside .claude/worktrees/<name>/.
       INSTALLER="$SKILL_DIR/scripts/install-hooks-user-level.py"
       [[ ! -f "$INSTALLER" ]] && [[ -f "$HOME/Desktop/ai-brain-starter/scripts/install-hooks-user-level.py" ]] && \
@@ -324,6 +324,30 @@ is_mac()   { [[ "$(uname -s)" == "Darwin" ]]; }
 is_linux() { [[ "$(uname -s)" == "Linux" ]]; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# quiet_retry CMD... — run with FULL output captured to $BOOTSTRAP_LOG (never
+# /dev/null: a silent failure used to be undiagnosable), retrying once after
+# 5s. Workshop rooms put 30 machines on one Wi-Fi hitting PyPI at the same
+# minute — transient fetch failures are the NORM there, and a retry converts
+# most of them into clean installs instead of red ✗ lines.
+quiet_retry() {
+  "$@" >>"$BOOTSTRAP_LOG" 2>&1 && return 0
+  sleep 5
+  "$@" >>"$BOOTSTRAP_LOG" 2>&1
+}
+
+# note_gap COMPONENT REPAIR_CMD — a component didn't land after retries.
+# For a non-technical user this must NOT look like breakage: record the gap
+# machine-readably so the setup interview (phase-00 Step 0.7) repairs it
+# automatically, and tell the user — calmly — that nothing is needed from them.
+GAPS_FILE="$HOME/.claude/.ai-brain-starter-install-gaps.jsonl"
+note_gap() {
+  mkdir -p "$HOME/.claude" 2>/dev/null || true
+  printf '{"ts":"%s","component":"%s","repair":"%s"}\n' \
+    "$(date +%Y-%m-%dT%H:%M:%S)" "$1" "$2" >> "$GAPS_FILE" 2>/dev/null || true
+  log "$(t "$1 will finish setting up during the interview — nothing for you to do." \
+           "$1 se termina de configurar durante la entrevista — no tenés que hacer nada.")"
+}
 
 # run_with_timeout SECS CMD [ARGS...] — portable timeout wrapper.
 # Prefers GNU `timeout` (Linux + Mac with coreutils) or `gtimeout` (brew),
@@ -929,7 +953,15 @@ elif is_mac && ! have brew; then
     exit 0
   fi
 
-  # Interactive terminal (or dry-run): install Homebrew for real — the password
+  if [[ $DRY_RUN -eq 1 ]]; then
+    # A dry run must NEVER mutate the machine. This branch used to fall
+    # through to the real installer ("or dry-run: install for real") — a live
+    # user discovered Homebrew/Node/gh/pipx/graphify actually installed during
+    # their "safe preview" and lost trust in the flag entirely.
+    dry "would: install Homebrew (interactive — its installer asks for the Mac password)"
+  else
+
+  # Interactive terminal: install Homebrew for real — the password
   # prompt below can actually be answered here.
   hdr "$(t "Installing Homebrew" "Instalando Homebrew")"
   log "$(t \
@@ -953,6 +985,8 @@ elif is_mac && ! have brew; then
   elif [[ -x /usr/local/bin/brew ]]; then
     eval "$(/usr/local/bin/brew shellenv)"
   fi
+
+  fi  # end DRY_RUN guard
 fi
 
 # ───────────────────────────────────────────────────────────────────────────────
@@ -965,6 +999,8 @@ if ! python3 -c "import sys; assert sys.version_info >= (3,10)" 2>/dev/null; the
               "Perfil corporativo: no se encontró Python 3.10+ — NO se instala automáticamente (espacio de usuario, sin sudo).")"
     warn "$(t "Provision Python via your IT-approved channel, then re-run. Some steps that need python3 will be skipped." \
               "Instalá Python por tu canal aprobado de IT y volvé a correr. Algunos pasos que necesitan python3 se omitirán.")"
+  elif [[ $DRY_RUN -eq 1 ]]; then
+    dry "would: install Python 3.12 (brew on Mac; apt/dnf/pacman on Linux)"
   else
     hdr "Installing Python 3.12"
     if is_mac; then
@@ -989,6 +1025,8 @@ if ! have node; then
               "Perfil corporativo: no se encontró Node.js — NO se instala automáticamente (espacio de usuario, sin sudo).")"
     warn "$(t "Provision Node.js via your IT-approved channel, then re-run. Some steps that need node will be skipped." \
               "Instalá Node.js por tu canal aprobado de IT y volvé a correr. Algunos pasos que necesitan node se omitirán.")"
+  elif [[ $DRY_RUN -eq 1 ]]; then
+    dry "would: install Node.js (brew on Mac; apt/dnf/pacman on Linux)"
   else
     hdr "Installing Node.js"
     if is_mac; then
@@ -1011,7 +1049,9 @@ have npm  && ok "npm $(npm --version)"
 # once Node is present.
 # ───────────────────────────────────────────────────────────────────────────────
 
-if ! have claude; then
+if ! have claude && [[ $DRY_RUN -eq 1 ]]; then
+  dry "would: npm install -g @anthropic-ai/claude-code"
+elif ! have claude; then
   hdr "$(t "Installing Claude Code" "Instalando Claude Code")"
   log "$(t \
     "Claude Code is Anthropic's developer tool that runs the AI brain skill." \
@@ -1032,16 +1072,22 @@ have claude && ok "claude $(claude --version 2>/dev/null | head -1 || echo insta
 # pipx (Python app installer)
 # ───────────────────────────────────────────────────────────────────────────────
 
-if ! have pipx; then
+if ! have pipx && [[ $DRY_RUN -eq 1 ]]; then
+  dry "would: install pipx (brew on Mac; pip --user on Linux)"
+elif ! have pipx; then
   hdr "Installing pipx"
   if is_mac; then
     brew install pipx && pipx ensurepath || err "pipx install failed"
   else
     python3 -m pip install --user pipx && python3 -m pipx ensurepath || err "pipx install failed"
   fi
-  # pipx ensurepath updates ~/.zshrc but doesn't affect this session
-  export PATH="$HOME/.local/bin:$PATH"
 fi
+# pipx installs console scripts into ~/.local/bin, and `pipx ensurepath` only
+# edits rc files (no effect on THIS shell). Export unconditionally — when pipx
+# was already present (brew), nothing ever added ~/.local/bin here, so tools
+# pipx installs below (graphify, fastmcp) looked like they "failed" even when
+# the install succeeded. That was the workshop machine's red ✗.
+export PATH="$HOME/.local/bin:$PATH"
 have pipx && ok "pipx $(pipx --version 2>/dev/null || echo installed)"
 
 # ───────────────────────────────────────────────────────────────────────────────
@@ -1050,7 +1096,9 @@ have pipx && ok "pipx $(pipx --version 2>/dev/null || echo installed)"
 # later (for issue filing), they can run: gh auth login
 # ───────────────────────────────────────────────────────────────────────────────
 
-if ! have gh; then
+if ! have gh && [[ $DRY_RUN -eq 1 ]]; then
+  dry "would: install gh, the GitHub CLI (brew on Mac; apt/dnf/pacman on Linux)"
+elif ! have gh; then
   hdr "Installing gh (GitHub CLI)"
   if is_mac; then
     brew install gh || warn "gh install failed — non-blocking, continue"
@@ -1072,7 +1120,9 @@ have gh && ok "gh $(gh --version 2>/dev/null | head -1 | awk '{print $3}')" || t
 # ───────────────────────────────────────────────────────────────────────────────
 
 if is_mac; then
-  if [[ ! -d "/Applications/Obsidian.app" ]]; then
+  if [[ ! -d "/Applications/Obsidian.app" ]] && [[ $DRY_RUN -eq 1 ]]; then
+    dry "would: brew install --cask obsidian"
+  elif [[ ! -d "/Applications/Obsidian.app" ]]; then
     hdr "$(t "Installing Obsidian" "Instalando Obsidian")"
     log "$(t \
       "Obsidian is the note-taking app this whole setup writes into. Free, runs locally, no account." \
@@ -1099,7 +1149,9 @@ else
       || [[ -f "$HOME/.local/share/flatpak/exports/bin/md.obsidian.Obsidian" ]] \
       || [[ -x "$HOME/.local/bin/obsidian" ]]
   }
-  if ! obsidian_installed; then
+  if ! obsidian_installed && [[ $DRY_RUN -eq 1 ]]; then
+    dry "would: install Obsidian (snap, then flatpak, then AppImage download)"
+  elif ! obsidian_installed; then
     hdr "Installing Obsidian"
     log "Obsidian is the note-taking app this whole setup writes into. Free, runs locally, no account."
 
@@ -1138,11 +1190,25 @@ fi
 # graphify CLI + Python package
 # ───────────────────────────────────────────────────────────────────────────────
 
-if ! have graphify; then
+if ! have graphify && [[ $DRY_RUN -eq 1 ]]; then
+  dry "would: pipx install graphifyy && graphify install"
+elif ! have graphify; then
   hdr "Installing graphify (knowledge graph builder)"
-  log "graphify reduces token usage by ~70% on vault queries. Most of this setup depends on it."
-  pipx install graphifyy >/dev/null 2>&1 || err "graphifyy install failed"
-  graphify install >/dev/null 2>&1 || err "graphify install failed"
+  log "$(t "graphify makes big vault questions fast (it builds the knowledge graph)." \
+           "graphify hace rápidas las preguntas grandes del vault (construye el grafo de conocimiento).")"
+  # Full output goes to $BOOTSTRAP_LOG (never /dev/null — a red ✗ with zero
+  # diagnostics was undiagnosable on a real workshop machine). pip --user is
+  # the fallback when pipx itself misbehaves; both land in ~/.local/bin,
+  # which is already exported above.
+  quiet_retry pipx install graphifyy \
+    || quiet_retry python3 -m pip install --user graphifyy \
+    || true
+  hash -r 2>/dev/null || true
+  if have graphify; then
+    quiet_retry graphify install || note_gap "graphify" "graphify install"
+  else
+    note_gap "graphify" "pipx install graphifyy && graphify install"
+  fi
 fi
 have graphify && ok "graphify $(graphify --version 2>/dev/null | head -1 || echo installed)"
 
@@ -1152,10 +1218,12 @@ have graphify && ok "graphify $(graphify --version 2>/dev/null | head -1 || echo
 # project-specific MCP the user (or their team) builds on top of this stack.
 # ───────────────────────────────────────────────────────────────────────────────
 
-if ! have fastmcp; then
+if ! have fastmcp && [[ $DRY_RUN -eq 1 ]]; then
+  dry "would: pipx install fastmcp"
+elif ! have fastmcp; then
   hdr "Installing fastmcp"
   log "fastmcp lets you build custom MCP servers in a few lines of Python."
-  pipx install fastmcp >/dev/null 2>&1 || warn "fastmcp install failed (non-blocking — install later with: pipx install fastmcp)"
+  quiet_retry pipx install fastmcp || note_gap "fastmcp" "pipx install fastmcp"
 fi
 have fastmcp && ok "fastmcp $(fastmcp --version 2>/dev/null | head -1 || echo installed)"
 
@@ -1202,7 +1270,24 @@ if [[ -d "$SKILL_DIR/.git" ]]; then
       STASH_MSG="bootstrap auto-stash $(date +%Y-%m-%d-%H%M)"
       log "Detected local uncommitted changes — stashing as: $STASH_MSG"
       log "Recover later with: cd $SKILL_DIR && git stash list && git stash pop"
-      do_cmd "git stash push -u -m '$STASH_MSG'" git stash push -u -m "$STASH_MSG" >/dev/null 2>&1 || warn "stash failed"
+      if [[ $DRY_RUN -eq 1 ]]; then
+        dry "git stash push -u -m '$STASH_MSG'"
+      elif git stash push -u -m "$STASH_MSG" >/dev/null 2>&1; then
+        # The checkout is now pristine upstream with the user's patches removed.
+        # sync-vault-scripts.sh refuses to run while this is set, so the vault
+        # does not get the UNPATCHED copies written over its patched ones. It
+        # reaches that script through sync-skills.sh -> sync-skills.py, which is
+        # why this is an exported env var and not an argument. Scoped to this
+        # bootstrap process: it dies with the run, so the user's next manual
+        # sync (after `git stash pop`) is unaffected.
+        export ABS_CLONE_PATCHES_STASHED="$STASH_MSG"
+        warn "Your vault's <meta>/scripts/ will NOT be refreshed this run — this"
+        warn "  clone no longer holds your patches, and syncing would overwrite the"
+        warn "  patched copies in your vault. Restore and sync when ready:"
+        warn "    cd $SKILL_DIR && git stash pop && bash scripts/sync-vault-scripts.sh"
+      else
+        warn "stash failed"
+      fi
     fi
     do_cmd "git pull --quiet (fast-forward $BEHIND commit(s))" git pull --quiet 2>/dev/null || warn "git pull failed"
     UPDATED+=("ai-brain-starter clone (pulled $BEHIND commit(s))")
@@ -1233,7 +1318,7 @@ SKILL_FORKS=()
 SKILL_SYMLINKS=()
 SKILLS_TO_SYNC=()
 
-for sub in graphify meeting-todos patterns insights deconstruct daily-journal rise repurpose-talk nano-banana second-brain-mapping setup-vault-types diagnose note-todos sunday-review coach coaching backfill-journal-body-context longitudinal resolver-query for-my-team health-context health-doctor health-setup ingest-github ingest-health ingest-youtube evolve instinct-export instinct-import interview-me longitudinal doubt-driven-development secret-warn; do
+for sub in graphify cierre-de-llamada meeting-todos patterns insights deconstruct daily-journal rise repurpose-talk nano-banana second-brain-mapping setup-vault-types diagnose note-todos sunday-review coach coaching backfill-journal-body-context longitudinal resolver-query for-my-team health-context health-doctor health-setup ingest-github ingest-health ingest-youtube evolve instinct-export instinct-import interview-me longitudinal doubt-driven-development secret-warn; do
   dst="$HOME/.claude/skills/$sub"
 
   if [[ -L "$dst" ]]; then
@@ -1424,8 +1509,8 @@ if [[ "${SKIP_VENDOR_SKILLS:-0}" != "1" ]]; then
                   "AVISO: Claude Code puede frenar en un momento para pedirte que apruebes estas herramientas.")"
   log "  ℹ️  $(t "That prompt is its normal safety check for anything not from Anthropic." \
                   "Ese aviso es su chequeo de seguridad normal para cualquier cosa que no viene de Anthropic.")"
-  log "  ℹ️  $(t "It is expected and safe to approve. The README explains what gets added." \
-                  "Es esperado, y aprobarlo es lo normal. El README explica todo lo que se está agregando.")"
+  log "  ℹ️  $(t "It is expected for third-party tools. What gets added is itemized in the README - the choice is yours." \
+                  "Es esperado con herramientas de terceros. El README detalla todo lo que se agrega - la decisión es tuya.")"
   log ""
 
   # Register a marketplace + install a plugin (idempotent + DRY_RUN-safe).
@@ -1449,11 +1534,22 @@ if [[ "${SKIP_VENDOR_SKILLS:-0}" != "1" ]]; then
   install_plugin "getsentry/sentry-skills" "sentry-skills@sentry-skills"
 
   # Trail of Bits skills (CC-BY-SA-4.0, security firm).
-  # Marketplace bundle. We install the relevant 8 plugins (Python toolchain +
-  # security-defaults + property-based testing + diff review + clarification).
+  # Marketplace bundle. We install the relevant 7 plugins (security-defaults +
+  # property-based testing + diff review + clarification).
   # Skipped: blockchain/smart-contract specifics, Burp Suite, DWARF, etc.
+  #
+  # DELIBERATELY EXCLUDED: modern-python. Its SessionStart hook prepends a PATH
+  # shim for `python3`/`python` that prints "ERROR: use uv run python3" and
+  # exit-1s on every bare invocation. ai-brain-starter's own hook fleet calls
+  # bare `python3` (with `|| true` / `2>/dev/null`), so with the shim active the
+  # entire hook layer — session close, the write-time secret guard, context
+  # loaders, aggregators — silently no-ops. It is Python-dev tooling irrelevant
+  # to a knowledge-worker vault and a footgun for non-developers. The substrate
+  # is ALSO hardened against any such refuse-shim ([PYTHON] token + PATH-strip),
+  # so a user who wants the uv/ruff toolchain can safely re-add it manually:
+  #   claude plugin install modern-python@trailofbits
   claude_marketplace_safe "trailofbits/skills"
-  for plugin in modern-python insecure-defaults sharp-edges property-based-testing static-analysis testing-handbook-skills differential-review ask-questions-if-underspecified; do
+  for plugin in insecure-defaults sharp-edges property-based-testing static-analysis testing-handbook-skills differential-review ask-questions-if-underspecified; do
     claude_install_safe "$plugin@trailofbits"
   done
   if [[ $DRY_RUN -eq 0 ]]; then ok "trailofbits plugins ready"; fi
@@ -1729,7 +1825,7 @@ for check in "${CHECKS[@]}"; do
   fi
 done
 # Skill folders (full bundled set + humanizer + ai-brain-starter itself)
-for sub in graphify meeting-todos patterns insights deconstruct daily-journal rise repurpose-talk nano-banana humanizer ai-brain-starter diagnose second-brain-mapping setup-vault-types note-todos sunday-review coach coaching backfill-journal-body-context longitudinal resolver-query for-my-team health-context health-doctor health-setup ingest-github ingest-health ingest-youtube evolve instinct-export instinct-import interview-me doubt-driven-development secret-warn; do
+for sub in graphify cierre-de-llamada meeting-todos patterns insights deconstruct daily-journal rise repurpose-talk nano-banana humanizer ai-brain-starter diagnose second-brain-mapping setup-vault-types note-todos sunday-review coach coaching backfill-journal-body-context longitudinal resolver-query for-my-team health-context health-doctor health-setup ingest-github ingest-health ingest-youtube evolve instinct-export instinct-import interview-me doubt-driven-development secret-warn; do
   if [[ -d "$HOME/.claude/skills/$sub" ]]; then
     ok "skill: $sub"
   else
@@ -2014,7 +2110,7 @@ if [[ "$CORPORATE_PROFILE" == "1" ]]; then
 Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ) · Profile: corporate (hardened) · Host: $(uname -sm 2>/dev/null)
 
 ## Pinned versions (no auto-update)
-- ai-brain-starter skill : ${ABS_DESC} (rev ${ABS_REV}) — https://github.com/adelaidasofia/ai-brain-starter
+- ai-brain-starter skill : ${ABS_DESC} (rev ${ABS_REV}) — https://github.com/mycelium-hq/ai-brain-starter
   Self-update hook DISABLED via sentinel ~/.claude/.ai-brain-starter-pinned (delete it to re-enable updates).
 - Claude Code CLI        : ${CC_VER} — autoupdater off (DISABLE_AUTOUPDATER=1 + CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1)
 - Obsidian               : pin to your IT-approved build + disable in-app auto-update (see docs/CORPORATE_PROFILE.md)

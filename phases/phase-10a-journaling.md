@@ -274,13 +274,14 @@ After creating the floor concept notes, configure the vault's `.obsidian/graph.j
 ```python
 import json, os
 
+VAULT_PATH = "[VAULT_PATH]"
 graph_path = os.path.join(VAULT_PATH, ".obsidian", "graph.json")
 os.makedirs(os.path.dirname(graph_path), exist_ok=True)
 
 # Load existing or create new
 graph = {}
 if os.path.exists(graph_path):
-    with open(graph_path) as f:
+    with open(graph_path, encoding="utf-8") as f:
         graph = json.load(f)
 
 # Add floor exclusion filter to search
@@ -292,7 +293,7 @@ if "Shame" not in existing_search:
 
 graph["showOrphans"] = False
 
-with open(graph_path, "w") as f:
+with open(graph_path, "w", encoding="utf-8") as f:
     json.dump(graph, f, indent=2)
 ```
 

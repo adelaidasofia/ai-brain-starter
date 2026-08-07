@@ -40,6 +40,7 @@ The everyday rituals — the surface you touch most.
 
 - **meeting-todos** — extracts action items from a meeting note and files them, separating your tasks from everyone else's.
 - **note-todos** — the same extraction for any non-meeting note: class notes, book notes, podcast notes, transcripts, panel writeups.
+- **cierre-de-llamada** — a SALES or client call just ended: turns its transcript into the whole follow-up (CRM summary, deal state, tickable tasks, a drafted follow-up email, the reminder, a note to the sales lead, and what worked / what did not). Invents nothing, and never sends anything to the client.
 
 ## Ingestion — pull external sources into the vault
 

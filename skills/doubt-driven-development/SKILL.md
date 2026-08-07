@@ -1,6 +1,6 @@
 ---
 name: doubt-driven-development
-description: Subjects every non-trivial decision to a fresh-context adversarial review before it stands. Use when correctness matters more than speed, when working in unfamiliar code, when stakes are high (production, security-sensitive logic, irreversible operations), or any time a confident output would be cheaper to verify now than to debug later.
+description: 'Use when correctness matters more than speed: about to commit non-trivial code, make an architectural call under uncertainty, work in unfamiliar code, or assert what the compiler cannot check (''this is safe'', ''thread-safe'', ''this scales'', ''matches the spec''). Strongest on high-stakes surfaces (production deploys, security-sensitive logic, data migrations, irreversible operations) and when the user asks to sanity-check, red-team, double-check, or get a second opinion on a decision.'
 ---
 
 # Doubt-Driven Development
@@ -223,7 +223,6 @@ If 3 cycles is "obviously insufficient" because the artifact is large: the artif
 ## Interaction with Other Skills
 
 - **code-review-and-quality / post-PR review**: complementary. Final review is post-hoc PR verdict; doubt-driven is in-flight per-decision. Use both.
-- **source-driven-development**: SDD verifies *facts about frameworks* against official docs. Doubt-driven verifies *your reasoning about the artifact*. SDD checks the API exists; doubt-driven checks you used it correctly under the contract.
 - **test-driven-development**: TDD's RED step is doubt made concrete — a failing test is a disproof attempt. When TDD applies, that failing test *is* the doubt step for behavioral claims.
 - **debugging-and-error-recovery**: when the reviewer surfaces a real failure mode, drop into the debugging skill to localize and fix.
 

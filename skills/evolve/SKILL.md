@@ -1,10 +1,12 @@
 ---
 name: evolve
-description: Cluster hardened instincts (high-confidence feedback_*/discovery_* memories) into a proposed higher-level structure — a Command, Skill, or Agent. Run when many related instincts have accumulated in one domain. Part of the Instinct Engine. Do NOT use for one-off pattern capture (use /patterns) or daily journaling.
+description: Use when many related hardened instincts (high-confidence feedback_*/discovery_* memories) have piled up in one domain, when the user runs /evolve or asks to promote, cluster, graduate, or consolidate accumulated instincts into a Command, Skill, or Agent, or when files in Instinct Proposals need review. Part of the Instinct Engine. Not for one-off pattern capture (use patterns), daily journaling, or sharing instinct packs (use instinct-export / instinct-import).
 trigger: /evolve
 ---
 
 # /evolve — promote a cluster of instincts into a structure
+
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). Shared starter files live at the repo root two levels up: `{SKILL_DIR}/../..`. If a path does not resolve, name the missing file and stop — never guess another location.
 
 When many related, high-confidence instincts pile up in one domain, that is a
 signal to promote them into ONE reusable structure instead of leaving them as
@@ -17,7 +19,7 @@ structures: Commands / Skills / Agents." Reimplemented clean per license-hygiene
 ## Step 1 — run the clusterer (deterministic, zero LLM cost)
 
 ```bash
-python3 ~/.claude/skills/ai-brain-starter/scripts/instinct.py evolve
+python3 "{SKILL_DIR}/../../scripts/instinct.py" evolve
 ```
 
 It groups every instinct by inferred `domain`, computes each cluster's median

@@ -72,7 +72,7 @@ A healthcare pack (vertical-healthcare) is in progress but not yet shipped — i
 Existing Claude Code 2.1.129+ users can now try AI Brain Starter skills against an existing vault without running the full bootstrap:
 
 ```
-claude --plugin-url https://github.com/adelaidasofia/ai-brain-starter/releases/latest/download/ai-brain-starter.zip
+claude --plugin-url https://github.com/mycelium-hq/ai-brain-starter/releases/latest/download/ai-brain-starter.zip
 ```
 
 The plugin loads for the current session only. You get the skills (journaling, graphify, weekly insights, etc.); your home directory and vault structure are not modified. This is an evaluation path, not a substitute for the full bootstrap, which sets up the Obsidian vault, hooks, resolver, and everything that compounds across sessions.

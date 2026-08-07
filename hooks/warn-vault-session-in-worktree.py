@@ -57,8 +57,8 @@ Bypass: VAULT_WORKTREE_WARN_BYPASS=1.
 Test knobs: VAULT_WORKTREE_WARN_NODEDUP=1 (skip dedup), VAULT_WORKTREE_WARN_STATE_DIR
 (redirect the sentinel dir), GUARD_FIRES_LOG (redirect the telemetry sink).
 
-Canonical: ~/dev/adelaida-skills/hooks/ (deployed as a copy to ~/.claude/hooks/
-via install.sh). Negative-control test: warn-vault-session-in-worktree.test.sh.
+Canonical: the maintainer's private skills repo (deployed as a copy to
+~/.claude/hooks/ via install.sh). Negative-control test: warn-vault-session-in-worktree.test.sh.
 Ports to ai-brain-starter (MYC-576 -- every installed vault hits the same melt);
 guard_telemetry.py ports with it (MYC-809 -- port the rails, not just the pattern).
 """
@@ -112,12 +112,18 @@ def _read_payload() -> tuple[str, str, str]:
     return cwd, transcript, event
 
 
+def _norm(path: str) -> str:
+    """Forward-slash normalization so WORKTREE_SEGMENT matches Windows paths."""
+    return path.replace("\\", "/")
+
+
 def _split_segment(path: str) -> tuple[str, Path]:
     """(worktree_root, main_root) from a path carrying WORKTREE_SEGMENT.
 
     Normalizes a deep cwd (a worktree subdir) back to the worktree ROOT so the
     dedup slug stays stable regardless of how far inside the session sits.
     """
+    path = _norm(path)
     idx = path.index(WORKTREE_SEGMENT)
     main_root = path[:idx]
     slug = path[idx + len(WORKTREE_SEGMENT):].split("/", 1)[0]
@@ -133,7 +139,7 @@ def _detect(payload_cwd: str, transcript: str, event: str) -> tuple[str, Path] |
     """
     # Channel A -- any payload cwd that contains the worktree segment (terminal +
     # tool-time payloads; the reliable signal at UserPromptSubmit + PreToolUse).
-    if payload_cwd and WORKTREE_SEGMENT in payload_cwd:
+    if payload_cwd and WORKTREE_SEGMENT in _norm(payload_cwd):
         return _split_segment(payload_cwd)
 
     # Channel B -- transcript marker (Desktop mode, when the marker is present).
@@ -155,7 +161,7 @@ def _detect(payload_cwd: str, transcript: str, event: str) -> tuple[str, Path] |
             proc_cwd = os.getcwd()
         except OSError:
             proc_cwd = ""
-        if proc_cwd and WORKTREE_SEGMENT in proc_cwd:
+        if proc_cwd and WORKTREE_SEGMENT in _norm(proc_cwd):
             return _split_segment(proc_cwd)
 
     return None, None
@@ -203,7 +209,7 @@ def main() -> int:
         "SURFACE THIS TO THE USER IMMEDIATELY, before any other work:\n\n"
         "🛑 [vault-worktree] This vault session is running INSIDE a git worktree:\n"
         f"    {worktree_path}\n\n"
-        "The vault must NEVER run in worktree mode (MYC-575). The Desktop app's\n"
+        "The vault must NEVER run in worktree mode. The Desktop app's\n"
         "per-session worktree checkbox created a multi-thousand-file checkout inside\n"
         "Obsidian's watched tree → 250%+ CPU / 2+ GB RAM melt, AND this worktree can\n"
         "be SILENTLY DELETED mid-session (that is exactly what happened in the\n"
@@ -217,7 +223,7 @@ def main() -> int:
         f"path ({main_root}/...) and commit via vault-safe-commit.sh — never the\n"
         "worktree path. The Stop-hook snapshot net backstops divergent files, but the\n"
         "only safe state is a plain (non-worktree) vault session.\n\n"
-        "Source fix tracked: MYC-575. Bypass this warning: VAULT_WORKTREE_WARN_BYPASS=1"
+        "Bypass this warning: VAULT_WORKTREE_WARN_BYPASS=1"
     )
     # Telemetry on the WARN path ONLY (never the silent/plain hot path) -- MYC-1176 item 6.
     _log_fire("warn-vault-session-in-worktree", status="warned", slug=slug, event=event or "?")
@@ -226,6 +232,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     try:
         sys.exit(main())
     except Exception:

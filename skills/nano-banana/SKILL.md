@@ -1,6 +1,6 @@
 ---
 name: nano-banana
-description: Generate, edit, and compose images using Google's Gemini 3 Pro Image model (Nano Banana Pro). Use this skill when the user asks to create images, generate visuals, edit photos, compose multiple images, create logos, thumbnails, infographics, product shots, or any image generation task. Supports text-to-image, image editing, multi-image composition (up to 14 images), iterative refinement, aspect ratio control, and Google Search-grounded image generation for real-time data visualization. Do NOT use for non-image tasks, text generation, or design feedback (use Canva MCP for template designs, design:design-critique for feedback).
+description: Use when the user asks to create or generate an image, visual, logo, thumbnail, infographic, product shot, hero image, OG image, blog/Substack header, sticker, portrait, or any text-to-image or image-generation task; edit a photo; compose multiple images; refine an image iteratively; set aspect ratio/resolution; or visualize real-time data (weather, stocks, news) with Gemini's Nano Banana Pro. Not for text generation, design feedback (design:design-critique), or template designs (Canva MCP).
 ---
 
 # Nano Banana Pro

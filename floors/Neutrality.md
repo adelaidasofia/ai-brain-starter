@@ -18,7 +18,7 @@ Part of the middle tier: see [[Middle Floors]].
 
 **[[Apathy]] (5)** is the shadow of **Neutrality (21)**.
 
-> 'I don't care' vs 'I'm not attached'
+> "I don't care" vs. "I'm not attached"
 
 Most "Neutrality" people claim is actually [[Apathy]]. The difference is whether you are still bracing.
 

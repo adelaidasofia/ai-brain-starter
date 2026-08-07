@@ -188,11 +188,13 @@ The substrate ships memory, voice, vault, and session lifecycle. These vendor-pu
 
 **Repo:** [trailofbits/skills](https://github.com/trailofbits/skills). **License:** CC-BY-SA-4.0 (Creative Commons Attribution Share-Alike). **Stars:** 5,095.
 
-**Why install:** Trail of Bits is a high-trust security firm with deep Python tooling expertise. The bundle covers 22 skills including `modern-python` (uv + ruff + ty + pytest, the modern toolchain that avoids venv drift), `insecure-defaults` (detect hardcoded secrets, default credentials, weak crypto), `sharp-edges` (error-prone APIs and dangerous configurations), `static-analysis` (CodeQL + Semgrep + SARIF), `property-based-testing`, and `differential-review` (security-focused diff review with git-history analysis).
+**Why install:** Trail of Bits is a high-trust security firm with deep Python tooling expertise. The bundle covers 22 skills; we install `insecure-defaults` (detect hardcoded secrets, default credentials, weak crypto), `sharp-edges` (error-prone APIs and dangerous configurations), `static-analysis` (CodeQL + Semgrep + SARIF), `property-based-testing`, and `differential-review` (security-focused diff review with git-history analysis). `modern-python` (uv + ruff + ty + pytest) lives in the same bundle but is **not** auto-installed — it ships a `python3` PATH shim that would silently break the vault's own hooks; see the install note below.
 
 **License caveat:** CC-BY-SA-4.0 is copyleft on documentation. Cloning into your own `~/.claude/skills/` is fine. **Forking the documentation into a derived work requires keeping the same license.** Do not bundle Trail of Bits content into MIT-licensed downstream repos without preserving CC-BY-SA-4.0.
 
-**Install:** automatic via `bootstrap.sh` (installs 8 relevant plugins from the marketplace bundle: modern-python, insecure-defaults, sharp-edges, property-based-testing, static-analysis, testing-handbook-skills, differential-review, ask-questions-if-underspecified). Manual: `claude plugin marketplace add trailofbits/skills && claude plugin install <name>@trailofbits` per plugin.
+**Install:** automatic via `bootstrap.sh` (installs 7 relevant plugins from the marketplace bundle: insecure-defaults, sharp-edges, property-based-testing, static-analysis, testing-handbook-skills, differential-review, ask-questions-if-underspecified). Manual: `claude plugin marketplace add trailofbits/skills && claude plugin install <name>@trailofbits` per plugin.
+
+**`modern-python` is intentionally excluded from the default install.** Its SessionStart hook prepends a PATH shim for `python3`/`python` that prints `ERROR: use uv run python3` and exit-1s on every bare invocation. The vault's own hooks call bare `python3` (with `|| true` / `2>/dev/null`), so with that shim active the entire hook layer — session close, the write-time secret guard, context loaders, aggregators — would silently no-op. It is Python-dev tooling, not knowledge-worker tooling, and a footgun for non-developers. The substrate is nonetheless hardened to coexist with the shim (hook commands resolve an absolute interpreter at install time; shell scripts strip `*/hooks/shims` from PATH), so if you do Python development it is safe to add back: `claude plugin install modern-python@trailofbits`.
 
 ### Stripe agent-toolkit — billing integration discipline
 
@@ -249,6 +251,30 @@ The substrate ships memory, voice, vault, and session lifecycle. These vendor-pu
 ### Catalog source
 
 These adjacents were surfaced via [VoltAgent/awesome-agent-skills](https://github.com/VoltAgent/awesome-agent-skills) (21k stars, MIT, hand-curated). The full catalog covers 1,100+ skills from official teams plus community contributions. The monthly `~/.claude/scheduled/scan-awesome-repos.sh` job watches this and four other awesome-* repos for new entries; reports land in `⚙️ Meta/Awesome Repo Scan/<YYYY-MM>.md`.
+
+---
+
+## Repo-shipped CLI tools
+
+Standalone scripts this repo bundles at `scripts/` that you run directly against any git repo — not Claude skills, no setup required beyond a Python interpreter.
+
+### ci-cost-audit.py — find CI spend leaks before they become an invoice
+
+**What it does:** GitHub Actions bills per JOB, rounded up to a whole minute, times the runner multiplier (Linux 1x, Windows 2x, macOS 10x) — never per workflow, never per wall-clock minute. An AI brain opens many branches at once, so the shape that empties an Actions budget is a wide fan-out of very short jobs multiplied by branches in flight, not a slow test. `ci-cost-audit.py` reports that shape for any repo: per-job floor waste, expensive runners on PR triggers, missing `concurrency` groups, `cancel-in-progress` that would deadlock a merge queue, duplicate push+pull_request triggers, and relevance predicates broad enough to match ordinary churn (scored against real file counts, so a correctly-narrow predicate is not flagged).
+
+**Why it matters:** measured on a live fleet, one 11.5-hour window ran 2,967 jobs for $81.84 — macOS was 3.5% of the jobs and 41% of the bill, and 20% of the total was pure per-job rounding on jobs whose median runtime was 6 seconds. That is the default failure mode of any repo an agent fleet drives, and it is invisible until someone measures it.
+
+**Use it:**
+```bash
+python3 scripts/ci-cost-audit.py                       # static check, current repo
+python3 scripts/ci-cost-audit.py --path ../other-repo   # static check, elsewhere
+python3 scripts/ci-cost-audit.py --repo owner/name --hours 24   # + real billed minutes via gh
+python3 scripts/ci-cost-audit.py --self-test            # negative controls, no repo needed
+```
+
+Static mode needs no network access or credentials. Measured mode needs the `gh` CLI authenticated against the target repo.
+
+**Run it:** once per repo when GitHub Actions billing looks off, or periodically as a client install's agent fleet grows — the cost shape scales with how many branches are open at once, not with how big the codebase is.
 
 ---
 

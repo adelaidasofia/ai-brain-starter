@@ -10,7 +10,7 @@ aliases: [Miedo, "Floor 13", "Piso 13"]
 
 **Floor 13 · Low tier**
 
-Anxiety, 'what if,' imposter feelings.
+Anxiety, "what if," imposter feelings.
 
 Part of the low tier: see [[Low Floors]].
 

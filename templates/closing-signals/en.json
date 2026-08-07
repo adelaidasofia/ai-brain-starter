@@ -137,6 +137,10 @@
     {
       "_comment": "Meta-QUESTION about a close word — 'what does ttyl mean?', 'how do I say bye?', 'what's an example of a sign-off?'. Asking ABOUT a close phrase is referenced content, never a close itself. Promoted to strict because the weak-tier meta-question FP guard does NOT override a high_confidence match on the bare close word. MYC-1266 (same family as the definitional guards above).",
       "pattern": "\\b(what|how|why|when|where|who|define|defines|explain|mean[s]?|spell[s]?|example\\s+of|stand[s]?\\s+for)\\b.{0,40}\\b(bye|ttyl|cya|gn|good\\s*night|wrapping|signing\\s+off|sign[\\s-]?off|close\\s+(this|the|out|up)\\s+session|closing\\s+cascade)\\b"
+    },
+    {
+      "_comment": "INTERROGATIVE about whether a close ALREADY happened — 'did you close this session?', 'have you closed the session?', 'is the session closed?'. A question ABOUT the close action's state/completion, not a request to perform it. Requires a STATE/PAST auxiliary (did/do/does/have/has/had/is/are/was/were) + subject + a close verb + a trailing '?'. Modal REQUESTS ('can/could/would/will you close this session?') carry no such auxiliary, so they still fire. Codified 2026-06-30 after 'did you close this session?' fired the full cascade via the high_confidence 'close (this|the) session' pattern; strict tier is required because false_positive_guards do NOT override a high_confidence match.",
+      "pattern": "\\b(did|do|does|have|has|had|is|are|was|were)\\s+(you|we|i|it|the|this|that|everything|already)\\b[^?\\n]{0,45}\\bclos(?:e|ed|ing)\\b[^?\\n]{0,45}\\?"
     }
   ]
 }

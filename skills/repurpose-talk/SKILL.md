@@ -1,6 +1,6 @@
 ---
 name: repurpose-talk
-description: Turn a speaking engagement into 10-30 pieces of content (LinkedIn posts, Substack notes, video clips plan)
+description: Use when the user just gave a talk, panel, fireside chat, keynote, workshop, podcast, or webinar and wants content made from it — triggers like "I just gave a talk", "the panel is done", "just finished speaking", "turn my talk into LinkedIn posts", "repurpose this recording/transcript into posts, notes, or clips", or /repurpose-talk. Works from a recording, transcript, slides, or a from-memory brain-dump.
 trigger: /repurpose-talk
 version: 1.0.0
 ---

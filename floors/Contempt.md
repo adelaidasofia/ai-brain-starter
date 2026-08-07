@@ -10,7 +10,7 @@ aliases: [Desprecio, "Floor 17", "Piso 17"]
 
 **Floor 17 · Low tier**
 
-'you are beneath me,' cold dismissal.
+"you are beneath me," cold dismissal.
 
 Part of the low tier: see [[Low Floors]].
 

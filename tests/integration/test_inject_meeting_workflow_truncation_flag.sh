@@ -29,6 +29,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOOK="$REPO_ROOT/hooks/inject-meeting-workflow-on-trigger.py"
 
+# Hermeticity: an ambient VAULT_ROOT (set machine-wide on dev boxes) wins over
+# this test's fixture inside the hook, making the hook read the REAL vault's
+# rule file — the test then fails locally while passing on CI. Always unset.
+unset VAULT_ROOT
+
 fail() {
     echo "FAIL: $1" >&2
     exit 1

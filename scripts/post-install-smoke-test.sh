@@ -95,23 +95,32 @@ done
 }
 
 # === 4. Hook smoke test (sample stdin) ===
+# Hermetic fixture: a throwaway vault with a Meta/ dir and NO CLAUDE.md, with
+# VAULT_ROOT pinned to it. This isolates the detector from the operator's own
+# closingSignals config and any ambient VAULT_ROOT. Without it, a machine whose
+# real vault sets `closingSignals.customOnly: true` (which makes the detector
+# fire ONLY on the user's custom phrases and skip the shared pack) sees the
+# shared-pack "bye" correctly suppressed — and this check false-FAILs even though
+# the detector is behaving as configured (MYC-1988). CLOSING_SIGNAL_DETECTION is
+# unset so the check never reaches the optional Haiku/API path.
 hdr "Hook smoke tests"
 DETECTOR="$SKILL_DIR/hooks/detect-closing-signal.py"
 if [[ -f "$DETECTOR" ]]; then
-  TMPDIR_HOOK=$(mktemp -d)
-  resp=$(echo '{"prompt":"hello world","session_id":"smoke","cwd":"'"$TMPDIR_HOOK"'"}' | python3 "$DETECTOR" 2>/dev/null)
+  FIXTURE_VAULT=$(mktemp -d)
+  mkdir -p "$FIXTURE_VAULT/Meta/Sessions"
+  resp=$(echo '{"prompt":"hello world","session_id":"smoke","cwd":"'"$FIXTURE_VAULT"'"}' | env -u CLOSING_SIGNAL_DETECTION VAULT_ROOT="$FIXTURE_VAULT" python3 "$DETECTOR" 2>/dev/null)
   if echo "$resp" | python3 -c "import json,sys; json.loads(sys.stdin.read())" 2>/dev/null; then
     ok "detect-closing-signal.py returns valid JSON for non-close input"
   else
     fail "detect-closing-signal.py returned invalid JSON"
   fi
-  resp=$(echo '{"prompt":"bye","session_id":"smoke","cwd":"'"$TMPDIR_HOOK"'"}' | python3 "$DETECTOR" 2>/dev/null)
+  resp=$(echo '{"prompt":"bye","session_id":"smoke","cwd":"'"$FIXTURE_VAULT"'"}' | env -u CLOSING_SIGNAL_DETECTION VAULT_ROOT="$FIXTURE_VAULT" python3 "$DETECTOR" 2>/dev/null)
   if echo "$resp" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); assert 'hookSpecificOutput' in d" 2>/dev/null; then
-    ok "detect-closing-signal.py injects context on 'bye'"
+    ok "detect-closing-signal.py injects context on 'bye' (hermetic shared-pack fixture)"
   else
     fail "detect-closing-signal.py did not inject context on 'bye'"
   fi
-  rm -rf "$TMPDIR_HOOK"
+  rm -rf "$FIXTURE_VAULT"
 fi
 
 LINTER="$SKILL_DIR/hooks/lint-vault-frontmatter.py"
@@ -151,6 +160,31 @@ if [[ -f "$SURFACER" ]]; then
   rm -f "$STATE_F"
 else
   warn "dev-hub-refresh-on-session-start.py not present"
+fi
+
+# === 4c. Journal Step-0 context-guard self-heal (2026-07-07) ===
+# The SessionStart self-heal that re-derives the /journal context guard from the
+# vault-synced substrate on every session, so a stale account cannot silently skip
+# Step 0. --self-test carries the pos/neg + repair controls; the direct negative
+# control here proves the check BITES on an unprotected settings.json.
+hdr "Journal-guard self-heal"
+HEALER="$SKILL_DIR/scripts/heal-journal-guard.py"
+if [[ -f "$HEALER" ]]; then
+  if python3 "$HEALER" --self-test >/dev/null 2>&1; then
+    ok "heal-journal-guard.py --self-test (registration + preflight controls)"
+  else
+    fail "heal-journal-guard.py --self-test failed"
+  fi
+  NEG_SET=$(mktemp)
+  printf '%s' '{"hooks": {}}' > "$NEG_SET"
+  if python3 "$HEALER" --check-only --settings "$NEG_SET" >/dev/null 2>&1; then
+    fail "self-heal --check-only PASSED an unprotected settings.json (guard asleep)"
+  else
+    ok "self-heal --check-only trips on an unprotected account (exit 1)"
+  fi
+  rm -f "$NEG_SET"
+else
+  warn "heal-journal-guard.py not present"
 fi
 
 # === 5. Aggregator smoke ===

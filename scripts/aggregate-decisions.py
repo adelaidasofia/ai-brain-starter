@@ -17,14 +17,22 @@ Rotation (added 2026-05-03 after Decision Log hit 351 KB / +4600 lines/month):
   Default window: 6 months. Override via --inline-window-months.
 
 Usage:
-  VAULT_ROOT=/path/to/vault python3 aggregate-decisions.py
+  python3 aggregate-decisions.py                # vault auto-detected from script location
   python3 aggregate-decisions.py --dry-run
   python3 aggregate-decisions.py --no-legacy
   python3 aggregate-decisions.py --inline-window-months 12
+  VAULT_ROOT_FORCE=1 VAULT_ROOT=/other/vault python3 aggregate-decisions.py  # deliberate cross-vault
 
 Environment variables:
-  VAULT_ROOT   — absolute path to the Obsidian vault root.
-                 Defaults to $HOME/Documents/MyVault — CUSTOMIZE or set env var.
+  VAULT_ROOT        — absolute path to the vault root. Optional: by default the
+                      vault is auto-detected from this script's OWN location
+                      (⚙️ Meta/scripts/ → 2 levels up). If VAULT_ROOT is set but
+                      points at a DIFFERENT vault than the one this copy lives
+                      in, it is IGNORED (with a stderr warning) and the script's
+                      own vault is used — so a globally-exported VAULT_ROOT can't
+                      silently redirect a ported copy at the wrong vault.
+  VAULT_ROOT_FORCE  — set to 1 to honor VAULT_ROOT even when it differs from the
+                      script's own vault (deliberate cross-vault runs).
 
 File format (Decisions/ entries):
   Each file must start with YAML frontmatter containing:
@@ -53,9 +61,37 @@ import re
 import sys
 from pathlib import Path
 
-# Auto-detect from script location (⚙️ Meta/scripts/ → 2 levels up), or override via env var.
-_SCRIPT_DIR = Path(__file__).resolve().parent
-VAULT_ROOT = Path(os.environ.get("VAULT_ROOT", str(_SCRIPT_DIR.parent.parent)))
+# --- VAULT_ROOT resolution ------------------------------------------------
+# Ground truth is THIS script's own location: ⚙️ Meta/scripts/ → 2 levels up
+# is the vault this physical copy belongs to. A VAULT_ROOT env var is honored
+# only when it points at that same vault, or when the caller explicitly sets
+# VAULT_ROOT_FORCE=1.
+#
+# Why: a globally-exported VAULT_ROOT (e.g. a shell-profile export) otherwise
+# silently redirects EVERY copy of this script — including copies ported into
+# other vaults — at that one vault, causing wrong-vault reads and destructive
+# wrong-vault writes with NO error. Preferring the script's own location on
+# mismatch is fail-safe: a copy can only ever touch the vault it lives in.
+def _resolve_vault_root() -> tuple[Path, str]:
+    auto_root = Path(__file__).resolve().parent.parent.parent
+    env_raw = os.environ.get("VAULT_ROOT")
+    if not env_raw:
+        return auto_root, "auto-detect (script location)"
+    env_root = Path(os.path.expanduser(env_raw)).resolve()
+    if env_root == auto_root:
+        return env_root, "env VAULT_ROOT (matches script location)"
+    if os.environ.get("VAULT_ROOT_FORCE", "").strip().lower() in ("1", "true", "yes"):
+        return env_root, f"env VAULT_ROOT (FORCED, differs from script vault {auto_root})"
+    print(
+        f"WARNING: VAULT_ROOT env points at {env_root}, but this script lives in "
+        f"{auto_root}. Operating on the script's own vault ({auto_root}); this "
+        f"copy will NOT touch {env_root}. Set VAULT_ROOT_FORCE=1 to override.",
+        file=sys.stderr,
+    )
+    return auto_root, "auto-detect (env VAULT_ROOT ignored: vault mismatch)"
+
+
+VAULT_ROOT, _VAULT_ROOT_SOURCE = _resolve_vault_root()
 META_DIR = VAULT_ROOT / "⚙️ Meta"
 DECISIONS_DIR = META_DIR / "Decisions"
 DECISION_LOG = META_DIR / "Decision Log.md"
@@ -66,6 +102,28 @@ AGGREGATOR_END = "<!-- aggregate-decisions:END -->"
 LEGACY_HEADER = "## Legacy (pre-split) historical decisions"
 
 INLINE_WINDOW_MONTHS_DEFAULT = 6
+
+
+def _backup_before_write(path: Path, keep: int = 3) -> Path | None:
+    """Write a timestamped backup of `path` before it is overwritten, so a
+    bad aggregation — or a wrong-vault run that somehow slips past the
+    vault-root guard — can never silently destroy the prior good file. Keeps
+    the most recent `keep` backups (older ones pruned) so a file rebuilt on
+    every session-close never fills the vault with .bak files. Returns the
+    backup path, or None when there was nothing to back up."""
+    if not path.exists():
+        return None
+    stamp = dt.datetime.now().strftime("%Y-%m-%d-%H%M%S")
+    backup = path.with_name(f"{path.stem}.bak-{stamp}{path.suffix}")
+    backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    for old in sorted(
+        path.parent.glob(f"{path.stem}.bak-*{path.suffix}"), reverse=True
+    )[keep:]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    return backup
 
 
 def preamble() -> str:
@@ -319,6 +377,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    print(f"VAULT_ROOT: {VAULT_ROOT}  [{_VAULT_ROOT_SOURCE}]")
+
     if not META_DIR.exists():
         print(
             f"ERROR: {META_DIR} does not exist. Set VAULT_ROOT env var "
@@ -395,19 +455,29 @@ def main() -> int:
             print(f"  ... +{len(archive_files) - 20} more")
         return 0
 
+    log_backup = _backup_before_write(DECISION_LOG)
     DECISION_LOG.write_text(new_content, encoding="utf-8")
     print(
         f"Aggregated {len(inline_files)} inline decision(s) into "
         f"{DECISION_LOG.name} ({len(new_content):,} bytes)"
+        + (f" [backup: {log_backup.name}]" if log_backup else "")
     )
     if archive_content is not None:
+        archive_backup = _backup_before_write(DECISION_LOG_ARCHIVE)
         DECISION_LOG_ARCHIVE.write_text(archive_content, encoding="utf-8")
         print(
             f"Archived {len(archive_files)} closed decision(s) to "
             f"{DECISION_LOG_ARCHIVE.name} ({len(archive_content):,} bytes)"
+            + (f" [backup: {archive_backup.name}]" if archive_backup else "")
         )
     return 0
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())

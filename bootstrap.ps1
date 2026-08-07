@@ -10,11 +10,11 @@
 #
 # Usage (clone the repo first, then run the local script; do not curl-pipe).
 # Run from PowerShell, NOT cmd.exe:
-#     git clone https://github.com/adelaidasofia/ai-brain-starter "$env:USERPROFILE\.claude\skills\ai-brain-starter"
-#     & "$env:USERPROFILE\.claude\skills\ai-brain-starter\bootstrap.ps1"
+#     git clone https://github.com/mycelium-hq/ai-brain-starter "$env:USERPROFILE\.claude\skills\ai-brain-starter"
+#     powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\skills\ai-brain-starter\bootstrap.ps1"
 #
 # Dry run (preview changes without making them):
-#     & "$env:USERPROFILE\.claude\skills\ai-brain-starter\bootstrap.ps1" -DryRun
+#     powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\skills\ai-brain-starter\bootstrap.ps1" -DryRun
 #
 # SAFETY GUARANTEES, same as bootstrap.sh:
 #   - Existing settings.json/.mcp.json keys preserved (setdefault never overwrites)
@@ -33,7 +33,7 @@
 param([switch]$DryRun, [string]$Profile = "")
 
 $ErrorActionPreference = "Stop"
-$RepoUrl = "https://github.com/adelaidasofia/ai-brain-starter.git"
+$RepoUrl = "https://github.com/mycelium-hq/ai-brain-starter.git"
 $SkillDir = "$env:USERPROFILE\.claude\skills\ai-brain-starter"
 $Failed    = @()
 $Installed = @()
@@ -49,6 +49,30 @@ function Warn($msg) { Write-Host "  ! $msg" -ForegroundColor Yellow }
 function Err($msg)  { Write-Host "  X $msg" -ForegroundColor Red; $script:Failed += $msg }
 function Dry($msg)  { Write-Host "  [dry-run] $msg" -ForegroundColor Magenta }
 function Have($cmd) { return [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
+
+# Run a native command without letting benign stderr kill the install.
+# Under $ErrorActionPreference = "Stop", a native command that writes ANY
+# warning to stderr (pip's routine "not on PATH" note, npm progress, git
+# hints) can surface as a terminating NativeCommandError even though the
+# command SUCCEEDED - a real Windows install died mid-run on exactly that,
+# at `pip install pipx`. Success is the exit code, never stderr.
+# Returns $true when the command exited 0.
+function Run-Native([scriptblock]$Block) {
+    $eapSaved = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $global:LASTEXITCODE = 0
+    try {
+        & $Block 2>&1 | ForEach-Object { Write-Host "    $_" }
+    } catch {
+        # e.g. CommandNotFound: the native command never ran, so LASTEXITCODE
+        # would still hold the initial 0 - force failure so callers see it.
+        Write-Host "    $_" -ForegroundColor Yellow
+        $global:LASTEXITCODE = 1
+    } finally {
+        $ErrorActionPreference = $eapSaved
+    }
+    return ($LASTEXITCODE -eq 0)
+}
 
 function Backup-File($path) {
     if (-not (Test-Path $path)) { return }
@@ -196,7 +220,7 @@ if ($env:EMAIL_GATE_BYPASS -ne "1" -and -not $DryRun -and -not (Test-Path $email
 }
 
 # ─── Pre-flight gate (skip with $env:PREFLIGHT_BYPASS = "1") ──────────────────
-$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptRoot = Split-Path -Parent $PSCommandPath
 $preflightLocal = Join-Path $scriptRoot "scripts\preflight.ps1"
 $preflightInstalled = "$env:USERPROFILE\.claude\skills\ai-brain-starter\scripts\preflight.ps1"
 $preflightToRun = ""
@@ -287,7 +311,9 @@ Start-Sleep -Seconds 1
 # missing, auto-install App Installer (which provides winget) before doing
 # anything else. Never abort with "go install something from the Microsoft
 # Store yourself", that defeats the one-command promise.
-if (-not (Have winget)) {
+if (-not (Have winget) -and $DryRun) {
+    Dry "would: install winget (App Installer) from the Microsoft Store package"
+} elseif (-not (Have winget)) {
     Hdr (T "Installing winget (App Installer)" "Instalando winget (App Installer)")
     Log (T "winget is the Windows package manager we use to install everything else." `
           "winget es el gestor de paquetes de Windows que usamos para instalar todo lo demás.")
@@ -336,6 +362,8 @@ if (-not $pythonOk -and $CorporateProfile) {
             "Perfil corporativo: no se encontro Python 3.10+ - NO se instala automaticamente (espacio de usuario, version fija).")
     Warn (T "Provision Python via your IT-approved channel, then re-run. Steps that need python will be skipped." `
             "Instala Python por tu canal aprobado de IT y volve a correr. Los pasos que necesitan python se omitiran.")
+} elseif (-not $pythonOk -and $DryRun) {
+    Dry "would: winget install Python.Python.3.12 (or direct download fallback)"
 } elseif (-not $pythonOk) {
     Hdr "Installing Python 3.12"
     if ($UseWinget) {
@@ -361,6 +389,10 @@ if (-not (Have node) -and $CorporateProfile) {
             "Perfil corporativo: no se encontro Node.js - NO se instala automaticamente (espacio de usuario, version fija).")
     Warn (T "Provision Node.js via your IT-approved channel, then re-run. Steps that need node will be skipped." `
             "Instala Node.js por tu canal aprobado de IT y volve a correr. Los pasos que necesitan node se omitiran.")
+    Warn (T "The exact command for IT to approve/run: winget install -e --id OpenJS.NodeJS.LTS" `
+            "El comando exacto para que IT apruebe/corra: winget install -e --id OpenJS.NodeJS.LTS")
+} elseif (-not (Have node) -and $DryRun) {
+    Dry "would: winget install OpenJS.NodeJS.LTS (or direct download fallback)"
 } elseif (-not (Have node)) {
     Hdr "Installing Node.js"
     if ($UseWinget) {
@@ -384,7 +416,9 @@ if (Have node) { Ok "node $(node --version)" } else { Err "node install failed" 
 # Without this, the user has no way to actually run /setup-brain after the
 # bootstrap finishes. Distributed via npm so the install path is identical
 # across Mac, Linux, and Windows once Node is present.
-if (-not (Have claude)) {
+if (-not (Have claude) -and $DryRun) {
+    Dry "would: npm install -g @anthropic-ai/claude-code"
+} elseif (-not (Have claude)) {
     Hdr (T "Installing Claude Code" "Instalando Claude Code")
     Log (T "Claude Code is Anthropic's developer tool that runs the AI brain skill." `
           "Claude Code es la herramienta de Anthropic para developers que corre la skill del AI brain.")
@@ -408,10 +442,14 @@ if (-not (Have claude)) {
 if (Have claude) { Ok (T "Claude Code installed" "Claude Code instalado") }
 
 # ─── pipx ─────────────────────────────────────────────────────────────────────
-if (-not (Have pipx)) {
+if (-not (Have pipx) -and $DryRun) {
+    Dry "would: python -m pip install --user pipx"
+} elseif (-not (Have pipx)) {
     Hdr "Installing pipx"
-    python -m pip install --user pipx
-    python -m pipx ensurepath
+    # Run-Native: pip's routine "scripts not on PATH" stderr warning aborted a
+    # real install here under EAP=Stop. Exit code decides success, not stderr.
+    if (-not (Run-Native { python -m pip install --user pipx })) { Err "pip install pipx failed" }
+    [void](Run-Native { python -m pipx ensurepath })
     $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
 }
 if (Have pipx) { Ok "pipx" } else { Err "pipx install failed" }
@@ -419,7 +457,9 @@ if (Have pipx) { Ok "pipx" } else { Err "pipx install failed" }
 # ─── fastmcp ──────────────────────────────────────────────────────────────────
 # Framework for building custom MCP servers in minimal Python. Needed when
 # wiring custom connectors (CRM bridges, vault sync, investor relations, etc.)
-if (-not (Have fastmcp)) {
+if (-not (Have fastmcp) -and $DryRun) {
+    Dry "would: pipx install fastmcp"
+} elseif (-not (Have fastmcp)) {
     Hdr "Installing fastmcp"
     # EAP guard: pipx writes progress/warnings to stderr -> terminating error
     # under Stop in PS 5.1 even with 2>$null. Relaxed here; the Have-check below
@@ -431,7 +471,9 @@ if (-not (Have fastmcp)) {
 if (Have fastmcp) { Ok "fastmcp" } else { Warn "fastmcp not installed (non-blocking, install later with: pipx install fastmcp)" }
 
 # ─── gh (GitHub CLI) ──────────────────────────────────────────────────────────
-if (-not (Have gh)) {
+if (-not (Have gh) -and $DryRun) {
+    Dry "would: winget install GitHub.cli"
+} elseif (-not (Have gh)) {
     Hdr "Installing gh (GitHub CLI)"
     Log "gh lets the session-end capture cascade file improvement ideas as GitHub issues automatically."
     winget install -e --id GitHub.cli --accept-source-agreements --accept-package-agreements
@@ -553,10 +595,13 @@ if (-not $ObsidianInstalled -and $CorporateProfile) {
 if ($ObsidianInstalled) { Ok "Obsidian installed" }
 
 # ─── graphify ─────────────────────────────────────────────────────────────────
-if (-not (Have graphify)) {
+if (-not (Have graphify) -and $DryRun) {
+    Dry "would: pipx install graphifyy + graphify install --platform windows"
+} elseif (-not (Have graphify)) {
     Hdr "Installing graphify (knowledge graph builder)"
-    pipx install graphifyy
-    graphify install --platform windows
+    # Run-Native: pipx writes progress + PATH notes to stderr (EAP=Stop hazard).
+    if (-not (Run-Native { pipx install graphifyy })) { Err "pipx install graphifyy failed" }
+    if (Have graphify) { [void](Run-Native { graphify install --platform windows }) }
 }
 if (Have graphify) { Ok "graphify" } else { Err "graphify install failed" }
 
@@ -605,7 +650,21 @@ if (Test-Path "$SkillDir\.git") {
             $stashMsg = "bootstrap auto-stash $(Get-Date -Format 'yyyy-MM-dd-HHmm')"
             Log "Detected local uncommitted changes - stashing as: $stashMsg"
             Log "Recover later with: cd $SkillDir; git stash list; git stash pop"
-            if (-not $DryRun) { git stash push -u -m $stashMsg 2>$null | Out-Null }
+            if (-not $DryRun) {
+                git stash push -u -m $stashMsg 2>$null | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    # The checkout is now pristine upstream with the user's patches
+                    # removed. sync-vault-scripts.ps1 refuses to run while this is
+                    # set, so the vault keeps its patched scripts instead of having
+                    # the UNPATCHED upstream copies written over them (the reported
+                    # session-close-runner.sh / vault-safe-commit.sh regression).
+                    $env:ABS_CLONE_PATCHES_STASHED = $stashMsg
+                    Warn "Your vault's <meta>/scripts/ will NOT be refreshed this run - this"
+                    Warn "  clone no longer holds your patches, and syncing would overwrite the"
+                    Warn "  patched copies in your vault. Restore and sync when ready:"
+                    Warn "    cd $SkillDir; git stash pop; pwsh scripts/sync-vault-scripts.ps1"
+                }
+            }
         }
         if ($DryRun) { Dry "would: git pull --quiet (fast-forward $behind commit(s))" }
         else { git pull --quiet 2>$null }
@@ -618,7 +677,7 @@ if (Test-Path "$SkillDir\.git") {
     $ErrorActionPreference = $eapSelfUpdate
 } else {
     if ($DryRun) { Dry "would: git clone $RepoUrl -> $SkillDir" }
-    else { git clone --quiet $RepoUrl $SkillDir }
+    elseif (-not (Run-Native { git clone --quiet $RepoUrl $SkillDir })) { Err "ai-brain-starter clone failed (git exit $LASTEXITCODE)" }
     $script:Installed += "ai-brain-starter clone"
 }
 if ((Test-Path "$SkillDir\SKILL.md") -or $DryRun) { Ok "ai-brain-starter at $SkillDir" } else { Err "ai-brain-starter clone failed" }
@@ -633,7 +692,7 @@ if ((Test-Path "$SkillDir\SKILL.md") -or $DryRun) { Ok "ai-brain-starter at $Ski
 Hdr "Installing bundled sub-skills (with safety checks)"
 $stamp = Get-Date -Format "yyyy-MM-dd-HHmm"
 
-foreach ($sub in @("graphify", "meeting-todos", "patterns", "insights", "deconstruct", "daily-journal", "rise", "repurpose-talk", "nano-banana", "second-brain-mapping", "setup-vault-types", "diagnose", "note-todos", "sunday-review", "coach", "coaching", "backfill-journal-body-context", "longitudinal", "resolver-query", "for-my-team", "health-context", "health-doctor", "health-setup", "ingest-github", "ingest-health", "ingest-youtube", "evolve", "instinct-export", "instinct-import", "interview-me", "doubt-driven-development", "secret-warn")) {
+foreach ($sub in @("graphify", "cierre-de-llamada", "meeting-todos", "patterns", "insights", "deconstruct", "daily-journal", "rise", "repurpose-talk", "nano-banana", "second-brain-mapping", "setup-vault-types", "diagnose", "note-todos", "sunday-review", "coach", "coaching", "backfill-journal-body-context", "longitudinal", "resolver-query", "for-my-team", "health-context", "health-doctor", "health-setup", "ingest-github", "ingest-health", "ingest-youtube", "evolve", "instinct-export", "instinct-import", "interview-me", "doubt-driven-development", "secret-warn")) {
     $src = "$SkillDir\skills\$sub"
     $dst = "$env:USERPROFILE\.claude\skills\$sub"
 
@@ -697,9 +756,11 @@ foreach ($sub in @("graphify", "meeting-todos", "patterns", "insights", "deconst
 
 # ─── Humanizer ────────────────────────────────────────────────────────────────
 $humDir = "$env:USERPROFILE\.claude\skills\humanizer"
-if (-not (Test-Path $humDir)) {
+if (-not (Test-Path $humDir) -and $DryRun) {
+    Dry "would: git clone humanizer -> $humDir"
+} elseif (-not (Test-Path $humDir)) {
     Hdr "Installing humanizer"
-    git clone --quiet https://github.com/adelaidasofia/humanizer.git $humDir
+    [void](Run-Native { git clone --quiet https://github.com/adelaidasofia/humanizer.git $humDir })
 }
 if (Test-Path $humDir) { Ok "humanizer skill installed" } else { Err "humanizer clone failed" }
 
@@ -709,7 +770,7 @@ if (Test-Path $humDir) { Ok "humanizer skill installed" } else { Err "humanizer 
 Write-Host ""
 Write-Host ("  " + (T "HEADS UP: Claude Code may pause to ask you to approve these tools." "AVISO: Claude Code puede frenar en un momento para pedirte que apruebes estas herramientas."))
 Write-Host ("  " + (T "That prompt is its normal safety check for anything not from Anthropic." "Ese aviso es su chequeo de seguridad normal para cualquier cosa que no viene de Anthropic."))
-Write-Host ("  " + (T "It is expected and safe to approve. The README explains what gets added." "Es esperado, y aprobarlo es lo normal. El README explica todo lo que se esta agregando."))
+Write-Host ("  " + (T "It is expected for third-party tools. What gets added is itemized in the README - the choice is yours." "Es esperado con herramientas de terceros. El README detalla todo lo que se agrega - la decision es tuya."))
 Write-Host ""
 
 # ─── Granola MCP ─────────────────────────────────────────────────────────────
@@ -800,7 +861,7 @@ if ($DryRun) {
 foreach ($pair in @(@("graphify","graphify"), @("node","node"), @("npm","npm"), @("pipx","pipx"), @("gh","gh"))) {
     if (Have $pair[1]) { Ok $pair[0] } else { Err "$($pair[0]) not callable" }
 }
-foreach ($sub in @("graphify","meeting-todos","patterns","insights","deconstruct","daily-journal","rise","repurpose-talk","nano-banana","humanizer","ai-brain-starter","diagnose","second-brain-mapping","setup-vault-types","note-todos","sunday-review","coach","coaching","backfill-journal-body-context","longitudinal","resolver-query","for-my-team","health-context","health-doctor","health-setup","ingest-github","ingest-health","ingest-youtube","evolve","instinct-export","instinct-import","interview-me","doubt-driven-development","secret-warn")) {
+foreach ($sub in @("graphify","cierre-de-llamada","meeting-todos","patterns","insights","deconstruct","daily-journal","rise","repurpose-talk","nano-banana","humanizer","ai-brain-starter","diagnose","second-brain-mapping","setup-vault-types","note-todos","sunday-review","coach","coaching","backfill-journal-body-context","longitudinal","resolver-query","for-my-team","health-context","health-doctor","health-setup","ingest-github","ingest-health","ingest-youtube","evolve","instinct-export","instinct-import","interview-me","doubt-driven-development","secret-warn")) {
     if (Test-Path "$env:USERPROFILE\.claude\skills\$sub") { Ok "skill: $sub" } else { Err "skill missing: $sub" }
 }
 if (Test-Path "$env:USERPROFILE\.claude\skills\graphify\scripts") { Ok "graphify scripts" } else { Err "graphify scripts missing" }
@@ -875,10 +936,15 @@ if ((Test-Path $userHookInstaller) -and -not $DryRun) {
     Write-Host ("━━━ " + (T "Installing hooks at user level (so they fire inside worktrees)" `
                               "Instalando hooks a nivel de usuario (para que disparen dentro de worktrees)") + " ━━━") -ForegroundColor Cyan
 
+    # py first: the launcher is always real. A bare `python3`/`python` on PATH
+    # can be the Microsoft Store alias STUB (opens the Store instead of running),
+    # so every candidate is validated by actually executing it.
     $pythonCmd = $null
-    foreach ($candidate in @("python3", "python", "py")) {
+    foreach ($candidate in @("py", "python", "python3")) {
         $resolved = Get-Command $candidate -ErrorAction SilentlyContinue
-        if ($resolved) { $pythonCmd = $resolved.Source; break }
+        if (-not $resolved) { continue }
+        & $resolved.Source -c "import sys" 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { $pythonCmd = $resolved.Source; break }
     }
 
     if (-not $pythonCmd) {
@@ -889,7 +955,9 @@ if ((Test-Path $userHookInstaller) -and -not $DryRun) {
         $Failed += "user-level hook install (missing python3) - meeting trigger + 6 other hooks WILL NOT FIRE until resolved"
     } else {
         try {
-            & $pythonCmd $userHookInstaller --quiet
+            # --fail-on-missing (parity with bootstrap.sh): verifies every wired
+            # hook script exists on disk and escalates divergent-fork strands.
+            & $pythonCmd $userHookInstaller --quiet --fail-on-missing
             if ($LASTEXITCODE -eq 0) {
                 Write-Host ("  OK " + (T "User-level hooks installed (~/.claude/settings.json)" `
                                           "Hooks a nivel de usuario instalados (~/.claude/settings.json)")) -ForegroundColor Green
@@ -898,8 +966,8 @@ if ((Test-Path $userHookInstaller) -and -not $DryRun) {
                                          "La instalación de hooks a nivel de usuario FALLÓ (exit $LASTEXITCODE).")) -ForegroundColor Red
                 Write-Host ("  X " + (T "The meeting trigger + 6 other UserPromptSubmit hooks will not fire." `
                                          "El trigger de meetings + 6 hooks UserPromptSubmit no van a disparar.")) -ForegroundColor Red
-                Write-Host ("  X " + (T "Re-run manually: python3 $userHookInstaller" `
-                                         "Volvé a correr manualmente: python3 $userHookInstaller")) -ForegroundColor Red
+                Write-Host ("  X " + (T "Re-run manually: & `"$pythonCmd`" `"$userHookInstaller`" --fail-on-missing" `
+                                         "Volvé a correr manualmente: & `"$pythonCmd`" `"$userHookInstaller`" --fail-on-missing")) -ForegroundColor Red
                 $Failed += "user-level hook install (exit $LASTEXITCODE) - meeting trigger + 6 other hooks WILL NOT FIRE"
             }
         } catch {
@@ -910,8 +978,22 @@ if ((Test-Path $userHookInstaller) -and -not $DryRun) {
     }
     Write-Host ""
 } elseif ($DryRun) {
-    Write-Host ("  > [dry-run] would run: python3 $userHookInstaller --quiet  " + `
+    Write-Host ("  > [dry-run] would run: python $userHookInstaller --quiet --fail-on-missing  " + `
                   "# wires 7 UserPromptSubmit hooks incl. meeting-workflow trigger") -ForegroundColor DarkGray
+}
+
+# Deploy vault-side scripts (journal-preflight.py, aggregators, etc.) into the
+# vault's Meta/scripts. Windows parity with the Mac update flow
+# (sync-skills.py -> sync-vault-scripts.sh). Self-resolves the vault from the
+# settings.json hooks just installed. Non-fatal: never blocks the install.
+if (-not $DryRun) {
+    try {
+        $vaultSync = Join-Path $PSScriptRoot "scripts/sync-vault-scripts.ps1"
+        if (Test-Path $vaultSync) { & $vaultSync -Quiet }
+    } catch {
+        Write-Host ("  ! " + (T "vault-script sync skipped: $_" `
+                                 "sincronizacion de scripts del vault omitida: $_")) -ForegroundColor DarkYellow
+    }
 }
 
 Write-Host ""
@@ -1013,7 +1095,7 @@ if ($CorporateProfile) {
 Generated: $stamp | Profile: corporate (hardened) | Host: Windows $([System.Environment]::OSVersion.Version) $env:PROCESSOR_ARCHITECTURE
 
 ## Pinned versions (no auto-update)
-- ai-brain-starter skill : rev $absRev - https://github.com/adelaidasofia/ai-brain-starter
+- ai-brain-starter skill : rev $absRev - https://github.com/mycelium-hq/ai-brain-starter
   Self-update hook DISABLED via sentinel ~/.claude/.ai-brain-starter-pinned (delete it to re-enable updates).
 - Claude Code CLI        : $ccVer - autoupdater off (DISABLE_AUTOUPDATER=1 + CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1)
 - Obsidian               : pin to your IT-approved build + disable in-app auto-update (see docs/CORPORATE_PROFILE.md)

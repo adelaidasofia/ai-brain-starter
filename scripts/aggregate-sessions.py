@@ -14,15 +14,22 @@ function of the sorted input, concurrent runs of this script produce
 identical output — safe against races.
 
 Usage:
-  VAULT_ROOT=/path/to/vault python3 aggregate-sessions.py
+  python3 aggregate-sessions.py                 # vault auto-detected from script location
   python3 aggregate-sessions.py --keep 5
   python3 aggregate-sessions.py --dry-run
   python3 aggregate-sessions.py --no-legacy
+  VAULT_ROOT_FORCE=1 VAULT_ROOT=/other/vault python3 aggregate-sessions.py  # deliberate cross-vault
 
 Environment variables:
-  VAULT_ROOT   — absolute path to the Obsidian vault root.
-                 Defaults to $HOME/Documents/MyVault — CUSTOMIZE THIS or
-                 set the env var in your shell / hook.
+  VAULT_ROOT        — absolute path to the vault root. Optional: by default the
+                      vault is auto-detected from this script's OWN location
+                      (⚙️ Meta/scripts/ → 2 levels up). If VAULT_ROOT is set but
+                      points at a DIFFERENT vault than the one this copy lives
+                      in, it is IGNORED (with a stderr warning) and the script's
+                      own vault is used — so a globally-exported VAULT_ROOT can't
+                      silently redirect a ported copy at the wrong vault.
+  VAULT_ROOT_FORCE  — set to 1 to honor VAULT_ROOT even when it differs from the
+                      script's own vault (deliberate cross-vault runs).
 
 File format (Sessions/ entries):
   Each file must start with YAML frontmatter containing:
@@ -62,10 +69,37 @@ import re
 import sys
 from pathlib import Path
 
-# VAULT_ROOT — auto-detect from script location (⚙️ Meta/scripts/ → 2 levels up),
-# or override via env var.
-_SCRIPT_DIR = Path(__file__).resolve().parent
-VAULT_ROOT = Path(os.environ.get("VAULT_ROOT", str(_SCRIPT_DIR.parent.parent)))
+# --- VAULT_ROOT resolution ------------------------------------------------
+# Ground truth is THIS script's own location: ⚙️ Meta/scripts/ → 2 levels up
+# is the vault this physical copy belongs to. A VAULT_ROOT env var is honored
+# only when it points at that same vault, or when the caller explicitly sets
+# VAULT_ROOT_FORCE=1.
+#
+# Why: a globally-exported VAULT_ROOT (e.g. a shell-profile export) otherwise
+# silently redirects EVERY copy of this script — including copies ported into
+# other vaults — at that one vault, causing wrong-vault reads and destructive
+# wrong-vault writes with NO error. Preferring the script's own location on
+# mismatch is fail-safe: a copy can only ever touch the vault it lives in.
+def _resolve_vault_root() -> tuple[Path, str]:
+    auto_root = Path(__file__).resolve().parent.parent.parent
+    env_raw = os.environ.get("VAULT_ROOT")
+    if not env_raw:
+        return auto_root, "auto-detect (script location)"
+    env_root = Path(os.path.expanduser(env_raw)).resolve()
+    if env_root == auto_root:
+        return env_root, "env VAULT_ROOT (matches script location)"
+    if os.environ.get("VAULT_ROOT_FORCE", "").strip().lower() in ("1", "true", "yes"):
+        return env_root, f"env VAULT_ROOT (FORCED, differs from script vault {auto_root})"
+    print(
+        f"WARNING: VAULT_ROOT env points at {env_root}, but this script lives in "
+        f"{auto_root}. Operating on the script's own vault ({auto_root}); this "
+        f"copy will NOT touch {env_root}. Set VAULT_ROOT_FORCE=1 to override.",
+        file=sys.stderr,
+    )
+    return auto_root, "auto-detect (env VAULT_ROOT ignored: vault mismatch)"
+
+
+VAULT_ROOT, _VAULT_ROOT_SOURCE = _resolve_vault_root()
 META_DIR = VAULT_ROOT / "⚙️ Meta"
 SESSIONS_DIR = META_DIR / "Sessions"
 LAST_SESSION = META_DIR / "Last Session.md"
@@ -73,6 +107,28 @@ LAST_SESSION = META_DIR / "Last Session.md"
 AGGREGATOR_BEGIN = "<!-- aggregate-sessions:BEGIN -->"
 AGGREGATOR_END = "<!-- aggregate-sessions:END -->"
 LEGACY_HEADER = "## Legacy (pre-split) historical entries"
+
+
+def _backup_before_write(path: Path, keep: int = 3) -> Path | None:
+    """Write a timestamped backup of `path` before it is overwritten, so a
+    bad aggregation — or a wrong-vault run that somehow slips past the
+    vault-root guard — can never silently destroy the prior good file. Keeps
+    the most recent `keep` backups (older ones pruned) so a file rebuilt on
+    every session-close never fills the vault with .bak files. Returns the
+    backup path, or None when there was nothing to back up."""
+    if not path.exists():
+        return None
+    stamp = dt.datetime.now().strftime("%Y-%m-%d-%H%M%S")
+    backup = path.with_name(f"{path.stem}.bak-{stamp}{path.suffix}")
+    backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    for old in sorted(
+        path.parent.glob(f"{path.stem}.bak-*{path.suffix}"), reverse=True
+    )[keep:]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    return backup
 
 
 def preamble() -> str:
@@ -247,6 +303,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    print(f"VAULT_ROOT: {VAULT_ROOT}  [{_VAULT_ROOT_SOURCE}]")
+
     if not META_DIR.exists():
         print(
             f"ERROR: {META_DIR} does not exist. Set VAULT_ROOT env var "
@@ -304,13 +362,21 @@ def main() -> int:
             print(f"  - {f.name}")
         return 0
 
+    backup = _backup_before_write(LAST_SESSION)
     LAST_SESSION.write_text(new_content, encoding="utf-8")
     print(
         f"Aggregated {min(args.keep, len(files))} of {len(files)} session(s) "
         f"into {LAST_SESSION.name} ({len(new_content):,} bytes)"
+        + (f" [backup: {backup.name}]" if backup else "")
     )
     return 0
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())

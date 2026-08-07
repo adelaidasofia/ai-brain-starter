@@ -43,3 +43,17 @@ secrets.json
 hooks/.last-secret-scan
 hooks/.last-secret-scan-full
 hooks/.secret-scan.lock
+
+# Stray vault "Meta" folders left by local sync / resolver runs against a real
+# vault (e.g. a script writing "⚙️ Meta/logs/"). Never ship a user's vault
+# folder into this public substrate repo.
+/⚙️ Meta/
+/Meta/
+
+# Same hazard, WhatsApp export side: scripts/whatsapp/sync.mjs defaults
+# VAULT_ROOT to two levels up from itself, which inside this repo resolves to
+# the REPO ROOT, not a vault. Running it without VAULT_ROOT set therefore writes
+# personal chat transcripts here. Credentials (baileys_auth/, baileys_store.json)
+# are already ignored; this covers the exported message content too, so a user
+# can never stage their own WhatsApp history into a public fork.
+/🤖 AI Chats/

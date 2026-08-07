@@ -1,0 +1,49 @@
+{
+  "eval": "agentic-os-harness",
+  "ticket": "MYC-623",
+  "ran_at": "2026-07-23T23:27:33+00:00",
+  "claude_cli": "2.1.216 (Claude Code)",
+  "verdict": "GREEN",
+  "checks": [
+    {
+      "name": "control/write-capable-probe-writes",
+      "pass": true,
+      "detail": "write-willing prose + Write in `tools:` produced a write"
+    },
+    {
+      "name": "claim-A/tool-surface-enforced",
+      "pass": true,
+      "detail": "identical prompt and prose minus Write in `tools:` did NOT write"
+    },
+    {
+      "name": "shipped/planner-did-not-write[one-sided]",
+      "pass": true,
+      "detail": "shipped planner did not write (prose-confounded; not evidence for claim A)"
+    },
+    {
+      "name": "shipped/resolver-can-write",
+      "pass": true,
+      "detail": "shipped resolver wrote, as it must"
+    },
+    {
+      "name": "control/hook-emits-correct-envelope",
+      "pass": true,
+      "detail": "installed hook emits the right rule for .ts/.py and nothing for .md"
+    },
+    {
+      "name": "claim-B/src/widget.ts",
+      "pass": true,
+      "detail": "model received rule 'typescript' (expected 'typescript')"
+    },
+    {
+      "name": "claim-B/src/thing.py",
+      "pass": true,
+      "detail": "model received rule 'python' (expected 'python')"
+    },
+    {
+      "name": "claim-B/notes/readme.md",
+      "pass": true,
+      "detail": "model received rule None (expected None)"
+    }
+  ]
+}

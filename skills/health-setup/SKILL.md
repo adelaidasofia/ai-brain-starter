@@ -1,6 +1,6 @@
 ---
 name: health-setup
-description: Interactive setup wizard for the health-mcp connector. Picks the right wearable (Apple Watch / Apple Health, Oura Ring, Fitbit, Garmin, Whoop) and OS (macOS / Windows / Linux), walks the user through getting API tokens or exporting data, sets env vars, and verifies the connection end-to-end. Use when the user says /health-setup, asks to set up their wearable, asks "which wearable", asks how to import Oura or Fitbit, or after a fresh install of health-mcp.
+description: Use when the user says /health-setup or /setup-health, asks to set up or connect a wearable (Apple Watch, Apple Health, Oura Ring, Fitbit, Garmin, Whoop), asks how to import Oura / Fitbit / Apple Health data, asks which wearable to use, hits a failing health_vendor_healthcheck, a 429 rate limit, or an expired Fitbit token during setup, or has health-mcp installed with an empty body track. Not for querying already-imported data or building new connectors.
 ---
 
 # health-setup, interactive wearable connector wizard

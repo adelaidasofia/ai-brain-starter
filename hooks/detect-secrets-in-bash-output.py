@@ -12,7 +12,9 @@ log. Two outputs:
 2. Append-only audit log at ~/.claude/hooks/secret-detection-log.jsonl.
    Each entry: timestamp, session_id, tool_input (command hash), patterns
    that matched, match counts. This is the corpus for spotting recurring
-   gaps in PreToolUse coverage.
+   gaps in PreToolUse coverage. Entries may also carry `fp_suppressed` for
+   hits reclassified as content-addressed IDs (docker run -d / drizzle
+   migration hashes) rather than secrets.
 
 Pairs with:
 - PreToolUse hookify rule `block-secret-dump-command-class` (vault
@@ -39,7 +41,7 @@ from pathlib import Path
 HOOK_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOK_DIR))
 
-from _lib.secret_patterns import scan  # noqa: E402
+from _lib.secret_patterns import filter_tool_output_false_positives, scan  # noqa: E402
 
 LOG_PATH = HOOK_DIR / "secret-detection-log.jsonl"
 PLAYBOOK_HINT = "⚙️ Meta/Handoffs/20260513-eng6-secrets-rotation-playbook.md"
@@ -125,6 +127,13 @@ def main() -> int:
         print(json.dumps({"continue": True, "suppressOutput": True}))
         return 0
 
+    # Alert-layer-only reclassification: docker-run-detached ID echoes and
+    # drizzle migration-hash psql rows are content-addressed, not secrets.
+    # scan()/redact() above are untouched — this only trims what THIS hook
+    # alerts on. Suppressed hits are still audit-logged below with a reason.
+    command = (payload.get("tool_input") or {}).get("command", "")
+    hits, fp_suppressed = filter_tool_output_false_positives(hits, output, command)
+
     # Secrets just landed in the transcript. Log + (maybe) alert.
     self_inspection = _is_self_secret_inspection(payload)
     entry = {
@@ -132,8 +141,12 @@ def main() -> int:
         "session_id": payload.get("session_id", "unknown"),
         "command_sha": _hash_command(payload),
         "hits": [{"pattern": n, "count": c} for n, c in hits],
-        "alert_suppressed": self_inspection,
+        "alert_suppressed": bool(self_inspection or not hits),
     }
+    if fp_suppressed:
+        entry["fp_suppressed"] = [
+            {"pattern": n, "count": c, "reason": r} for n, c, r in fp_suppressed
+        ]
     try:
         with LOG_PATH.open("a") as f:
             f.write(json.dumps(entry, separators=(",", ":")) + "\n")
@@ -144,6 +157,13 @@ def main() -> int:
     # Self-inspection of own .env / admin.env / .zsh_secrets: skip the alert.
     # Detection still in audit log; loud rotation message is just noise here.
     if self_inspection:
+        print(json.dumps({"continue": True, "suppressOutput": True}))
+        return 0
+
+    # Every match was a documented content-addressed ID shape (docker ID
+    # echo / drizzle migration hash) — audit entry retained above, no loud
+    # alert; nothing real is left in `hits` to report.
+    if not hits:
         print(json.dumps({"continue": True, "suppressOutput": True}))
         return 0
 

@@ -107,7 +107,7 @@ def main() -> int:
 
     # --- 1. registered SCRATCH worktrees: trim idle claude/* over cap, oldest first ---
     # Deliberate ~/dev/<repo>-<slug> sibling worktrees are never auto-removed.
-    regs = [w for w in list_worktrees(main_repo) if is_scratch_worktree(w)]
+    regs = [w for w in (list_worktrees(main_repo) or []) if is_scratch_worktree(w)]
     report["registered_before"] = len(regs)
     over = max(0, len(regs) - args.cap)
     removed = 0
@@ -166,7 +166,7 @@ def main() -> int:
             git(main_repo, ["worktree", "prune"])
         except Exception:
             pass
-        report["registered_after"] = len(list_worktrees(main_repo))
+        report["registered_after"] = len(list_worktrees(main_repo) or [])
         report["orphans_after"] = len(list_orphan_dirs(main_repo))
 
     if args.json:
@@ -195,6 +195,12 @@ from _lib.worktree_safety import WORKTREES_SEG as WORKTREES_SEG_LOCAL  # noqa: E
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     try:
         sys.exit(main())
     except KeyboardInterrupt:

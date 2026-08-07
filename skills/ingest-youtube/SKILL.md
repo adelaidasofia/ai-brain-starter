@@ -1,13 +1,15 @@
 ---
 name: ingest-youtube
-description: Pulls a YouTube video transcript (or a channel's recent uploads) into the vault as queryable markdown. Use when the user says /ingest-youtube <url-or-channel> [--days N], or asks to ingest, capture, sync, transcribe, or pull a YouTube video or channel into the vault. Writes one file per video to External Inputs/YouTube/<channel-slug>/<YYYY-MM-DD>-<video-slug>.md. Idempotent: re-ingesting the same video overwrites cleanly. Do NOT use for downloading the video itself, for live streams, or for non-YouTube sources.
+description: Use when the user says /ingest-youtube <url-or-channel> [--days N], pastes a YouTube URL (youtube.com or youtu.be) wanting a transcript or summary in the vault, asks to ingest, capture, sync, transcribe, or pull a YouTube video, channel, talk, podcast, or keynote into the vault, or wants a video's captions or content available to the knowledge graph. Not for downloading video files, live streams, or non-YouTube sources (Vimeo, Twitch).
 ---
 
 # ingest-youtube — YouTube-to-vault connector
 
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). If a path does not resolve, name the missing file and stop — never guess another location.
+
 Ingests YouTube transcripts into the vault as markdown the graphify pipeline can read and the rest of the AI Brain Starter substrate (decision log, session-close cascade, hooks) can act on.
 
-Same pattern as `ingest-slack`, `ingest-whatsapp`, `ingest-notion`, `ingest-linear`, `ingest-github`, `ingest-gmail`. Adding YouTube means a new normalizer, not a new architecture.
+Same connector pattern as `ingest-github`: adding a new source means a new normalizer, not a new architecture.
 
 ## When to use
 
@@ -45,7 +47,7 @@ Do NOT use for:
 
 ## Invocation
 
-The skill is a thin orchestrator. The actual ingestion runs in Python at `~/.claude/skills/ingest-youtube/ingest.py`.
+The skill is a thin orchestrator. The actual ingestion runs in Python at `{SKILL_DIR}/ingest.py`.
 
 When invoked:
 
@@ -105,7 +107,6 @@ Whisper fallback is OFF by default for cost reasons. Enable per-call with `--whi
 
 ## Cross-references
 
-- For ingesting a Slack discussion of the video → `ingest-slack` separately
 - For turning the transcript into LinkedIn/Substack content → `repurpose-talk` after ingest
 - For pulling action items out of the transcript → `note-todos` after ingest
 - For knowledge-graph extraction across many transcripts → `graphify` on `External Inputs/YouTube/` directly

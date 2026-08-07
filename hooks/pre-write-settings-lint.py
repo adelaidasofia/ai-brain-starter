@@ -76,7 +76,9 @@ def main() -> int:
 
     label = f"<pretooluse:{Path(file_path).name}>"
     result = subprocess.run(
-        ["python3", str(LINT_SCRIPT), "--strict", "--content", projected, "--label", label],
+        # sys.executable, not "python3": Windows installs have no python3 on PATH.
+        [sys.executable or "python3", str(LINT_SCRIPT),
+         "--strict", "--content", projected, "--label", label],
         capture_output=True,
         text=True,
     )

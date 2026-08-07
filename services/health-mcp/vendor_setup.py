@@ -231,7 +231,7 @@ _GUIDES: dict[str, dict[str, Any]] = {
         "tool_to_run": "(via apple_health)",
         "ongoing_cadence": "Same as Apple Health.",
         "notes": [
-            "Garmin Connect IQ is a planned v0.4 addition. Track at github.com/adelaidasofia/ai-brain-starter/issues",
+            "Garmin Connect IQ is a planned v0.4 addition. Track at github.com/mycelium-hq/ai-brain-starter/issues",
         ],
     },
     "whoop": {
@@ -248,7 +248,7 @@ _GUIDES: dict[str, dict[str, Any]] = {
         "common_steps": [
             "Confirm you have Whoop Pro",
             "Visit developer.whoop.com to register an OAuth2 app",
-            "Track v0.4 progress at github.com/adelaidasofia/ai-brain-starter/issues for native support",
+            "Track v0.4 progress at github.com/mycelium-hq/ai-brain-starter/issues for native support",
         ],
         "transfer_steps_by_os": {},
         "env_vars": {},

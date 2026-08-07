@@ -29,6 +29,16 @@ Spanish closing patterns added 2026-05-13 — the same session's goodbye
 ("Que descanses, Ade") slipped past the English-only regex, so the
 three-gate check never even fired.
 
+2026-06-30: VAULT_ROOT is now resolved repo-aware (see _lib/vault_root.py),
+in lockstep with detect-closing-signal.py. Before this fix, VAULT_ROOT was
+read straight from the env var — permanently, for every repo, whenever a
+machine-wide default was configured. A session working inside its own
+vault-shaped repo (own CLAUDE.md, own Session End/Close cascade) had its
+session file correctly written there by detect-closing-signal.py's own
+repo-aware fix, but THIS hook still checked the unrelated default vault's
+Sessions/ dir and runner state — turning a silent mis-filing into an
+active false hard-block quoting the wrong vault's missing files.
+
 FAIL-SAFE / conditional enforcement (so this hook is safe to wire by
 default for every vault):
   - The hard-block (exit 2) is gated on the session-close cascade actually
@@ -45,6 +55,14 @@ Bypass / overrides:
   - VERIFY_CASCADE_SOFT=1    — force advisory mode even when the runner is
                                installed (warn, never block).
 """
+
+# MYC-3529: REQUIRED, not cosmetic. This module annotates with PEP-604
+# `X | None`, which is evaluated at def-time and is a TypeError on Python
+# 3.9 -- the floor version scripts/ci.sh's gate actually runs. py_compile
+# does NOT catch it (the annotation compiles fine and only blows up when
+# the def executes), so the import crash is invisible to the lint gates and
+# shows up only as a hook that silently does nothing.
+from __future__ import annotations
 
 import json
 import os
@@ -65,7 +83,19 @@ except Exception:  # fail-open: if the lib cannot load, never block a close
     def is_closing_claim(_text: str) -> bool:  # type: ignore
         return False
 
-VAULT_ROOT = Path(os.environ.get("VAULT_ROOT", str(Path.home() / "vault")))
+# Shared vault-root resolver - single source of truth (_lib/vault_root.py).
+# Repo-aware: a session working inside its own vault-shaped repo (own
+# CLAUDE.md declaring a Session End/Close cascade) resolves to that repo,
+# not a global VAULT_ROOT default. Must stay in lockstep with
+# detect-closing-signal.py's resolution — that hook decides where the model
+# writes the session file; this hook must look in the SAME place, or a
+# correctly-written artifact false-blocks the close because this hook is
+# still checking an unrelated default vault.
+try:
+    from _lib.vault_root import resolve_vault_root  # noqa: E402
+except Exception:  # fail-open: if the lib cannot load, fall back to env/home
+    def resolve_vault_root(cwd: Path, env_vault_root: str | None) -> Path:  # type: ignore
+        return Path(env_vault_root) if env_vault_root else (cwd or Path.home() / "vault")
 
 
 def _find_meta_dir(vault_root: Path) -> Path:
@@ -92,13 +122,59 @@ def _find_meta_dir(vault_root: Path) -> Path:
     return vault_root / "Meta"
 
 
-META_DIR = _find_meta_dir(VAULT_ROOT)
-META_NAME = META_DIR.name
-SESSIONS_DIR = META_DIR / "Sessions"
-RUNNER_SCRIPT = META_DIR / "scripts" / "session-close-runner.sh"
+# Import-time placeholders so the module stays importable without a hook
+# payload. main() calls _resolve_vault_context(cwd) immediately after reading
+# cwd from stdin, before any gate function runs, rebinding these to the SAME
+# repo-aware vault detect-closing-signal.py resolved for this session.
+#
+# MYC-3529: these used to be seeded from a naive
+# `os.environ.get("VAULT_ROOT", str(Path.home() / "vault"))`. The seed was
+# always overwritten before use, but it is the exact #375/#404 shape and it
+# made the module's import-time answer wrong for every vault not literally
+# named "vault" — including for anything that imports this module without
+# calling main(). They are now seeded through the SAME sanctioned resolver
+# the rebind uses, so the import-time answer and the per-invocation answer
+# can never disagree by construction.
+VAULT_ROOT: Path
+META_DIR: Path
+META_NAME: str
+SESSIONS_DIR: Path
+RUNNER_SCRIPT: Path
+
+
+def _resolve_vault_context(cwd: str) -> None:
+    """Recompute VAULT_ROOT/META_DIR/META_NAME/SESSIONS_DIR/RUNNER_SCRIPT for
+    THIS invocation's cwd, repo-aware. Every gate function below reads these
+    as module globals, so rebinding here (called once, early in main()) is
+    sufficient to put the whole hook in lockstep with the cwd it was invoked
+    with — no signature changes needed downstream.
+    """
+    global VAULT_ROOT, META_DIR, META_NAME, SESSIONS_DIR, RUNNER_SCRIPT
+    VAULT_ROOT = resolve_vault_root(Path(cwd) if cwd else Path.cwd(), os.environ.get("VAULT_ROOT"))
+    META_DIR = _find_meta_dir(VAULT_ROOT)
+    META_NAME = META_DIR.name
+    SESSIONS_DIR = META_DIR / "Sessions"
+    RUNNER_SCRIPT = META_DIR / "scripts" / "session-close-runner.sh"
+
+
+# Seed the module globals declared above. Going through _resolve_vault_context
+# rather than repeating the expression is the point: one resolution path, so an
+# import-time read can never drift from the per-invocation rebind.
+_resolve_vault_context("")
+
 # Default is the exact path session-close-runner.sh writes; the env override is
 # for hermetic tests (and any setup where both sides agree to relocate it).
-RUNNER_REPORT = Path(os.environ.get("ABS_RUNNER_REPORT", "/tmp/abs-session-close-runner.report"))
+# The literal /tmp (NOT tempfile.gettempdir()) is deliberate on POSIX: the bash
+# runner writes literally to /tmp, and macOS GUI processes see TMPDIR as
+# /var/folders/... — gettempdir() there would look in the wrong place and
+# false-block every close. Windows has no /tmp, so use the real temp dir there
+# (the bash runner can't run on Windows anyway; this hook stays advisory).
+import tempfile
+_DEFAULT_RUNNER_REPORT = (
+    str(Path(tempfile.gettempdir()) / "abs-session-close-runner.report")
+    if os.name == "nt" else "/tmp/abs-session-close-runner.report"
+)
+RUNNER_REPORT = Path(os.environ.get("ABS_RUNNER_REPORT", _DEFAULT_RUNNER_REPORT))
 RUNNER_FRESH_SECONDS = 1800  # 30 minutes
 
 
@@ -315,6 +391,11 @@ def main() -> int:
     last_text = get_last_assistant_text(transcript_path)
     if not is_closing_claim(last_text):
         return 0  # no closing claim — skip
+
+    # Repo-aware vault resolution, now that we know this is worth the work:
+    # put every gate below in lockstep with whichever vault
+    # detect-closing-signal.py resolved for THIS cwd (see _lib/vault_root.py).
+    _resolve_vault_context(cwd)
 
     # Enforcement (hard-block) is conditional on the session-close cascade
     # being INSTALLED in this vault — see runner_installed(). This is what

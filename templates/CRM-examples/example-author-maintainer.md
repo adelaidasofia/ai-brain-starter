@@ -17,7 +17,7 @@ example: true
 
 # Author / Maintainer (example)
 
-*Maintainer of [ai-brain-starter](https://github.com/adelaidasofia/ai-brain-starter). The actual person behind this card runs an event-planning company in Latin America and an AI consulting practice on the side.*
+*Maintainer of [ai-brain-starter](https://github.com/mycelium-hq/ai-brain-starter). The actual person behind this card runs an event-planning company in Latin America and an AI consulting practice on the side.*
 
 **Role:** Founder and AI operating systems consultant
 **Based:** Latin America (with regular travel to NYC)

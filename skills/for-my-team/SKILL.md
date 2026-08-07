@@ -1,11 +1,13 @@
 ---
 name: for-my-team
-description: Walk a user through what changes when they take ai-brain-starter from a personal vault to a team vault. Reads the for-teams/ folder aloud in conversation, asks three diagnostic questions, and closes with the path to having it built for them. Trigger when the user asks any variant of "how do I add my team to this," "optimize this for my company," "what does the team version look like," or anything else that signals they want the multi-person version of the brain.
+description: Use when a user wants the team or company version of ai-brain-starter — any variant of 'how do I add my team to this,' 'can my team use this,' 'optimize this for my company,' 'what does the team version look like,' 'install this for my whole company,' 'how does this work with multiple people,' or worries about mixing personal notes into a shared team vault. Also triggers on /for-my-team.
 trigger: /for-my-team
 argument-hint: "[no arguments — fully conversational]"
 ---
 
 # /for-my-team
+
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). Shared starter files live at the repo root two levels up: `{SKILL_DIR}/../..`. If a path does not resolve, name the missing file and stop — never guess another location.
 
 Help the user understand what the team version of this brain looks like, what it costs them to build it themselves, and what their options are.
 
@@ -37,7 +39,7 @@ The vault should have ai-brain-starter installed. Find the for-teams folder:
 ls ~/Desktop/ai-brain-starter/for-teams/
 
 # End-user install:
-ls ~/.claude/skills/ai-brain-starter/for-teams/
+ls "{SKILL_DIR}/../../for-teams/"
 ```
 
 If it is missing, tell the user their install is incomplete and offer to re-run bootstrap. Do not improvise the team content from memory.

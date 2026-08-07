@@ -31,16 +31,35 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _meta_resolver import find_meta_dir  # noqa: E402
 
 
-def detect_vault_root() -> Path:
-    """Detect vault root from $VAULT_ROOT env var or script location."""
-    env_root = os.environ.get("VAULT_ROOT")
-    if env_root:
-        return Path(env_root)
-    script_dir = Path(__file__).resolve().parent
-    candidate = script_dir.parent.parent
-    if (candidate / "⚙️ Meta").is_dir():
-        return candidate
-    return Path.cwd()
+def _resolve_vault_root(cli_override: Path | None) -> tuple[Path, str]:
+    """Resolve the vault root, defeating the inherited-VAULT_ROOT footgun.
+
+    Precedence: an explicit --vault-root is honored; otherwise the vault is
+    auto-detected from THIS script's own location (⚙️ Meta/scripts/ → 2 levels
+    up). An ambient VAULT_ROOT env var is honored ONLY when it matches the
+    script's own vault, or when VAULT_ROOT_FORCE=1 (deliberate cross-vault).
+    Otherwise it is ignored (with a stderr warning) and the script's own vault
+    is used — so a globally-exported VAULT_ROOT can't silently redirect a
+    ported copy at the wrong vault, causing wrong-vault reads and destructive
+    wrong-vault writes with NO error."""
+    if cli_override is not None:
+        return cli_override.resolve(), "--vault-root (explicit)"
+    auto_root = Path(__file__).resolve().parent.parent.parent
+    env_raw = os.environ.get("VAULT_ROOT")
+    if not env_raw:
+        return auto_root, "auto-detect (script location)"
+    env_root = Path(os.path.expanduser(env_raw)).resolve()
+    if env_root == auto_root:
+        return env_root, "env VAULT_ROOT (matches script location)"
+    if os.environ.get("VAULT_ROOT_FORCE", "").strip().lower() in ("1", "true", "yes"):
+        return env_root, f"env VAULT_ROOT (FORCED, differs from script vault {auto_root})"
+    print(
+        f"WARNING: VAULT_ROOT env points at {env_root}, but this script lives in "
+        f"{auto_root}. Operating on the script's own vault ({auto_root}); this "
+        f"copy will NOT touch {env_root}. Set VAULT_ROOT_FORCE=1 to override.",
+        file=sys.stderr,
+    )
+    return auto_root, "auto-detect (env VAULT_ROOT ignored: vault mismatch)"
 
 
 # Decision entries use this shape:
@@ -70,6 +89,28 @@ PLACEHOLDER_RE = re.compile(r"^\s*\*?\(fill in|\*\(verify|\*\(measure|\*\(check"
 # accumulating duplicates.
 PRIORITIES_MARKER_START = "<!-- decision-outcome-check: START -->"
 PRIORITIES_MARKER_END = "<!-- decision-outcome-check: END -->"
+
+
+def _backup_before_write(path: Path, keep: int = 3) -> Path | None:
+    """Write a timestamped backup of `path` before it is overwritten, so a
+    bad rewrite — or a wrong-vault run that somehow slips past the vault-root
+    guard — can never silently destroy the prior good file. Keeps the most
+    recent `keep` backups (older ones pruned) so repeated runs never fill the
+    vault with .bak files. Returns the backup path, or None when there was
+    nothing to back up."""
+    if not path.exists():
+        return None
+    stamp = dt.datetime.now().strftime("%Y-%m-%d-%H%M%S")
+    backup = path.with_name(f"{path.stem}.bak-{stamp}{path.suffix}")
+    backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    for old in sorted(
+        path.parent.glob(f"{path.stem}.bak-*{path.suffix}"), reverse=True
+    )[keep:]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    return backup
 
 
 def parse_decisions(content: str) -> list[dict]:
@@ -170,7 +211,8 @@ def main() -> int:
                         help="Path to vault root (default: auto-detected)")
     args = parser.parse_args()
 
-    vault_root = (args.vault_root or detect_vault_root()).resolve()
+    vault_root, _source = _resolve_vault_root(args.vault_root)
+    print(f"VAULT_ROOT: {vault_root}  [{_source}]")
     meta_dir = find_meta_dir(vault_root) or (vault_root / "Meta")
 
     decision_log = meta_dir / "Decision Log.md"
@@ -214,14 +256,20 @@ def main() -> int:
         print("No changes to Current Priorities.md.")
         return 0
 
-    backup = priorities.with_name(
-        f"{priorities.stem}.bak-{dt.datetime.now().strftime('%Y-%m-%d-%H%M')}{priorities.suffix}"
-    )
-    backup.write_text(priorities_content, encoding="utf-8")
+    backup = _backup_before_write(priorities)
     priorities.write_text(updated, encoding="utf-8")
-    print(f"Updated {priorities.name} (backup: {backup.name})")
+    print(
+        f"Updated {priorities.name}"
+        + (f" (backup: {backup.name})" if backup else "")
+    )
     return 0
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())

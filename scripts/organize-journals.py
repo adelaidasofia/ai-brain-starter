@@ -15,6 +15,7 @@ The Journals folder is expected at: <vault-root>/Journals/
 Customize JOURNALS_DIR if your vault uses a different name (e.g. "📓 Journals").
 """
 
+import sys
 import argparse
 import os
 import re
@@ -192,4 +193,10 @@ def main():
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     main()

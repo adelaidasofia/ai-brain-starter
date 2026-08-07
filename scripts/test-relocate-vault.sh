@@ -20,6 +20,13 @@
 #     cloud-sync it's being moved OUT of REFUSES (that copy doesn't survive the
 #     move); a cloud vault with a surviving backup (archive/TM/git-remote) still
 #     PROCEEDS.
+#   - ENSURE-BACKUP (MYC-2404): --ensure-backup STANDS UP a verified backup as
+#     part of the flow so a non-technical user reaches a backed-up, relocated
+#     vault in ONE approved step (no --force, no vault-backup.sh by hand).
+#     Negative controls prove fail-closed: a stand-up that FAILS at setup, and a
+#     stand-up that reports success but lands NO archive, BOTH refuse the move and
+#     preserve the vault. A real vault-backup.sh stand-up proceeds; a pre-existing
+#     surviving backup skips the stand-up (idempotent).
 # Hermetic: a temp HOME-like sandbox + an isolated --config-dir; the real
 # ~/.claude is never touched.
 # Run: bash scripts/test-relocate-vault.sh
@@ -31,6 +38,16 @@ trap 'rm -rf "$TMP"' EXIT
 fails=0
 pass() { echo "PASS  $1"; }
 fail() { echo "FAIL  $1"; fails=$((fails + 1)); }
+
+# HERMETICITY: Obsidian-running is a SOFT gate in relocate-vault.sh, skippable
+# with --force. Its real probe (pgrep -x Obsidian) reads AMBIENT host state, so a
+# developer with Obsidian OPEN — the normal state when developing an Obsidian-vault
+# tool — would see every full-relocate case below that omits --force die at that
+# gate instead of exercising the backup/cloud/ensure-backup gate it targets (15
+# such failures on a dev Mac). Pin the probe to "absent" for the whole suite so
+# those OTHER gates are what get tested; Section 10 flips it to "running" per-call
+# to cover the Obsidian refusal itself, deterministically, with no real Obsidian.
+export RELOCATE_VAULT_OBSIDIAN=absent
 
 # Mirror the script's projkey EXACTLY (resolve ancestry, keep leaf literal) so
 # fixtures land at the same key the script computes, even where $TMPDIR resolves
@@ -180,6 +197,152 @@ CLAUDE_CONFIG_DIR="$CFG" VAULT_BACKUP_CONF="$CL2_CONF" VAULT_BACKUP_SKIP_TIMEMAC
              || fail "cloud vault with a surviving archive should proceed, got rc=$rc"
 { [ -d "$cl2_dst" ] && [ -L "$cl2_src" ]; } && pass "cloud+archive move-out: moved + symlink left" \
              || fail "cloud+archive: did not relocate"
+
+# --- 9. ENSURE-BACKUP (MYC-2404): stand up the backup, don't just refuse --------
+# The MYC-2382 gate REFUSES a backup-less move but leaves a non-technical user
+# stuck (they don't know --force and won't run vault-backup.sh by hand). --ensure
+# -backup STANDS UP a verified off-machine backup as part of the move — one step.
+# The whole point is safety, so the negative controls come FIRST: a stand-up that
+# fails MUST NOT move the vault (fail-closed preserves; it never destroys).
+# VAULT_BACKUP_CMD lets these tests inject a stub backup tool deterministically.
+
+# Stub A: FAILS on setup (unreachable/denied dest, disk full, etc.).
+STUB_FAIL="$TMP/vault-backup-fail.sh"
+cat > "$STUB_FAIL" <<'STUB'
+#!/usr/bin/env bash
+echo "stub: simulated backup failure ($1)" >&2
+exit 1
+STUB
+chmod +x "$STUB_FAIL"
+
+# Stub B: pretends success (exit 0) but lands NO archive + writes NO conf. The
+# re-check must still catch that nothing survives and refuse (no silent no-op).
+STUB_LIE="$TMP/vault-backup-lie.sh"
+cat > "$STUB_LIE" <<'STUB'
+#!/usr/bin/env bash
+echo "stub: reports success but lands nothing ($1)"
+exit 0
+STUB
+chmod +x "$STUB_LIE"
+
+# 9a NEGATIVE CONTROL: stand-up FAILS at setup -> refuse, vault preserved.
+eb1_src="$TMP/eb-fail-src" ; eb1_dst="$TMP/eb-fail-dst"
+mkdir -p "$eb1_src" ; echo n > "$eb1_src/n.md"
+out="$(CLAUDE_CONFIG_DIR="$CFG" VAULT_BACKUP_CONF="$NOBK_CONF" VAULT_BACKUP_SKIP_TIMEMACHINE=1 \
+       VAULT_BACKUP_CMD="$STUB_FAIL" \
+       bash "$SCRIPT" --ensure-backup "$eb1_src" "$eb1_dst" 2>&1)" ; rc=$?
+[ "$rc" != 0 ] && pass "ensure-backup NC1: stand-up fails at setup -> refuses the move (rc=$rc)" \
+               || fail "ensure-backup NC1: expected a refusal when stand-up fails, moved with rc=$rc"
+{ [ -d "$eb1_src" ] && [ ! -L "$eb1_src" ] && [ -f "$eb1_src/n.md" ] && [ ! -e "$eb1_dst" ]; } \
+  && pass "ensure-backup NC1: vault NOT moved on stand-up failure (fail-closed preserves)" \
+  || fail "ensure-backup NC1: vault was moved/altered despite the stand-up failure"
+echo "$out" | grep -qiE 'fail-closed|not moving|untouched' \
+  && pass "ensure-backup NC1: refusal explains it is fail-closed" \
+  || fail "ensure-backup NC1: refusal lacked a fail-closed explanation: $out"
+
+# 9b NEGATIVE CONTROL: stand-up returns 0 but no surviving backup -> re-check refuses.
+eb2_src="$TMP/eb-lie-src" ; eb2_dst="$TMP/eb-lie-dst"
+mkdir -p "$eb2_src" ; echo n > "$eb2_src/n.md"
+out="$(CLAUDE_CONFIG_DIR="$CFG" VAULT_BACKUP_CONF="$NOBK_CONF" VAULT_BACKUP_SKIP_TIMEMACHINE=1 \
+       VAULT_BACKUP_CMD="$STUB_LIE" \
+       bash "$SCRIPT" --ensure-backup "$eb2_src" "$eb2_dst" 2>&1)" ; rc=$?
+[ "$rc" != 0 ] && pass "ensure-backup NC2: stand-up 'succeeds' but no archive -> re-check refuses (rc=$rc)" \
+               || fail "ensure-backup NC2: expected a refusal when no surviving backup materialized, rc=$rc"
+{ [ -d "$eb2_src" ] && [ ! -L "$eb2_src" ] && [ ! -e "$eb2_dst" ]; } \
+  && pass "ensure-backup NC2: vault NOT moved when stand-up produced no backup" \
+  || fail "ensure-backup NC2: vault moved despite no surviving backup"
+
+# 9c POSITIVE: the REAL vault-backup.sh stands up a verified archive -> move proceeds.
+# Hermetic: --backup-schedule none (no launchd/cron), temp conf/marker, temp dest.
+eb3_src="$TMP/eb-real-src" ; eb3_dst="$TMP/eb-real-dst"
+mkdir -p "$eb3_src/⚙️ Meta" ; echo "brain" > "$eb3_src/CLAUDE.md" ; echo "note" > "$eb3_src/note.md"
+EB3_DEST="$TMP/eb-real-backups"
+EB3_CONF="$TMP/eb-real-conf.json" ; echo '{}' > "$EB3_CONF"
+EB3_MARKER="$TMP/eb-real-marker"
+out="$(CLAUDE_CONFIG_DIR="$CFG" VAULT_BACKUP_CONF="$EB3_CONF" VAULT_BACKUP_MARKER="$EB3_MARKER" \
+       VAULT_BACKUP_SKIP_TIMEMACHINE=1 \
+       bash "$SCRIPT" --ensure-backup --backup-dest "$EB3_DEST" --backup-schedule none \
+            "$eb3_src" "$eb3_dst" 2>&1)" ; rc=$?
+[ "$rc" = 0 ] && pass "ensure-backup P1: real stand-up + verify -> move proceeds (rc=0)" \
+             || fail "ensure-backup P1: real stand-up should proceed, rc=$rc; out=$out"
+{ [ -d "$eb3_dst" ] && [ -L "$eb3_src" ] && [ "$(readlink "$eb3_src")" = "$eb3_dst" ]; } \
+  && pass "ensure-backup P1: vault moved + symlink left after stand-up" \
+  || fail "ensure-backup P1: vault not relocated as expected"
+ls "$EB3_DEST"/vault-backup-*.tar.gz >/dev/null 2>&1 \
+  && pass "ensure-backup P1: a real verified archive was stood up BEFORE the move" \
+  || fail "ensure-backup P1: no archive found in $EB3_DEST"
+# The auto stand-up is UNENCRYPTED — the move must say so loudly (privacy: a vault may
+# hold private notes and the archive often lands in a cloud folder). MYC-2512 phase 1.
+echo "$out" | grep -qiE 'not encrypted' \
+  && pass "ensure-backup P1: warns loudly that the stood-up backup is unencrypted" \
+  || fail "ensure-backup P1: missing the unencrypted-backup warning: $out"
+
+# 9d POSITIVE (idempotent): a pre-existing surviving backup skips the stand-up.
+# VAULT_BACKUP_CMD points at the FAIL stub — if the stand-up were (wrongly) invoked
+# the move would refuse; it proceeds only because a backup already exists.
+eb4_src="$TMP/eb-idem-src" ; eb4_dst="$TMP/eb-idem-dst"
+mkdir -p "$eb4_src" ; echo n > "$eb4_src/n.md"
+EB4_RES="$(cd "$eb4_src" && pwd -P)"
+EB4_DEST="$TMP/eb-idem-backups" ; mkdir -p "$EB4_DEST" ; touch "$EB4_DEST/vault-backup-now.tar.gz"
+EB4_CONF="$TMP/eb-idem-conf.json"
+printf '{"vaults": {"%s": {"dest": "%s", "archive_stem": "vault-backup"}}}\n' "$EB4_RES" "$EB4_DEST" > "$EB4_CONF"
+CLAUDE_CONFIG_DIR="$CFG" VAULT_BACKUP_CONF="$EB4_CONF" VAULT_BACKUP_SKIP_TIMEMACHINE=1 \
+  VAULT_BACKUP_CMD="$STUB_FAIL" \
+  bash "$SCRIPT" --ensure-backup "$eb4_src" "$eb4_dst" >/dev/null 2>&1 ; rc=$?
+[ "$rc" = 0 ] && pass "ensure-backup P2: pre-existing backup -> stand-up skipped, move proceeds (rc=0)" \
+             || fail "ensure-backup P2: pre-existing backup should skip stand-up + proceed, rc=$rc"
+{ [ -d "$eb4_dst" ] && [ -L "$eb4_src" ]; } \
+  && pass "ensure-backup P2: idempotent -> moved + symlink (fail-stub never invoked)" \
+  || fail "ensure-backup P2: did not relocate with a pre-existing backup"
+
+# 9e DRY-RUN: --ensure-backup --dry-run previews the stand-up + move, changes nothing.
+eb5_src="$TMP/eb-dry-src" ; eb5_dst="$TMP/eb-dry-dst"
+mkdir -p "$eb5_src" ; echo n > "$eb5_src/n.md"
+out="$(CLAUDE_CONFIG_DIR="$CFG" VAULT_BACKUP_CONF="$NOBK_CONF" VAULT_BACKUP_SKIP_TIMEMACHINE=1 \
+       VAULT_BACKUP_CMD="$STUB_FAIL" \
+       bash "$SCRIPT" --ensure-backup --dry-run "$eb5_src" "$eb5_dst" 2>&1)" ; rc=$?
+[ "$rc" = 0 ] && pass "ensure-backup 9e: --dry-run previews without refusing (rc=0)" \
+             || fail "ensure-backup 9e: --dry-run should not refuse/execute, rc=$rc; out=$out"
+{ [ -d "$eb5_src" ] && [ ! -L "$eb5_src" ] && [ ! -e "$eb5_dst" ]; } \
+  && pass "ensure-backup 9e: --dry-run changed nothing (no stand-up, no move)" \
+  || fail "ensure-backup 9e: --dry-run mutated the filesystem"
+echo "$out" | grep -qi 'would' \
+  && pass "ensure-backup 9e: --dry-run names the stand-up it would run" \
+  || fail "ensure-backup 9e: --dry-run did not preview the stand-up: $out"
+
+# --- 10. OBSIDIAN SOFT GATE: the refusal fires when Obsidian IS detected --------
+# The whole suite pins RELOCATE_VAULT_OBSIDIAN=absent so the other gates are
+# testable on any host; here we flip it to "running" to prove the Obsidian gate
+# itself STILL refuses (and stays escapable with --force), deterministically and
+# with no real Obsidian process. This is the dedicated coverage the seam must keep:
+# a soft gate that silently stopped firing would otherwise pass every test.
+ob_src="$TMP/obsidian-src" ; ob_dst="$TMP/obsidian-dst" ; mkdir -p "$ob_src" ; echo n > "$ob_src/n.md"
+
+# 10a REFUSE: Obsidian "running", no --force -> refuses at the Obsidian gate FIRST
+# (before the backup gate), names Obsidian + the --force remedy, vault NOT moved.
+out="$(CLAUDE_CONFIG_DIR="$CFG" RELOCATE_VAULT_OBSIDIAN=running \
+       bash "$SCRIPT" "$ob_src" "$ob_dst" 2>&1)" ; rc=$?
+[ "$rc" = 1 ] && pass "obsidian gate: refuses a move while Obsidian runs (rc=1)" \
+             || fail "obsidian gate: expected rc=1, got $rc"
+{ [ -d "$ob_src" ] && [ ! -L "$ob_src" ] && [ ! -e "$ob_dst" ]; } \
+  && pass "obsidian gate: vault NOT moved on refusal" \
+  || fail "obsidian gate: vault was moved despite the refusal"
+echo "$out" | grep -qi 'obsidian' \
+  && pass "obsidian gate: refusal names Obsidian (fired before the backup gate)" \
+  || fail "obsidian gate: refusal did not mention Obsidian: $out"
+echo "$out" | grep -qi -- '--force' \
+  && pass "obsidian gate: refusal names the --force escape hatch" \
+  || fail "obsidian gate: refusal did not name --force: $out"
+
+# 10b ESCAPE HATCH: Obsidian "running" + --force -> gate skipped, move proceeds
+# (the refusal's own promise; also proves the seam does not leak past --force).
+CLAUDE_CONFIG_DIR="$CFG" RELOCATE_VAULT_OBSIDIAN=running \
+  bash "$SCRIPT" "$ob_src" "$ob_dst" --force >/dev/null 2>&1 ; rc=$?
+[ "$rc" = 0 ] && pass "obsidian gate: --force overrides it even while Obsidian runs (rc=0)" \
+             || fail "obsidian gate: --force did not override the Obsidian gate (rc=$rc)"
+{ [ -d "$ob_dst" ] && [ -L "$ob_src" ]; } \
+  && pass "obsidian gate: --force -> vault moved + symlink left despite Obsidian running" \
+  || fail "obsidian gate: --force did not relocate with Obsidian running"
 
 echo
 if [ "$fails" -gt 0 ]; then echo "FAILED: $fails"; exit 1; fi

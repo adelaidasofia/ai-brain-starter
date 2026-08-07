@@ -1,7 +1,7 @@
 ---
 type: skill
 name: setup-vault-types
-description: Interactive wizard to configure which document types your vault uses. Asks the user what kinds of notes they take (journals, books, meetings, clients, podcasts, etc.), enables the matching extractors, and scaffolds extractors for custom types. Run once after installing ai-brain-starter, and again whenever you add a new kind of doc. Do NOT use this to run extraction. Use /second-brain-mapping for that.
+description: 'Use when configuring which document types a vault tracks: after installing ai-brain-starter, when a new kind of note appears (journals, books, meetings, clients, podcasts, travel, WhatsApp/Slack/iMessage exports), when extraction skips files because no extractor matches their type, or to add, list, or remove a custom type. Triggers: /setup-vault-types, "set up vault types", "add a note type", "enable an extractor". NOT for running extraction (use /second-brain-mapping).'
 trigger: /setup-vault-types
 argument-hint: "[--add <typename> | --list | --remove <typename>]"
 tool_access:
@@ -35,6 +35,8 @@ output_shape:
 ---
 
 # /setup-vault-types
+
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). Shared starter files live at the repo root two levels up: `{SKILL_DIR}/../..`. If a path does not resolve, name the missing file and stop — never guess another location.
 
 Figure out which doc types belong in this vault, then wire the right extractors.
 
@@ -110,7 +112,7 @@ For each checked type, symlink its extractor into the vault's `scripts/extractor
 
 ```bash
 VAULT="$(vault-root)"
-STARTER="$HOME/.claude/skills/ai-brain-starter"  # or wherever it's installed
+STARTER="{SKILL_DIR}/../.."  # the starter repo root, two levels above this skill's folder
 for type in ${SELECTED_TYPES[@]}; do
   ln -sf "$STARTER/scripts/extractors/$type.py" "$VAULT/scripts/extractors/$type.py"
 done

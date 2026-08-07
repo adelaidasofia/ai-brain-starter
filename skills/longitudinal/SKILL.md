@@ -1,6 +1,6 @@
 ---
 name: longitudinal
-description: Multi-year health-mcp pattern surface. Scans years of HealthKit + journal data, returns ONLY the strongest correlations (Briden noise filter). Use when the user asks for "patterns in my health data," "what does my body tell me," "correlations between mood and HRV," "Floor x body fingerprint," or runs /longitudinal. Do NOT use for single-day analysis (use /health-doctor), this-week patterns (use /weekly), or pattern extraction across journals only (use /patterns).
+description: 'Use when the user wants multi-year health patterns from HealthKit + journal data: "patterns in my health data," "what does my body tell me," "correlations between mood and HRV," "Floor x body fingerprint," long-term trends in sleep, HRV, VO2max, cycle, or symptoms, "how has my body changed over the years," or /longitudinal. NOT for single-day analysis (use /health-doctor), this-week patterns (use /weekly), or journal-only pattern extraction (use /patterns).'
 argument-hint: "[scope -- e.g. 'all', '5y', '1y', leave blank for 1y default]"
 ---
 

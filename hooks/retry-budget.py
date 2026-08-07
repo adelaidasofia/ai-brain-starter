@@ -23,11 +23,12 @@ import os
 import time
 import hashlib
 import glob
+import tempfile
 
 THRESHOLD_BLOCK = 4       # 4th+ attempt blocks (3 attempts allowed)
 WINDOW_SEC = 30 * 60
 MIN_CMD_LEN = 15
-STATE_DIR = "/tmp"
+STATE_DIR = tempfile.gettempdir()  # /tmp is POSIX-only; Windows has no /tmp
 STATE_TTL_SEC = 24 * 3600
 
 

@@ -57,8 +57,8 @@ Semver: `vX.Y.0` for new features, `vX.Y.Z` for fixes, `vN.0.0` for breaking ins
 Stable URL pattern (latest, regardless of version):
 
 ```
-https://github.com/adelaidasofia/ai-brain-starter/releases/latest/download/ai-brain-starter.zip
-https://github.com/adelaidasofia/ai-brain-starter/releases/latest/download/ai-brain-starter.zip.sha256
+https://github.com/mycelium-hq/ai-brain-starter/releases/latest/download/ai-brain-starter.zip
+https://github.com/mycelium-hq/ai-brain-starter/releases/latest/download/ai-brain-starter.zip.sha256
 ```
 
 ## Privacy gating (PR-scoped)

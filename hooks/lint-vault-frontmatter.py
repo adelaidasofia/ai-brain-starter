@@ -212,7 +212,15 @@ def main() -> int:
     # Write projected content to a temp file and call validator
     import subprocess
     import tempfile
-    with tempfile.NamedTemporaryFile(suffix=".md", mode="w", delete=False, encoding="utf-8") as tf:
+    # newline="" is REQUIRED, not cosmetic. Without it, Python text mode on
+    # Windows rewrites every "\n" to "\r\n" as it writes. The validator then
+    # reads this file through safe_read_text, which decodes BYTES directly
+    # (no universal-newline translation), so it sees the injected "\r\n" and
+    # its LF-only frontmatter regex fails — denying every Write/Edit of a
+    # vault .md file on Windows regardless of content. Preserve bytes exactly.
+    with tempfile.NamedTemporaryFile(
+        suffix=".md", mode="w", delete=False, encoding="utf-8", newline=""
+    ) as tf:
         # Adjust path so detect_type in validator finds the right schema
         tf.write(projected)
         tmp_path = tf.name

@@ -102,7 +102,7 @@ Opening (2 paragraphs):
   with them.
 
 (Bottom of post, one line below the close, separated by a horizontal rule:)
-Built it as open-source for anyone running an AI Brain Starter. github.com/adelaidasofia/ai-brain-starter
+Built it as open-source for anyone running an AI Brain Starter. github.com/mycelium-hq/ai-brain-starter
 ```
 
 Length target: 1,500 to 2,500 words. Not shorter (it would lose the lived register). Not longer (it would lose readers).
@@ -186,7 +186,7 @@ Before declaring done:
 - [ ] Zero em dashes in either body (commas, colons, periods, parentheses only)
 - [ ] Zero exclamation marks in either body
 - [ ] Floor wikilinks present on first occurrence in each language
-- [ ] Bottom-of-post one-line link to github.com/adelaidasofia/ai-brain-starter present in both
+- [ ] Bottom-of-post one-line link to github.com/mycelium-hq/ai-brain-starter present in both
 - [ ] Privacy commitment visible in the first third of the article (Jackie's vote)
 - [ ] At least one dissent voice in the panel pass actually changed something in the draft
 - [ ] /humanizer pass clean on both

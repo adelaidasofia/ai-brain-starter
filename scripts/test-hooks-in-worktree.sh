@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test-hooks-in-worktree.sh — verify hooks fire inside a git worktree.
 #
-# Closes adelaidasofia/ai-brain-starter#6 verification path. Creates a
+# Closes mycelium-hq/ai-brain-starter#6 verification path. Creates a
 # temporary git repo, adds ai-brain-starter hooks at project level, creates
 # a worktree, then simulates UserPromptSubmit input from inside the worktree
 # and checks the hook responds.

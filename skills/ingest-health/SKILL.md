@@ -1,6 +1,6 @@
 ---
 name: ingest-health
-description: Imports Apple Health data into the local DuckDB used by health-mcp. Three modes (XML export.zip, Simple Health Export CSV folder, Health Auto Export TCP-live). Use when the user says /ingest-health, asks to import health data, sync Apple Health, or set up the health connector. Idempotent: re-running on the same file is a no-op unless force=True. Reads only; never writes vault.
+description: Use when the user says /ingest-health, asks to import, sync, ingest, or load Apple Health / Apple Watch / HealthKit data, has a fresh export.zip from the iPhone Health app, a Simple Health Export CSV folder, or a Health Auto Export TCP live feed, or when health-mcp queries return empty because no data was ever imported. Not for querying existing health data (health-mcp tools do that) or non-Apple wearables (Garmin, Whoop, Oura).
 ---
 
 # ingest-health, Apple Health to DuckDB connector

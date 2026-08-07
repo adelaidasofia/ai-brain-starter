@@ -1,4 +1,18 @@
 #!/bin/bash
+# --- ai-brain-starter: shim-safe PATH (strip refuse-shims) ----------------
+# Some machines carry a python3/python PATH shim (e.g. trailofbits
+# modern-python) that exit-1s on bare invocation and would turn every bare
+# python call below into a silent no-op. Drop any */hooks/shims dir from PATH
+# so bare python calls here (and, via export, in children) hit a real python.
+if [ "${PATH#*/hooks/shims}" != "$PATH" ]; then
+  _abs_new=""; _abs_oifs=$IFS; IFS=:
+  for _abs_d in $PATH; do
+    case $_abs_d in */hooks/shims|*/hooks/shims/) ;; *) _abs_new=${_abs_new:+$_abs_new:}$_abs_d ;; esac
+  done
+  IFS=$_abs_oifs; PATH=$_abs_new; export PATH
+  unset _abs_new _abs_d _abs_oifs
+fi
+# --------------------------------------------------------------------------
 # graph-context-hook.sh — UserPromptSubmit hook that injects targeted graph
 # context when the user's prompt contains routing keywords.
 #
@@ -84,7 +98,17 @@ freshness_note() {
   local path="$1"
   local label="$2"
   if [ ! -f "$path" ]; then
-    printf "missing (run /graphify on %s to build it)" "$label"
+    # Distinguish a NEVER-BUILT graph from one that was built and then LOST.
+    # graphify-out/ is gitignored, so a lost graph leaves NO trace while the
+    # second-brain-mapping state file still records that graphify ran. That
+    # silent gap is exactly how a graph can vanish for weeks unnoticed — a bare
+    # "missing" note reads identically whether it was never built or just lost.
+    local _state="$VAULT_ROOT/⚙️ Meta/.second-brain-mapping-state.json"
+    if [ -f "$_state" ] && python3 -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get('phase_2_graphify') else 1)" "$_state" 2>/dev/null; then
+      printf "⚠ LOST — this graph was built before but is GONE now (gitignored + untracked, no git trace). Your SOURCE is intact; rebuild it: /graphify --update on %s" "$label"
+    else
+      printf "missing (run /graphify on %s to build it)" "$label"
+    fi
     return
   fi
   local mtime now days

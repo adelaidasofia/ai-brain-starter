@@ -14,19 +14,13 @@ Proving something, need for external validation.
 
 Part of the low tier: see [[Low Floors]].
 
-## Elevators involving this floor
-
-- **Schadenfreude** = **Pride** + [[Joy]]
-
-These are movements between floors, not floors themselves. The journal tags the floor you land on; the elevator name describes the trip.
-
 ## Shadow twin
 
-**Pride (18)** is the shadow of **[[Trust]] (25)**.
+**Pride (18)** is the shadow of **Confidence**.
 
-> 'I need you to see me' vs 'I see myself'
+> "I need you to see me" vs. "I see myself"
 
-When Pride shows up easily, check whether [[Trust]] is what you actually mean. The difference is whether you are still bracing.
+When Pride shows up easily, check whether Confidence is what you actually mean. The difference is whether you are still bracing.
 
 ## How to use this floor
 
