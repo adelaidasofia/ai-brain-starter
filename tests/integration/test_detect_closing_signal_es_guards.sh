@@ -50,6 +50,7 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP/fake-home"
+export USERPROFILE="$TMP/fake-home"
 mkdir -p "$HOME/.claude"
 
 VAULT="$TMP/vault"
