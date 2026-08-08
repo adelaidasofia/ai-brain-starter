@@ -87,7 +87,8 @@ def _current_head() -> str | None:
     try:
         result = subprocess.run(
             ["git", "-C", SKILL_DIR, "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=3,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -164,7 +165,8 @@ def _detect_lang_hint() -> str:
         try:
             result = subprocess.run(
                 ["defaults", "read", "-g", "AppleLocale"],
-                capture_output=True, text=True, timeout=2,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=2,
             )
             if result.returncode == 0 and result.stdout.strip()[:2].lower() == "es":
                 return "es"
