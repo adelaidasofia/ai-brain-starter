@@ -13,8 +13,8 @@ cycle finds HEAD == origin/main, so it no-ops (no pull, no re-deploy) and the
 warning is gone forever. Result: the checkout is current but ~/.claude/settings.json
 is STALE — deployed hooks != committed hooks.json — the exact silent-drift class
 MYC-720 fought, moved one level up. update-check.sh only checks CHECKOUT-behind
-(HEAD..origin), never deployed==committed; the maintainer detector is adelaida-
-skills-only. So a paying client whose deploy silently failed has ZERO signal.
+(HEAD..origin), never deployed==committed; the maintainer detector covers only
+the maintainer's own private skills repo. So a paying client whose deploy silently failed has ZERO signal.
 
 WHAT IT CHECKS (cheap, LOCAL only — no git, no network):
   committed = the ABS-owned hooks in this checkout's hooks.json
@@ -423,6 +423,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     try:
         main()
     except Exception:

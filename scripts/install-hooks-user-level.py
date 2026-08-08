@@ -129,6 +129,14 @@ ABS_FINGERPRINTS = [
     # commit into a stalled rebase — so it belongs in the substrate and is
     # ACTIVATED here, not left in one machine's ~/.claude (MYC-1017).
     "ai-brain-starter/hooks/block-git-mutation-mid-operation.py",
+    # MCP secret-leak guards (MYC-3560). Written after three real GitHub PAT
+    # leaks, shipped as working files, and never once registered -- the
+    # protection everyone believed was in place did not exist. Same
+    # if/then/else reasoning as the two gates above: both block by exiting 2
+    # with remediation prose on STDERR, so the `2>/dev/null || echo <allow>`
+    # idiom would silently rewrite the block into an allow.
+    "ai-brain-starter/hooks/block-claude-mcp-inline-secret.py",
+    "ai-brain-starter/hooks/block-mcp-config-inline-secret.py",
     # Auto-remediation (the FIX side of the surfacing hooks):
     "ai-brain-starter/hooks/remediate-runaway-procs.py",
     # Write-time secret guard:
@@ -202,6 +210,9 @@ ABS_OWNED_BASENAMES = {
     # above: a hand-wired ~/.claude/hooks/ copy must dedup against the
     # skill-path copy, or the block fires twice on every git command.
     "block-git-mutation-mid-operation.py",
+    # MCP secret-leak guards (MYC-3560): same basename-dedup reasoning as the
+    # two gates above.
+    "block-claude-mcp-inline-secret.py", "block-mcp-config-inline-secret.py",
     "block-secret-in-note.py", "context-budget-measure.py",
     "validate-handoff-frontmatter.py",
     "block-populated-public-skill.py",

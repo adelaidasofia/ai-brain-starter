@@ -208,6 +208,11 @@ def find_modules_in_flight(repo: Path) -> list[ModuleInFlight]:
             ["git", "-C", str(repo), "status", "--porcelain=v1", "-uall"],
             capture_output=True,
             text=True,
+            # Pinned explicitly: `text=True` alone decodes with the console code
+            # page, and on a non-UTF-8 Windows console any path carrying a
+            # non-ASCII byte raises before the caller sees a line.
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
@@ -264,6 +269,8 @@ def find_wip_stashes(repo: Path) -> list[StashEntry]:
             ["git", "-C", str(repo), "stash", "list"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
@@ -338,6 +345,8 @@ def find_unpushed_local_commits(
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
@@ -416,6 +425,8 @@ def _resolve_upstream(repo: Path, branch: str) -> Optional[str]:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
@@ -466,6 +477,8 @@ def _git(repo: Path, *args: str, timeout: int = 15):
             ["git", "-C", str(repo), *args],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         return r.returncode, r.stdout.strip(), r.stderr.strip()
@@ -551,6 +564,8 @@ def _gh(repo: Path, *args: str, timeout: int = 20):
             env=_gh_env(),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         return r.returncode, r.stdout.strip(), r.stderr.strip()
@@ -817,11 +832,106 @@ def _has_live_session_lock(repo: Path, now_ts: Optional[float] = None) -> bool:
         return False
     if not isinstance(data, dict):
         return False
-    for s in data.get("sessions", []):
-        la = s.get("last_activity_at") if isinstance(s, dict) else None
+    for s in _lock_entries(data):
+        la = s.get("last_activity_at")
         if isinstance(la, (int, float)) and (now_ts - la) < SESSION_LOCK_LIVE_WINDOW_SEC:
             return True
     return False
+
+
+def _lock_entries(data: dict) -> list:
+    """Session entries from a lock file, across every schema it has worn.
+
+    THE bug this exists to kill (measured 2026-08-06): the live file is v2,
+    `{"version": 2, "sessions": {"<sid>": {...}}}` — sessions is a **dict**.
+    The reader iterated `data.get("sessions", [])` as a LIST, so iterating the
+    dict yielded its string KEYS, every `isinstance(entry, dict)` was False, and
+    the function returned "no live session" on a file that had two live ones.
+    It was documented as reading THE REAL lock and had been dead the whole time.
+
+    Mirrors `_load_sessions` in session-lock.py, the writer, so the reader and
+    the writer can no longer disagree about shape:
+      v2      -> {"sessions": {sid: entry}}
+      legacy  -> {"sessions": [entry, ...]}
+      v1 flat -> the top-level object IS one entry
+    """
+    sessions = data.get("sessions")
+    if isinstance(sessions, dict):
+        return [v for v in sessions.values() if isinstance(v, dict)]
+    if isinstance(sessions, list):
+        return [v for v in sessions if isinstance(v, dict)]
+    if "last_activity_at" in data:
+        return [data]
+    return []
+
+
+def has_live_session_lock(path: Path, now_ts: Optional[float] = None) -> bool:
+    """Is a Claude session live in this working tree? THE one answer.
+
+    Public because two DESTRUCTIVE tools need it and each had grown its own,
+    wrong, copy. Measured 2026-08-06: across the entire dev root there were ZERO
+    files named `.session-lock` — the probe both copies used. session-lock.py
+    writes `<main_root>/.claude/.session-lock.json`, a multi-session MAP keyed on
+    `last_activity_at`, and it resolves `main_root` through
+    `git rev-parse --git-common-dir`, so a sibling worktree's lock does not live
+    inside the worktree at all. Both guards were therefore dead in production
+    while reading, correctly, as "no session here".
+
+    That is not a cosmetic miss. `dev-build-reclaim.py`'s bottom pressure rung
+    sets the idle threshold to 0 days, which every worktree passes, so the
+    session lock is the ONLY thing standing between an actively-compiling
+    worktree and having its `target/` deleted. `dev-worktree-prune.py` deletes
+    the whole worktree.
+
+    Three probes, in order of authority. Legacy mtime probes are kept because
+    they cost one stat and any future tool that drops a plain `.session-lock`
+    still gets protected.
+
+    An OSError anywhere reads as LOCKED, never unlocked: "I could not tell" and
+    "nobody is here" are different answers, and only one is safe to act on when
+    the action is deletion.
+    """
+    now_ts = now_ts or time.time()
+
+    # 1. Legacy per-worktree marker files (cheap, and back-compatible).
+    for cand in (path / ".session-lock", path / ".claude" / ".session-lock"):
+        try:
+            if cand.exists() and (now_ts - cand.stat().st_mtime) < SESSION_LOCK_LIVE_WINDOW_SEC:
+                return True
+        except OSError:
+            return True
+
+    # 2. The REAL lock, in this tree.
+    if _has_live_session_lock(path, now_ts):
+        return True
+
+    # 3. The REAL lock, at the shared root a worktree points back to. This is
+    #    the case that was missing: `~/dev/<repo>-<slug>` keeps its lock at the
+    #    main checkout, so probing only the worktree finds nothing, forever.
+    root = session_lock_root(path)
+    if root is not None and root != path:
+        return _has_live_session_lock(root, now_ts)
+    return False
+
+
+def session_lock_root(path: Path) -> Optional[Path]:
+    """The checkout whose `.claude/.session-lock.json` covers `path`.
+
+    Mirrors session-lock.py: resolve `--git-common-dir`, then strip the trailing
+    `.git` to get the main working tree. Returns None when `path` is not in a
+    git repo or git is unavailable — callers treat None as "no extra place to
+    look", never as "unlocked".
+    """
+    rc, out, _ = _git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if rc != 0 or not out:
+        rc, out, _ = _git(path, "rev-parse", "--git-common-dir")
+    if rc != 0 or not out:
+        return None
+    common = Path(out.rstrip("/"))
+    if not common.is_absolute():
+        common = (path / common).resolve()
+    # common is typically <main_root>/.git; for a bare repo it is the repo dir.
+    return common.parent if common.name == ".git" else common
 
 
 def _plan_stash_reap(
@@ -1060,6 +1170,8 @@ def has_recent_session_commits(repo: Path, minutes: int = 30) -> bool:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
