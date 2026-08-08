@@ -85,7 +85,6 @@ bfa9ef01137e3f61aa2c1fae86bfb387630fbc7e05713bd1653845a37f1bbbf4 SEV-1-hard-cras
 9c067bd908bf5c7fca7fa27a53f05f01e79a20899326363c50705263fdac19ae SEV-1-hard-crash hooks/detect-secrets-in-bash-output.py
 77b5a0e0d935036329159316ff2b43b6047090ebc1450e15914f9af4a3d78d7d SEV-1-hard-crash hooks/observe-tool-calls.py
 aaa7afc8c853cf4fe5801a1c336a3373404affd530e3ec713f29abf5172483c7 SEV-1-hard-crash hooks/post-tool-use-learnings.py
-2cde67ec1bd8c7c340da4b906b3acf67b4e8ebff9294ddaa1231e9d64da20474 SEV-1-hard-crash hooks/scan-prior-sessions-for-secrets.py
 6c2285ef516c019faa3f8a1cd2183f178b86d3622177b3268ff8d3fefe2c4d5e SEV-1-hard-crash hooks/sunday-review-nudge.py
 06e6d93077a5d21e19ace2d368ba2f8b385ba6768a6980d9c53e6db075f1871c SEV-1-hard-crash hooks/test_claim_surface_honesty.py
 d08aadf9dfa1db19269f8866ac0b35a787dbae82baa510b41c323c3d7582b414 SEV-1-hard-crash hooks/test_footprint_aggregate_bloat.py
