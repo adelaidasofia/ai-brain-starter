@@ -236,6 +236,7 @@ INTEGRATION_TESTS=(
   # Wired 2026-07-02 — found dormant by the gate-coverage invariant below.
   # These existed on disk, passed locally, and never ran in CI.
   test_detect_closing_signal_strict_guards
+  test_journal_index_localized_dir
   test_inject_meeting_workflow_truncation_flag
   test_install_path_verification
   test_meeting_todos_step0_create_if_absent

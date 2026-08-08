@@ -75,12 +75,45 @@ def _parse_inline_list(v):
     return v
 
 
+JOURNAL_DIR_CANDIDATES = (
+    "📓 Journals", "Journals",       # en (Phase 3 default)
+    "📔 Journal", "Journal",
+    "📓 Diario", "Diario",           # es
+    "📓 Diário", "Diário",           # pt
+)
+
+
+def find_journal_dir(vault):
+    """Auto-detect the journal folder, mirroring what find_meta_dir does for Meta.
+
+    The --journal-dir default was the hardcoded English "Journals", but Phase 3
+    creates a LOCALIZED folder on a non-English install ("📓 Diario" on es), and
+    insights/SKILL.md invokes this script with NO arguments — so that default was
+    the only thing ever consulted. Result: /weekly and /monthly died with
+    "journal directory not found" on every non-English vault.
+
+    Returns None when nothing matches, so the caller still fails loud rather
+    than inventing a folder (same contract as the Meta resolver).
+
+    NOTE: no `str | None` return annotation — insights/SKILL.md runs this with
+    /usr/bin/python3, which is 3.9 on macOS, and this module has no
+    `from __future__ import annotations`, so a PEP 604 union would crash at
+    import time. (gate (a) of scripts/ci.sh guards this class.)
+    """
+    for name in JOURNAL_DIR_CANDIDATES:
+        p = os.path.join(vault, name)
+        if os.path.isdir(p):
+            return p
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--vault-root", default=".",
                     help="Vault root directory (default: current working directory)")
-    ap.add_argument("--journal-dir", default="Journals",
-                    help="Journal subfolder relative to vault root (default: Journals)")
+    ap.add_argument("--journal-dir", default=None,
+                    help="Journal subfolder relative to vault root. Default: auto-detect, "
+                         "handling localized names ('📓 Journals', '📓 Diario', '📓 Diário'...).")
     ap.add_argument("--meta-dir", default=None,
                     help="Meta subfolder where the index is written. Default: auto-detect the "
                          "vault's Meta folder (handles '⚙️ Meta' and plain 'Meta'). The folder "
@@ -88,7 +121,19 @@ def main():
     args = ap.parse_args()
 
     vault = os.path.abspath(args.vault_root)
-    journal_dir = os.path.join(vault, args.journal_dir)
+
+    if args.journal_dir is not None:
+        journal_dir = os.path.join(vault, args.journal_dir)
+    else:
+        journal_dir = find_journal_dir(vault)
+        if journal_dir is None:
+            print(
+                f"journal directory not found under {vault} "
+                f"(tried: {', '.join(JOURNAL_DIR_CANDIDATES)}). "
+                f"Pass --journal-dir if yours is named differently.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     if not os.path.isdir(journal_dir):
         print(f"journal directory not found: {journal_dir}", file=sys.stderr)

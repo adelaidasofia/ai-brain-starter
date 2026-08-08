@@ -43,6 +43,22 @@ Now, every time you run backup setup again, it reads your existing scheduled tas
 
 ---
 
+## 2026-08-01: entries that quietly drop out of every query
+
+**Who this affects:** anyone whose notes put wikilinks in a frontmatter field -- `people:`, `related:`, `projects:`, `attendees:`.
+
+A wikilink is made of square brackets. YAML reads square brackets as list syntax. Put them together without quotes and one of two things happens, and neither one tells you.
+
+`people: [[Ada]], [[Alan]]` stops the frontmatter from parsing at all. The consequence is not a warning, it is that the file becomes **invisible** -- Dataview stops returning it, the metadata extractors skip it, and weekly and monthly reviews are computed as if the entry had never been written. Open the note and it looks completely normal. That is why this can run for weeks before anyone wonders why a review came back thinner than the month actually felt.
+
+`related: [[[Ada]], [[Alan]]]` is the worse one, because it **works**. YAML reads the inner brackets as nested lists and gives you lists inside lists where you wanted two links. No error, no unparseable file, nothing to notice. The queries just never match.
+
+The coaching skill's session template was prescribing that second form. It now shows the correct one, and the journal skill states the rule with both failure modes named, so it covers any wikilink field you add later rather than only the ones shipped today.
+
+**The whole fix:** quote each link on its own. `people: ["[[Ada Lovelace]]", "[[Alan Turing]]"]`
+
+---
+
 ## 2026-07-31: five Windows install bugs, all of them silent
 
 **Who this affects:** everyone on Windows. Two of the five also affect Mac and Linux. All of them were reported by people who ran the installer, were told it succeeded, and found out later that it hadn't.
@@ -84,6 +100,18 @@ Now it does. When a session set a goal that was never cleared, the close ends by
 **The fix:** the entry template now opens with `type: journal`, and the capture-first save names it as a required field. Nothing else about the entry changed.
 
 **What you should do:** nothing for new entries. If you journaled before this fix, ask Claude to backfill `type: journal` into your existing entries' frontmatter so extraction sees them too.
+
+---
+
+## 2026-07-16: /weekly and /monthly could not find your journal folder
+
+**Who this affects:** anyone whose journal folder is named anything other than a bare, emoji-less `Journals` — which includes the **default `📓 Journals`** that the setup interview creates, and every localized name (`📓 Diario` on a Spanish install, `📓 Diário` on Portuguese).
+
+**The bug:** `build-journal-index.py` auto-detects your Meta folder (so `⚙️ Meta` and plain `Meta` both work) but did **not** do the same for the journal folder — it fell back to a hardcoded English `Journals`. Since `insights/SKILL.md` runs the script with no arguments, that hardcoded default was the only thing ever consulted. The result was `/weekly` and `/monthly` failing at step 0 with `journal directory not found`.
+
+**The fix:** the journal folder is now auto-detected the same way the Meta folder already was, across the emoji and plain forms of the English, Spanish, and Portuguese names. Passing `--journal-dir` explicitly still wins, and a vault with no journal folder at all still fails loudly instead of inventing one.
+
+**New test:** `tests/integration/test_journal_index_localized_dir.sh` (6 assertions incl. a negative control), wired into `scripts/ci.sh`. Against the pre-fix code it fails on `📓 Diario`, `📓 Diário`, **and `📓 Journals`**.
 
 ---
 
