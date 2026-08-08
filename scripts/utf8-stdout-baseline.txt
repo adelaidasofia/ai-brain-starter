@@ -81,7 +81,6 @@
 b552b16724232b207192f04461c11804ba77007d77f2d264390e42050fbdc798 SEV-1-hard-crash hooks/build-runbook-check.py
 bc33d8d8e22fa7ce1ef99656851c6db0288aa5c0bddd2351daa1b361849f1a08 SEV-1-hard-crash hooks/check-sync-folder-machinery.py
 a6f38ebfd1745f9f5e7f6e07ed36985b1bc926e484768e7e7fd17dfaf4dc8257 SEV-1-hard-crash hooks/context-budget-measure.py
-bfa9ef01137e3f61aa2c1fae86bfb387630fbc7e05713bd1653845a37f1bbbf4 SEV-1-hard-crash hooks/detect-closing-signal.py
 9c067bd908bf5c7fca7fa27a53f05f01e79a20899326363c50705263fdac19ae SEV-1-hard-crash hooks/detect-secrets-in-bash-output.py
 77b5a0e0d935036329159316ff2b43b6047090ebc1450e15914f9af4a3d78d7d SEV-1-hard-crash hooks/observe-tool-calls.py
 aaa7afc8c853cf4fe5801a1c336a3373404affd530e3ec713f29abf5172483c7 SEV-1-hard-crash hooks/post-tool-use-learnings.py

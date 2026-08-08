@@ -592,6 +592,46 @@ def active_session_goal(transcript_path: str | None) -> str | None:
     return goal
 
 
+def resolve_todo_files(vault_root: Path, meta_dir: Path) -> list[Path]:
+    """Return the vault's canonical to-do file(s), most-specific first.
+
+    Codified 2026-08-07 after a session's to-dos landed only in the session
+    file and never reached the to-do list, so the next morning's /rise could
+    not see them. The cascade now gets the destination path pre-resolved
+    instead of leaving the model to guess where to-dos live.
+
+    Source of truth is `todo_files:` in rise-config.md (the same list /rise
+    ranks from), so close and morning always agree. Falls back to the common
+    filenames when there is no config.
+    """
+    found: list[Path] = []
+    config = meta_dir / "rise-config.md"
+    if config.is_file():
+        try:
+            text = config.read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        block = re.search(r"^\s*todo_files:\s*$((?:\n\s*-\s*.+)+)",
+                          text, re.MULTILINE)
+        if block:
+            for line in block.group(1).splitlines():
+                item = line.strip().lstrip("-").strip().strip('"').strip("'")
+                if not item:
+                    continue
+                candidate = vault_root / item
+                if candidate.is_file():
+                    found.append(candidate)
+    if not found:
+        for name in ("Por hacer.md", "To do.md", "Get to-do.md",
+                     "Team to-do.md", "Current Priorities.md",
+                     "Prioridades Actuales.md"):
+            for base in (vault_root, meta_dir):
+                candidate = base / name
+                if candidate.is_file() and candidate not in found:
+                    found.append(candidate)
+    return found[:4]
+
+
 def list_decisions_with_empty_outcome(meta_dir: Path) -> list[str]:
     """Return relative paths of Decisions/ files where Outcome: is blank."""
     decisions_dir = meta_dir / "Decisions"
@@ -700,6 +740,7 @@ def build_injected_context(
     is_trivial: bool,
     is_ambiguous: bool,
     goal_condition: str | None = None,
+    todo_files: list[Path] | None = None,
 ) -> str:
     """Compose the system block injected into the model's context.
 
@@ -729,7 +770,7 @@ def build_injected_context(
             + _full_cascade_block(
                 timestamp_human, timestamp_file, worktree, vault_root,
                 meta_dir, session_file, decisions_dir, captures_file,
-                pending_outcomes,
+                pending_outcomes, None, todo_files,
             )
         )
 
@@ -739,7 +780,7 @@ def build_injected_context(
         + _full_cascade_block(
             timestamp_human, timestamp_file, worktree, vault_root,
             meta_dir, session_file, decisions_dir, captures_file,
-            pending_outcomes, goal_condition,
+            pending_outcomes, goal_condition, todo_files,
         )
     )
 
@@ -792,9 +833,28 @@ def _full_cascade_block(
     captures_file: Path,
     pending_outcomes: list[str],
     goal_condition: str | None = None,
+    todo_files: list[Path] | None = None,
 ) -> str:
     """The reusable cascade-instruction block."""
     pending = ", ".join(pending_outcomes) if pending_outcomes else "(none)"
+    # Pre-resolve the to-do destination the same way the Time Tracking surface
+    # is resolved: the model trusts the injected path instead of inferring it.
+    if todo_files:
+        todo_line = "  To-do file(s):    " + "\n                    ".join(
+            str(p) for p in todo_files
+        )
+        todo_phase2 = f"""  • APPEND every new to-do to the to-do file(s) resolved above, under a
+    dated heading ("## <source> — YYYY-MM-DD"). Writing a to-do ONLY into
+    the session file does not count as filing it: /rise ranks from the
+    to-do file, so anything that stops at the session file is invisible
+    the next morning. Each line self-contained (context prefix in
+    brackets + wikilink or path) and marked 🔴 if it blocks something.
+    Deferred/incomplete items from Phase 0b go here too, with their reason."""
+    else:
+        todo_line = ("  To-do file(s):    (none found — create one at the vault root "
+                     "and list it under todo_files: in rise-config.md)")
+        todo_phase2 = ("""  • No to-do file resolved. Write the to-dos into the session file AND
+    tell the user their to-dos have nowhere durable to land.""")
     # Pre-resolve the Time Tracking surface (codified 2026-05-14). The Phase 1
     # bullet used to say "if vault uses it" and require the model to infer
     # presence; that produced a false-negative when the model checked the
@@ -844,6 +904,7 @@ Then walk Phases 0b -> 1 -> 2 -> 2b -> 3 below."""
   Session file:     {session_file}  (already pre-built with frontmatter + headers; fill in the body)
   Decisions dir:    {decisions_dir}  (write per-decision files here, slug-named)
   Captures file:    {captures_file}
+{todo_line}
 {tt_line}
   Decisions with empty Outcome (review for backfill): {pending}
 
@@ -891,6 +952,7 @@ PHASE 1 — Single-pass conversation scan (compose all in memory before writing)
 
 PHASE 2 — Batch writes (one tool-call block, append never overwrite):
   • Fill in the pre-built session file (paths above).
+{todo_phase2}
   • Create per-decision files in Decisions/ as needed.
   • Append journal seeds to Captures.
   • Personal vs team firewall: never let personal content leak to a team vault.
@@ -1079,6 +1141,7 @@ def main() -> int:
         sessions_dir = meta_dir / "Sessions"
         decisions_dir = meta_dir / "Decisions"
         captures_file = meta_dir / "Session Captures.md"
+        todo_files = resolve_todo_files(vault_root, meta_dir)
 
         worktree = derive_worktree(cwd)
         now = datetime.now()
@@ -1134,6 +1197,7 @@ def main() -> int:
             is_trivial=is_trivial,
             is_ambiguous=is_ambiguous,
             goal_condition=active_session_goal(transcript_path),
+            todo_files=todo_files,
         )
         emit_context(context)
         log_debug(f"injected context for {confidence} signal in {int((time.time() - start) * 1000)}ms")
@@ -1145,4 +1209,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # The injected cascade carries non-ASCII (em dashes, bullets, the ⚙️ Meta
+    # path). On a cp1252 console that print raises UnicodeEncodeError and the
+    # close cascade dies silently — the SEV-1 class this hook was pinned under
+    # in utf8-stdout-baseline.txt. Guard the streams before main() writes.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())
