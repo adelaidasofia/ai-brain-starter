@@ -180,6 +180,7 @@ def main() -> int:
                 res = subprocess.run(
                     [sys.executable, str(path)], input=json.dumps(payload),
                     cwd=str(cwd), env=env, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace",
                     timeout=TIMEOUT_SEC)
             except subprocess.TimeoutExpired:
                 check(False, "%s did not finish in %ds on a minimal [%s] "
@@ -210,7 +211,9 @@ def main() -> int:
                            "TZ = ZoneInfo('America/not-a-real-zone')\n",
                            encoding="utf-8")
         res = subprocess.run([sys.executable, str(planted)], input="{}",
-                             capture_output=True, text=True, timeout=TIMEOUT_SEC)
+                             capture_output=True, text=True,
+                             encoding="utf-8", errors="replace",
+                             timeout=TIMEOUT_SEC)
         check("Traceback (most recent call last)" in res.stderr,
               "a planted import-time crasher produced no traceback -- the "
               "smoke gate's crash predicate does not detect the class it "

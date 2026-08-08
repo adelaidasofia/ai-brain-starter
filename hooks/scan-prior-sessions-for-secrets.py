@@ -179,6 +179,8 @@ def _active_worktree_slugs(vault_root: Path) -> set[str] | None:
             cwd=str(vault_root),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired):
