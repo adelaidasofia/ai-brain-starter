@@ -75,6 +75,18 @@ Now it does. When a session set a goal that was never cleared, the close ends by
 
 ---
 
+## 2026-07-16: /weekly and /monthly could not find your journal folder
+
+**Who this affects:** anyone whose journal folder is named anything other than a bare, emoji-less `Journals` — which includes the **default `📓 Journals`** that the setup interview creates, and every localized name (`📓 Diario` on a Spanish install, `📓 Diário` on Portuguese).
+
+**The bug:** `build-journal-index.py` auto-detects your Meta folder (so `⚙️ Meta` and plain `Meta` both work) but did **not** do the same for the journal folder — it fell back to a hardcoded English `Journals`. Since `insights/SKILL.md` runs the script with no arguments, that hardcoded default was the only thing ever consulted. The result was `/weekly` and `/monthly` failing at step 0 with `journal directory not found`.
+
+**The fix:** the journal folder is now auto-detected the same way the Meta folder already was, across the emoji and plain forms of the English, Spanish, and Portuguese names. Passing `--journal-dir` explicitly still wins, and a vault with no journal folder at all still fails loudly instead of inventing one.
+
+**New test:** `tests/integration/test_journal_index_localized_dir.sh` (6 assertions incl. a negative control), wired into `scripts/ci.sh`. Against the pre-fix code it fails on `📓 Diario`, `📓 Diário`, **and `📓 Journals`**.
+
+---
+
 ## 2026-07-14: the secret detector stopped crying wolf over container IDs and migration checksums
 
 **Who this affects:** everyone — a detector that flags things that aren't secrets teaches you to stop trusting its real alerts.
