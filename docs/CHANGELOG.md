@@ -43,6 +43,20 @@ Now, every time you run backup setup again, it reads your existing scheduled tas
 
 ---
 
+## 2026-08-01: WhatsApp chats that were all filed as one-on-ones
+
+**Who this affects:** anyone using the WhatsApp bridge, especially if your vault is not in English.
+
+Three things the chat extractor was getting wrong, each of which produced a field that looked filled in and was not.
+
+**Every group chat was labelled a direct message.** The extractor decided group-vs-direct from two signals: a `chat_type` field, or a `jid` ending in `@g.us`. Exports written by older versions of the bridge wrapper carry neither, so on those vaults the answer was always "direct" -- measured at 113 of 113 groups. It now falls back to what those exports do carry: the group subject in the filename, and the `-` discriminator that a group JID has and a phone number never does. It deliberately does not guess from JID length, because direct chats get named after long numeric identifiers too.
+
+**The "this chat contains a decision" flag only spoke English.** The trigger words were `exception, incident, pricing, escalation, outage, edge case, refund`. On a Spanish vault that fired on 6 chats out of 736 -- not a signal, just noise near zero. Spanish equivalents are now included by default, which takes it to 100, and `WHATSAPP_DECISION_TERMS` lets you replace the list entirely for any other language.
+
+**The "people mentioned" field was empty on every single chat.** It reused the helper that finds `[[wikilinks]]`, and a chat file is a verbatim message log that never contains one. Every chat reported nobody, in a vault with 35 people in the CRM. It now matches names as plain text, and resolves the chat's own counterpart to their CRM note even when the phone book spells it differently -- a trailing org tag (`Ana Ruiz 30X`) or missing accents (`Angela` for `Ángela`) previously meant no link at all. On the test vault that went from 0 chats linked to 46.
+
+---
+
 ## 2026-08-01: entries that quietly drop out of every query
 
 **Who this affects:** anyone whose notes put wikilinks in a frontmatter field -- `people:`, `related:`, `projects:`, `attendees:`.
@@ -90,6 +104,16 @@ Now it does. When a session set a goal that was never cleared, the close ends by
 **On macOS:** the `vault-root` test suite had been failing on every Mac for a path-spelling reason (`/var` vs `/private/var`) that never appeared in CI. Fixed. A gate that is always red on your platform is a gate you learn to skip.
 
 ---
+
+## 2026-07-27: journal entries now carry `type: journal`, so metadata extraction stops skipping them
+
+**Who this affects:** everyone who uses `/journal` together with `/second-brain-mapping` (or anything else that reads the vault's typed frontmatter).
+
+**The bug:** the journal skill's entry template never wrote a `type:` field into the frontmatter. The metadata extractor sorts every note by that field — no field, no sort: each entry landed in the "No type field" bucket and was silently left out of extraction, even though every other journal template in this repo already says `type: journal`. In one real vault, twelve days of entries were invisible to mapping until the field was added by hand.
+
+**The fix:** the entry template now opens with `type: journal`, and the capture-first save names it as a required field. Nothing else about the entry changed.
+
+**What you should do:** nothing for new entries. If you journaled before this fix, ask Claude to backfill `type: journal` into your existing entries' frontmatter so extraction sees them too.
 
 ## 2026-07-16: the test gate now runs green on Spanish-locale Macs
 
