@@ -112,7 +112,7 @@ panelists_seated:
   - <Name 1>
   - <Name 2>
   - ...
-related: [<wikilinks to verbatim file, source transcripts, decision logs>]
+related: ["[[verbatim file]]", "[[source transcript]]", "[[decision log]]"]   # quote EVERY wikilink individually
 status: open
 re_eval_date: YYYY-MM-DD (one month from session)
 ---
