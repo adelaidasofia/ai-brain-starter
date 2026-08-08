@@ -100,7 +100,7 @@ function Store-Passphrase { param([string]$slug, [string]$plain)
 function Get-Passphrase { param([string]$slug)
   $pf = Join-Path $env:USERPROFILE ".claude\.vault-backup-pass-$slug"
   if (-not (Test-Path -LiteralPath $pf)) { return $null }
-  $secure = (Get-Content -Raw -LiteralPath $pf) | ConvertTo-SecureString
+  $secure = ((Get-Content -Raw -LiteralPath $pf) -replace '[^0-9A-Fa-f]', '') | ConvertTo-SecureString
   $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
   try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
   finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
@@ -127,7 +127,11 @@ function New-Archive {
       $pass = Get-Passphrase $slug
       if (-not $pass) { Die "could not read backup passphrase" }
       $out = "$outBase.zip.gpg"
+      $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
       & $gpg.Source --batch --yes --pinentry-mode loopback --passphrase $pass -c --cipher-algo AES256 -o $out $zip 2>$null
+      $gpgCode = $LASTEXITCODE
+      $ErrorActionPreference = $prevEAP
+      if ($gpgCode -ne 0 -or -not (Test-Path -LiteralPath $out)) { Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue; Die "gpg encryption failed (exit $gpgCode)" }
       Remove-Item -LiteralPath $zip -Force
       return $out
     }
@@ -316,7 +320,11 @@ function Cmd-Verify {
       $slug = if ($e.keychain_account) { $e.keychain_account } else { Slug-For $v }
       $pass = Get-Passphrase $slug
       $zip = Join-Path $tmp "restore.zip"
+      $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
       & $gpg.Source --batch --yes --pinentry-mode loopback --passphrase $pass -o $zip -d $newest.FullName 2>$null
+      $gpgCode = $LASTEXITCODE
+      $ErrorActionPreference = $prevEAP
+      if ($gpgCode -ne 0 -or -not (Test-Path -LiteralPath $zip)) { Die "gpg decryption failed (exit $gpgCode)" }
       Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
       Remove-Item -LiteralPath $zip -Force
     } else {
