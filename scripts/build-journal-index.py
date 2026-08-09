@@ -207,6 +207,23 @@ def main():
                         meta[k.strip()] = v.strip().strip("'\"")
                 if i > 15:
                     break
+            # A typed non-journal note living under the journal folder is not an
+            # entry. The recursive walk picks up the insight reports that
+            # /weekly and /monthly write into "Weekly Insights/" and
+            # "Monthly Insights/" subfolders, and those carry a creationDate,
+            # so the creationDate gate alone let them in — on one real vault,
+            # 29 indexed "entries" for 27 lived days. /patterns reads the last 7
+            # from this index, so the machine was re-reading its own summaries
+            # as if they were new material.
+            #
+            # Only a type that is present AND not "journal" disqualifies a file.
+            # An absent type still indexes: entries written before the daily-journal
+            # template gained `type: journal` (#379) have no field at all, and
+            # excluding those would empty the index on exactly the vaults that
+            # fix targets.
+            entry_type = meta.get("type")
+            if entry_type is not None and entry_type != "journal":
+                continue
             if "creationDate" in meta:
                 # Store path relative to journal_dir so subfoldered entries
                 # with colliding basenames stay distinct.
