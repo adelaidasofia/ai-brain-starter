@@ -217,7 +217,10 @@ def main():
         "last_updated": datetime.now().strftime("%Y-%m-%dT%H:%M"),
         "entries": entries,
     }
-    with open(output_path, "w") as f:
+    # encoding is explicit: on Windows the default is the ANSI codepage, and
+    # with ensure_ascii=False that writes accented titles as cp1252 bytes —
+    # the resulting file is not valid UTF-8 and every reader of it fails.
+    with open(output_path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
 
     print(f"Indexed {len(entries)} entries → {output_path}")
