@@ -8,6 +8,12 @@ of journal entries in milliseconds without re-reading every file.
 
 Run weekly via cron, or manually after a journaling session.
 
+Insight reports saved by /weekly or /monthly (weekly-insights, monthly-insights,
+or their own report subfolder) are excluded from the index — see
+NON_JOURNAL_TYPES and DEFAULT_EXCLUDE_DIRS below. Without this, a report saved
+inside the journal folder gets indexed as an entry and inflates every count the
+insights skill reports.
+
 Usage:
     python3 build-journal-index.py [--vault-root .] [--journal-dir Journals]
 
@@ -83,6 +89,30 @@ JOURNAL_DIR_CANDIDATES = (
 )
 
 
+# Insight reports (weekly/monthly) are conventionally saved INSIDE the journal
+# folder and carry their own `creationDate`, so a naive walk indexes them as
+# journal entries and inflates every count the insights skill reports.
+#
+# Filter them by `type` using a DENYLIST, never an allowlist: real entries can
+# be missing the `type` field entirely (older entries, hand-written ones), and
+# requiring `type: journal` would silently drop them from the index — a quieter
+# and worse bug than the one this fixes.
+NON_JOURNAL_TYPES = {
+    "insight",
+    "insights",
+    "monthly-insights",
+    "weekly-insights",
+    "summary",
+    "report",
+}
+
+# Second layer: skip report subfolders outright, so a report that is missing its
+# `type` field still never reaches the index. Same localization spread as
+# JOURNAL_DIR_CANDIDATES above — the insights skill saves reports under a
+# folder named in the vault's own language.
+DEFAULT_EXCLUDE_DIRS = ("Resúmenes", "Resumenes", "Summaries", "Reports", "Resumos")
+
+
 def find_journal_dir(vault):
     """Auto-detect the journal folder, mirroring what find_meta_dir does for Meta.
 
@@ -118,7 +148,13 @@ def main():
                     help="Meta subfolder where the index is written. Default: auto-detect the "
                          "vault's Meta folder (handles '⚙️ Meta' and plain 'Meta'). The folder "
                          "must already exist; this script never creates it.")
+    ap.add_argument("--exclude-dir", action="append", default=None,
+                    help="Subfolder name to skip, e.g. the folder insight reports are saved in "
+                         f"(repeatable). Default: {', '.join(DEFAULT_EXCLUDE_DIRS)}")
     args = ap.parse_args()
+
+    exclude_dirs = set(args.exclude_dir if args.exclude_dir is not None
+                       else DEFAULT_EXCLUDE_DIRS)
 
     vault = os.path.abspath(args.vault_root)
 
@@ -160,10 +196,17 @@ def main():
     output_path = os.path.join(meta_dir, "journal-index.json")
     entries = []
     skipped = []
+    excluded_dirs = []
+    excluded_by_type = []
 
     # Recursive walk: indexes journals nested under year-month subfolders
     # (e.g. Journals/2026-04/2026-04-15.md), not just top-level files.
-    for root, _dirs, files in os.walk(journal_dir):
+    for root, dirs, files in os.walk(journal_dir):
+        # Prune report subfolders in place so os.walk never descends into them.
+        for d in dirs:
+            if d in exclude_dirs:
+                excluded_dirs.append(os.path.relpath(os.path.join(root, d), journal_dir))
+        dirs[:] = [d for d in dirs if d not in exclude_dirs]
         for fname in files:
             if not fname.endswith(".md"):
                 continue
@@ -191,6 +234,9 @@ def main():
                         meta[k.strip()] = v.strip().strip("'\"")
                 if i > 15:
                     break
+            if meta.get("type", "").strip().lower() in NON_JOURNAL_TYPES:
+                excluded_by_type.append(os.path.relpath(fpath, journal_dir))
+                continue
             if "creationDate" in meta:
                 # Store path relative to journal_dir so subfoldered entries
                 # with colliding basenames stay distinct.
@@ -223,6 +269,14 @@ def main():
     print(f"Indexed {len(entries)} entries → {output_path}")
     if entries:
         print(f"  date range: {entries[0]['date']} → {entries[-1]['date']}")
+    # Report what the filters removed. A silent filter is how the opposite bug
+    # (real entries vanishing from the index) starts and stays unnoticed.
+    if excluded_dirs:
+        print(f"  excluded folder(s): {', '.join(sorted(set(excluded_dirs)))}")
+    if excluded_by_type:
+        preview = ", ".join(sorted(excluded_by_type)[:5])
+        more = " ..." if len(excluded_by_type) > 5 else ""
+        print(f"  excluded {len(excluded_by_type)} non-journal file(s) by type: {preview}{more}")
 
 
 if __name__ == "__main__":
