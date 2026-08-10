@@ -87,17 +87,38 @@ else
   VAULT="$(resolve_main_vault "$CANDIDATE")"
 fi
 
+# Pick an interpreter that RUNS, not merely one that resolves. Every python3
+# call below is wrapped in `2>/dev/null || echo ""`, so a stub that resolves and
+# then exits non-zero does not surface as an error — it surfaces as an empty
+# SESSION_ID, which reads exactly like "no close marker, normal turn end". The
+# hook then does nothing, silently, forever. Windows ships such a stub by
+# default: the app-execution alias for python3 under %LOCALAPPDATA%\Microsoft\
+# WindowsApps sits on PATH, answers `command -v`, and exits 49 advertising the
+# Microsoft Store. Probe each candidate; fall back to bare python3 so a machine
+# with no working interpreter behaves exactly as it does today.
+PYTHON=""
+for _py_c in python3 python py; do
+  _py_p="$(command -v "$_py_c" 2>/dev/null)" || continue
+  [ -n "$_py_p" ] || continue
+  if "$_py_p" -c 'import sys; sys.exit(0)' >/dev/null 2>&1; then
+    PYTHON="$_py_p"
+    break
+  fi
+done
+[ -n "$PYTHON" ] || PYTHON="python3"
+unset _py_c _py_p
+
 # Read hook input (Stop hook contract: {session_id, transcript_path, cwd, ...})
 HOOK_INPUT="$(cat || true)"
-SESSION_ID=$(echo "$HOOK_INPUT" | python3 -c "import json,sys; d=json.loads(sys.stdin.read() or '{}'); print(d.get('session_id',''))" 2>/dev/null || echo "")
-TRANSCRIPT_PATH=$(echo "$HOOK_INPUT" | python3 -c "import json,sys; d=json.loads(sys.stdin.read() or '{}'); print(d.get('transcript_path',''))" 2>/dev/null || echo "")
+SESSION_ID=$(echo "$HOOK_INPUT" | "$PYTHON" -c "import json,sys; d=json.loads(sys.stdin.read() or '{}'); print(d.get('session_id',''))" 2>/dev/null || echo "")
+TRANSCRIPT_PATH=$(echo "$HOOK_INPUT" | "$PYTHON" -c "import json,sys; d=json.loads(sys.stdin.read() or '{}'); print(d.get('transcript_path',''))" 2>/dev/null || echo "")
 
 # Auto-detect the Meta folder via the shared resolver, which prefers the variant
 # containing a known human-memory subfolder. This stops a machine-memory "Meta/"
 # (Learnings/, created by the closed-loop capture) from shadowing the human
 # "⚙️ Meta/" just because plain "Meta" sorts before the emoji prefix. See
 # scripts/_meta_resolver.py.
-META_DIR="$(python3 "$SCRIPT_DIR/_meta_resolver.py" "$VAULT" Sessions Decisions 2>/dev/null || true)"
+META_DIR="$("$PYTHON" "$SCRIPT_DIR/_meta_resolver.py" "$VAULT" Sessions Decisions 2>/dev/null || true)"
 [ -z "$META_DIR" ] && META_DIR="$VAULT/Meta"
 
 SESSIONS_DIR="$META_DIR/Sessions"
@@ -178,7 +199,7 @@ if [ -z "$MARKER" ] || [ ! -f "$MARKER" ]; then
 fi
 
 # This is a close turn. Read marker for the session file path.
-SESSION_FILE=$(python3 -c "
+SESSION_FILE=$("$PYTHON" -c "
 import json, sys
 try:
     with open('$MARKER') as f:
@@ -188,7 +209,7 @@ except Exception:
     print('')
 " 2>/dev/null || echo "")
 
-IS_TRIVIAL=$(python3 -c "
+IS_TRIVIAL=$("$PYTHON" -c "
 import json
 try:
     with open('$MARKER') as f:
@@ -210,7 +231,7 @@ fi
 
 FALLBACK_SCRIPT="$SCRIPT_DIR/session-close-fallback.py"
 if [ -f "$FALLBACK_SCRIPT" ] && [ -n "$TRANSCRIPT_PATH" ]; then
-  python3 "$FALLBACK_SCRIPT" \
+  "$PYTHON" "$FALLBACK_SCRIPT" \
     --session-id "$SESSION_ID" \
     --transcript-path "$TRANSCRIPT_PATH" \
     >/dev/null 2>>"$ERROR_LOG" || log_err "fallback exited non-zero"
@@ -239,11 +260,11 @@ if [ "$CLOSE_DEFER" = "0" ]; then
 # === Step 2c: Aggregators (foreground, sequential) ===
 
 if [ -f "$AGGREGATE_SESSIONS" ]; then
-  VAULT_ROOT="$VAULT" python3 "$AGGREGATE_SESSIONS" >/dev/null 2>>"$ERROR_LOG" \
+  VAULT_ROOT="$VAULT" "$PYTHON" "$AGGREGATE_SESSIONS" >/dev/null 2>>"$ERROR_LOG" \
     || log_err "aggregate-sessions failed"
 fi
 if [ -f "$AGGREGATE_DECISIONS" ]; then
-  VAULT_ROOT="$VAULT" python3 "$AGGREGATE_DECISIONS" >/dev/null 2>>"$ERROR_LOG" \
+  VAULT_ROOT="$VAULT" "$PYTHON" "$AGGREGATE_DECISIONS" >/dev/null 2>>"$ERROR_LOG" \
     || log_err "aggregate-decisions failed"
 fi
 
