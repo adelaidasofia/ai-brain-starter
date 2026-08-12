@@ -647,7 +647,8 @@ def _index_is_empty(dirpath):
     try:
         r = subprocess.run(
             ["git", "-C", dirpath, "diff", "--cached", "--quiet"],
-            capture_output=True, text=True, timeout=GIT_TIMEOUT_SEC,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=GIT_TIMEOUT_SEC,
             env=_GIT_CLEAN_ENV,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
