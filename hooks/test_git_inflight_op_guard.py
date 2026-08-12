@@ -160,6 +160,32 @@ def stall_cherry_pick(repo):
     return os.path.exists(os.path.join(gd, "CHERRY_PICK_HEAD"))
 
 
+def stall_sequencer_mid_run(repo):
+    """A multi-commit cherry-pick stopped on a conflict, then RESOLVED AND
+    COMMITTED. That commit clears CHERRY_PICK_HEAD while the remaining picks
+    stay queued, leaving .git/sequencer as the only in-flight evidence.
+    Returns True only if that exact state was produced -- sequencer present
+    AND every per-stop marker absent -- so the leg cannot pass vacuously."""
+    base_commit(repo)
+    git(repo, "checkout", "-q", "-b", "topic")
+    write(os.path.join(repo, "f.txt"), "one\n")
+    git(repo, "commit", "-q", "-am", "pick one")
+    write(os.path.join(repo, "f.txt"), "two\n")
+    git(repo, "commit", "-q", "-am", "pick two")
+    git(repo, "checkout", "-q", "main")
+    write(os.path.join(repo, "f.txt"), "main\n")
+    git(repo, "commit", "-q", "-am", "main change")
+    git(repo, "cherry-pick", "topic~1", "topic")      # stops on the first pick
+    write(os.path.join(repo, "f.txt"), "resolved\n")  # resolve + commit it
+    git(repo, "add", "f.txt")
+    git(repo, "commit", "-q", "-m", "resolved")
+    gd = os.path.normpath(os.path.join(repo, git(repo, "rev-parse", "--git-dir").stdout.strip()))
+    per_stop = ("CHERRY_PICK_HEAD", "REVERT_HEAD", "MERGE_HEAD",
+                "rebase-merge", "rebase-apply", "BISECT_LOG")
+    return (os.path.exists(os.path.join(gd, "sequencer"))
+            and not any(os.path.exists(os.path.join(gd, m)) for m in per_stop))
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix="inflight-guard-")
 
@@ -405,6 +431,27 @@ def main():
         ok("13c. Resolution hint tracks the operation (merge -> `git merge --abort`)")
     else:
         bad("13c. resolution hint (merge)", "hint did not follow the marker")
+
+    # 14. Regression: a multi-commit cherry-pick sequence whose conflict has
+    # been RESOLVED AND COMMITTED. git clears CHERRY_PICK_HEAD at that commit
+    # but leaves the remaining picks queued in .git/sequencer, so every
+    # per-stop marker is gone while the operation is still in flight. Before
+    # `sequencer` joined IN_FLIGHT_MARKERS the guard went silent here and a
+    # commit could land inside someone else's unfinished sequence.
+    seq = init_repo(os.path.join(tmp, "sequencer"))
+    if stall_sequencer_mid_run(seq):
+        ok("14. setup: sequence mid-run, CHERRY_PICK_HEAD already cleared")
+        code, _, serr = run_hook("git commit -m x", cwd=seq)
+        if code == 2:
+            ok("14a. Guard still BLOCKS mid-sequence (sequencer alone)")
+        else:
+            bad("14a. mid-sequence", "guard went silent: exit %s" % code)
+        if "cherry-pick" in serr:
+            ok("14b. Hint names cherry-pick as the in-flight op")
+        else:
+            bad("14b. mid-sequence hint", "wrong verb: %r" % serr[-200:])
+    else:
+        bad("14. setup", "could not produce a mid-run sequencer state")
 
     subprocess.run(["rm", "-rf", tmp], capture_output=True)
 
