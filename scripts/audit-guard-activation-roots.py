@@ -196,4 +196,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313): this CLI prints arrows and box glyphs,
+    # and a cp1252 console raises UnicodeEncodeError on the first one. Force UTF-8
+    # so an audit that found a real guard gap can still report it on Windows.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())
