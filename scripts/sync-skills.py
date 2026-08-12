@@ -49,6 +49,55 @@ def _install_dir() -> Path:
                 or (Path.home() / ".claude" / "skills"))
 
 
+# --------------------------------------------------------------------------
+# .driftignore — the user's "this one is deliberately mine" list.
+#
+# vault-repo-drift-check.sh has honored `$REPO_ROOT/.driftignore` since it
+# shipped, and .driftignore.example documents `skills/my-private-skill` as a
+# supported pattern. This file did not read it, so a skill the user had
+# explicitly declared personal was still reported every session AND was still a
+# sync target. The gap has a name in the wild: a NAME COLLISION between a
+# bundled skill and a user's own skill of the same name. Renaming the bundled
+# copy (the correct fix, since two skills cannot share one slug) leaves the
+# user's unrelated skill sitting at the bundled skill's old name, where this
+# script compares them heading-for-heading and calls the result "diverged" —
+# inviting a reconcile that would destroy one of the two skills.
+#
+# Ignoring is deliberately BIDIRECTIONAL: an ignored skill is skipped by BOTH
+# the drift report and the sync. Silencing the report while still overwriting
+# the file on the next `git pull` would be the worse of the two failure modes,
+# because it removes the warning and keeps the hazard.
+
+def _driftignore_path(repo_root: Path) -> Path:
+    return repo_root / ".driftignore"
+
+
+def load_driftignore(repo_root: Path) -> list[str]:
+    """Substring patterns from `<repo_root>/.driftignore`, one per line, `#`
+    comments and blank lines dropped. Missing or unreadable file -> no patterns
+    (fail open: an ignore list that cannot be read must never start ignoring
+    everything, and must never crash a sync)."""
+    patterns: list[str] = []
+    try:
+        text = _driftignore_path(repo_root).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return patterns
+    for line in text.splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        if stripped:
+            patterns.append(stripped)
+    return patterns
+
+
+def is_ignored(skill_name: str, patterns: list[str]) -> bool:
+    """True if any pattern is a substring of the path this script emits for the
+    skill (`skills/<name>`). Same matching rule as vault-repo-drift-check.sh, so
+    one .driftignore governs both checks and a pattern means the same thing in
+    each."""
+    emitted = f"skills/{skill_name}"
+    return any(p in emitted for p in patterns)
+
+
 class SyncReport:
     def __init__(self) -> None:
         self.created: list[str] = []
@@ -161,7 +210,8 @@ def _dedup(items: list[str]) -> list[str]:
     return list(dict.fromkeys(items))
 
 
-def classify_drift(clone_skills_root: Path, install_root: Path) -> list[dict]:
+def classify_drift(clone_skills_root: Path, install_root: Path,
+                   ignore_patterns: list[str] | None = None) -> list[dict]:
     """Compare each bundled skill's SKILL.md in the clone against the installed
     bare copy. Returns a sorted list of dicts for skills that DIFFER and are not
     skip-guarded; identical/synced, clone-only, and skip-guarded skills are
@@ -177,14 +227,22 @@ def classify_drift(clone_skills_root: Path, install_root: Path) -> list[dict]:
 
     missing_sections = clone-only headings (what an apply would add).
     extra_sections   = bare-only headings (local sections an apply would drop).
+
+    Skills matched by `.driftignore` are omitted entirely. `ignore_patterns`
+    defaults to the list at the repo root that owns `clone_skills_root`, which
+    keeps the lookup hermetic under the test suite's temporary checkouts.
     """
     results: list[dict] = []
     if not clone_skills_root.is_dir():
         return results
+    if ignore_patterns is None:
+        ignore_patterns = load_driftignore(clone_skills_root.parent)
     for skill_dir in sorted(clone_skills_root.iterdir()):
         if not skill_dir.is_dir():
             continue
         name = skill_dir.name
+        if is_ignored(name, ignore_patterns):
+            continue  # declared personal in .driftignore -> not drift, not ours
         src = skill_dir / "SKILL.md"
         if not src.is_file():
             continue  # nothing to compare for this skill
@@ -348,12 +406,17 @@ def main() -> int:
         return 1
 
     r = SyncReport()
+    ignore_patterns = load_driftignore(starter)
     skills_root = starter / "skills"
     if skills_root.is_dir():
         for skill_dir in sorted(skills_root.iterdir()):
-            if skill_dir.is_dir():
-                sync_skill_folder(skill_dir, install / skill_dir.name,
-                                  skill_dir.name, stamp, r)
+            if not skill_dir.is_dir():
+                continue
+            if is_ignored(skill_dir.name, ignore_patterns):
+                r.skipped.append(f"{skill_dir.name}: matched .driftignore (declared personal)")
+                continue
+            sync_skill_folder(skill_dir, install / skill_dir.name,
+                              skill_dir.name, stamp, r)
 
     lines = [
         f"=== sync-skills run at {stamp} ===",

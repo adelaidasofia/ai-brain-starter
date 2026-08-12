@@ -209,5 +209,113 @@ class ClassifyDriftTests(unittest.TestCase):
         self.assertIsNone(SS.drift_message(SS.classify_drift(self.clone, self.install)))
 
 
+class DriftIgnoreTests(unittest.TestCase):
+    """.driftignore lets a user declare a skill permanently personal.
+
+    THE BUG THIS GUARDS (NAME-COLLISION-NAG): vault-repo-drift-check.sh has read
+    `$REPO_ROOT/.driftignore` since it shipped and .driftignore.example advertises
+    `skills/my-private-skill` as a supported pattern, but sync-skills.py ignored
+    the file entirely. A user whose own skill collided with a bundled one (so the
+    bundled copy was renamed, the only fix available when two skills want one
+    slug) got their unrelated skill compared heading-for-heading against the
+    bundled one and reported "diverged" every single session, with a suggested
+    reconcile that would have destroyed one of the two.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        base = Path(self._tmp.name)
+        self.repo = base / "clone"               # ai-brain-starter repo root
+        self.clone = self.repo / "skills"
+        self.install = base / "install"
+        self.clone.mkdir(parents=True)
+        self.install.mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _ignore(self, text: str) -> None:
+        _write(self.repo / ".driftignore", text)
+
+    def _collision(self) -> None:
+        """A bundled `diagnose` and a user's unrelated `diagnose`, sharing only
+        the slug. Left alone this classifies as diverged."""
+        _skill(self.clone, "diagnose", CLONE_JOURNAL_AHEAD)
+        _skill(self.install, "diagnose", BARE_JOURNAL + "## Local only\nMine.\n")
+
+    def test_collision_is_diverged_without_ignore(self):
+        # The control: without the ignore, this is exactly the false nag.
+        self._collision()
+        d = {x["name"]: x for x in SS.classify_drift(self.clone, self.install)}
+        self.assertEqual(d["diagnose"]["status"], "diverged")
+
+    def test_ignored_skill_is_not_reported(self):
+        self._collision()
+        self._ignore("skills/diagnose\n")
+        self.assertEqual(SS.classify_drift(self.clone, self.install), [])
+        self.assertIsNone(SS.drift_message(SS.classify_drift(self.clone, self.install)))
+
+    def test_ignore_does_not_silence_other_skills(self):
+        # Scoping guard: one ignored skill must not turn the whole check off.
+        self._collision()
+        _skill(self.clone, "daily-journal", CLONE_JOURNAL_AHEAD)
+        _skill(self.install, "daily-journal", BARE_JOURNAL)
+        self._ignore("skills/diagnose\n")
+        names = {d["name"] for d in SS.classify_drift(self.clone, self.install)}
+        self.assertEqual(names, {"daily-journal"})
+
+    def test_comments_and_blanks_are_stripped(self):
+        self._collision()
+        self._ignore("# the /diagnose collision, resolved deliberately\n"
+                     "\n"
+                     "skills/diagnose  # trailing comment\n")
+        self.assertEqual(SS.classify_drift(self.clone, self.install), [])
+
+    def test_missing_driftignore_ignores_nothing(self):
+        # Fail-open, but open in the SAFE direction: no file means no patterns,
+        # never "ignore everything".
+        self._collision()
+        self.assertEqual(SS.load_driftignore(self.repo), [])
+        self.assertNotEqual(SS.classify_drift(self.clone, self.install), [])
+
+    def test_empty_pattern_never_matches_everything(self):
+        # A file of only comments/blank lines must not produce a "" pattern,
+        # which is a substring of every path and would silence the entire check.
+        self._collision()
+        self._ignore("# nothing here\n\n   \n")
+        self.assertEqual(SS.load_driftignore(self.repo), [])
+        self.assertNotEqual(SS.classify_drift(self.clone, self.install), [])
+
+    def test_match_is_substring_of_the_emitted_path(self):
+        # Same rule as vault-repo-drift-check.sh, so one pattern means the same
+        # thing in both checks.
+        self.assertTrue(SS.is_ignored("diagnose", ["skills/diagnose"]))
+        self.assertTrue(SS.is_ignored("diagnose", ["diagnose"]))
+        self.assertFalse(SS.is_ignored("diagnose-vault", ["skills/diagnose-v2"]))
+        self.assertFalse(SS.is_ignored("daily-journal", ["skills/diagnose"]))
+
+    def test_ignored_skill_is_skipped_by_the_sync_too(self):
+        # The load-bearing half: silencing the report while still overwriting the
+        # file on the next pull would remove the warning and keep the hazard.
+        self._collision()
+        self._ignore("skills/diagnose\n")
+        _skill(self.clone, "daily-journal", CLONE_JOURNAL_AHEAD)
+        _skill(self.install, "daily-journal", BARE_JOURNAL)
+        mine = self.install / "diagnose" / "SKILL.md"
+        before = mine.read_text(encoding="utf-8")
+        os.environ["ABS_SYNC_STARTER_DIR"] = str(self.repo)
+        os.environ["ABS_SYNC_INSTALL_DIR"] = str(self.install)
+        try:
+            self.assertEqual(SS.main(), 0)
+        finally:
+            os.environ.pop("ABS_SYNC_STARTER_DIR", None)
+            os.environ.pop("ABS_SYNC_INSTALL_DIR", None)
+        self.assertEqual(mine.read_text(encoding="utf-8"), before,
+                         "an ignored skill must survive a sync untouched")
+        self.assertIn("Crisis protocol",
+                      (self.install / "daily-journal" / "SKILL.md").read_text(encoding="utf-8"),
+                      "a non-ignored skill must still be synced")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

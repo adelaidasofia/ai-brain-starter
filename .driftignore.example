@@ -1,18 +1,34 @@
-# .driftignore — patterns the vault-repo drift check should NOT flag.
+# .driftignore — patterns the drift checks should NOT flag.
 #
 # Copy this to `.driftignore` in your repo clone (it's gitignored locally so
 # your personal patterns never get committed):
 #
 #     cp .driftignore.example .driftignore
 #
+# Read by BOTH drift checks, with the same matching rule:
+#   - scripts/vault-repo-drift-check.sh  (vault vs repo, monthly)
+#   - scripts/sync-skills.py             (installed skill copies vs checkout,
+#                                         reported at session start)
+#
 # One pattern per line. Matched as a substring against the path the drift
 # check emits (e.g. `rules/voice-style.md`, `scripts/audit-foo.py`,
 # `skills/my-private-skill`, `hooks/my-business.sh`).
+#
+# For sync-skills.py the match is bidirectional and it is the point: an
+# ignored skill is left out of the drift report AND skipped by the sync, so a
+# skill you have declared personal is never silently overwritten on the next
+# `git pull`. Silencing the warning while keeping the overwrite would be worse
+# than the warning.
 #
 # Add a pattern when an item is permanently personal: tied to your name,
 # your company, your psychological framework, your domain, or your private
 # workflow. Generic patterns are universal and should be contributed
 # upstream as PRs instead.
+#
+# The other common case is a NAME COLLISION: you already had a skill named
+# `foo` and the starter bundles its own `foo`. Rename one of them (two skills
+# cannot share a slug), then ignore the survivor's path here so the checker
+# stops comparing two unrelated skills and calling them "diverged".
 
 # --- Examples (delete or edit) ---
 # rules/my-voice-style.md
