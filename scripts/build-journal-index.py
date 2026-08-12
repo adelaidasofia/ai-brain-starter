@@ -75,6 +75,13 @@ def _parse_inline_list(v):
     return v
 
 
+# Frontmatter `type:` values that mark a file as OUTPUT of the insights pipeline
+# rather than a journal entry feeding it. `insight` is what insights/SKILL.md's
+# Format block emits today; the older values are kept so a vault carrying reports
+# written by an earlier version is cleaned up by the same pass.
+DERIVED_TYPES = frozenset({"insight", "weekly-review", "monthly-review"})
+
+
 JOURNAL_DIR_CANDIDATES = (
     "📓 Journals", "Journals",       # en (Phase 3 default)
     "📔 Journal", "Journal",
@@ -160,6 +167,7 @@ def main():
     output_path = os.path.join(meta_dir, "journal-index.json")
     entries = []
     skipped = []
+    derived = []
 
     # Recursive walk: indexes journals nested under year-month subfolders
     # (e.g. Journals/2026-04/2026-04-15.md), not just top-level files.
@@ -191,6 +199,22 @@ def main():
                         meta[k.strip()] = v.strip().strip("'\"")
                 if i > 15:
                     break
+            if meta.get("type") in DERIVED_TYPES:
+                # A /weekly or /monthly report is DERIVED FROM this index, not an
+                # input to it. Its canonical frontmatter (insights/SKILL.md, the
+                # "Format:" block) carries `creationDate` and `type: insight`, and
+                # the walk below is recursive over the whole journal folder, so
+                # every report lands back in the index as a floorless pseudo-entry
+                # that inflates `total` and dilutes the floor distribution the next
+                # report is computed from. The error compounds: each run indexes the
+                # previous run's output.
+                #
+                # Folder placement does NOT protect against this and never did.
+                # `os.walk(journal_dir)` reaches `Weekly Insights/` exactly as it
+                # reaches `June 2026/`, so the 2026-Q2 move of reports into month
+                # folders neither caused nor fixed it. `type` is the honest signal.
+                derived.append(os.path.relpath(fpath, journal_dir))
+                continue
             if "creationDate" in meta:
                 # Store path relative to journal_dir so subfoldered entries
                 # with colliding basenames stay distinct.
@@ -210,6 +234,12 @@ def main():
         preview = ", ".join(f"{f} [{s}]" for f, s in skipped[:5])
         more = " ..." if len(skipped) > 5 else ""
         print(f"  note: skipped {len(skipped)} unreadable file(s): {preview}{more}",
+              file=sys.stderr)
+    if derived:
+        preview = ", ".join(derived[:5])
+        more = " ..." if len(derived) > 5 else ""
+        print(f"  note: excluded {len(derived)} derived report(s) from the index "
+              f"(insight output, not journal input): {preview}{more}",
               file=sys.stderr)
     entries.sort(key=lambda x: x["date"])
     output = {
