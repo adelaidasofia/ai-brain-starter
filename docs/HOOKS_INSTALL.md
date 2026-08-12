@@ -98,8 +98,12 @@ The hooks shipped by ai-brain-starter (per [`hooks.json`](../hooks.json) source-
 
 The lock runs in three modes off one shared file (`<repo>/.claude/.session-lock.json`, a multi-session map):
 
-- **SessionStart** — warns (informationally) if another session was active in this repo in the last 5 minutes.
+- **SessionStart** — warns (informationally) if another session was active in this repo in the last 5 minutes. It also tells you when the enforcement layer below **cannot fire in this repo at all**: if the git dir lives outside the checkout (a mirror or `--separate-git-dir` layout), no command resolves as "this repo" and nothing is gated. Without that line a dormant gate and a quiet one look identical, and the warning reads like protection you do not have.
 - **PreToolUse(Bash)** — the *enforcement* layer. While a sibling is live, a **git-mutating** command (commit / push / checkout / switch / branch-create / merge / rebase / reset / cherry-pick / revert / pull / am / apply) that targets *this* repo is warn-blocked every time (exit 2); any other command warns once, then stays quiet so read-only parallel work isn't nagged. A `cd` into another repo, or an explicit `-C` / `--work-tree` / `--git-dir` pointed elsewhere, is correctly attributed to that other repo and let through (no false-block).
+
+  **One exemption — a provably scoped commit.** `git commit -o <path> [<path>…]` (equivalently `--only`) is **allowed** while a sibling is live, provided it names at least one literal path and the index is empty. `-o` commits the working-tree contents of the paths you name and disregards the index, so it cannot absorb a sibling's staged work — which is the whole harm this gate exists to stop. Without this carve-out the only way to make a safe commit was to disable the gate session-wide, which is how a guard teaches you to turn it off.
+
+  Still blocked, deliberately: a bare `git commit`, `-a`/`--all`, `-i`/`--include`, `--amend` (it takes the staged index even alongside `-o`), `--interactive`, `--patch`, a `.`/glob/magic pathspec (those sweep files you did not name), an unrecognised option (the parse refuses to guess), an explicit `--git-dir`, pathspecs without an explicit `-o`, and a multi-line `-m` message — that last one cannot be tokenised safely, so use `-F <message-file>` instead.
 - **Stop / SessionEnd** — heartbeat + cleanup so the live-session count stays honest.
 
 It never *hard*-blocks: every block is bypassable, only same-repo siblings are ever gated, and different repos worked in parallel never interfere. It pairs with the worktree pattern (which prevents the shared-HEAD collision structurally); the lock covers the case where two sessions still pick the *same* checkout.
