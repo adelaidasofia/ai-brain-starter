@@ -17,6 +17,13 @@ set -u
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CI="$REPO_ROOT/scripts/ci.sh"
 [ -f "$CI" ] || { echo "FAIL: scripts/ci.sh not found"; exit 1; }
+# HOME alone does NOT sandbox on Windows: ntpath.expanduser reads USERPROFILE and
+# ignores HOME, so `HOME=... bash -c` would run this against the developer's REAL
+# ~/.claude — the exact catastrophic class the guard under test exists to catch
+# (2026-07-30: 95 of 111 hook entries repointed at a deleted worktree, every tool
+# call denied in every later session). run_sandboxed sets HOME *and* USERPROFILE
+# and neutralises the HOMEDRIVE/HOMEPATH fallback. MYC-3536.
+. "$(dirname "${BASH_SOURCE[0]}")/lib/sandbox_home.sh"
 
 TD=$(mktemp -d); trap 'rm -rf "$TD"' EXIT
 PASS=0; FAIL=0
@@ -40,7 +47,7 @@ printf 'sync line\n'         > "$FAKE/.claude/hooks/sync-my-skills.log"
 printf '4242\n'              > "$FAKE/.claude/hooks/sync.demo.lock/pid"
 printf '{"e":1}\n'           > "$FAKE/.claude/state/settings-hook-integrity.jsonl"
 
-fp() { HOME="$FAKE" bash -c "source '$FN'; real_home_fingerprint"; }
+fp() { run_sandboxed "$FAKE" bash -c "source '$FN'; real_home_fingerprint"; }
 
 BASE=$(fp)
 [ -n "$BASE" ] || { echo "FAIL: empty fingerprint"; exit 1; }
