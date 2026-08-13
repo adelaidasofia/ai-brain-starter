@@ -44,6 +44,14 @@ THE INVARIANT
     took route 2 until 2026-08-13, when a Windows install turned up with all
     three absent; they are installer-deployed now.
 
+    THE THIRD INVARIANT (2026-08-13)
+    A WIRED hook taking route 2 carries an explicit
+    `<!-- weak-route-ok: <name> <reason> -->` in the phase doc that copies it.
+    Route 2 is POSIX-only and model-executed, so choosing it has a real Windows
+    cost; this makes choosing it a decision somebody wrote down rather than a
+    default nobody noticed. Unwired opt-in `cp` steps are documentation and are
+    out of scope. See _undeclared_weak_routes().
+
     THE SECOND INVARIANT (2026-08-13)
     Every `_lib.<mod>` imported by an installer-deployed hook is in
     HOME_HOOKS_LIB_DEPS, so the dependency ships with its consumer. These hooks
@@ -206,6 +214,12 @@ def _referenced_home_hooks() -> set[str]:
     return set(_HOME_HOOK_RE.findall(blob))
 
 
+# A phase doc that deliberately owns a copy step declares it, once, anywhere in
+# the file. Naming the hook is required so the marker cannot be a blanket
+# permission slip for whatever gets added later.
+_WEAK_ROUTE_OK_RE = re.compile(r"<!--\s*weak-route-ok:\s*([\w.-]+\.(?:py|sh))\s+(.+?)-->", re.S)
+
+
 def _phase_doc_copies() -> dict[str, str]:
     """basename -> phase doc that copies it into ~/.claude/hooks/.
 
@@ -226,6 +240,73 @@ def _phase_doc_copies() -> dict[str, str]:
     return found
 
 
+def _weak_route_declarations() -> dict[str, str]:
+    """basename -> the reason its phase doc gives for owning the copy."""
+    declared: dict[str, str] = {}
+    if not PHASES_DIR.is_dir():
+        return declared
+    for doc in sorted(PHASES_DIR.glob("*.md")):
+        for name, reason in _WEAK_ROUTE_OK_RE.findall(doc.read_text(encoding="utf-8")):
+            declared.setdefault(name, " ".join(reason.split()))
+    return declared
+
+
+def _undeclared_weak_routes(phase_copies: dict[str, str],
+                            referenced: set[str]) -> list[str]:
+    """The phase-doc route is WEAK. Taking it must be a declared choice.
+
+    THE BUG THIS CLOSES, which is the one this whole lint already exists for,
+    arriving one level up. On 2026-08-13 retry-budget.py, validate-mcp-json.py
+    and vault-context.py turned up absent from a real Windows install. All three
+    were correctly wired, and all three had a deploy route this lint accepted:
+    three `cp` lines in phases/phase-05-context-layer.md. The lint was GREEN the
+    entire time, because it asked "is there a route?" and the honest question is
+    "is there a route that can actually run?"
+
+    A phase-doc `cp` cannot run on native Windows (`cp` is not a command there),
+    and it only runs at all if an agent reads the doc and chooses to. Paired
+    with the `[ -f ]` guard on every one of these commands, a hook that never
+    landed is indistinguishable from a hook the user switched off. Three of them
+    were dead for months and nothing anywhere said so.
+
+    So route 2 stays available — a genuinely conditional hook may need it — but
+    it is no longer the kind of thing that can happen by accident. Declare it:
+
+        <!-- weak-route-ok: some-hook.py the installer cannot own this because
+             <reason>; on Windows it is <what happens / why that is acceptable> -->
+
+    Nothing declares it today, because no WIRED hook uses route 2 today. The
+    marker costs nothing until someone reaches for the weak route, which is
+    exactly when a human should be looking.
+
+    SCOPED TO WIRED HOOKS, deliberately. phases/ also carries `cp` steps for
+    conditional opt-ins (permission-denied.py and friends) that hooks.json does
+    NOT wire — the reader installs those by hand AND adds their own settings
+    entry. Those are documentation, not a deploy route this lint governs, and
+    flagging them was this check's own first false positive: caught by its
+    controls before it shipped, which is the whole reason to run controls on a
+    guard you just wrote.
+    """
+    declared = _weak_route_declarations()
+    problems: list[str] = []
+    for name, doc in sorted(phase_copies.items()):
+        if name not in referenced:
+            continue  # not wired by hooks.json -> outside this lint's contract
+        if name not in declared:
+            problems.append(
+                f"{name}: deployed by a `cp` step in {doc} with no "
+                f"`<!-- weak-route-ok: {name} <reason> -->` declaration. The "
+                "phase-doc route is POSIX-only (it cannot run on native "
+                "Windows) and model-executed (it runs only if an agent reads "
+                "the doc and chooses to), and the `[ -f ]` guard turns both "
+                "failures into silence. Prefer HOME_HOOKS_INSTALLER_DEPLOYS in "
+                "scripts/install-hooks-user-level.py. If this hook genuinely "
+                "cannot be installer-owned, declare why — including what "
+                "Windows users get instead."
+            )
+    return problems
+
+
 def main() -> int:
     if not HOOKS_JSON.is_file():
         print(f"::error::{HOOKS_JSON} not found", file=sys.stderr)
@@ -238,6 +319,7 @@ def main() -> int:
     phase_copies = _phase_doc_copies()
 
     violations: list[str] = _lib_dependency_violations(installer_deploys, lib_deps)
+    violations += _undeclared_weak_routes(phase_copies, referenced)
 
     for name in sorted(referenced):
         by_installer = name in installer_deploys
