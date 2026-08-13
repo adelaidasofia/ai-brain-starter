@@ -75,9 +75,22 @@ except Exception:                          # fail-open: a missing _lib must neve
 
 
 def _run(args, cwd=None, timeout=10):
+    # Decode child output as UTF-8 explicitly, never the locale encoding. Git
+    # echoes paths and commit subjects back, and a vault path carries emoji and
+    # accented characters -- on a non-UTF-8 Windows console the locale default
+    # raises UnicodeDecodeError, which this function would swallow into a bare
+    # (1, "", "") and the guard would go quietly blind on exactly the machines
+    # least likely to notice. errors="replace" keeps a mangled byte from
+    # silencing a real staleness warning.
     try:
         r = subprocess.run(
-            args, cwd=cwd, capture_output=True, text=True, timeout=timeout
+            args,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
         )
         return r.returncode, r.stdout.strip(), r.stderr.strip()
     except Exception:
@@ -107,6 +120,79 @@ def _fetch_age_days(root: Path):
     if fh.exists():
         return (time.time() - fh.stat().st_mtime) / 86400.0
     return None
+
+
+def _warn_for_unstarted_worktree(root: Path, session_id: str):
+    """Once-per-(session,worktree) warning for a worktree that never started.
+
+    A worktree IS fresh off origin/main -- at the moment it is created. It does
+    not stay fresh. A session that spans days carries a worktree whose base was
+    correct on day one and is far behind by day three, and the checkout looks
+    identical either way: same files, no error, no signal. The original guard
+    skipped worktrees on the reasoning that they are "fresh by construction",
+    which is a statement about creation time being read as a statement about
+    always.
+
+    The discriminator is whether work has STARTED on this branch:
+
+      * zero commits of its own  -> the branch is still sitting on its base. If
+        that base has moved on, nothing is lost by recreating it, and building
+        here means building against a snapshot. Warn.
+      * one or more own commits  -> divergence from origin/main is the normal,
+        intended state of a feature branch. Silent, always. This is what keeps
+        the guard from nagging every real branch, which is how a guard teaches
+        its own bypass.
+
+    Returns the warning string, or None to stay silent.
+    """
+    try:
+        SEEN_DIR.mkdir(parents=True, exist_ok=True)
+        marker = SEEN_DIR / f"{session_id}__wt__{root.name}"
+        if marker.exists():
+            return None
+        marker.touch()
+    except Exception:
+        pass  # marker is best-effort; never block on it
+
+    _run(["git", "-C", str(root), "fetch", "--quiet", "origin"], timeout=FETCH_TIMEOUT)
+
+    behind, ref = _behind(root)
+    if behind is None or behind < THRESHOLD:
+        return None
+
+    # Own commits ahead of the base. A non-zero count means real work lives
+    # here and the divergence is intentional -> never warn.
+    rc, ahead, _ = _run(
+        ["git", "-C", str(root), "rev-list", "--count", f"{ref}..HEAD"]
+    )
+    if rc != 0 or not ahead.isdigit():
+        return None  # cannot prove it is unstarted -> stay silent (fail-open)
+    if int(ahead) > 0:
+        return None
+
+    _, branch, _ = _run(
+        ["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"]
+    )
+    _, head, _ = _run(["git", "-C", str(root), "log", "-1", "--format=%h %cs (%cr)"])
+    msg = (
+        f"Heads up: this worktree ({root}) has no commits of its own yet, and "
+        f"its base is {behind} commit(s) behind {ref} (HEAD {head}). A worktree "
+        f"is fresh when it is CREATED, not forever -- if this session has been "
+        f"open a while, you are about to build against an old snapshot of the "
+        f"repo.\n"
+        f"  • nothing is lost by rebasing onto current {ref} (no own commits):\n"
+        f"      git -C {root} rebase {ref}\n"
+        f"  • before assuming work is unbuilt, check whether it already landed:\n"
+        f"      git -C {root} log --oneline HEAD..{ref}\n"
+        f"Branch: {branch}. Bypass: STALE_CHECKOUT_BYPASS=1"
+    )
+    log_fire(
+        "warn-stale-dev-checkout",
+        status="warned-worktree",
+        repo=root.name,
+        behind=behind,
+    )
+    return msg
 
 
 def _warn_for_root(root: Path, session_id: str):
@@ -173,9 +259,11 @@ def evaluate(file_path: str, session_id: str):
     root, git_is_dir = _repo_root(p)
     if root is None:
         return None
-    # Worktrees (.git is a FILE) are fresh off origin/main by construction → skip.
+    # Worktrees (.git is a FILE) get the unstarted-worktree check instead of
+    # the bare-checkout one: a worktree that has never been committed to is
+    # only as current as the day it was created.
     if not git_is_dir:
-        return None
+        return _warn_for_unstarted_worktree(root, session_id)
 
     return _warn_for_root(root, session_id)
 
@@ -228,17 +316,115 @@ def evaluate_bash(command: str, session_id: str):
     for cand in _bash_dev_targets(command):
         try:
             g = cand / ".git"
-            if not cand.is_dir() or not g.exists() or not g.is_dir():
-                continue  # missing, non-repo, or worktree (.git is a FILE) → skip
+            if not cand.is_dir() or not g.exists():
+                continue  # missing or non-repo → skip
+            is_worktree = not g.is_dir()  # worktree's .git is a gitdir FILE
         except OSError:
             continue
-        warning = _warn_for_root(cand, session_id)
+        warning = (
+            _warn_for_unstarted_worktree(cand, session_id)
+            if is_worktree
+            else _warn_for_root(cand, session_id)
+        )
         if warning:
             return warning
     return None
 
 
+def _self_test() -> int:
+    """Prove the unstarted-worktree branch still bites, on a real git repo.
+
+    The control that matters: BOTH worktrees are equally behind. The only
+    difference is whether one carries its own commit. If the guard ever
+    regressed to warning on "behind" alone it would fire on both, and if it
+    regressed to never firing it would fire on neither -- this separates those
+    two failures from a correct guard, which a one-case test cannot.
+
+    The preconditions are ASSERTED, because a setup that silently failed to go
+    behind reads exactly like a guard that correctly found nothing.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+    import uuid
+
+    def git(*args, cwd):
+        subprocess.run(
+            ["git", *args], cwd=cwd, check=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+
+    tmp = Path(tempfile.mkdtemp(prefix="stale-wt-selftest-"))
+    failures = []
+    try:
+        upstream = tmp / "upstream"
+        upstream.mkdir()
+        git("init", "-q", cwd=upstream)
+        git("symbolic-ref", "HEAD", "refs/heads/main", cwd=upstream)
+        git("config", "user.email", "t@example.invalid", cwd=upstream)
+        git("config", "user.name", "selftest", cwd=upstream)
+        (upstream / "f.txt").write_text("1\n")
+        git("add", "f.txt", cwd=upstream)
+        git("commit", "-qm", "c1", cwd=upstream)
+
+        clone = tmp / "clone"
+        git("clone", "-q", str(upstream), str(clone), cwd=tmp)
+        git("config", "user.email", "t@example.invalid", cwd=clone)
+        git("config", "user.name", "selftest", cwd=clone)
+
+        # Both worktrees are cut from the SAME (then-current) base.
+        unstarted, started = tmp / "wt-unstarted", tmp / "wt-started"
+        git("worktree", "add", "-q", str(unstarted), "-b", "wt/unstarted", "HEAD", cwd=clone)
+        git("worktree", "add", "-q", str(started), "-b", "wt/started", "HEAD", cwd=clone)
+        git("config", "user.email", "t@example.invalid", cwd=started)
+        git("config", "user.name", "selftest", cwd=started)
+        (started / "own.txt").write_text("own\n")
+        git("add", "own.txt", cwd=started)
+        git("commit", "-qm", "own work", cwd=started)
+
+        # ...then upstream moves on, which is the whole scenario.
+        for i in range(2, 2 + THRESHOLD + 1):
+            (upstream / "f.txt").write_text(f"{i}\n")
+            git("add", "f.txt", cwd=upstream)
+            git("commit", "-qm", f"c{i}", cwd=upstream)
+        git("fetch", "-q", "origin", cwd=clone)
+
+        for wt, want_ahead in ((unstarted, 0), (started, 1)):
+            behind, ref = _behind(wt)
+            _, ahead, _ = _run(["git", "-C", str(wt), "rev-list", "--count", f"{ref}..HEAD"])
+            if behind is None or behind < THRESHOLD:
+                failures.append(f"setup: {wt.name} is {behind} behind, need >= {THRESHOLD}")
+            if ahead != str(want_ahead):
+                failures.append(f"setup: {wt.name} has {ahead} own commits, want {want_ahead}")
+
+        for wt, want_fire in ((unstarted, True), (started, False)):
+            fired = _warn_for_unstarted_worktree(wt, str(uuid.uuid4())) is not None
+            if fired is not want_fire:
+                failures.append(
+                    f"{wt.name}: expected fire={want_fire}, got fire={fired}"
+                )
+
+        sid = str(uuid.uuid4())
+        if _warn_for_unstarted_worktree(unstarted, sid) is None:
+            failures.append("once-per-session: first call did not fire")
+        if _warn_for_unstarted_worktree(unstarted, sid) is not None:
+            failures.append("once-per-session: second call fired again (noise budget)")
+    except Exception as exc:  # noqa: BLE001 - a self-test that dies must be LOUD
+        failures.append(f"self-test raised: {exc!r}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    if failures:
+        for f in failures:
+            print(f"FAIL  {f}", file=sys.stderr)
+        return 1
+    print("warn-stale-dev-checkout --self-test: OK")
+    return 0
+
+
 def main():
+    if "--self-test" in sys.argv:
+        sys.exit(_self_test())
     try:
         payload = json.load(sys.stdin)
     except Exception:
