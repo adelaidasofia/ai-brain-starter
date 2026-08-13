@@ -78,9 +78,21 @@ function Test-Elevated {
 # Run an installer and return its REAL exit code (0 when it never launched is a
 # lie, so a launch failure returns a sentinel). Start-Process -Wait alone
 # discards the exit status entirely - the bug this closes.
+# -PassThru WITHOUT -Wait, then WaitForExit() on the object we hold. `-Wait
+# -PassThru` also reports exit codes correctly (both forms verified against a
+# script exiting 0/1/3/42), but holding the object and waiting on it ourselves
+# keeps the handle open explicitly, and the $null guard below is what actually
+# matters: an exit code we could not read must never come back as 0. Returning
+# a false 0 here would rebuild, one layer up, the exact silent-success bug this
+# function exists to remove.
 function Invoke-Installer([string]$FilePath, [string[]]$ArgumentList) {
     try {
-        $p = Start-Process -Wait -PassThru -FilePath $FilePath -ArgumentList $ArgumentList
+        $p = Start-Process -PassThru -FilePath $FilePath -ArgumentList $ArgumentList
+        if ($null -eq $p) { return -1 }
+        $p.WaitForExit()
+        # A null ExitCode means we do not know what happened. That is the exact
+        # state this function exists to stop reading as success.
+        if ($null -eq $p.ExitCode) { return -1 }
         return $p.ExitCode
     } catch {
         Warn "could not launch ${FilePath}: $_"
@@ -91,6 +103,12 @@ function Invoke-Installer([string]$FilePath, [string[]]$ArgumentList) {
 # Prepend a directory to the PERSISTED user PATH (and this process's PATH).
 # Used by the user-scoped runtime installs, which unpack somewhere the machine
 # PATH will never mention. Idempotent: re-running never duplicates the entry.
+#
+# Known tradeoff: SetEnvironmentVariable rewrites the USER Path as a plain
+# string, so a `%VAR%` inside it is stored expanded. Accepted deliberately -
+# `setx` truncates at 1024 characters, which silently DESTROYS a long PATH, and
+# that is the worse failure. The machine PATH, where expandable entries
+# actually live, is never touched here.
 function Add-UserPathEntry([string]$Dir) {
     $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
     if ($null -eq $userPath) { $userPath = "" }
@@ -473,6 +491,7 @@ if (-not (Have node) -and $CorporateProfile) {
     Hdr "Installing Node.js"
     $nodeVersion = "v20.18.0"
     $wingetTried = $false
+    $userScopedNode = $false
     if ($UseWinget) {
         $wingetTried = $true
         winget install -e --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements
@@ -518,8 +537,20 @@ if (-not (Have node) -and $CorporateProfile) {
                 if (-not (Test-Path (Join-Path $unpacked "node.exe"))) {
                     throw "unpacked archive has no node.exe at $unpacked"
                 }
-                if (Test-Path $nodeHome) { Remove-Item $nodeHome -Recurse -Force -ErrorAction SilentlyContinue }
+                # Move an existing folder aside rather than deleting it. We only
+                # get here because node is not on PATH, so whatever is there is
+                # broken or stale - but it is still the user's, and a silent
+                # recursive delete of a folder under LOCALAPPDATA is not ours to
+                # make. Same .bak-<stamp> convention the rest of the install uses.
+                if (Test-Path $nodeHome) {
+                    $shelved = "$nodeHome.bak-$(Get-Date -Format 'yyyy-MM-dd-HHmm')"
+                    Move-Item -LiteralPath $nodeHome -Destination $shelved -ErrorAction SilentlyContinue
+                    if (Test-Path $nodeHome) { throw "could not move the existing $nodeHome aside" }
+                    Warn (T "Moved a previous $nodeHome aside to $shelved." `
+                            "Se movio el $nodeHome anterior a $shelved.")
+                }
                 Move-Item -LiteralPath $unpacked -Destination $nodeHome
+                $userScopedNode = $true
                 Remove-Item $nodeZip -Force -ErrorAction SilentlyContinue
                 Remove-Item $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
                 Add-UserPathEntry $nodeHome
@@ -541,7 +572,12 @@ if (-not (Have node) -and $CorporateProfile) {
     # A user-scoped install lives on the USER PATH, which the line above does
     # pick up - but only after Add-UserPathEntry persisted it. Re-assert the
     # in-process entries so this same run can call node/npm immediately.
-    if (Test-Path "$env:LOCALAPPDATA\nodejs\node.exe") {
+    #
+    # Gated on $userScopedNode, NOT on the folder existing: a LEFTOVER
+    # %LOCALAPPDATA%\nodejs from an earlier run would otherwise be prepended
+    # ahead of a per-machine install we just made, and the stale copy would win
+    # every `node` call from here on.
+    if ($userScopedNode) {
         Add-UserPathEntry "$env:LOCALAPPDATA\nodejs"
         Add-UserPathEntry "$env:APPDATA\npm"
     }
