@@ -97,7 +97,20 @@ def _load_installer_manifest() -> tuple[set[str], set[str]]:
         raise RuntimeError(f"cannot load {INSTALLER}")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return set(mod.HOME_HOOKS_INSTALLER_DEPLOYS), set(mod.HOME_HOOKS_LIB_DEPS)
+    # HOME_HOOKS_LIB_DEPS via getattr, and an absent one is EMPTY rather than an
+    # error: an installer that predates the constant is a valid installer, and
+    # scripts/test_windows_install_regressions.py deliberately synthesizes a
+    # one-constant installer to exercise this guard in isolation. Crashing there
+    # with an AttributeError traceback would be a worse failure mode than the
+    # clean violation this lint exists to print.
+    #
+    # Empty is NOT a bypass. It cannot pass on a repo that actually needs the
+    # manifest: _lib_dependency_violations() checks each import against this
+    # set, so an empty one turns EVERY `_lib.<mod>` in a deployed hook into a
+    # named violation. Deleting the constant from the real installer therefore
+    # reddens this gate loudly, which is the point.
+    return (set(mod.HOME_HOOKS_INSTALLER_DEPLOYS),
+            set(getattr(mod, "HOME_HOOKS_LIB_DEPS", ())))
 
 
 # Both spellings, because both are in use in this repo's hooks/ and a guard
