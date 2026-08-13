@@ -39,8 +39,11 @@ DEFAULT_VAULT = _SCRIPT_DIR.parent.parent  # scripts/ -> parent folder -> vault 
 # VAULT is set in main() from --vault-root arg; default here for import-time safety
 VAULT = DEFAULT_VAULT
 sys.path.insert(0, str(_SCRIPT_DIR))
+# scripts/ -> repo root -> hooks/ (same layout as scripts/relocate-sweep.py)
+sys.path.insert(0, str(_SCRIPT_DIR.parent / "hooks"))
 
 from graphify_canonicalize import canonicalize, force_valid_file_types
+from _lib.safe_read import safe_read_bytes, safe_read_text  # noqa: E402
 
 
 SLASH_LABEL_RE = re.compile(r"^[\w\s\u00C0-\uFFFF]+/[\w\s\u00C0-\uFFFF]+$")
@@ -163,7 +166,11 @@ def main():
         if not p.exists():
             print(f"  MISSING chunk {i:02d}, aborting")
             sys.exit(1)
-        data = json.loads(p.read_text())
+        chunk_read = safe_read_text(p)
+        if not chunk_read.ok:
+            print(f"  UNREADABLE chunk {i:02d} ({chunk_read.status}), aborting")
+            sys.exit(1)
+        data = json.loads(chunk_read.text)
         for n in data.get("nodes", []):
             old = n.get("label", "")
             new = clean_slash_label(old)
@@ -235,9 +242,13 @@ def main():
     graph_path = Path(args.graph_path)
     if graph_path.exists():
         backup = Path(args.graph_path + f".backup_{ts}_pre_{args.stage_name.replace(' ', '_')}_finish")
-        backup.write_bytes(graph_path.read_bytes())
+        graph_read = safe_read_bytes(graph_path)
+        if not graph_read.ok:
+            print(f"  ERROR: could not read existing graph.json ({graph_read.status}), aborting")
+            sys.exit(1)
+        backup.write_bytes(graph_read.data)
         print(f"  backed up: {backup}")
-        existing = json.loads(graph_path.read_text(encoding="utf-8"))
+        existing = json.loads(graph_read.data.decode("utf-8"))
     else:
         print(f"  no existing graph.json found, starting fresh")
         existing = {"nodes": [], "links": [], "hyperedges": []}
@@ -422,7 +433,12 @@ def main():
     lines.append("")
     lines.append("## Top God Nodes")
     for i, n in enumerate(gn, 1):
-        lines.append(f"{i}. `{n['label']}` ({n['edges']} edges)")
+        # god_nodes() returns "degree"; "edges" has never been a key on it.
+        # This raised KeyError *after* Step 3 had already written the merged
+        # graph and *before* Step 5 saved the semantic cache, so the graph
+        # looked healthy and the next --update silently re-paid full price.
+        deg = n.get("degree", n.get("edges", n.get("edge_count", 0)))
+        lines.append(f"{i}. `{n['label']}` ({deg} edges)")
     lines.append("")
     lines.append("## Surprising Connections")
     for s in sc[:10]:
@@ -501,7 +517,8 @@ def main():
         manifest = {"version": 1, "entries": {}}
         if manifest_path.exists():
             try:
-                manifest = json.loads(manifest_path.read_text())
+                manifest_read = safe_read_text(manifest_path)
+                manifest = json.loads(manifest_read.text) if manifest_read.ok else {"version": 1, "entries": {}}
                 if "entries" not in manifest:
                     manifest = {"version": 1, "entries": {}}
             except Exception:
@@ -558,7 +575,10 @@ def main():
             list_path = Path(f"{chunk_prefix}{i:02d}_files.txt")
             if not list_path.is_file():
                 continue
-            for line in list_path.read_text().splitlines():
+            list_read = safe_read_text(list_path)
+            if not list_read.ok:
+                continue
+            for line in list_read.text.splitlines():
                 line = line.strip()
                 if not line:
                     continue
@@ -581,8 +601,11 @@ def main():
 
         for abs_path, staged_sf in files_in_stage.items():
             try:
-                content = Path(abs_path).read_bytes()
-                sha = hashlib.sha256(content + b"\x00" + abs_path.encode()).hexdigest()
+                content_read = safe_read_bytes(Path(abs_path))
+                sha = (
+                    hashlib.sha256(content_read.data + b"\x00" + abs_path.encode()).hexdigest()
+                    if content_read.ok else None
+                )
             except Exception:
                 sha = None
             manifest["entries"][abs_path] = {
@@ -610,12 +633,16 @@ def main():
         cutoff = time.time() - 3600  # last hour
         upgraded = 0
         recent = 0
-        for c in cache_dir.glob("*.json"):
+        # rglob, not glob: the cache is nested (cache/semantic/, cache/ast/),
+        # so a flat glob matches nothing and reports 0 touched entries even
+        # when the run upgraded hundreds.
+        for c in cache_dir.rglob("*.json"):
             if c.stat().st_mtime < cutoff:
                 continue
             recent += 1
             try:
-                if is_llm_extraction(json.loads(c.read_text())):
+                cache_read = safe_read_text(c)
+                if cache_read.ok and is_llm_extraction(json.loads(cache_read.text)):
                     upgraded += 1
             except Exception:
                 pass
@@ -632,7 +659,7 @@ def main():
     print(f"TOP 15 GOD NODES (post-{args.stage_name})")
     print("=" * 60)
     for i, n in enumerate(gn[:15], 1):
-        print(f"  {i:2d}. {n['label']} ({n['edges']})")
+        print(f"  {i:2d}. {n['label']} ({n.get('degree', n.get('edges', 0))})")
 
     print()
     print(f"{args.stage_name.upper()} FINISH COMPLETE")

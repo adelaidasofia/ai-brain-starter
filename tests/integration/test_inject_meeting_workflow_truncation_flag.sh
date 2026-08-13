@@ -94,11 +94,26 @@ CASCADE_POS=$(echo "$OUT" | grep -bF "Run the FULL cascade" | head -1 | cut -d: 
     fail "TRUNCATED flag must come BEFORE the cascade-instruction. Got flag at $FLAG_POS, cascade at $CASCADE_POS"
 
 # 4. TRUNCATED flag names the rule file path.
-echo "$OUT" | head -c 600 | grep -qF "$TMP_VAULT/Meta/rules/meeting-workflow.md" || \
-    fail "TRUNCATED flag should name the rule-file path in the first 600 chars. Got:\n$(echo "$OUT" | head -c 600)"
+# No pipes on purpose. `echo "$OUT" | head -c 600 | grep -qF ...` has TWO
+# SIGPIPE sources under `set -o pipefail` (line 27): head closes the stream
+# after 600 bytes, and grep -qF exits the instant it matches. Either one hands
+# the upstream writer EPIPE, pipefail promotes that non-zero to the pipeline,
+# and `|| fail` fires even though the match SUCCEEDED. Observed live as
+# "line 97: echo: write error: Broken pipe" followed by a failure whose own
+# "Got:" dump plainly contained the path it claimed was missing.
+# Bash substring expansion does the same job in-process: no pipe, no race.
+HEAD600="${OUT:0:600}"
+case "$HEAD600" in
+    *"$TMP_VAULT/Meta/rules/meeting-workflow.md"*) : ;;
+    *) fail "TRUNCATED flag should name the rule-file path in the first 600 chars. Got:\n$HEAD600" ;;
+esac
 
 # 5. TRUNCATED flag warns about silent-drop categories explicitly.
-TOP=$(echo "$OUT" | head -c 800)
+# Substring expansion, not `| head -c 800`: head closes the stream after 800
+# bytes while echo is still writing the full injected block, so echo takes
+# EPIPE and pipefail fails the substitution under `set -e`. Same race as #4
+# above; a byte-bounded reader races no matter how small the input is.
+TOP="${OUT:0:800}"
 echo "$TOP" | grep -qiE "decision log|crm|humanizer|backlinks|late step" || \
     fail "TRUNCATED flag should warn about the silent-drop categories (Decision Log / CRM / humanizer / backlinks / late steps). Got top 800 chars:\n$TOP"
 
