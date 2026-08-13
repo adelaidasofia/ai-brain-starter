@@ -100,8 +100,28 @@ def _load_installer_manifest() -> tuple[set[str], set[str]]:
     return set(mod.HOME_HOOKS_INSTALLER_DEPLOYS), set(mod.HOME_HOOKS_LIB_DEPS)
 
 
-# `from _lib.<module> import ...` / `import _lib.<module>` in a hook's source.
-_LIB_IMPORT_RE = re.compile(r"^\s*(?:from|import)\s+_lib\.(\w+)", re.MULTILINE)
+# Both spellings, because both are in use in this repo's hooks/ and a guard
+# that only knows one is a guard that passes on the other:
+#   from _lib.<mod> import name   /   import _lib.<mod>       -> _DOTTED
+#   from _lib import <mod>, <mod2>                            -> _FROM_PKG
+_LIB_IMPORT_DOTTED_RE = re.compile(r"^\s*(?:from|import)\s+_lib\.(\w+)", re.MULTILINE)
+_LIB_IMPORT_FROM_PKG_RE = re.compile(r"^\s*from\s+_lib\s+import\s+(.+)$", re.MULTILINE)
+
+
+def _imported_lib_modules(body: str) -> set[str]:
+    """Every `_lib` submodule a hook's source imports, in either spelling."""
+    mods = set(_LIB_IMPORT_DOTTED_RE.findall(body))
+    for clause in _LIB_IMPORT_FROM_PKG_RE.findall(body):
+        # `from _lib import a as x, b` -> {a, b}. Parenthesized multi-line
+        # forms only yield their first line here, which under-reports rather
+        # than over-reports: a missed name is caught the moment someone
+        # actually deploys a hook using it, and a FALSE violation would block
+        # CI on a correct repo.
+        for part in clause.split("#", 1)[0].split(","):
+            token = part.strip().lstrip("(").split(" as ")[0].strip()
+            if token.isidentifier():
+                mods.add(token)
+    return mods
 
 
 def _lib_dependency_violations(deployed: set[str], lib_deps: set[str]) -> list[str]:
@@ -127,7 +147,7 @@ def _lib_dependency_violations(deployed: set[str], lib_deps: set[str]) -> list[s
             body = src.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        for mod in sorted(set(_LIB_IMPORT_RE.findall(body))):
+        for mod in sorted(_imported_lib_modules(body)):
             if f"{mod}.py" not in lib_deps:
                 problems.append(
                     f"{name}: imports _lib.{mod}, but '{mod}.py' is not in "
