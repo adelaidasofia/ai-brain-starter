@@ -47,6 +47,17 @@ import sys
 import time
 from pathlib import Path
 
+# This file became a runnable, console-printing CLI when --self-test landed,
+# and its warning bodies carry non-ASCII (bullets, arrows). On a Windows
+# cp1252 console that is the ai-brain-starter#313 crash class: the guard whose
+# whole job is to WARN would die while printing its warning. Reconfigure before
+# anything can print.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+    except (AttributeError, ValueError):
+        pass
+
 THRESHOLD = 5          # commits behind origin/main before we warn
 FETCH_TIMEOUT = 8      # seconds; fail-open past this
 STALE_FETCH_DAYS = 3.0 # if last fetch older than this, also flag knowledge-staleness
