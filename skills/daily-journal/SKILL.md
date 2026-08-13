@@ -5,6 +5,12 @@ description: Use when the user wants to journal, do a daily or end-of-day check-
 
 # Daily Journal — Interview & Log
 
+> **`[VAULT_PATH]` below is a placeholder, not a path.** Resolve it to the vault root before
+> running anything. Passing it through literally is the failure this note exists to prevent:
+> nothing in the repo substitutes it inside a skill file, so a command keeps a path that cannot
+> exist, and a step that merely *checks* such a path skips silently — the report loses a section
+> and no error is raised.
+
 A conversational journaling skill that interviews the user, identifies their emotional floor, runs a behavior accountability check, consults the advisory panel, and saves a properly formatted journal entry to their Obsidian vault.
 
 ## Language

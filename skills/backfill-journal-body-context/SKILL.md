@@ -5,6 +5,12 @@ description: Use when the user says /backfill-journal-body-context, wants existi
 
 # backfill-journal-body-context
 
+> **`[VAULT_PATH]` below is a placeholder, not a path.** Resolve it to the vault root before
+> running anything. Passing it through literally is the failure this note exists to prevent:
+> nothing in the repo substitutes it inside a skill file, so a command keeps a path that cannot
+> exist, and a step that merely *checks* such a path skips silently — the report loses a section
+> and no error is raised.
+
 Reads existing daily journals, pulls health-mcp data for each entry's date, and appends a "Body track" section BELOW the original verbatim content. The original entry text is NEVER modified — the rule from `feedback_journal_verbatim_words.md` is non-negotiable.
 
 ## When to use

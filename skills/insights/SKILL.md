@@ -6,6 +6,12 @@ argument-hint: "[week or month -- e.g. 'this week', 'last month', or leave blank
 
 When the user types /weekly or /monthly, generate an insight report from their recent journal entries.
 
+> **`[VAULT_PATH]` below is a placeholder, not a path.** Resolve it to the vault root before
+> running anything. Passing it through literally is the failure this note exists to prevent:
+> nothing in the repo substitutes it inside a skill file, so a command keeps a path that cannot
+> exist, and a step that merely *checks* such a path skips silently — the report loses a section
+> and no error is raised.
+
 ## Language
 
 Generate the entire report in the language the user writes in. If Spanish, all sections — coach, therapist, panel, floor notes — are in Spanish.
@@ -58,10 +64,10 @@ If the vault has `scripts/token-usage-report.py`, run it to surface real per-ses
 
 ```bash
 # /weekly: 7-day window
-VAULT_ROOT="<VAULT_PATH>" python3 "<VAULT_PATH>/scripts/token-usage-report.py" --days 7 --top 10
+VAULT_ROOT="[VAULT_PATH]" python3 "[VAULT_PATH]/scripts/token-usage-report.py" --days 7 --top 10
 
 # /monthly: 30-day window
-VAULT_ROOT="<VAULT_PATH>" python3 "<VAULT_PATH>/scripts/token-usage-report.py" --days 30 --top 20
+VAULT_ROOT="[VAULT_PATH]" python3 "[VAULT_PATH]/scripts/token-usage-report.py" --days 30 --top 20
 ```
 
 The script writes `⚙️ Meta/Token Usage Report.md`. Read it and surface a compact block in the report. If `Opus cost share` >60% or `Sessions ≥60 turns` >3, surface as a coach line in Section 3 (model-routing or session-length drift). Single-session cost outliers (>$200) get one bullet in Section 2.
@@ -73,7 +79,7 @@ This replaces guess-work with real numbers from `~/.claude/projects/<vault-hash>
 If the vault has `scripts/compress-vault-doc.py`, run the compression-candidate sweep on docs flagged by Drift Audit:
 
 ```bash
-VAULT_ROOT="<VAULT_PATH>" python3 "<VAULT_PATH>/scripts/compress-vault-doc.py" --auto-from-drift --dry-run
+VAULT_ROOT="[VAULT_PATH]" python3 "[VAULT_PATH]/scripts/compress-vault-doc.py" --auto-from-drift --dry-run
 ```
 
 If candidates show >2KB savings, surface as a compact block. If <2KB, skip silently.
@@ -85,7 +91,7 @@ If candidates show >2KB savings, surface as a compact block. If <2KB, skip silen
 If the vault has `scripts/monthly-baseline.py`, run it for the target period:
 
 ```bash
-VAULT_ROOT="<VAULT_PATH>" python3 "<VAULT_PATH>/scripts/monthly-baseline.py" --month YYYY-MM --pretty
+VAULT_ROOT="[VAULT_PATH]" python3 "[VAULT_PATH]/scripts/monthly-baseline.py" --month YYYY-MM --pretty
 ```
 
 The script outputs floor distribution shifts ≥3pp from baseline, word-frequency anomalies ≥2× or ≤0.5× baseline, numeric metric deltas ≥10%, activity deltas, top people mentions, and missing-data flags. **Use this output as the FIRST DATA SECTION** (sections 0a/0b/0c below). Don't bury it under "Month at a glance." Anomaly-led framing means the reader sees what's different before they see what's present.

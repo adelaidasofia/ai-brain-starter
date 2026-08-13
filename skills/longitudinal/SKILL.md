@@ -6,6 +6,12 @@ argument-hint: "[scope -- e.g. 'all', '5y', '1y', leave blank for 1y default]"
 
 When the user types /longitudinal, run the multi-year correlation pass and surface only the strongest signals across years of health-mcp + journal data.
 
+> **`[VAULT_PATH]` below is a placeholder, not a path.** Resolve it to the vault root before
+> running anything. Passing it through literally is the failure this note exists to prevent:
+> nothing in the repo substitutes it inside a skill file, so a command keeps a path that cannot
+> exist, and a step that merely *checks* such a path skips silently — the report loses a section
+> and no error is raised.
+
 ## Language
 
 Generate the report in the language the user writes in. If Spanish, all sections including the panel commentary are in Spanish.
