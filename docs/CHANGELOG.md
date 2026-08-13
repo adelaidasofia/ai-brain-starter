@@ -115,6 +115,19 @@ Now it does. When a session set a goal that was never cleared, the close ends by
 
 **What you should do:** nothing for new entries. If you journaled before this fix, ask Claude to backfill `type: journal` into your existing entries' frontmatter so extraction sees them too.
 
+## 2026-07-16: the Spanish close detector stopped firing mid-conversation and started hearing "cierra esta sesión"
+
+**Who this affects:** anyone journaling or working in Spanish (or Portuguese) — the session-close detector was misbehaving in both directions for you, and English users never saw it.
+
+**The bug:** two failures, same root cause. The close detector lets its strong tiers (explicit, high-confidence sign-offs) override the false-positive guards — and the guard tier that's *allowed* to override them (`strict_guards`) existed only in the English pack. So in Spanish, every false-positive guard was dead code:
+
+- **Fired when it shouldn't:** "¿Ya está en el prompt o no está creado?" — a question in the middle of a working session — triggered the full close cascade, because `ya (está|estuvo|fue)` was unanchored and matched inside any sentence.
+- **Stayed silent when it should have fired:** "cierra esta sesión" did nothing. The pattern was built on the stem `cerr`, which covers *cerrar/cerremos/cerramos* but not the imperative *cierra* — Spanish *cerrar* is an e→ie stem-changing verb, so the command form is *cierr-*, not *cerr-*.
+
+**The fix:** ported the `strict_guards` tier to `es.json` (meta-discussion of the cascade, technical references, "close the *database* session", questions *about* closing), anchored `ya está/estuvo/fue/quedó` to end-of-message, and added the imperative `cierra/cierre/cierren` (plus Argentine `cerrá`) to the close-session pattern.
+
+**New test:** `tests/integration/test_detect_closing_signal_es_guards.sh`, wired into `scripts/ci.sh`. The English `strict_guards` test is unchanged and still passes.
+
 ---
 
 ## 2026-07-16: /weekly and /monthly could not find your journal folder
