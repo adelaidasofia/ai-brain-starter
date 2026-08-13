@@ -459,7 +459,32 @@ WATCH_GLOBS = [
 #   trips    installer backup left behind (.bak-*)
 #   trips    the SessionStart snapshot rewritten
 #   ignores  append-only .log / .jsonl grows, lock dir churns, per-session
-#            scratch appears
+#            scratch appears, a hook runtime-state DOTFILE is rewritten
+#
+# DOTFILES, added 2026-08-13. ~/.claude/hooks/ is shared ground: this repo's
+# deployed hooks sit there alongside whatever private tooling the operator has
+# installed, and that tooling drops last-run stamps right beside them. Measured
+# on one machine: 8 dotfiles, 7 of them pure runtime state --
+# .mcp-config-secret-scan-last, .last-secret-scan, .last-secret-scan-full,
+# .secret-scan-findings.json, .pre-push-doubt-heeding.stamp,
+# .deployed-manifest.sha256, .secret-scan.lock. Only .gitignore is durable, and
+# nothing this gate protects is a dotfile.
+#
+# CHURN_SUFFIXES cannot catch them: .stamp, .sha256, .json and a bare
+# extensionless marker are four spellings of one behaviour, and the next hook
+# adds a fifth. That is the open set this file's own comment warns about ("a
+# denylist against an open set always loses"), so exclude by the PROPERTY that
+# separates them: deployed hook code is never a dotfile. Every entry in
+# install-hooks-user-level.py's HOME_HOOKS_INSTALLER_DEPLOYS and every
+# ABS-owned basename is a named *.py / *.sh.
+#
+# Caught live: a background secret-scan hook rewrote
+# hooks/.mcp-config-secret-scan-last 91 seconds into a gate run and reddened
+# test_bootstrap_dry_run -- a test that touches neither file. Re-running that
+# test alone, on that branch AND on a pristine origin/main, tripped nothing.
+# That is precisely the "reddens an unrelated test and trains a bypass" outcome
+# the quiet control below exists to prevent, arriving through a gap in the walk
+# the quiet control does not inspect.
 CHURN_SUFFIXES = (".log", ".jsonl")
 
 seen = []
@@ -475,6 +500,8 @@ for tree in WATCH_TREES:
             fp = Path(root) / name
             if fp.suffix in CHURN_SUFFIXES:
                 continue
+            if name.startswith("."):
+                continue  # hook runtime state, never deployed hook code
             try:
                 st = fp.stat()
             except OSError:
@@ -552,6 +579,12 @@ else:
                    "fingerprint walk")
     if 'endswith(".lock")' not in src:
         bad.append("the runtime lock-dir pruning is gone from the walk")
+    if 'name.startswith(".")' not in src:
+        bad.append('the dotfile exclusion is gone from the walk — ~/.claude/'
+                   'hooks/ is shared with the operator\'s private tooling, '
+                   'which drops last-run stamps (.stamp/.sha256/.json/no '
+                   'suffix) beside the deployed hooks; without this the gate '
+                   'reddens on whichever test happens to be running')
 
 if bad:
     print("::error::real-home tripwire quiet-control FAILED — the watched set "
@@ -561,7 +594,7 @@ if bad:
         print("::error::  - " + b)
     sys.exit(1)
 print("    tripwire quiet-control: fingerprint still excludes append-only "
-      "logs, lock dirs and per-session scratch")
+      "logs, lock dirs, runtime-state dotfiles and per-session scratch")
 PY
 }
 _home_before_suite="$(real_home_fingerprint)"
