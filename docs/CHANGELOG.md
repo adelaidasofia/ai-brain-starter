@@ -9,6 +9,34 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-13: three helpers that were never actually installed, and a Windows setup that could fail without saying so
+
+**Who this affects:** everyone, for the second half. Windows users especially, for the first.
+
+Both of these came out of one real Windows install, where a person hit them, worked around them by hand, and told us.
+
+**Setup could fail to install Node.js and not say why.** Node's installer puts itself in a location that belongs to the whole machine, which Windows only allows after you approve a permission prompt. Setup ran that installer in silent mode, where no prompt can appear, so on a normal (non-Administrator) PowerShell the install simply refused. Worse, setup was throwing away the installer's answer entirely: whether it succeeded, failed, or never started, the next line of output looked the same. All you saw, several lines later, was a bare "node install failed" with no reason attached.
+
+Now setup checks whether it is running as Administrator first. If it is, nothing changes. If it is not, it installs Node just for you, from the official ZIP build, into your own user folder, and adds it to your PATH. That path needs no permission prompt at all, so it cannot fail this way. It also adds the folder npm uses for global tools, which the machine-wide installer would normally have added, so Claude Code installs and runs straight afterward. If winget was tried first and could not do it, setup now falls back to the direct download instead of giving up. And every installer's real exit code is now read and reported, so a failure says what happened and what to do about it. The same fix is applied to the Python installer beside it, which had the identical problem.
+
+**Three background helpers were being wired up but never copied into place.** `vault-context.py` (reads your priorities and open loops and puts them in front of Claude before it answers a strategic question), `retry-budget.py` (stops Claude looping on the same failing command), and `validate-mcp-json.py` (catches a broken `.mcp.json` before it silently disables every connector you have).
+
+Setup listed them in your settings, so they looked installed. But the actual copying was a `cp` command written inside one of the setup guides, meant to be run while Claude walked you through setup. `cp` is not a command on Windows, so there it could not run at all. And because each of these hooks is deliberately wired as "run this only if the file exists", a missing file produces no error, no warning, and no output. Nothing to notice, on any platform.
+
+There was a second layer to it. `vault-context.py` reads a small shared library that ships beside it, and nothing ever copied that library anywhere. So even where the `cp` did run, the hook loaded, found no library, fell back to its own do-nothing branch, and exited cleanly. It has been reporting healthy and injecting nothing, on every operating system, since it shipped.
+
+All three now install with everything else, on every platform, along with the library they need. Setup verifies them afterward instead of assuming.
+
+**What you should do:** run this once, and you are current:
+
+```
+python3 ~/.claude/skills/ai-brain-starter/scripts/install-hooks-user-level.py
+```
+
+If your session start mentions "background helpers not active", this is what it was pointing at. Nothing else changes, and re-running is safe: anything you edited by hand is backed up to `<file>.bak-YYYY-MM-DD-HHMM` before it is replaced.
+
+---
+
 ## 2026-08-05: on Mac and Linux, "daily backup scheduled" now means it really is
 
 **Who this affects:** anyone on macOS or Linux who set up the daily vault backup.
