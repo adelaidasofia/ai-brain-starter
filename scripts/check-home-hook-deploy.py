@@ -70,6 +70,7 @@ Stdlib only. No network, no git, no writes.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import re
@@ -113,27 +114,44 @@ def _load_installer_manifest() -> tuple[set[str], set[str]]:
             set(getattr(mod, "HOME_HOOKS_LIB_DEPS", ())))
 
 
-# Both spellings, because both are in use in this repo's hooks/ and a guard
-# that only knows one is a guard that passes on the other:
-#   from _lib.<mod> import name   /   import _lib.<mod>       -> _DOTTED
-#   from _lib import <mod>, <mod2>                            -> _FROM_PKG
-_LIB_IMPORT_DOTTED_RE = re.compile(r"^\s*(?:from|import)\s+_lib\.(\w+)", re.MULTILINE)
-_LIB_IMPORT_FROM_PKG_RE = re.compile(r"^\s*from\s+_lib\s+import\s+(.+)$", re.MULTILINE)
-
-
 def _imported_lib_modules(body: str) -> set[str]:
-    """Every `_lib` submodule a hook's source imports, in either spelling."""
-    mods = set(_LIB_IMPORT_DOTTED_RE.findall(body))
-    for clause in _LIB_IMPORT_FROM_PKG_RE.findall(body):
-        # `from _lib import a as x, b` -> {a, b}. Parenthesized multi-line
-        # forms only yield their first line here, which under-reports rather
-        # than over-reports: a missed name is caught the moment someone
-        # actually deploys a hook using it, and a FALSE violation would block
-        # CI on a correct repo.
-        for part in clause.split("#", 1)[0].split(","):
-            token = part.strip().lstrip("(").split(" as ")[0].strip()
-            if token.isidentifier():
-                mods.add(token)
+    """Every `_lib` submodule a hook's source imports, in any spelling.
+
+    Parsed with `ast`, not matched with a regex. Both spellings are in use in
+    this repo's hooks/ — `from _lib.<mod> import x`, `import _lib.<mod>`, and
+    `from _lib import <mod>` — so a guard that knows only one passes on the
+    other. A regex covering both then over-matches: hooks/ already contains the
+    line
+
+        f"from _lib.secret_patterns import redact; from pathlib import Path; "
+
+    inside a string, and a bare `from _lib import x` in a docstring sits at
+    column 0 like real code. A false violation blocks CI on a correct repo,
+    which is worse than the gap being closed. The AST sees imports and nothing
+    that merely looks like one, and it handles parenthesized multi-line and
+    aliased forms for free.
+
+    A file that does not parse yields nothing: gate (a) py_compiles every
+    tracked *.py and owns that failure, and a second, worse-worded report of it
+    here would only muddy attribution.
+    """
+    try:
+        tree = ast.parse(body)
+    except (SyntaxError, ValueError):
+        return set()
+    mods: set[str] = set()
+    for node in ast.walk(tree):
+        # from _lib import a, b   /   from _lib.mod import x
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if node.module == "_lib":
+                mods.update(alias.name for alias in node.names)
+            elif node.module.startswith("_lib."):
+                mods.add(node.module.split(".")[1])
+        # import _lib.mod  /  import _lib.mod as m
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("_lib."):
+                    mods.add(alias.name.split(".")[1])
     return mods
 
 
