@@ -43,6 +43,18 @@ Now, every time you run backup setup again, it reads your existing scheduled tas
 
 ---
 
+## 2026-08-01: a graphify stage looked like it worked, then charged you twice
+
+**Who this affects:** anyone who runs `/graphify` with more than one chunk.
+
+Finishing a graphify stage crashed at the very last step, and the crash landed in the one place where it did the most damage while looking like the least. By the time it fired, the merged graph had already been written to disk. What had *not* run yet was the step that saves the semantic cache. So you got a healthy-looking graph, a stack trace you could reasonably read as "the report failed, no big deal" — and a cache that never recorded any of the work. The next `--update` re-extracted every one of those files from scratch and re-paid the full token cost. On a real run that was thousands of files silently re-billed.
+
+The cause was a single wrong key. The function that ranks your most-connected nodes returns each one's `degree`; the report step asked for `edges`, which has never existed on it. Three lines asked for it.
+
+**And the check that was supposed to catch it counted zero every time.** After saving the cache, the script reports how many entries it touched, so you can confirm the run landed. It looked for cache files directly inside the cache folder — but the cache is nested, in `semantic/` and `ast/` subfolders. So the count was always zero, whether the run had upgraded nothing or upgraded thousands. A verification step that cannot distinguish success from failure is worse than no verification, because you stop looking.
+
+Both are fixed. The report reads `degree` (and still falls back to the older key names if a future version renames it), and the cache check walks the nested folders. If a stage ever crashes again, it will crash *before* the merge instead of after.
+
 ## 2026-08-01: WhatsApp chats that were all filed as one-on-ones
 
 **Who this affects:** anyone using the WhatsApp bridge, especially if your vault is not in English.
