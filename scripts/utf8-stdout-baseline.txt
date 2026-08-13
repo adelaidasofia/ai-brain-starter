@@ -144,6 +144,5 @@ ef44e1e697864634bd4f41c5041e9d3c445aa429c37d35bb7dbdb613c76c3592 SEV-4-json-enco
 bde2c3d7a3b64f2828d4b6a7be9e33381c7496877cf11eea0fdbb6068382b4e1 SEV-4-json-encoded hooks/vault-context.py
 381d8c9eec790997f7736fc89e088fdb12f7dd1606b4be8e753ba0bf0d43e497 SEV-4-json-encoded hooks/warn-learning-to-tool-private-memory.py
 6141c3d8cc8a60cf6ae1c9a3d8fcde728808188e2bbe4cfedd581276076bf1c3 SEV-4-json-encoded hooks/warn-recreate-deleted-file.py
-a201c72df70798c65e0a3db62587a38eec99b1989b83b808826604dcf2f42fd2 SEV-4-json-encoded hooks/warn-stale-dev-checkout.py
 effe9f0dc7226a8ea9456ec6be5112ea357ef8795adde5375499f19c6db000fc SEV-4-json-encoded hooks/warn-uncommitted-builds-on-stop.py
 dfba549e5cd609ddde59d63aac175d884d0224a6703265e0b04c1a0eac315b20 SEV-4-json-encoded hooks/whatsapp-mcp-auto-export.py

@@ -150,6 +150,14 @@ jobs:
       # the wrong vault and skips the file it exists for. Shipped that way in
       # hooks/validate-handoff-frontmatter.py and was inert on every install
       # (#375/#404) - two unrelated users had already hand-patched it identically.
+      # A worktree is fresh when it is CREATED, not forever. This guard's
+      # discriminator is "has work started on this branch", NOT "is it behind",
+      # so its self-test runs two worktrees that are EQUALLY behind and differ
+      # only by one commit. A regression in either direction (warn on behind
+      # alone / never warn) fails it; a one-case test could not tell them apart.
+      - name: unstarted-worktree staleness negative controls (the guard must still bite)
+        run: python3 hooks/warn-stale-dev-checkout.py --self-test
+
       # Self-test first (cheap, and proves the guard still bites), then the tree.
       - name: naive VAULT_ROOT read negative controls (the guard must still bite)
         run: python3 scripts/check-vault-root-reads.py --self-test
