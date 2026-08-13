@@ -266,6 +266,11 @@ ABS_OWNED_BASENAMES = {
     # committed basenames against owned deployed ones — every Windows user would
     # get a "1 background helper is not active" nag that no action can clear.
     "pre-write-settings-lint.py", "lint-claude-settings.py",
+    # Phase-05 hooks, moved to the installer route 2026-08-13 (see
+    # HOME_HOOKS_INSTALLER_DEPLOYS). Owned for the same reason as the two
+    # above: unowned means verify_paths_on_disk() never looks at them, and a
+    # never-deployed hook then reports as a clean install forever.
+    "retry-budget.py", "validate-mcp-json.py", "vault-context.py",
 }
 
 # Hooks that hooks.json invokes from ~/.claude/hooks/ and that THIS INSTALLER is
@@ -279,15 +284,51 @@ ABS_OWNED_BASENAMES = {
 # settings.json, present on disk 0 times, reported OK. Shipped-but-never-once-
 # executed, on every install, since they were merged (#313's follow-on).
 #
-# The complement — retry-budget.py, validate-mcp-json.py, vault-context.py — is
-# deliberately NOT here: phase-05 copies those during /setup-brain, some only
-# when the user opts in. scripts/check-home-hook-deploy.py asserts that every
-# ~/.claude/hooks/ reference in hooks.json is covered by exactly one of the two
-# routes, so the next hook added to the template cannot land in neither.
+# retry-budget.py, validate-mcp-json.py and vault-context.py joined this set
+# 2026-08-13, from a field report on a Windows install where all three were
+# absent from ~/.claude/hooks/. They used to take the PHASE-DOC route: three
+# literal `cp` lines in phases/phase-05-context-layer.md, executed by the MODEL
+# during /setup-brain. Three things were wrong with that:
+#
+#   1. POSIX-ONLY. `cp` and `mkdir -p` are not commands on native Windows, so
+#      the step could not run there at all — and its failure is invisible,
+#      because the `[ -f ]` guard turns every missing hook into silence.
+#   2. MODEL-EXECUTED. A copy step that depends on an agent reading a markdown
+#      table and choosing to run it is not a deploy route; it is a suggestion.
+#      Nothing verified it afterwards on any platform.
+#   3. THE DEPENDENCY WAS NEVER SHIPPED. vault-context.py does
+#      `from _lib.vault_root import vault_root_for` and falls back to a stub
+#      returning None when that import fails. Nothing ever copied hooks/_lib/
+#      to ~/.claude/hooks/, so even a SUCCESSFUL `cp` of the .py landed a hook
+#      that resolved no vault and injected nothing, on every platform, forever
+#      — fail-open, exit 0, no output. See HOME_HOOKS_LIB_DEPS.
+#
+# The phase doc no longer copies them (its `cp` lines are gone). Do not add one
+# back: scripts/check-home-hook-deploy.py fails on BOTH routes as loudly as on
+# neither, because a phase doc offering a choice the installer already made is
+# a documented lie.
 HOME_HOOKS_INSTALLER_DEPLOYS = {
     "pre-write-settings-lint.py",   # PreToolUse(Write|Edit) settings-integrity blocker
     "lint-claude-settings.py",      # SessionStart settings drift lint (+ --test self-check)
     "check-claude-code-version.sh",  # SessionStart version check (POSIX only; bash)
+    "retry-budget.py",              # PreToolUse(Bash) 4th-identical-command blocker
+    "validate-mcp-json.py",         # PreToolUse(Write|Edit) .mcp.json parse gate
+    "vault-context.py",             # UserPromptSubmit vault-context injector
+}
+
+# Package files under hooks/_lib/ that a HOME_HOOKS_INSTALLER_DEPLOYS hook
+# imports, and that therefore have to land in ~/.claude/hooks/_lib/ in the SAME
+# install. "Ship the dep with the consumer, same commit."
+#
+# A deployed hook does `sys.path.insert(0, <its own dir>)` and then
+# `from _lib.X import ...`. Deploy the hook alone and that import raises
+# ImportError inside a try/except whose fallback is a silent no-op — the hook
+# runs, exits 0, and does nothing, which is indistinguishable from a hook with
+# nothing to say. scripts/check-home-hook-deploy.py statically asserts that
+# every `_lib` module imported by a deployed hook appears here.
+HOME_HOOKS_LIB_DEPS = {
+    "__init__.py",     # makes _lib a package; without it the import fails
+    "vault_root.py",   # vault-context.py -> vault_root_for()
 }
 
 # Hooks ai-brain-starter USED TO ship and has deliberately RETIRED. The
@@ -1148,6 +1189,11 @@ def deploy_home_hooks(
     ever writes is a hook that cannot fire; the `[ -f ]` guard then makes the
     absence look like health.
 
+    Also deploys HOME_HOOKS_LIB_DEPS into <config_dir>/hooks/_lib/. A hook that
+    imports `_lib.<mod>` and finds it missing does not crash — it falls into a
+    try/except stub and silently does nothing, which reads exactly like a hook
+    with nothing to report. The dependency ships with its consumer.
+
     Contract:
       - COPY-IF-DIFFERENT: an identical destination is a no-op, so re-runs and
         the daily update pass are quiet and idempotent.
@@ -1163,9 +1209,20 @@ def deploy_home_hooks(
     """
     notes: list[str] = []
     dest_dir = config_dir / "hooks"
-    for name in sorted(HOME_HOOKS_INSTALLER_DEPLOYS):
-        src = repo_hooks_dir / name
-        dest = dest_dir / name
+
+    targets: list[tuple[str, Path, Path]] = [
+        (name, repo_hooks_dir / name, dest_dir / name)
+        for name in sorted(HOME_HOOKS_INSTALLER_DEPLOYS)
+    ]
+    # _lib is a package, not a hook: same copy contract, no executable bit, and
+    # its own subdirectory. Deployed BEFORE nothing in particular — order does
+    # not matter, since the import only runs when a hook fires.
+    targets += [
+        (f"_lib/{name}", repo_hooks_dir / "_lib" / name, dest_dir / "_lib" / name)
+        for name in sorted(HOME_HOOKS_LIB_DEPS)
+    ]
+
+    for name, src, dest in targets:
         if not src.is_file():
             notes.append(f"  ! {name}: not in {repo_hooks_dir} — hook will not fire")
             continue
@@ -1176,16 +1233,24 @@ def deploy_home_hooks(
             if dry_run:
                 notes.append(f"  + {name} (would {'update' if dest.is_file() else 'deploy'})")
                 continue
-            dest_dir.mkdir(parents=True, exist_ok=True)
+            # dest.parent, not dest_dir: an entry under _lib/ needs its own
+            # subdirectory created, and a FileNotFoundError here is swallowed by
+            # the OSError handler below — the hook would deploy and its library
+            # would not, which is the exact silent half-install being fixed.
+            dest.parent.mkdir(parents=True, exist_ok=True)
             if dest.is_file():
+                # dest.name, not name: `name` may carry a subdirectory
+                # ("_lib/vault_root.py") and Path.with_name() raises ValueError
+                # on a separator — an exception this except-clause does not
+                # catch, which would abort the whole install.
                 backup = dest.with_name(
-                    f"{name}.bak-{datetime.now().strftime('%Y-%m-%d-%H%M')}")
+                    f"{dest.name}.bak-{datetime.now().strftime('%Y-%m-%d-%H%M')}")
                 shutil.copyfile(dest, backup)
                 notes.append(f"  ~ {name} (updated; previous copy at {backup.name})")
             else:
                 notes.append(f"  + {name} (deployed)")
             shutil.copyfile(src, dest)
-            if os.name != "nt":
+            if os.name != "nt" and "/" not in name:
                 try:
                     dest.chmod(dest.stat().st_mode | 0o111)
                 except OSError:

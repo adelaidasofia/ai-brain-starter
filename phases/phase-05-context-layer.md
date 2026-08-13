@@ -132,12 +132,9 @@ Also add an auto-update hook that checks GitHub for updates at most once per wee
 
 Also add the **vault-context hook** — this one actually reads and injects file contents before responding to strategic questions, instead of just instructing Claude to read them. The difference matters: an instruction can be skipped or deferred; injected content is always there.
 
-Copy the hook file:
-```bash
-cp ~/.claude/skills/ai-brain-starter/hooks/vault-context.py ~/.claude/hooks/vault-context.py
-```
+**Nothing to copy.** `scripts/install-hooks-user-level.py` already deployed `~/.claude/hooks/vault-context.py` — and the `hooks/_lib/` package it imports — during bootstrap, on every platform. This step used to be a literal `cp` command run from this doc, which is why the hook never landed on Windows (`cp` is not a command there) and why its `_lib` dependency landed nowhere at all. The hook is wired with a `[ -f ]` guard, so both failures were completely silent.
 
-Then add it as an additional UserPromptSubmit hook in `.claude/settings.local.json`:
+Wire it as an additional UserPromptSubmit hook in `.claude/settings.local.json`:
 ```json
 {
   "type": "command",
@@ -152,22 +149,18 @@ To add your own project-specific files, edit `~/.claude/hooks/vault-context.py` 
 
 ### Additional PreToolUse hooks
 
-The starter ships five PreToolUse hooks under `hooks/`. Two install by default (they help every user with no behavior-change cost). Three are conditional — install only if the specific risk applies.
+The starter ships five PreToolUse hooks under `hooks/`. Two are installed for everyone by the bootstrap (they help every user with no behavior-change cost). Three are conditional — install only if the specific risk applies.
 
-**Install by default — run these two `cp` commands now:**
-
-```bash
-mkdir -p ~/.claude/hooks
-cp ~/.claude/skills/ai-brain-starter/hooks/retry-budget.py ~/.claude/hooks/
-cp ~/.claude/skills/ai-brain-starter/hooks/validate-mcp-json.py ~/.claude/hooks/
-```
+**Already installed — no command to run:**
 
 | Hook | What it does | Why it's default |
 |---|---|---|
 | `retry-budget.py` | Blocks the 4th identical Bash command within 30 minutes | Caps Claude's tendency to loop on failing commands and burn context. Bypass: `RETRY_BUDGET_BYPASS=1 <cmd>` |
 | `validate-mcp-json.py` | Blocks Write/Edit on `.mcp.json` if the result fails JSON parsing | Claude Code silently drops malformed `.mcp.json`, disabling every registered MCP. Catches a single misplaced brace before it takes the stack dark. |
 
-Both are already wired into `hooks.json` with file-exists guards — if the user removes the file, the hook chain stays clean (protection just goes away, no errors). To uninstall either: `rm ~/.claude/hooks/<name>.py`.
+`scripts/install-hooks-user-level.py` deploys both, cross-platform, and re-verifies them on every run. They were `cp` commands in this doc until 2026-08-13; on Windows that step could not run, and nothing checked afterwards, so both hooks were wired-and-absent — protection that reported as installed and never once fired.
+
+Both are wired into `hooks.json` with file-exists guards — if the user removes the file, the hook chain stays clean (protection just goes away, no errors). To uninstall either: `rm ~/.claude/hooks/<name>.py`. Note that a later bootstrap re-deploys it; to keep it off permanently, remove its entry from `settings.json` too.
 
 **Conditional opt-ins — install only if the risk applies (read each file first):**
 
