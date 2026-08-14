@@ -98,7 +98,6 @@ d11e46cfd26ba07935e39f6bd73c36095e242d4a2a5a6856d12a07f7b929195b SEV-E-no-defaul
 63fb9c590ff9d6f690249a4238094e595229adda50a5cfc8d55e87c1115b7a9d SEV-E-no-default scripts/graph-to-neo4j.py
 c41c1955f5ecc763a067cff06cd3c6cbe0a8aa47ad20625dd8eb7e779f8fd20d SEV-E-no-default scripts/hallucination-sample-audit.py
 24f7876383293d84f9524173e1e1b795b90eb4f18cee25dc64f5adaa57f59783 SEV-E-no-default scripts/hallucination-watch.py
-6670bcec0a1d80f8ea0d75ae7a8aae27993c4c5790e2e53f5029f9d2b1be7dea SEV-E-no-default scripts/heal-journal-guard.py
 6082be21cce7a61305998c0b07dd6c1148aebe660dcf364d8998d317b7cdcc57 SEV-E-no-default scripts/insight-fact-check.py
 a5aed49db53aae2474b33dd27da96d15a3fb4d13676974aa3d43e6c7d1d900c9 SEV-E-no-default scripts/rotate-last-session.py
 094e856feb69cd63ac7602b4d763d2067201d9b88c79aa7edc6f50fca9f7038a SEV-E-no-default scripts/security-snapshot.py

@@ -178,6 +178,12 @@ def healthy_matchers(settings: dict) -> "set":
 def resolve_vault(settings: dict) -> "str":
     """Vault root from $VAULT_ROOT, else parsed out of an installed vault-hook command.
     Empty string when no vault can be resolved (a box with no vault set up yet)."""
+    # vault-root-ok: per-ACCOUNT healer (it repairs ~/.claude, not a vault file), so
+    # there is no target file to resolve a root from - the installed commands ARE the
+    # per-vault signal, and they are the fallback below. No default: unset falls through
+    # to that parse and then to "", never to a guessed ~/vault. Set is honored only when
+    # it names a real directory, and repair_preflight threads the same value into
+    # sync-vault-scripts, so the check and the repair cannot disagree about the vault.
     env = os.environ.get("VAULT_ROOT")
     if env and Path(env).is_dir():
         return env
