@@ -233,11 +233,12 @@ def resolve_vault(settings: dict, explicit: "str | None" = None) -> "str":
     last resort and is called by run_session_start(), not from here -- folding it
     in here would make the hermetic 'no-vault' controls in self_test() depend on
     whatever vaults happen to sit in the developer's real home."""
-    # vault-root-ok: per-ACCOUNT healer (it repairs ~/.claude, not a vault file), so
-    # there is no target file to resolve a root from - the installed commands ARE the
-    # per-vault signal. Each source is honored only when it names a real directory.
+    # Each source is honored only when it names a real directory.
     if explicit and Path(explicit).is_dir():
         return str(explicit)
+    # vault-root-ok: per-ACCOUNT healer (it repairs ~/.claude, not a vault file), so
+    # there is no target file to resolve a root from - the installed commands ARE the
+    # per-vault signal, and they are the next fallback below.
     env = os.environ.get("VAULT_ROOT")
     if env and Path(env).is_dir():
         return env
