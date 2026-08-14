@@ -1058,9 +1058,33 @@ def backup_settings(settings_path: Path) -> Path | None:
 
 
 def write_settings_with_verify(settings_path: Path, settings: dict, backup: Path | None) -> bool:
-    """Write settings.json, verify it parses, rollback on failure."""
+    """Write settings.json, verify it parses, rollback on failure.
+
+    ensure_ascii=True (JSON's default) is load-bearing, not style (#397). This is
+    the ONE place settings become BYTES, and those bytes are read back by a
+    consumer whose encoding we do not control. On Windows, Claude Code hands hook
+    commands to a shell running a legacy code page: a settings.json carrying raw
+    UTF-8 gets decoded there as cp1252/cp437, an account directory named "Ñoño"
+    comes back as "Ã‘oÃ±o", the absolute hook path stops resolving, and EVERY hook
+    fails — which blocks Bash and Grep for the whole session (47, then 132, then
+    104 dead paths across one reporter's three reinstalls). Escaping non-ASCII to
+    \\uXXXX makes the file pure ASCII, which decodes identically under UTF-8,
+    cp1252, cp437 and latin-1, so no consumer's code page can corrupt a path.
+
+    JSON semantics are untouched — "\\u00f3" and "ó" parse to the same string — so
+    merge/dedup/uninstall, which all match on these command strings, see exactly
+    what they saw before. Same escaping already relied on as cp1252 protection
+    elsewhere in this repo (SEV-4-json-encoded, scripts/utf8-stdout-baseline.txt).
+
+    This is the byte-level half of the fix whose path-level half is
+    _ascii_safe_win_path() (#430). That one is necessary but not sufficient: 8.3
+    short-name creation is disabled by default on many modern volumes, and there
+    it degrades to returning the path unchanged; it also covers only the Windows
+    hook-command rewrite, never the substituted vault path or the user's own
+    pre-existing entries. Locked by scripts/test_settings_json_codepage_safe.py.
+    """
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    new_text = json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
+    new_text = json.dumps(settings, indent=2, ensure_ascii=True) + "\n"
     try:
         settings_path.write_text(new_text, encoding="utf-8")
     except OSError as e:
