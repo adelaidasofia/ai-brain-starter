@@ -165,7 +165,10 @@ for _ev, groups in (data.get("hooks") or {}).items():
             cmd = h.get("command", "")
             # The installed hook commands embed the absolute vault path right
             # before the meta-folder + /scripts/. Grab the longest such prefix.
-            m = re.search(r"(/[^'\"]+?)/(?:⚙️ Meta|Meta)/scripts/", cmd)
+            # POSIX root, Windows drive letter or UNC share, either separator -
+            # byte-identical to heal-journal-guard.py's _VAULT_FROM_CMD_RE (its
+            # self-test pins the parity) and to the copy in the .ps1 sibling.
+            m = re.search(r"((?:[A-Za-z]:)?[\\/][^'\"]+?)[\\/](?:⚙️ Meta|Meta)[\\/]scripts[\\/]", cmd)
             if m:
                 print(m.group(1))
                 sys.exit(0)

@@ -74,9 +74,19 @@ _GUARD_PATH_RE = re.compile(
     r"|'([^'\n]*" + re.escape(GUARD_BASENAME) + r")'"
     r"|((?:~|/|[A-Za-z]:[\\/])[^\s'\"|&;]*" + re.escape(GUARD_BASENAME) + r")"
 )
-# The installed vault hooks embed the absolute vault path right before the meta folder;
-# same regex sync-vault-scripts.sh uses, so both resolve the identical root.
-_VAULT_FROM_CMD_RE = re.compile(r"(/[^'\"]+?)/(?:⚙️ Meta|Meta)/scripts/")
+# The installed vault hooks embed the absolute vault path right before the meta folder.
+# SAME three roots as the guard regex above (POSIX / drive letter / UNC share) and EITHER
+# separator, because the Windows installer writes `C:\...\<vault>\⚙️ Meta\scripts\...`.
+# A `/`-only pattern matched no Windows command at all, so resolve_vault() returned "" and
+# preflight_state() answered 'no-vault' on every Windows box -- which has_gap() does not
+# count, so the preflight check AND its repair were structurally dead there. That is the
+# quiet half of issues #370/#394: not a false nag, a SILENT no-op (a Windows account with
+# journal-preflight.py missing reads as healthy). Kept byte-identical to the regex inlined
+# in sync-vault-scripts.sh + .ps1 so all three resolve the identical root; the self-test
+# pins that parity. Over-matching stays harmless: the caller still is_dir()s the result.
+_VAULT_FROM_CMD_RE = re.compile(
+    r"((?:[A-Za-z]:)?[\\/][^'\"]+?)[\\/](?:⚙️ Meta|Meta)[\\/]scripts[\\/]"
+)
 
 
 # --------------------------------------------------------------------------- helpers
@@ -565,6 +575,63 @@ def self_test() -> int:
         check("path-win-space-in-home",
               guard_path_in(f'py "{runner}" --fallback allow "{win_s}"') == win_s)
         check("path-absent-is-none", guard_path_in("python3 /some/other-hook.py") is None)
+
+        # VAULT-PATH controls (issues #370, #394). resolve_vault() parses the vault root
+        # out of an installed vault-hook command. A `/`-only pattern matched NO Windows
+        # command, so preflight_state() answered 'no-vault' on every Windows box and the
+        # preflight check + repair branch never ran there. That is a SILENT no-op, not a
+        # visible nag: a Windows account MISSING journal-preflight.py reads as healthy.
+        # The win-*/unc-* cases below FAIL on the pre-fix regex - they are its negative
+        # control; the posix-* ones pin that widening it did not regress macOS/Linux.
+        def vroot(cmd):
+            m = _VAULT_FROM_CMD_RE.search(cmd)
+            return m.group(1) if m else None
+
+        win_v = "C:\\Users\\dev\\vault"
+        unc_v = "\\\\server\\share\\vault"
+        check("vault-posix-decorated",
+              vroot(f"python3 /Users/d/vault/⚙️ Meta/scripts/{PREFLIGHT_BASENAME}")
+              == "/Users/d/vault")
+        check("vault-posix-plain-meta",
+              vroot(f"python3 /home/u/v/Meta/scripts/{PREFLIGHT_BASENAME}") == "/home/u/v")
+        check("vault-posix-quoted-space",
+              vroot(f'python3 "/Users/d/my vault/⚙️ Meta/scripts/{PREFLIGHT_BASENAME}"')
+              == "/Users/d/my vault")
+        check("vault-win-quoted",
+              vroot(f'py -3 "{win_v}\\⚙️ Meta\\scripts\\{PREFLIGHT_BASENAME}"') == win_v)
+        check("vault-win-space-in-home",
+              vroot(f'py -3 "C:\\Users\\dev user\\vault\\⚙️ Meta\\scripts\\{PREFLIGHT_BASENAME}"')
+              == "C:\\Users\\dev user\\vault")
+        # Full installed Windows form. The runner path ALSO contains `\scripts\`, so this
+        # proves the anchor is <meta>\scripts\ and we pick the VAULT, not the first path.
+        check("vault-win-full-command",
+              vroot(f'py -3 "{runner}" --fallback allow '
+                    f'"{win_v}\\⚙️ Meta\\scripts\\{PREFLIGHT_BASENAME}"') == win_v)
+        check("vault-unc-share",
+              vroot(f'py -3 "{unc_v}\\⚙️ Meta\\scripts\\{PREFLIGHT_BASENAME}"') == unc_v)
+        # Over-matching is the other failure mode: a path regex that matches arbitrary
+        # text is its own bug. Neither of these names a vault.
+        check("vault-absent-is-none", vroot("python3 /some/other-hook.py") is None)
+        check("vault-absent-win-is-none",
+              vroot('py -3 "C:\\Users\\dev\\.claude\\hooks\\other.py"') is None)
+        # END-TO-END on THIS platform: resolve_vault() must still return a REAL directory
+        # parsed out of a command. Its is_dir() half can only hold where the path exists,
+        # so the Windows forms above are proven at the PARSE layer - which is where the
+        # bug lived - and this control proves the parse still feeds the real resolver.
+        e2e_vault = root / "e2e vault"
+        (e2e_vault / "⚙️ Meta" / "scripts").mkdir(parents=True)
+        check("vault-resolve-end-to-end", resolve_vault({"hooks": {"SessionStart": [
+            {"hooks": [{"type": "command", "command":
+                        f'python3 "{e2e_vault}/⚙️ Meta/scripts/{PREFLIGHT_BASENAME}"'}]}]}})
+              == str(e2e_vault))
+        # PARITY: the identical regex is inlined in sync-vault-scripts.sh and .ps1, which
+        # resolve the same vault for the repair this healer invokes. Pin the three together
+        # so a fix to one can never silently leave the others POSIX-only.
+        for _sib in ("sync-vault-scripts.sh", "sync-vault-scripts.ps1"):
+            _p = clone_root() / "scripts" / _sib
+            if _p.is_file():
+                check("vault-regex-parity-" + _sib,
+                      _VAULT_FROM_CMD_RE.pattern in _p.read_text(encoding="utf-8"))
 
         # PREFLIGHT diagnose: no vault -> 'no-vault'; vault with the file -> 'ok'; without
         # -> 'missing'. (The subprocess repair is exercised end-to-end in the .sh test.)
