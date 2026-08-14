@@ -36,6 +36,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# HOME alone does not sandbox ~ on Windows — see lib/sandbox_home.sh.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$REPO_ROOT/tests/integration/lib/sandbox_home.sh"
 BOOTSTRAP="$REPO_ROOT/bootstrap.sh"
 [ -f "$BOOTSTRAP" ] || { echo "ERROR: $BOOTSTRAP not found" >&2; exit 1; }
 
@@ -85,7 +88,10 @@ REAL_RESULT="$(bash "$PROBE_HARNESS")"
 
 # ── shared fixture: a local "origin" so no test below touches the network ──
 export GIT_CONFIG_NOSYSTEM=1
-export HOME="$TMP/fakehome"; mkdir -p "$HOME"
+# sandbox_home sets HOME *and* USERPROFILE (and neutralises HOMEDRIVE/HOMEPATH),
+# so the `git config --global` writes below cannot reach the real ~/.gitconfig
+# on Windows, where ntpath.expanduser ignores HOME entirely.
+sandbox_home "$TMP"
 git config --global user.email "ci@example.invalid"
 git config --global user.name  "CI"
 git config --global init.defaultBranch main
