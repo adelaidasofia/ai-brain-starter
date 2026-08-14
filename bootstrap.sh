@@ -990,6 +990,97 @@ elif is_mac && ! have brew; then
 fi
 
 # ───────────────────────────────────────────────────────────────────────────────
+# git
+# The entry command fetches this repo and every later update runs `git pull`, so
+# git is a prerequisite — and until now it was the one prerequisite bootstrap
+# never installed. Corporate laptops block the CLI installers that provide it
+# (2026-08-12 cohort install session: "Git and Node.js CLI installs require
+# administrator rights"), and none of the no-admin recovery below could help,
+# because the fetch
+# that lands THIS script ran first and needed git. The entry command now falls
+# back to an archive, so we can arrive here without git; install it for the
+# update path.
+#
+# PRESENCE IS NOT CAPABILITY on macOS. With the Command Line Tools absent,
+# /usr/bin/git exists and is on PATH, so `have git` returns true — but running it
+# raises the CLT install dialog and exits non-zero. Probe by EXECUTION, bounded,
+# so a stub that opens a GUI cannot hang a non-interactive install.
+# ───────────────────────────────────────────────────────────────────────────────
+
+have_working_git() {
+  have git || return 1
+  run_with_timeout 15 git --version >/dev/null 2>&1
+}
+
+# adopt_archive_install DIR REPO_URL — turn a directory that holds this repo's
+# files but no .git (the archive entry path) into a real clone, so the update
+# path works on every later run. Returns non-zero on any failure; the caller
+# treats that as non-fatal, because archive content is complete and functional
+# and only auto-update depends on this.
+#
+# NEVER destroys local edits: a bare `reset --hard` would silently discard a
+# hand-patched archive install, so the tree is staged and diffed against
+# origin/main first, and anything that differs is copied aside under the same
+# .bak-<stamp> convention the rest of this installer uses. Writes the backup
+# path to .adopt-backup-path so the caller can surface it.
+adopt_archive_install() {
+  local dir="$1" repo_url="$2" shelved
+  cd "$dir" || return 1
+  rm -f "$dir/.adopt-backup-path" 2>/dev/null || true
+  git init -q || return 1
+  git remote remove origin 2>/dev/null || true
+  git remote add origin "$repo_url" || return 1
+  git fetch --quiet origin main || return 1
+  git add -A 2>/dev/null || true
+  if ! git diff --cached --quiet origin/main 2>/dev/null; then
+    shelved="$dir.bak-$(date +%Y-%m-%d-%H%M)"
+    cp -R "$dir" "$shelved" || return 1
+    printf '%s\n' "$shelved" > "$dir/.adopt-backup-path" 2>/dev/null || true
+  fi
+  git reset --hard --quiet origin/main || return 1
+  git branch -q -M main 2>/dev/null || true
+  git branch -q --set-upstream-to=origin/main main 2>/dev/null || true
+  return 0
+}
+
+if ! have_working_git; then
+  if [[ "$CORPORATE_PROFILE" == "1" ]]; then
+    warn "$(t "Corporate profile: git not found — NOT auto-installing (user-space, no sudo)." \
+              "Perfil corporativo: no se encontró git — NO se instala automáticamente (espacio de usuario, sin sudo).")"
+    warn "$(t "The exact request for IT: install Git (macOS: Xcode Command Line Tools; Linux: the distro's git package)." \
+              "El pedido exacto para IT: instalar Git (macOS: Xcode Command Line Tools; Linux: el paquete git de la distro).")"
+  elif [[ $DRY_RUN -eq 1 ]]; then
+    dry "would: install git (brew on Mac; apt/dnf/pacman on Linux)"
+  elif is_mac; then
+    hdr "$(t "Installing git" "Instalando git")"
+    if have brew; then
+      quiet_retry brew install git || note_gap "git" "brew install git"
+    else
+      # No brew and no working git. Apple's only supported route is the Command
+      # Line Tools, which open a GUI dialog and want an admin password, neither
+      # answerable from here. Do NOT fire `xcode-select --install` blindly: an
+      # unexplained dialog is exactly what strands a non-technical installer.
+      # Name the click, then keep going — thanks to the archive entry path the
+      # rest of the install does not need git, only auto-update does.
+      warn "$(t "git isn't available yet, and installing it needs one click only you can make." \
+                "git todavía no está disponible, y instalarlo necesita un clic que sólo podés hacer vos.")"
+      warn "$(t "  In Terminal run:  xcode-select --install   then click Install in the window that appears." \
+                "  En Terminal corré:  xcode-select --install   y hacé clic en Instalar en la ventana que aparece.")"
+      warn "$(t "  Everything else continues now — only automatic updates wait on it." \
+                "  Todo lo demás sigue ahora — sólo las actualizaciones automáticas dependen de eso.")"
+      note_gap "git" "xcode-select --install"
+    fi
+  else
+    hdr "$(t "Installing git" "Instalando git")"
+    sudo apt-get install -y git 2>/dev/null \
+      || sudo dnf install -y git 2>/dev/null \
+      || sudo pacman -S --noconfirm git 2>/dev/null \
+      || note_gap "git" "install git with your distribution's package manager"
+  fi
+fi
+have_working_git && ok "git $(git --version 2>/dev/null | awk '{print $3}')"
+
+# ───────────────────────────────────────────────────────────────────────────────
 # Python 3.10+
 # ───────────────────────────────────────────────────────────────────────────────
 
@@ -1296,6 +1387,37 @@ if [[ -d "$SKILL_DIR/.git" ]]; then
   fi
 
   cd - >/dev/null
+elif [[ -f "$SKILL_DIR/bootstrap.sh" ]]; then
+  # The directory holds this repo's files but has no .git: the entry command
+  # fetched an archive because git was unavailable at the time. `git clone` into
+  # a non-empty directory FAILS, and that failure used to land in the red
+  # actionable list — trading a missing-git block for a scary-looking one. Adopt
+  # the directory as a real clone instead, which restores the update path above
+  # for every later run.
+  if ! have_working_git; then
+    warn "$(t "Installed from an archive, and git isn't available yet — automatic updates stay off until git is installed." \
+              "Instalado desde un archivo, y git todavía no está disponible — las actualizaciones automáticas quedan apagadas hasta instalar git.")"
+    SKIPPED+=("ai-brain-starter clone (archive install, git unavailable)")
+  elif [[ $DRY_RUN -eq 1 ]]; then
+    dry "would: adopt $SKILL_DIR as a git clone of $REPO_URL"
+  else
+    log "$(t "Installed from an archive — reconnecting it to the repository so updates work." \
+             "Instalado desde un archivo — reconectándolo al repositorio para que las actualizaciones funcionen.")"
+    if ( adopt_archive_install "$SKILL_DIR" "$REPO_URL" ); then
+      if [[ -f "$SKILL_DIR/.adopt-backup-path" ]]; then
+        warn "$(t "Local changes were found in the archive install. A copy is at:" \
+                  "Se encontraron cambios locales en la instalación por archivo. Hay una copia en:")"
+        warn "  $(cat "$SKILL_DIR/.adopt-backup-path" 2>/dev/null)"
+      fi
+      INSTALLED+=("ai-brain-starter clone (adopted from archive install)")
+    else
+      # Non-fatal: the archive content is complete and fully functional. Only
+      # auto-update needs the git wiring, so this is a warn, never a red ✗.
+      warn "$(t "Couldn't reconnect the archive install to the repository — automatic updates stay off. Everything else works." \
+                "No se pudo reconectar la instalación por archivo al repositorio — las actualizaciones automáticas quedan apagadas. Todo lo demás funciona.")"
+      note_gap "ai-brain-starter clone" "rm -rf $SKILL_DIR && git clone $REPO_URL $SKILL_DIR"
+    fi
+  fi
 else
   do_cmd "clone ai-brain-starter to $SKILL_DIR" git clone --quiet "$REPO_URL" "$SKILL_DIR" || err "ai-brain-starter clone failed"
   INSTALLED+=("ai-brain-starter clone")

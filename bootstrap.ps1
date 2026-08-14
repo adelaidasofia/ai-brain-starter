@@ -782,6 +782,48 @@ if (Have graphify) { Ok "graphify" } else { Err "graphify install failed" }
 #   - Stashes local uncommitted changes before pulling
 #   - Detects DIVERGENT history (your fork has commits not on origin/main)
 #     and refuses to pull, so your fork is never silently overwritten
+# Adopt-ArchiveInstall DIR REPOURL - turn a directory that holds this repo's
+# files but no .git (the archive entry path, for a machine with no git) into a
+# real clone, so the self-update path below works on every later run. Returns
+# $true on success. A $false is NON-FATAL to the caller: archive content is
+# complete and functional, and only auto-update depends on this.
+#
+# NEVER destroys local edits. A bare `reset --hard` would silently discard a
+# hand-patched archive install, so the tree is staged and diffed against
+# origin/main first; anything that differs is copied aside under the same
+# .bak-<stamp> convention this installer already uses for Node.
+function Adopt-ArchiveInstall {
+    param([string]$Dir, [string]$RepoUrl)
+    # git writes progress/notices to stderr, which PowerShell 5.1 turns into a
+    # terminating error under Stop even with 2>$null. Same guard the self-update
+    # section below uses; $LASTEXITCODE checks are unaffected.
+    $eapAdopt = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    Push-Location $Dir
+    try {
+        Remove-Item -LiteralPath "$Dir\.adopt-backup-path" -Force -ErrorAction SilentlyContinue
+        git init -q 2>$null;                       if ($LASTEXITCODE -ne 0) { return $false }
+        git remote remove origin 2>$null | Out-Null
+        git remote add origin $RepoUrl 2>$null;    if ($LASTEXITCODE -ne 0) { return $false }
+        git fetch --quiet origin main 2>$null;     if ($LASTEXITCODE -ne 0) { return $false }
+        git add -A 2>$null | Out-Null
+        git diff --cached --quiet origin/main 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            $shelved = "$Dir.bak-$(Get-Date -Format 'yyyy-MM-dd-HHmm')"
+            Copy-Item -LiteralPath $Dir -Destination $shelved -Recurse -Force
+            if (-not (Test-Path -LiteralPath $shelved)) { return $false }
+            Set-Content -LiteralPath "$Dir\.adopt-backup-path" -Value $shelved
+        }
+        git reset --hard --quiet origin/main 2>$null; if ($LASTEXITCODE -ne 0) { return $false }
+        git branch -q -M main 2>$null | Out-Null
+        git branch -q --set-upstream-to=origin/main main 2>$null | Out-Null
+        return $true
+    } finally {
+        Pop-Location
+        $ErrorActionPreference = $eapAdopt
+    }
+}
+
 Hdr "Installing the ai-brain-starter skill"
 New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.claude\skills" | Out-Null
 if (Test-Path "$SkillDir\.git") {
@@ -847,6 +889,32 @@ if (Test-Path "$SkillDir\.git") {
     }
     Pop-Location
     $ErrorActionPreference = $eapSelfUpdate
+} elseif (Test-Path "$SkillDir\bootstrap.ps1") {
+    # The directory holds this repo's files but has no .git: the entry command
+    # fetched a zip because git was unavailable. `git clone` into a non-empty
+    # directory FAILS, and that failure used to land in the red actionable list -
+    # trading a missing-git block for a scary-looking one. Adopt instead.
+    if (-not (Have git)) {
+        Warn (T "Installed from an archive, and git isn't available yet - automatic updates stay off until git is installed." `
+                "Instalado desde un archivo, y git todavia no esta disponible - las actualizaciones automaticas quedan apagadas hasta instalar git.")
+        $script:Skipped += "ai-brain-starter clone (archive install, git unavailable)"
+    }
+    elseif ($DryRun) { Dry "would: adopt $SkillDir as a git clone of $RepoUrl" }
+    elseif (Adopt-ArchiveInstall -Dir $SkillDir -RepoUrl $RepoUrl) {
+        if (Test-Path "$SkillDir\.adopt-backup-path") {
+            Warn (T "Local changes were found in the archive install. A copy is at:" `
+                    "Se encontraron cambios locales en la instalacion por archivo. Hay una copia en:")
+            Warn ("  " + (Get-Content -LiteralPath "$SkillDir\.adopt-backup-path" -ErrorAction SilentlyContinue))
+        }
+        $script:Installed += "ai-brain-starter clone (adopted from archive install)"
+    }
+    else {
+        # Non-fatal: the archive content is complete and functional. Only
+        # auto-update needs the git wiring, so this is a Warn, never an Err.
+        Warn (T "Couldn't reconnect the archive install to the repository - automatic updates stay off. Everything else works." `
+                "No se pudo reconectar la instalacion por archivo al repositorio - las actualizaciones automaticas quedan apagadas. Todo lo demas funciona.")
+        $script:Skipped += "ai-brain-starter clone (archive install, adopt failed)"
+    }
 } else {
     if ($DryRun) { Dry "would: git clone $RepoUrl -> $SkillDir" }
     elseif (-not (Run-Native { git clone --quiet $RepoUrl $SkillDir })) { Err "ai-brain-starter clone failed (git exit $LASTEXITCODE)" }
