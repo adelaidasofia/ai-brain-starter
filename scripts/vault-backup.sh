@@ -22,9 +22,11 @@
 #           one that never re-runs setup. (MYC-3528)
 #
 # Provider-agnostic: the destination is any folder path you give it. Encryption
-# (--encrypt) is optional and uses gpg (or openssl) with the passphrase stored
-# in your OS keychain, never in plaintext. Pure POSIX-ish bash + python3 for the
-# small JSON bits (python3 is already a hard dependency of this repo).
+# (--encrypt) is optional and uses gpg (or openssl), with the passphrase stored
+# in your OS keychain when one is available. With NO keychain it falls back to a
+# 0600 file (loudly, and `status` keeps reporting which of the two you have).
+# Pure POSIX-ish bash + python3 for the small JSON bits (python3 is already a
+# hard dependency of this repo).
 #
 # Usage:
 #   bash vault-backup.sh setup  [--vault PATH] [--dest DIR] [--encrypt] [--keep N] [--schedule daily|none]
@@ -451,7 +453,7 @@ cmd_schedule() {
 }
 
 cmd_status() {
-  local vault=""
+  local vault="" enc_on=0
   while [ $# -gt 0 ]; do case "$1" in --vault) vault="$2"; shift 2;; *) shift;; esac; done
   vault="$(resolve_vault "$vault")"
   say "${B}Vault:${N} $vault"
@@ -462,6 +464,31 @@ cmd_status() {
   else
     say "${B}Destination:${N} $dest $([ -d "$dest" ] && echo "(reachable)" || echo "${R}(UNREACHABLE)${N}")"
     say "${B}Encrypted:${N}   $(conf_get "$vault" encrypt)    ${B}Keep:${N} $(conf_get "$vault" keep)"
+    # Where the passphrase lives is part of the security posture, not a setup
+    # detail. "Encrypted: true" on its own reads as safe even when the key fell
+    # back to a file on the same disk as the backup. The setup-time warning is a
+    # one-shot the user scrolls past; status is the surface they come back to, so
+    # report the store kind every time and mark the fallback as weaker.
+    # conf_get renders the JSON bool through python, so this reads "True", not
+    # "true". Match every plausible spelling: a strict compare here fails open
+    # (the line silently never prints) and looks exactly like a healthy status.
+    case "$(conf_get "$vault" encrypt)" in true|True|TRUE|1|yes) enc_on=1;; *) enc_on=0;; esac
+    if [ "$enc_on" = 1 ]; then
+      local skind; skind="$(conf_get "$vault" store_kind)"
+      case "$skind" in
+        keychain|secret-tool|dpapi)
+          say "${B}Passphrase:${N}  OS keychain ($skind)" ;;
+        file:*)
+          warn "Passphrase:  ${skind#file:}"
+          warn "             chmod-600 file, NOT an OS keychain. Weaker: anyone who can"
+          warn "             read your home dir can decrypt the backups. Install a keychain"
+          warn "             (macOS: built in; Linux: libsecret/secret-tool) and re-run setup." ;;
+        "")
+          warn "Passphrase:  unknown (no store_kind recorded) - re-run setup to repair" ;;
+        *)
+          say "${B}Passphrase:${N}  $skind" ;;
+      esac
+    fi
     local last lastv n
     last="$(conf_get "$vault" last)"; lastv="$(conf_get "$vault" last_verify)"
     n="$(ls -1 "$dest"/$ARCHIVE_STEM-* 2>/dev/null | wc -l | tr -d ' ')"
