@@ -306,7 +306,11 @@ cmd_setup() {
     command -v gpg >/dev/null 2>&1 || command -v openssl >/dev/null 2>&1 \
       || die "--encrypt needs gpg or openssl installed"
     local p1 p2
-    printf "Set a backup passphrase (kept in your OS keychain, never in plaintext): "
+    # Do NOT promise the keychain here: whether one exists is not known until
+    # store_passphrase() runs, a few lines down. Promising it at the moment the
+    # user types the secret is the worst place to be wrong, so state the
+    # conditional truth and let the WARN + `status` report what actually happened.
+    printf "Set a backup passphrase (stored in your OS keychain when the machine has one): "
     read -rs p1; echo
     printf "Confirm passphrase: "
     read -rs p2; echo
