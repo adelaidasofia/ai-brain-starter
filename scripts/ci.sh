@@ -333,6 +333,12 @@ INTEGRATION_TESTS=(
   # and the shipped command actually BLOCKS a seeded secret while passing a
   # clean payload.
   test_installer_registers_mcp_secret_guards
+  # Skip-prefix privacy guard: a `__SKIP` line is content the user told the
+  # assistant NOT to persist, and a persisted line cannot be un-persisted (file
+  # + git history + any index over the vault). Every assertion carries a
+  # negative control, because a guard that blocks everything and one that blocks
+  # the right thing produce identical PASSes on a block-only suite.
+  test_skip_prefix_guard
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new

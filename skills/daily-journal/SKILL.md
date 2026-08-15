@@ -607,6 +607,8 @@ One door only. Write it to frontmatter as `door:` (action + when). Tomorrow's se
 
 **File location:** Journal files go in the **monthly subfolder**, not the root. Pattern: `[VAULT_PATH]/Journals/[Month YYYY]/filename.md` (e.g. `Journals/April 2026/filename.md`). Check your vault's journal folder structure and match it.
 
+**`__SKIP` lines never land.** Before writing, strip every line whose first token is `__SKIP` — that is something the user said to you but does not want recorded. Then emit one line per dropped item so the drop is never silent: `Dropped __SKIP line 2 (token preview: <first 6 words>)`. Do not paraphrase the dropped content back into the entry, and do not copy it anywhere else. A PreToolUse hook (`block-skip-prefix-in-vault-write.py`) blocks the write if a `__SKIP` line survives, so this is enforced, not advisory. Full rule: `templates/rules/skip-prefix-convention.md`.
+
 **Always use Bash (`cat`) to read and write journal files — do NOT use the Read tool.** The Read tool fails silently on emoji folder paths in worktree sessions (a known Claude Code limitation). Use:
 - Write: `cat > "/full/path/file.md" << 'EOF' ... EOF`
 - Read/verify: `cat "/full/path/file.md"` or `ls -la "/full/path/file.md"`
