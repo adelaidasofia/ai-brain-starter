@@ -129,7 +129,9 @@ with tempfile.TemporaryDirectory() as td:
           heal.preflight_state(WINDOWS_SETTINGS, str(plain)) == "ok")
 
 # --- discovery: only when unambiguous ---------------------------------------
-# Run against a fake HOME so the developer's real home cannot influence the result.
+# Run against a fake HOME so the developer's real home cannot influence the
+# result. ORDER MATTERS in this block and is load-bearing -- see the hermeticity
+# assertion below.
 with tempfile.TemporaryDirectory() as td2:
     fake_home = Path(td2)
     _real_home = heal.Path.home
@@ -146,18 +148,154 @@ with tempfile.TemporaryDirectory() as td2:
         check("discovered-vault-revives-preflight",
               heal.preflight_state(WINDOWS_SETTINGS, heal._discover_vault()) == "ok")
 
-        # Two candidates -> refuse to choose. Healing the wrong vault would write a
-        # preflight into someone else's notes.
-        make_vault(fake_home / "SecondVault")
-        check("discovery-refuses-when-ambiguous", heal._discover_vault() == "")
-
-        # resolve_vault() itself must stay HERMETIC: it must NOT go looking. The
-        # self-test's 'no-vault' controls depend on this, and folding discovery in
+        # HERMETICITY. resolve_vault() must NOT go looking on its own; the
+        # self-test's 'no-vault' controls depend on it, and folding discovery in
         # made them depend on the developer's real home instead.
+        #
+        # This assertion MUST run while exactly ONE vault exists. Asserted after a
+        # second vault is created it is VACUOUS: discovery returns "" under
+        # ambiguity, so `resolve_vault(...) == ""` holds whether or not discovery
+        # is wired in, and the check can never fail. A check that cannot fail is
+        # the exact defect this whole file exists to prevent.
         check("resolve-vault-never-discovers-on-its-own",
               heal.resolve_vault(WINDOWS_SETTINGS) == "")
+
+        # Canonicalisation: one vault reachable under TWO names is ONE vault.
+        # Without resolve() a junction/mirrored copy read as ambiguous and
+        # switched discovery off entirely (a normal Windows layout).
+        link = fake_home / "VaultTwin"
+        made_link = False
+        try:
+            link.symlink_to(fake_home / "OnlyVault", target_is_directory=True)
+            made_link = True
+        except (OSError, NotImplementedError):
+            pass  # unprivileged Windows without Developer Mode; skip, don't fail
+        if made_link:
+            check("same-vault-under-two-names-is-not-ambiguous",
+                  heal._discover_vault() == str(fake_home / "OnlyVault"))
+            link.unlink()
+
+        # Two GENUINELY distinct candidates -> refuse to choose. Healing the
+        # wrong vault would write a preflight into someone else's notes.
+        make_vault(fake_home / "SecondVault")
+        check("discovery-refuses-when-ambiguous", heal._discover_vault() == "")
+        check("ambiguous-candidates-are-still-enumerable",
+              len(heal._vault_candidates()) == 2)
+
+        # One un-stat-able child must not abort the whole scan. Previously the
+        # try/except wrapped the entire loop, so a single permission-denied entry
+        # turned discovery off for the account.
+        import shutil as _shutil
+        _shutil.rmtree(fake_home / "SecondVault")
+        _real_is_dir = Path.is_dir
+        boom = fake_home / "Exploding"
+        boom.mkdir()
+
+        def _is_dir_that_explodes(self):
+            if self.name == "Exploding":
+                raise PermissionError("simulated unreadable child")
+            return _real_is_dir(self)
+
+        Path.is_dir = _is_dir_that_explodes  # type: ignore[assignment]
+        try:
+            check("one-unreadable-child-does-not-abort-the-scan",
+                  heal._discover_vault() == str(fake_home / "OnlyVault"))
+        finally:
+            Path.is_dir = _real_is_dir  # type: ignore[assignment]
     finally:
         heal.Path.home = _real_home  # type: ignore[assignment]
+
+# --- WIRING: the production path must actually USE discovery -----------------
+# Everything above tests the helpers in isolation. None of it notices if the four
+# lines in run_session_start() that call discovery are deleted -- the feature can
+# be unplugged and every assertion above still passes. That is the same
+# artifact-without-activation gap MYC-3875 is about, so lock the call site
+# itself: drive run_session_start() end to end and assert it SPEAKS.
+import io  # noqa: E402
+import json as _json  # noqa: E402
+from contextlib import redirect_stdout  # noqa: E402
+
+
+def _drive_session_start(home: Path, vaults: list, with_preflight: bool):
+    """Run run_session_start() against a sandbox home; return its emitted JSON."""
+    claude = home / ".claude"
+    claude.mkdir(parents=True, exist_ok=True)
+    # Registration healthy, so the ONLY possible gap is the vault preflight.
+    guard = claude / heal.GUARD_BASENAME
+    guard.write_text("#!/usr/bin/env python3\nprint('{}')\n", encoding="utf-8")
+    groups = [{"matcher": m, "hooks": [{"type": "command",
+                                        "command": f'py -3 "{guard}"'}]}
+              for m in sorted(heal.wanted_matchers(heal.clone_root()))]
+    (claude / "settings.json").write_text(
+        _json.dumps({"hooks": {"PreToolUse": groups}}), encoding="utf-8")
+    for v in vaults:
+        make_vault(home / v, with_preflight=with_preflight)
+
+    _home = heal.Path.home
+    heal.Path.home = staticmethod(lambda: home)  # type: ignore[assignment]
+    os.environ["HEAL_JOURNAL_GUARD_NO_COOLDOWN"] = "0"
+    heal._stamp_cooldown()  # pre-stamp: no repair may spawn during a test
+    buf = io.StringIO()
+    try:
+        with redirect_stdout(buf):
+            heal.run_session_start()
+    finally:
+        heal.Path.home = _home  # type: ignore[assignment]
+        os.environ.pop("HEAL_JOURNAL_GUARD_NO_COOLDOWN", None)
+    try:
+        return _json.loads(buf.getvalue() or "{}")
+    except _json.JSONDecodeError:
+        return {}
+
+
+def _context_of(payload):
+    return ((payload.get("hookSpecificOutput") or {})
+            .get("additionalContext", ""))
+
+
+with tempfile.TemporaryDirectory() as td3:
+    home = Path(td3) / "home"
+    out = _drive_session_start(home, ["TheVault"], with_preflight=False)
+    # Discovery must find TheVault, notice the missing preflight, and SAY so.
+    # Unwire the discovery block in run_session_start() and this goes red.
+    check("WIRING-session-start-uses-discovery",
+          "incomplete" in _context_of(out).lower())
+    check("WIRING-session-start-not-silent-on-a-real-gap",
+          not out.get("suppressOutput"))
+
+with tempfile.TemporaryDirectory() as td4:
+    home = Path(td4) / "home"
+    out = _drive_session_start(home, ["VaultA", "VaultB"], with_preflight=False)
+    ctx = _context_of(out)
+    # Ambiguity must refuse to heal, but must NOT be silent about refusing --
+    # a silent refusal is the original bug wearing a different hat.
+    check("WIRING-ambiguous-home-is-reported", "candidate vaults" in ctx)
+    check("WIRING-ambiguous-report-names-the-fix", "VAULT_ROOT" in ctx)
+
+with tempfile.TemporaryDirectory() as td5:
+    home = Path(td5) / "home"
+    out = _drive_session_start(home, ["TheVault"], with_preflight=True)
+    check("WIRING-healthy-account-stays-silent", bool(out.get("suppressOutput")))
+
+# --- WIRING: --vault must reach the DIAGNOSIS, not just the repair -----------
+with tempfile.TemporaryDirectory() as td6:
+    v = make_vault(Path(td6) / "V", with_preflight=False)
+
+    class _Args:
+        clone = None
+        settings = None
+        vault = str(v)
+
+    args = _Args()
+    args.settings = str(Path(td6) / "settings.json")
+    Path(args.settings).write_text(_json.dumps(WINDOWS_SETTINGS), encoding="utf-8")
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = heal.cmd_check_only(args)
+    # Before the fix --vault reached only repair_preflight(), so the DIAGNOSIS
+    # still answered 'no-vault' and, since that is not a gap, nothing ran.
+    check("WIRING-check-only-threads-vault", "preflight=missing" in buf.getvalue())
+    check("WIRING-check-only-exits-nonzero-on-a-real-gap", rc == 1)
 
 if _saved_vault_root is not None:
     os.environ["VAULT_ROOT"] = _saved_vault_root

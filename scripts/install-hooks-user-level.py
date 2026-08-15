@@ -1187,7 +1187,7 @@ def dedupe_identical_hooks(existing: dict) -> tuple[dict, int]:
     if "hooks" not in cleaned:
         return cleaned, 0
     for event, groups in list(cleaned["hooks"].items()):
-        # seen per matcher, so identical commands are collapsed both WITHIN a group
+        # seen per matcher, so identical entries are collapsed both WITHIN a group
         # and ACROSS groups that share a matcher (a later install can append a new
         # group rather than growing the existing one).
         seen: dict[str, set] = {}
@@ -1198,11 +1198,21 @@ def dedupe_identical_hooks(existing: dict) -> tuple[dict, int]:
             kept = []
             for h in g.get("hooks", []):
                 cmd = h.get("command", "")
-                if cmd and cmd in bucket:
+                # Key on the WHOLE entry, not just the command. Keying on the
+                # command alone made "byte-identical" false: two entries sharing
+                # a command but carrying `timeout: 5` and `timeout: 600` are not
+                # the same configuration, and collapsing them silently discarded
+                # the longer timeout. That breaks this function's entire warrant
+                # -- "there is no configuration in which running it twice is what
+                # the user meant" is only true when the entries really are
+                # identical -- and it would break it on UNOWNED entries, which
+                # may be the user's own.
+                key = json.dumps(h, sort_keys=True, ensure_ascii=True)
+                if cmd and key in bucket:
                     removed += 1
                     continue
                 if cmd:
-                    bucket.add(cmd)
+                    bucket.add(key)
                 kept.append(h)
             if kept:
                 ng = dict(g)
@@ -1769,10 +1779,16 @@ def main() -> int:
                 print(f"  - relocate {moved_count} moved-event stale copy(ies)")
             if deduped_count:
                 print(f"  - dedupe {deduped_count} duplicate owned hook(s)")
+            if identical_count:
+                print(f"  - collapse {identical_count} byte-identical hook(s)")
         return 0
 
+    # identical_count belongs here too: without it this branch can print
+    # "Already in sync. Nothing to write." on a run that collapsed entries and
+    # then discard the collapse -- a printed lie, and the discarded work silently
+    # reappears next run.
     if not summary["added"] and not summary["updated"] and not retired_count \
-            and not moved_count and not deduped_count:
+            and not moved_count and not deduped_count and not identical_count:
         if not args.quiet:
             print("\nAlready in sync. Nothing to write.")
         # Verify anyway. "Nothing to write" says the WIRING matches the template;
