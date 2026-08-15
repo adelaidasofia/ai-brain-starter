@@ -313,6 +313,15 @@ INTEGRATION_TESTS=(
   # every tool call. This static half runs on Linux CI, where the runtime
   # tripwire below cannot see the bug because HOME works there.
   test_home_sandbox_hermeticity
+  # bash-3.2 portability (2026-08-15): the guard above built its offender list
+  # with `mapfile`, a bash-4 builtin macOS /bin/bash does not have. Under
+  # `set -u` without `-e` that is non-fatal, so its primary check evaluated
+  # NOTHING on every Mac while the file still printed PASS and exited 0; the
+  # same defect left hooks/rotate-logs.sh rotating no logs at all. Neither
+  # existing gate can see the class: the bash32-syntax job is `-n` only and all
+  # of these PARSE on 3.2 (they fail at run time), and shellcheck has no
+  # bash-version model. Static, so it gives the same verdict on any runner.
+  test_bash32_portability
   # Root cause of the same incident: the runner path baked into settings.json
   # came from Path(__file__), so installing from a throwaway worktree wired ~95
   # hooks to a path that vanished with it. Pins the resolution to the INSTALLED
