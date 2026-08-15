@@ -265,9 +265,24 @@ def evaluate(src: str, lang: str = "py") -> dict:
 
 
 # ---- SessionStart set resolution ----------------------------------------------
+# hook_runner.py is the Windows installer's launcher shim, never a hook itself —
+# see resolve_command_path() for the full why. Both resolvers in this file have to
+# skip it, or a platformized hooks.json resolves EVERY entry to the launcher.
+_RUNNER_SHIM_RE = re.compile(r"(?:^|[\\/])hook_runner\.py$", re.IGNORECASE)
+
+
 def _basename(cmd: str) -> str | None:
-    m = re.search(r"([\w.\-]+\.(?:py|sh|bash))", cmd)
-    return m.group(1) if m else None
+    """The hook script's basename — the launcher's, only when it launches nothing.
+
+    --all reads a hooks.json, which ships in POSIX form, so the shim skip is
+    latent there today. It is still wrong to leave: pointed at a platformized
+    file, EVERY entry would resolve to hook_runner.py, none would be found under
+    --hooks-dir, and the gate would report an empty fleet and exit 0 — the silent
+    pass this whole script exists to prevent."""
+    names = re.findall(r"([\w.\-]+\.(?:py|sh|bash))", cmd)
+    if not names:
+        return None
+    return next((n for n in names if not _RUNNER_SHIM_RE.search(n)), names[0])
 
 
 def sessionstart_basenames(hooks_json: Path) -> list[str]:
@@ -411,8 +426,7 @@ _SCRIPT_TOKEN_RE = re.compile(
     r"|'([^'\n]+\.(?:py|sh|bash))'"
     r"|(?<![^\s'\"|&;(=])((?:~|/|\\\\|[A-Za-z]:[\\/])[^\s'\"|&;]*\.(?:py|sh|bash))"
 )
-_RUNNER_SHIM_RE = re.compile(r"(?:^|[\\/])hook_runner\.py$", re.IGNORECASE)
-_DRIVE_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_DRIVE_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")  # _RUNNER_SHIM_RE: see _basename above
 
 
 def _script_tokens(cmd: str) -> list[str]:
@@ -673,6 +687,17 @@ def _selftest_resolver() -> list[str]:
         got = resolve_command_path(cmd)
         if got != want:
             fails.append(f"resolve[{label}]: wanted {want!r}, got {got!r}  cmd={cmd!r}")
+
+    # _basename() is the OTHER resolver (--all): it must skip the shim too, or a
+    # platformized hooks.json resolves every entry to the launcher and --all
+    # audits an empty fleet.
+    for label, cmd, want in (("win shim", _FX_WIN_SHIM, "session-start-context.py"),
+                             ("posix chain", _FX_POSIX_CHAIN, "surface-backup-status.py"),
+                             ("shim only", f'py -3 "{_RX_RUNNER}"', "hook_runner.py"),
+                             ("no script", "echo hello", None)):
+        got = _basename(cmd)
+        if got != want:
+            fails.append(f"basename[{label}]: wanted {want!r}, got {got!r}")
     return fails
 
 
