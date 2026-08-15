@@ -1045,6 +1045,68 @@ def dedupe_owned_hooks(existing: dict) -> tuple[dict, int]:
     return cleaned, removed
 
 
+def dedupe_identical_hooks(existing: dict) -> tuple[dict, int]:
+    """Collapse BYTE-IDENTICAL hook commands sharing an (event, matcher). Keeps the
+    first occurrence.
+
+    WHY THIS EXISTS SEPARATELY FROM dedupe_owned_hooks(). That pass keys on
+    `_owned_basenames()`, so it only ever collapses hooks the template still
+    declares. A hook wired by an OLDER hooks.json but since dropped from both the
+    template and ABS_OWNED_BASENAMES resolves to an empty key, is read as a user
+    hook, and is therefore immortal -- every subsequent install appends another
+    copy that nothing will ever reap. Measured on a real long-lived account
+    (MYC-3876): 111 entries where a fresh install writes 56, with NINE hooks
+    present SEVEN times each -- one POSIX form plus six byte-identical Windows
+    forms -- while `Deduped:` reported 0 on every run.
+
+    Identity, not ownership, is the safe warrant here. Two byte-identical command
+    strings under the same matcher fire the same process on the same event; there
+    is no configuration in which running it twice is what the user meant. So this
+    pass needs no allowlist and cannot drift out of date with one.
+
+    Deliberately narrow, because the entries it touches are UNOWNED and may be the
+    user's own:
+      * only EXACT string matches collapse. A POSIX `python3 ~/...` variant and a
+        Windows `py -3 "C:\\..."` variant of the same script are left alone -- they
+        differ, and settings.json may be shared with a machine where the other one
+        is the live form.
+      * scoped by matcher, so the same command under two different matchers (two
+        genuinely different trigger conditions) is preserved.
+
+    Returns (cleaned, count_removed). Locked by tests/test_install_idempotent.py."""
+    cleaned = json.loads(json.dumps(existing))
+    removed = 0
+    if "hooks" not in cleaned:
+        return cleaned, 0
+    for event, groups in list(cleaned["hooks"].items()):
+        # seen per matcher, so identical commands are collapsed both WITHIN a group
+        # and ACROSS groups that share a matcher (a later install can append a new
+        # group rather than growing the existing one).
+        seen: dict[str, set] = {}
+        new_groups = []
+        for g in groups:
+            matcher = g.get("matcher", "")
+            bucket = seen.setdefault(matcher, set())
+            kept = []
+            for h in g.get("hooks", []):
+                cmd = h.get("command", "")
+                if cmd and cmd in bucket:
+                    removed += 1
+                    continue
+                if cmd:
+                    bucket.add(cmd)
+                kept.append(h)
+            if kept:
+                ng = dict(g)
+                ng["hooks"] = kept
+                new_groups.append(ng)
+        if new_groups:
+            cleaned["hooks"][event] = new_groups
+        else:
+            del cleaned["hooks"][event]
+    return cleaned, removed
+
+
 def backup_settings(settings_path: Path) -> Path | None:
     if not settings_path.is_file():
         return None
@@ -1564,6 +1626,10 @@ def main() -> int:
     # (a byte-changed command the owned-basename dedup recognizes only AFTER the hook is
     # owned, so merge replaced the first copy but a second stale one persisted).
     merged, deduped_count = dedupe_owned_hooks(merged)
+    # Collapse byte-identical copies regardless of ownership. dedupe_owned_hooks
+    # above cannot see a hook the template no longer declares, which is exactly
+    # the copy that accumulates forever (MYC-3876).
+    merged, identical_count = dedupe_identical_hooks(merged)
 
     if not args.quiet:
         print(f"Merging into: {settings_path}")
@@ -1574,6 +1640,7 @@ def main() -> int:
         print(f"Retired:      {retired_count} stale hook(s) removed")
         print(f"Relocated:    {moved_count} moved-event stale copy(ies) removed")
         print(f"Deduped:      {deduped_count} duplicate owned hook(s) removed")
+        print(f"Collapsed:    {identical_count} byte-identical hook(s) removed")
         print(f"Preserved:    {len(set(summary['kept']))} non-ABS hook(s) untouched")
         if win_skipped:
             print(f"Skipped:      {len(win_skipped)} POSIX-only (bash) hook(s) not "
