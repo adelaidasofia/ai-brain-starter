@@ -9,6 +9,26 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-15: your Sunday review now opens the backup instead of trusting it
+
+**Who this affects:** everyone who runs `/sunday-review`, and especially anyone whose vault sits inside iCloud, Dropbox, OneDrive, or any other sync folder.
+
+This one came out of a real vault. Someone asked a routine question about vault maintenance and found that their nightly backup had been producing an empty archive for 32 nights straight — 10 KB of nothing, against an 18 MB vault. The vault had been moved inside iCloud a month earlier, the scheduled job did not have macOS permission to read that folder, `tar` failed, and its complaint went to `/dev/null`. Nothing was lost, but for a month the safety net was a file that could not be opened.
+
+The part worth learning from is why nobody noticed. There were two checks running the whole time, and both said "OK, 0.7 days old" every single night. They were reading the archive's name and its timestamp — which were perfectly fine. A backup that fails this way keeps producing a fresh, correctly-named, recent file. Only opening it tells you anything.
+
+So `/sunday-review` now has a step that opens it: once a week, it decrypts the newest snapshot into a temp folder, restores it, and counts the files that came out. If the count is zero or absurdly low, that is a FAIL, in your review, in writing. If you have no backup configured at all, it says that too and hands you the setup command. The result now appears on its own line in the "Vault state" section of your Sunday note, next to the hygiene numbers.
+
+**What you should do:** nothing — the next `/sunday-review` runs it. If you would rather not wait for Sunday, the same drill is one command:
+
+```
+bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh verify
+```
+
+It takes a few seconds and either prints how many files it restored, or tells you your backup does not work.
+
+---
+
 ## 2026-08-13: three helpers that were never actually installed, and a Windows setup that could fail without saying so
 
 **Who this affects:** everyone, for the second half. Windows users especially, for the first.
