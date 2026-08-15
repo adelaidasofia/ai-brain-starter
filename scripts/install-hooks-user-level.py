@@ -187,6 +187,13 @@ ABS_FINGERPRINTS = [
     # Client-side deployed==committed drift detector (MYC-2507): surfaces when this
     # deploy step itself failed silently and settings.json fell behind hooks.json.
     "ai-brain-starter/hooks/surface-deployed-hooks-behind.py",
+    # Its sibling, for the other direction (MYC-1031 item 1 / MYC-3880): the one
+    # above catches settings.json falling BEHIND hooks.json; this one catches a
+    # SessionStart hook being pruned OUT of settings.json by a linter, a manual
+    # edit, or a parallel session -- drift hooks.json cannot see. Shipped dormant
+    # since MYC-1031 and wired here now that its identity function actually works
+    # on Windows; before that it was a guard about drift that was itself drifting.
+    "ai-brain-starter/hooks/sessionstart-hook-snapshot-guard.py",
     # Journal Step-0 context guard (2026-07-07) + its SessionStart self-heal. OWNED so
     # the installer dedups the guard (skill-path vs a ~/.claude/hooks/ copy) PER MATCHER,
     # verifies both scripts on disk, and can retire/relocate them. Registered under two
@@ -224,6 +231,7 @@ ABS_OWNED_BASENAMES = {
     "snapshot-pending-work-on-stop.py", "surface-orphan-worktree-snapshots.py",
     "remove-ended-worktree.py", "enforce-worktree-cap.py",
     "worktree-footprint-signal.py", "remediate-runaway-procs.py",
+    "sessionstart-hook-snapshot-guard.py",
     # Worktree HEAD-isolation gate (MYC-782). Basename listed so a copy wired at
     # ~/.claude/hooks/ — the hand-wired form on pre-registration machines —
     # dedups against the skill-path copy instead of double-firing.

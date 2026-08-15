@@ -7,7 +7,11 @@ structurally connected the two. "We ship guard X" kept being true at the file
 level and false at the behavior level:
 
   * MYC-1017  the fabrication-guard family, dormant.
-  * MYC-1031  sessionstart-hook-snapshot-guard.py, dormant.
+  * MYC-1031  sessionstart-hook-snapshot-guard.py, dormant ~its entire life. It
+              stayed on UNCLASSIFIED_BASELINE below until MYC-3880 found its
+              identity function fused all 19 Windows hooks into one -- a dormant
+              guard whose live logic was ALSO dead, so nothing could have noticed
+              from behavior. Fixed and wired together; both halves had to land.
   * MYC-782   check-cd-outside-worktree.py, dormant ~6 weeks while CLAUDE.md
               described it as an active guard. Fixed in #371.
 
@@ -121,7 +125,6 @@ UNCLASSIFIED_BASELINE: Set[str] = {
     "sdd-cache-pre.sh",
     "session-lock.py",
     "session-turn-counter.py",
-    "sessionstart-hook-snapshot-guard.py",
     "sunday-review-nudge.py",
     "surface-dependabot-backlog.py",
     "surface-stale-automation-failures.py",
