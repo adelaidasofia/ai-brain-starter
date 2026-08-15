@@ -58,8 +58,11 @@ Modes:
   --selftest        Positive + negative controls: a corpus walk with no guards
                     BITES; one stamping AFTER the walk BITES; one with all three
                     guards PASSES; one carrying the exemption annotation PASSES; a
-                    no-walk hook PASSES; a shell walk with no timeout BITES. Exit 1
-                    on any wrong verdict.
+                    no-walk hook PASSES; a shell walk with no timeout BITES. Plus
+                    resolver controls: the Windows launcher-shim command form
+                    resolves to the TARGET hook (not to hook_runner.py), and an
+                    unresolvable command still resolves to None (skipped, never
+                    counted bounded). Exit 1 on any wrong verdict.
   --json            machine-readable output (with --all).
 
 Stdlib only. Reads are bounded (1 MB cap, binary skip) - cloud-safe-walk
@@ -380,24 +383,91 @@ def sessionstart_commands(settings_path: Path) -> list[str]:
     return out
 
 
+# Every script path a command names, quoted or bare, in command order. THREE path
+# forms have to parse, because the Windows leg of the installer
+# (install-hooks-user-level.py) rewrites every hook command into a launcher shim:
+#
+#   POSIX bare      python3 ~/.claude/hooks/x.py 2>/dev/null || echo '{...}'
+#   POSIX guarded   [ -f ~/.claude/hooks/x.sh ] && bash ~/.claude/hooks/x.sh
+#   Windows shim    py -3 "C:\...\scripts\hook_runner.py" --fallback silent "C:\...\hooks\x.py"
+#
+# The pre-fix matcher required a literal `python`/`python3`/`bash`/`sh`/`zsh`
+# token, OR a forward slash inside the quotes, OR a `~`/`/` first character. The
+# Windows form has none of the three (`py -3` is the launcher, paths are
+# backslashed drive letters), so resolve_command_path() returned None for it and
+# the EFFECTIVE-set audit evaluated essentially nothing on every Windows install:
+# measured on a real box, 19 of 25 wired SessionStart commands resolved to
+# nothing. Same silent-no-op class as issues #370/#375/#485 (MYC-3879).
+#
+# Kept structurally parallel to _GUARD_PATH_RE in scripts/heal-journal-guard.py:
+# quoted alternatives first (a Windows home MAY contain a space), bare last (an
+# unquoted path ends at whitespace or a shell operator). Roots accepted: `~`,
+# POSIX `/`, a UNC `\\share`, a drive letter. Over-matching stays harmless — the
+# caller still stats the path — but a BARE path may only start where a token can,
+# else `./hooks/x.py` would match at its inner `/` and a cwd-relative command
+# would resolve to a bogus absolute `/hooks/x.py`.
+_SCRIPT_TOKEN_RE = re.compile(
+    r"\"([^\"\n]+\.(?:py|sh|bash))\""
+    r"|'([^'\n]+\.(?:py|sh|bash))'"
+    r"|(?<![^\s'\"|&;(=])((?:~|/|\\\\|[A-Za-z]:[\\/])[^\s'\"|&;]*\.(?:py|sh|bash))"
+)
+_RUNNER_SHIM_RE = re.compile(r"(?:^|[\\/])hook_runner\.py$", re.IGNORECASE)
+_DRIVE_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _script_tokens(cmd: str) -> list[str]:
+    """Script-looking paths in `cmd`, in command order."""
+    return [next(g for g in m.groups() if g) for m in _SCRIPT_TOKEN_RE.finditer(cmd)]
+
+
+def _absolute_or_none(raw: str) -> Path | None:
+    """Expand `~` and accept a path that is absolute in EITHER flavour.
+
+    Path.is_absolute() is flavour-BOUND: on Windows `/a/b` is not absolute (no
+    drive) and on POSIX `C:\\a\\b` is not absolute (no root). Leaning on it alone
+    would make this verdict depend on which OS runs the auditor; judging the
+    string keeps resolution platform-independent and unit-testable from POSIX CI.
+    A path that does not exist on THIS host is still counted unresolved by the
+    caller, which stats it.
+
+    Anything relative / cwd-dependent stays None: reported as unresolved, NEVER
+    silently treated as bounded."""
+    p = raw.strip()
+    if p.startswith("~"):
+        p = str(Path.home()) + p[1:]
+    if _DRIVE_ABS_RE.match(p) or p.startswith(("/", "\\\\")):
+        return Path(p)
+    return Path(p) if Path(p).is_absolute() else None
+
+
 def resolve_command_path(cmd: str) -> Path | None:
     """Best-effort resolve the script a SessionStart command runs, to an ABSOLUTE
-    path. Handles `python3 ~/.claude/hooks/x.py --flag`, quoted paths, and a
-    leading `[ -f X ] && ...` guard. Returns None when no path is found OR it is
-    not absolute after expanduser — a relative/cwd-dependent command is reported
-    as unresolved, NEVER silently treated as bounded."""
-    for rx in (r"(?:python3?|bash|sh|zsh)\s+(?:-\w+\s+)*['\"]([^'\"]+\.(?:py|sh|bash))['\"]",
-               r"(?:python3?|bash|sh|zsh)\s+(?:-\w+\s+)*([^\s'\"]+\.(?:py|sh|bash))",
-               r"['\"]([^'\"]*?/[^'\"]+\.(?:py|sh|bash))['\"]",
-               r"([~/][^\s'\"]*\.(?:py|sh|bash))"):
-        m = re.search(rx, cmd)
-        if m:
-            p = m.group(1)
-            if p.startswith("~"):
-                p = str(Path.home()) + p[1:]
-            pp = Path(p)
-            return pp if pp.is_absolute() else None
-    return None
+    path. Handles `python3 ~/.claude/hooks/x.py --flag`, quoted paths, a leading
+    `[ -f X ] && ...` guard, Windows drive-letter paths, and the Windows launcher
+    shim. Returns None when no path is found OR it is not absolute after
+    expanduser — a relative/cwd-dependent command is reported as unresolved,
+    NEVER silently treated as bounded.
+
+    hook_runner.py is a LAUNCHER, not a hook: on Windows every command reads
+    `py -3 "<abs>/scripts/hook_runner.py" --fallback silent "<abs>/hooks/x.py"`,
+    and the shim only re-execs the target with the payload on stdin. So a command
+    that goes through the shim resolves to its TARGET — the first script path
+    AFTER the shim, matching hook_runner's own argv handling
+    (`[--fallback MODE] <target> [extra...]`). Resolving to the shim instead
+    would be WORSE than not resolving at all: the launcher is walk-free and
+    identical for all 19 hooks, so the audit would read one trivially-clean file
+    19 times and report a clean fleet having never opened a hook. That is not
+    hypothetical — the installer's launcher is `python`/`python3` where `py` is
+    absent, and the pre-fix matcher DID resolve that form, straight to the shim."""
+    toks = _script_tokens(cmd)
+    if not toks:
+        return None
+    shim = next((i for i, t in enumerate(toks) if _RUNNER_SHIM_RE.search(t)), None)
+    if shim is not None:
+        target = next((t for t in toks[shim + 1:] if not _RUNNER_SHIM_RE.search(t)), None)
+        if target:  # no target at all -> the shim IS what runs; fall through
+            return _absolute_or_none(target)
+    return _absolute_or_none(toks[0])
 
 
 def cmd_settings(settings_path: Path, porcelain: bool) -> int:
@@ -525,6 +595,86 @@ _FX_SH_MAXDEPTH2 = """#!/usr/bin/env bash
 find ~/x -maxdepth 2 -name '.draft' -type f   # depth-bounded, not the corpus-walk freeze class
 """
 
+# ---- resolver fixtures (the Windows launcher-shim form, MYC-3879) -------------
+# EXACTLY the shape install-hooks-user-level.py emits on Windows:
+#     " ".join([*launcher, f'"{runner}"', "--fallback", fb, f'"{target}"'])
+# Hermetic absolute paths — never this machine's home — so the controls assert the
+# same thing on Windows and in POSIX CI. The win-* cases all resolve to None on
+# the pre-fix matcher: they are the negative control for that bug.
+_RX_RUNNER = r"C:\Users\dev\.claude\skills\ai-brain-starter\scripts\hook_runner.py"
+_RX_TARGET = r"C:\Users\dev\.claude\skills\ai-brain-starter\hooks\session-start-context.py"
+_RX_TARGET_SPACED = r"C:\Users\dev user\.claude\skills\ai-brain-starter\hooks\inject-instinct-context.py"
+_FX_WIN_SHIM = f'py -3 "{_RX_RUNNER}" --fallback silent "{_RX_TARGET}"'
+_FX_WIN_SHIM_SPACED = f'py -3 "{_RX_RUNNER}" --fallback allow "{_RX_TARGET_SPACED}"'
+_FX_WIN_SHIM_PY3 = f'python3 "{_RX_RUNNER}" --fallback silent "{_RX_TARGET}"'
+_FX_POSIX_CHAIN = ("python3 ~/.claude/skills/ai-brain-starter/hooks/surface-backup-status.py "
+                   "2>/dev/null || echo '{\"continue\":true,\"suppressOutput\":true}'")
+_FX_POSIX_GUARD = ("[ -f ~/.claude/hooks/check-claude-code-version.sh ] && "
+                   "bash ~/.claude/hooks/check-claude-code-version.sh || true")
+
+
+def _selftest_resolver() -> list[str]:
+    """Controls for resolve_command_path(). Returns failure lines (empty == pass).
+
+    Every case is an EQUALITY assertion, so a resolver that resolves NOTHING
+    cannot pass one by accident — the shape this guards against is precisely the
+    MYC-3879 bug, where 19 of 25 wired Windows commands silently resolved to None
+    and the effective-set audit evaluated an empty fleet while still printing OK."""
+    fails: list[str] = []
+
+    # --- premise guards: fixtures that rot into proving nothing must fail LOUD --
+    if _RX_RUNNER == _RX_TARGET or not _RX_RUNNER.endswith("hook_runner.py"):
+        fails.append("premise: the shim fixtures must name hook_runner.py AND a "
+                     "DIFFERENT target, else 'resolves to the target' is vacuous")
+    for lbl, fx, tgt in (("silent", _FX_WIN_SHIM, _RX_TARGET),
+                         ("allow+space", _FX_WIN_SHIM_SPACED, _RX_TARGET_SPACED),
+                         ("python3-launcher", _FX_WIN_SHIM_PY3, _RX_TARGET)):
+        if not (_RX_RUNNER in fx and tgt in fx and fx.index(_RX_RUNNER) < fx.index(tgt)):
+            fails.append(f"premise[{lbl}]: fixture must carry the launcher BEFORE a "
+                         f"different target: {fx!r}")
+        if "--fallback" not in fx or '"' not in fx:
+            fails.append(f"premise[{lbl}]: fixture is not the installer's quoted "
+                         f"`--fallback` launcher form: {fx!r}")
+    # Parity with the EMITTER. These fixtures only mean something while the Windows
+    # installer still wraps hooks in hook_runner.py with --fallback; if it stops,
+    # the shim rule above is stale and this must fail rather than keep asserting a
+    # shape nobody writes. An ABSENT installer is a standalone deployed copy of
+    # this script — the structural guards above still hold, so that is not a fail.
+    installer = Path(__file__).resolve().parent / "install-hooks-user-level.py"
+    if installer.exists():
+        isrc = _read_bounded(installer)
+        if not ("hook_runner" in isrc and "--fallback" in isrc):
+            fails.append("premise: install-hooks-user-level.py no longer emits the "
+                         "hook_runner `--fallback` launcher form — the shim rule in "
+                         "resolve_command_path() is stale")
+
+    home = str(Path.home())
+    cases = [
+        # Windows: must resolve to the TARGET hook, never to the launcher shim.
+        ("win shim -> target, not launcher", _FX_WIN_SHIM, Path(_RX_TARGET)),
+        ("win shim, space in home", _FX_WIN_SHIM_SPACED, Path(_RX_TARGET_SPACED)),
+        ("win shim, python3 launcher", _FX_WIN_SHIM_PY3, Path(_RX_TARGET)),
+        ("win bare drive-letter path", r"py -3 C:\Users\dev\.claude\hooks\x.py",
+         Path(r"C:\Users\dev\.claude\hooks\x.py")),
+        ("win shim, no target -> the shim", f'py -3 "{_RX_RUNNER}"', Path(_RX_RUNNER)),
+        # POSIX forms that already worked: regression controls.
+        ("posix tilde + fallback chain", _FX_POSIX_CHAIN,
+         Path(home + "/.claude/skills/ai-brain-starter/hooks/surface-backup-status.py")),
+        ("posix [ -f ] && guard form", _FX_POSIX_GUARD,
+         Path(home + "/.claude/hooks/check-claude-code-version.sh")),
+        ("posix absolute path", "python3 /Users/d/.claude/hooks/x.py",
+         Path("/Users/d/.claude/hooks/x.py")),
+        # Unresolvable stays unresolvable — reported as SKIPPED, never as bounded.
+        ("relative -> unresolved", "python3 hooks/x.py", None),
+        ("dot-relative -> unresolved", "python3 ./hooks/x.py", None),
+        ("no script named -> unresolved", "echo hello", None),
+    ]
+    for label, cmd, want in cases:
+        got = resolve_command_path(cmd)
+        if got != want:
+            fails.append(f"resolve[{label}]: wanted {want!r}, got {got!r}  cmd={cmd!r}")
+    return fails
+
 
 def cmd_selftest() -> int:
     cases = [
@@ -547,13 +697,16 @@ def cmd_selftest() -> int:
             fails.append(f"{label}: wanted {'BITE' if want_bite else 'PASS'}, "
                          f"got {'BITE' if bites else 'PASS'} (walks={v['walks']}, "
                          f"missing={v['missing']}, exempt={v['exempt']})")
+    fails += _selftest_resolver()
     if fails:
         print("SELFTEST FAIL:")
         for f in fails:
             print("  - " + f)
         return 1
     print("SELFTEST PASS: detector bites unguarded + stamp-after corpus walks, "
-          "passes 3-guard / exempt / no-walk hooks (py + sh).")
+          "passes 3-guard / exempt / no-walk hooks (py + sh); resolver reaches the "
+          "TARGET hook through the Windows launcher shim and still skips "
+          "unresolvable commands.")
     return 0
 
 
