@@ -325,6 +325,13 @@ is_linux() { [[ "$(uname -s)" == "Linux" ]]; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# have_sudo — true only if this shell could elevate WITHOUT a password prompt
+# right now (root, or cached/passwordless sudo). A non-interactive run (Claude
+# Code's Bash tool, or curl|bash) can never answer a prompt, so that is the
+# right question here, not "is the user in the admin group" (preflight.sh's
+# Section 5 answers that broader one for a human reading the report).
+have_sudo() { [[ "$EUID" -eq 0 ]] || sudo -n true 2>/dev/null; }
+
 # quiet_retry CMD... — run with FULL output captured to $BOOTSTRAP_LOG (never
 # /dev/null: a silent failure used to be undiagnosable), retrying once after
 # 5s. Workshop rooms put 30 machines on one Wi-Fi hitting PyPI at the same
@@ -384,6 +391,94 @@ version_at_least() {
   local required="$1" actual="$2"
   [[ -z "$actual" ]] && return 1
   [[ "$(printf '%s\n%s\n' "$required" "$actual" | sort -V | head -1)" == "$required" ]]
+}
+
+# ───────────────────────────────────────────────────────────────────────────────
+# User-space Node + Python fallback (no brew, no sudo, no compiler).
+#
+# A corporate laptop with no admin rights has neither. Until now that meant
+# `brew install node` / `brew install python@3.12` simply failed (err), and
+# the install never recovered — the exact "install DIES here" the 2026-08-12
+# cohort session hit (git already got the same fallback treatment above).
+# Mirrors bootstrap.ps1's Node ZIP fallback: fetch an official, relocatable
+# tarball into a user-owned prefix, no elevation involved anywhere.
+#   - Node: nodejs.org ships one directly.
+#   - Python: python.org's macOS/Linux builds all need an installer with admin
+#     rights; python-build-standalone (the engine behind uv/rye/mise, GitHub's
+#     own astral-sh org) is the portable, no-compile equivalent and is pinned
+#     the same way the Node version below is.
+# ───────────────────────────────────────────────────────────────────────────────
+NODE_FALLBACK_VERSION="v20.18.0"
+PY_FALLBACK_VERSION="3.12.7"
+PY_FALLBACK_TAG="20241016"
+
+# user_space_platform — echoes "<os>-<arch>" (darwin|linux, x64|arm64) for
+# building download URLs.
+user_space_platform() {
+  local os arch
+  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  case "$(uname -m)" in
+    arm64|aarch64) arch="arm64" ;;
+    *)             arch="x64" ;;
+  esac
+  printf '%s-%s\n' "$os" "$arch"
+}
+
+# add_user_path_entry DIR — put DIR on PATH for this session, and persist it
+# into the user's shell rc file (idempotent) so the next shell sees it too.
+# Every path here is user-owned, so no admin is ever needed. Conceptual
+# equivalent of bootstrap.ps1's Add-UserPathEntry (Windows keeps one per-user
+# PATH in the registry; a POSIX shell keeps it in a dotfile instead).
+add_user_path_entry() {
+  local dir="$1" rc
+  case ":$PATH:" in *":$dir:"*) : ;; *) export PATH="$dir:$PATH" ;; esac
+  case "${SHELL:-}" in
+    */zsh) rc="$HOME/.zshrc" ;;
+    *)     rc="$HOME/.bashrc" ;;
+  esac
+  [[ -f "$rc" ]] || : > "$rc"
+  grep -qF "$dir" "$rc" 2>/dev/null || printf '\nexport PATH="%s:$PATH"\n' "$dir" >> "$rc"
+}
+
+# fetch_tarball URL DEST INNER_DIR — download URL and move its INNER_DIR
+# (the top-level folder every one of these release tarballs unpacks into) to
+# DEST, replacing whatever was there. Non-zero on any failure; never leaves a
+# partial DEST (extracts to a scratch dir first, only moves on full success).
+fetch_tarball() {
+  local url="$1" dest="$2" inner="$3" tmp
+  tmp="$(mktemp -d)" || return 1
+  if ! curl -fsSL "$url" -o "$tmp/dl.tar.gz"; then rm -rf "$tmp"; return 1; fi
+  if ! tar -xzf "$tmp/dl.tar.gz" -C "$tmp"; then rm -rf "$tmp"; return 1; fi
+  [[ -d "$tmp/$inner" ]] || { rm -rf "$tmp"; return 1; }
+  mkdir -p "$(dirname "$dest")" || { rm -rf "$tmp"; return 1; }
+  rm -rf "$dest"
+  mv "$tmp/$inner" "$dest" || { rm -rf "$tmp"; return 1; }
+  rm -rf "$tmp"
+}
+
+# install_node_userspace — land a working `node`/`npm` under ~/.local/node
+# with no brew and no sudo. 0 on success (node is on PATH); non-zero on any
+# failure (caller degrades via note_gap, never err — see the Node section).
+install_node_userspace() {
+  local plat os arch triple
+  plat="$(user_space_platform)"; os="${plat%-*}"; arch="${plat#*-}"
+  triple="node-${NODE_FALLBACK_VERSION}-${os}-${arch}"
+  fetch_tarball "https://nodejs.org/dist/${NODE_FALLBACK_VERSION}/${triple}.tar.gz" \
+    "$HOME/.local/node" "$triple" || return 1
+  add_user_path_entry "$HOME/.local/node/bin"
+}
+
+# install_python_userspace — land a working `python3` under ~/.local/python
+# with no brew and no sudo. Same contract as install_node_userspace above.
+install_python_userspace() {
+  local plat os arch triple os_tag
+  plat="$(user_space_platform)"; os="${plat%-*}"; arch="${plat#*-}"
+  case "$os" in darwin) os_tag="apple-darwin" ;; *) os_tag="unknown-linux-gnu" ;; esac
+  case "$arch" in arm64) arch="aarch64" ;; *) arch="x86_64" ;; esac
+  triple="cpython-${PY_FALLBACK_VERSION}+${PY_FALLBACK_TAG}-${arch}-${os_tag}-install_only"
+  fetch_tarball "https://github.com/astral-sh/python-build-standalone/releases/download/${PY_FALLBACK_TAG}/${triple}.tar.gz" \
+    "$HOME/.local/python" "python" || return 1
+  add_user_path_entry "$HOME/.local/python/bin"
 }
 
 # ───────────────────────────────────────────────────────────────────────────────
@@ -1085,14 +1180,9 @@ have_working_git && ok "git $(git --version 2>/dev/null | awk '{print $3}')"
 # ───────────────────────────────────────────────────────────────────────────────
 
 if ! python3 -c "import sys; assert sys.version_info >= (3,10)" 2>/dev/null; then
-  if [[ "$CORPORATE_PROFILE" == "1" ]]; then
-    warn "$(t "Corporate profile: Python 3.10+ not found — NOT auto-installing (user-space, no sudo)." \
-              "Perfil corporativo: no se encontró Python 3.10+ — NO se instala automáticamente (espacio de usuario, sin sudo).")"
-    warn "$(t "Provision Python via your IT-approved channel, then re-run. Some steps that need python3 will be skipped." \
-              "Instalá Python por tu canal aprobado de IT y volvé a correr. Algunos pasos que necesitan python3 se omitirán.")"
-  elif [[ $DRY_RUN -eq 1 ]]; then
-    dry "would: install Python 3.12 (brew on Mac; apt/dnf/pacman on Linux)"
-  else
+  if [[ $DRY_RUN -eq 1 ]]; then
+    dry "would: install Python 3.12 (brew on Mac; apt/dnf/pacman on Linux; user-space tarball with neither)"
+  elif { is_mac && have brew; } || { is_linux && have_sudo; }; then
     hdr "Installing Python 3.12"
     if is_mac; then
       brew install python@3.12 || err "python install failed"
@@ -1102,6 +1192,13 @@ if ! python3 -c "import sys; assert sys.version_info >= (3,10)" 2>/dev/null; the
         || sudo pacman -S --noconfirm python python-pip 2>/dev/null \
         || err "python install failed (couldn't find apt/dnf/pacman)"
     fi
+  else
+    # No admin path reachable (no brew on Mac, no sudo on Linux — corporate
+    # laptops included). Degrade, never end the install: land a real python3
+    # in user space instead of erroring.
+    hdr "$(t "Installing Python 3.12 (user-space — no admin needed)" \
+              "Instalando Python 3.12 (espacio de usuario — sin admin)")"
+    install_python_userspace || note_gap "python3" "install Python 3.10+ yourself, then re-run"
   fi
 fi
 have python3 && ok "python3 $(python3 --version | awk '{print $2}')"
@@ -1111,14 +1208,9 @@ have python3 && ok "python3 $(python3 --version | awk '{print $2}')"
 # ───────────────────────────────────────────────────────────────────────────────
 
 if ! have node; then
-  if [[ "$CORPORATE_PROFILE" == "1" ]]; then
-    warn "$(t "Corporate profile: Node.js not found — NOT auto-installing (user-space, no sudo)." \
-              "Perfil corporativo: no se encontró Node.js — NO se instala automáticamente (espacio de usuario, sin sudo).")"
-    warn "$(t "Provision Node.js via your IT-approved channel, then re-run. Some steps that need node will be skipped." \
-              "Instalá Node.js por tu canal aprobado de IT y volvé a correr. Algunos pasos que necesitan node se omitirán.")"
-  elif [[ $DRY_RUN -eq 1 ]]; then
-    dry "would: install Node.js (brew on Mac; apt/dnf/pacman on Linux)"
-  else
+  if [[ $DRY_RUN -eq 1 ]]; then
+    dry "would: install Node.js (brew on Mac; apt/dnf/pacman on Linux; user-space tarball with neither)"
+  elif { is_mac && have brew; } || { is_linux && have_sudo; }; then
     hdr "Installing Node.js"
     if is_mac; then
       brew install node || err "node install failed"
@@ -1128,6 +1220,13 @@ if ! have node; then
         || sudo pacman -S --noconfirm nodejs npm 2>/dev/null \
         || err "node install failed"
     fi
+  else
+    # No admin path reachable (no brew on Mac, no sudo on Linux — corporate
+    # laptops included). Degrade, never end the install: land a real node in
+    # user space instead of erroring.
+    hdr "$(t "Installing Node.js (user-space — no admin needed)" \
+              "Instalando Node.js (espacio de usuario — sin admin)")"
+    install_node_userspace || note_gap "node" "install Node.js yourself, then re-run"
   fi
 fi
 have node && ok "node $(node --version)"
