@@ -291,7 +291,7 @@ python3 ~/.claude/skills/ai-brain-starter/scripts/check-vault-backup.py "<VAULT_
 bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh setup --vault "<VAULT_PATH>"
 ```
 
-Walk them through it in their language: it asks for a destination folder — **an external drive, or a Google Drive / Dropbox / OneDrive folder** (a single daily archive syncs fine; it is the churning vault that must never live in cloud sync, not one compressed file). It writes one compressed snapshot immediately, installs a daily schedule, and never touches the machine-exhaust dirs. **For a vault that will hold journals, health data, or client/CRM notes, add `--encrypt`** — it stores the passphrase in the OS keychain, never in plaintext.
+Walk them through it in their language: it asks for a destination folder — **an external drive, or a Google Drive / Dropbox / OneDrive folder** (a single daily archive syncs fine; it is the churning vault that must never live in cloud sync, not one compressed file). It writes one compressed snapshot immediately, installs a daily schedule, and never touches the machine-exhaust dirs. **For a vault that will hold journals, health data, or client/CRM notes, add `--encrypt`** — it stores the passphrase in the OS keychain when the machine has one, and says so loudly if it has to fall back to a protected file instead. (On Windows, `-Encrypt` needs gpg/Gpg4win installed; it errors rather than writing an unencrypted archive.) Tell them `vault-backup.sh status` reports which of the two they got, any time.
 
 Then have them prove it actually restores (a backup nobody has restored is a hope, not a backup):
 
