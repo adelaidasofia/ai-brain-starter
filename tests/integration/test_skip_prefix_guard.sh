@@ -141,5 +141,24 @@ assert "SKIP_PREFIX_EXTRA_PATHS extends coverage to a custom path" \
 assert "an unparseable EXTRA_PATHS entry does not crash or disable defaults" \
   "$(run "$(payload Write "$JOURNAL" '__SKIP private')" SKIP_PREFIX_EXTRA_PATHS='Diario/:[unclosed')" 2
 
+# --- 10. Windows-shaped paths ------------------------------------------------
+# A backslash path that misses every forward-slash pattern makes the guard fail
+# OPEN -- silently, no error, on a privacy control. Caught post-merge on #495.
+WIN_JOURNAL='C:\Users\me\vault\Journals\May 2026\x.md'
+WIN_COACHING='C:\vault\Home\Coaching Sessions\x.md'
+
+assert "Windows backslash journal path is BLOCKED (not silently inert)" \
+  "$(run "$(payload Write "$WIN_JOURNAL" 'ok
+__SKIP private')")" 2
+
+assert "Windows backslash coaching path is BLOCKED" \
+  "$(run "$(payload Write "$WIN_COACHING" '__SKIP private')")" 2
+
+assert "NEGATIVE CONTROL: clean Windows-path write is still allowed" \
+  "$(run "$(payload Write "$WIN_JOURNAL" 'nothing private here')")" 0
+
+assert "NEGATIVE CONTROL: Windows path outside a life-record folder is allowed" \
+  "$(run "$(payload Write 'C:\vault\Notes\groceries.md' '__SKIP buy milk')")" 0
+
 echo
 echo "ALL PASS ($pass assertions, negative control on every claim)"

@@ -144,11 +144,24 @@ SKIP_LINE_RE = re.compile(r"(?m)^[ \t]*__SKIP(?=[ \t]|$)")
 BASH_REDIRECT_MARKERS = ("cat >", "cat >>", "tee ", "tee -", " > ", " >> ")
 
 
+def _norm(text: str) -> str:
+    """Backslashes -> forward slashes before ANY path matching.
+
+    On Windows a life-record path arrives as `C:\\vault\\Journals\\May 2026\\x.md`.
+    The folder patterns are written with `/`, so without this every Windows write
+    misses every pattern and the guard fails OPEN -- silently, with no error, on
+    a privacy control. Matching only; nothing here is executed as a path.
+    """
+    return text.replace("\\", "/")
+
+
 def _matches_life_record(text: str) -> bool:
+    text = _norm(text)
     return any(rx.search(text) for rx in (_DEFAULT_PATH_RES + _extra_path_res()))
 
 
 def _is_self_ref_exempt(text: str) -> bool:
+    text = _norm(text)
     return any(marker in text for marker in SELF_REF_EXEMPT_MARKERS)
 
 
