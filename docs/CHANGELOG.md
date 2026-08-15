@@ -9,6 +9,37 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-15: the hook that reads your priorities only understood English
+
+**Who this affects:** everyone who does not work in English. Also everyone who ever customized this hook by hand.
+
+`vault-context.py` is the helper that notices you asked a strategic question and quietly puts your priorities and open loops in front of Claude before it answers. The 2026-08-13 update fixed the reason it was doing nothing on every machine. This is the second reason, and it only showed up once the first was gone.
+
+The list of words that make it fire was written in English, in the file itself. Ask *"what should I prioritize this week"* and you got your priorities. Ask the same thing in Spanish — *"qué prioridades tengo esta semana"* — and nothing matched, so the hook exited quietly, exactly as if you had asked it something unimportant. Measured on a real Spanish vault: zero matches for the Spanish sentence, full injection for the English one.
+
+About a third of that list was also one person's vocabulary: the name of their company, their city, their newsletter, plus a second list pointing at file paths that exist in one vault on earth. Harmless-looking, but it meant the file could never quite be yours.
+
+**Both are fixed the same way.** The trigger words now live in language packs — `templates/vault-context/en.json` and `es.json` — the same shape the closing-signal detector already uses, and both load by default. Spanish patterns accept the version without accents, because that is how people actually type in a terminal. Everything personal moved out of the shipped code and into a file of your own:
+
+```
+~/.claude/.vault-context-signals.json
+```
+
+```json
+{
+  "strategic_signals": ["\\bacme corp\\b", "\\bproject atlas\\b"],
+  "topic_map": [
+    { "signals": ["\\bproject atlas\\b"], "files": ["Business/Atlas Brief.md"] }
+  ]
+}
+```
+
+That file is also the fix for an older piece of advice. The original release told you to add your own keywords by editing `~/.claude/hooks/vault-context.py` directly — but that file is redeployed on update, so every customization was silently reverted the next time you updated. Anything in the override file survives.
+
+**What you should do:** nothing. `en` and `es` both load by default; set `VAULT_CONTEXT_LANGS` if you want only one. Another language is one JSON file in `templates/vault-context/` — the loader takes any language name you give it.
+
+---
+
 ## 2026-08-13: three helpers that were never actually installed, and a Windows setup that could fail without saying so
 
 **Who this affects:** everyone, for the second half. Windows users especially, for the first.

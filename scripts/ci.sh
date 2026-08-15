@@ -809,6 +809,13 @@ PY_DIRECT=(
   # platform-only import, because a Linux runner structurally cannot observe a
   # Windows-only import crash.
   hooks/test_hook_smoke.py
+  # vault-context shipped a hardcoded English trigger list, a third of it one
+  # person's vocabulary. On a Spanish vault it resolved the vault, matched
+  # nothing, and exited 0 — the MYC-3529 silent no-op reached by a different
+  # road. Negative control: the exact sentence that measured zero matches must
+  # fire, ordinary prompts must stay quiet, and no shipped pack may carry
+  # personal vocabulary again.
+  hooks/test_vault_context_signals.py
 )
 dormant_py=()
 while IFS= read -r -d '' f; do

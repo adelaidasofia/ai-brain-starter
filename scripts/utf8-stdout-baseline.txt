@@ -131,7 +131,6 @@ ab96a2f6b21c756727282b058c6bd99b417badf6db40c42f88a58de1998d7fbe SEV-4-json-enco
 6a55aed5c658a5361501e1144b26c501d95fd1f359383af4499e8894be76ff93 SEV-4-json-encoded hooks/surface-orphan-claude-branches.py
 26f8cab57abf95bbe0b1b3e81d5310946823b7b93ef814285ffe8d91dcdce672 SEV-4-json-encoded hooks/surface-orphan-worktree-snapshots.py
 ef44e1e697864634bd4f41c5041e9d3c445aa429c37d35bb7dbdb613c76c3592 SEV-4-json-encoded hooks/surface-stranded-session-artifacts.py
-bde2c3d7a3b64f2828d4b6a7be9e33381c7496877cf11eea0fdbb6068382b4e1 SEV-4-json-encoded hooks/vault-context.py
 381d8c9eec790997f7736fc89e088fdb12f7dd1606b4be8e753ba0bf0d43e497 SEV-4-json-encoded hooks/warn-learning-to-tool-private-memory.py
 6141c3d8cc8a60cf6ae1c9a3d8fcde728808188e2bbe4cfedd581276076bf1c3 SEV-4-json-encoded hooks/warn-recreate-deleted-file.py
 effe9f0dc7226a8ea9456ec6be5112ea357ef8795adde5375499f19c6db000fc SEV-4-json-encoded hooks/warn-uncommitted-builds-on-stop.py
