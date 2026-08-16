@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Static guard: no tracked *.sh may use a bash-4-only feature.
+# Static guard: no tracked shell script may use a bash-4-only feature.
 #
 # THE BUG THIS LOCKS OUT
 #
@@ -57,7 +57,7 @@ bad() { FAIL=$((FAIL + 1)); echo "FAIL  $1 :: $2"; }
 # `set -u` without `-e` on purpose (each check should report, not stop the run),
 # which is exactly the condition that let the original bug hide. Bump when
 # adding a check.
-EXPECTED_CHECKS=8
+EXPECTED_CHECKS=11
 
 # Files allowed to use a banned construct, each with a reason. Format:
 # "<path>  <reason>". Empty is the healthy state -- a row here is a debt, not a
@@ -121,7 +121,39 @@ def tracked(*patterns):
                          capture_output=True, text=True).stdout
     return [p for p in out.split("\0") if p]
 
-files = [extra] if extra else tracked("*.sh")
+# Scope by PROPERTY (is this a shell script?), never by NAME (*.sh).
+#
+# The first version of this gate globbed '*.sh', which is a denylist against an
+# open set: a hook named `rotate-logs` with no extension, or a `.bash`, carries
+# `mapfile` just as well and is invisible to a suffix match. Measured when this
+# was written: zero such files tracked here -- so this closes the hole while it
+# is still theoretical rather than after a file walks through it. The existing
+# `bash32-syntax` CI job has the same `-name '*.sh'` scope and the same hole.
+#
+# A shebang is the property. The regex needs a word-boundary `sh` token, so it
+# matches sh/bash/ksh/zsh/ash/dash invocations but not `python3`, and not the
+# embedded-but-not-bounded `sh` in `fish` or `osascript`. Controlled below in
+# both directions.
+SHEBANG_RE = re.compile(rb'^#!.*\b(?:ba|k|z|a|da)?sh\b')
+
+def is_shell(path):
+    if path.endswith((".sh", ".bash", ".ksh", ".zsh")):
+        return True
+    try:
+        with open(path, "rb") as fh:
+            first = fh.read(128).split(b"\n", 1)[0]
+    except OSError:
+        return False
+    return bool(SHEBANG_RE.match(first))
+
+if extra:
+    # Controls scan the named fixture regardless of classification, so the
+    # detector checks stay independent of the scope checks. ISSHELL reports what
+    # the SCOPE rule would have decided, so it can be asserted on its own.
+    files = [extra]
+    print(f"ISSHELL={1 if is_shell(extra) else 0}")
+else:
+    files = [p for p in tracked() if is_shell(p)]
 
 # This file spells out every pattern it hunts for, in prose and in regex, and
 # its controls are deliberate offenders. Scanning itself would be self-indicting.
@@ -164,7 +196,7 @@ collect_offenders() {  # collect_offenders <run_scan-output>
 
 export BASH32_EXEMPT
 
-echo "=== 1. no tracked *.sh uses a bash-4-only feature ==="
+echo "=== 1. no tracked shell script uses a bash-4-only feature ==="
 OUT="$(run_scan "")"
 FILES="$(printf '%s' "$OUT" | sed -n 's/^FILES=//p')"
 collect_offenders "$OUT"
@@ -172,13 +204,13 @@ collect_offenders "$OUT"
 # A scan that reaches zero files reports "no offenders" in exactly the same
 # words as a clean repo. Assert it actually looked.
 if [ "${FILES:-0}" -lt 20 ]; then
-  bad "detector reached the repo" "scanned ${FILES:-0} *.sh — this repo tracks ~80; the pattern or the git ls-files call has rotted"
+  bad "detector reached the repo" "scanned ${FILES:-0} shell file(s) — this repo tracks ~190; the scope rule or the git ls-files call has rotted"
 else
-  ok "scanned $FILES tracked *.sh"
+  ok "scanned $FILES tracked shell file(s)"
 fi
 
 if [ "${#OFFENDERS[@]}" -eq 0 ]; then
-  ok "every tracked *.sh is bash-3.2 clean"
+  ok "every tracked shell file is bash-3.2 clean"
 else
   printf '      %s\n' "${OFFENDERS[@]}" >&2
   bad "bash-4-only feature" "${#OFFENDERS[@]} site(s) use a construct macOS /bin/bash (3.2) cannot run. Each line above names its portable replacement; see scripts/PORTABILITY.md section 4"
@@ -221,6 +253,40 @@ if [ "${#files[@]}" -eq 0 ]; then echo none; fi'
 control "a comment naming the banned construct is not flagged" "cmt.sh" 0 '# Built bash-3.2-safe: no mapfile / readarray, no declare -A, no ${v^^}.
 echo ok   # mapfile would go here on bash 4'
 
+echo "=== 4. SCOPE CONTROLS: shell files are found by property, not by suffix ==="
+
+# The detector controls above all use .sh fixtures, so they prove the REGEXES
+# and say nothing about WHICH FILES get scanned. These assert the scope rule
+# itself, in both directions -- an over-narrow scope is how a gate reports a
+# clean repo it never fully read.
+scope_control() {  # scope_control <label> <fixture-name> <expected-isshell> <body>
+  printf '%s\n' "$4" > "$CTL/$2"
+  local v
+  v="$(run_scan "$CTL/$2" | sed -n 's/^ISSHELL=//p')"
+  if [ "${v:-x}" = "$3" ]; then
+    ok "$1"
+  else
+    bad "scope: $1" "expected ISSHELL=$3, got '${v:-<none>}'"
+  fi
+}
+
+# The case a '*.sh' glob misses: hooks/rotate-logs.sh was the real offender this
+# gate caught, and nothing but convention stops the next one shipping without
+# the suffix.
+scope_control "an extensionless #!/bin/bash file IS in scope" "rotate-logs" 1 '#!/bin/bash
+mapfile -t X < <(echo y)'
+
+# The other direction. A python file may legitimately contain the token
+# `mapfile` (a dict name, a docstring); scanning it would be a false positive.
+scope_control "a #!/usr/bin/env python3 file is NOT in scope" "tool.py" 0 '#!/usr/bin/env python3
+mapfile = {}'
+
+# `fish` and `osascript` both CONTAIN the letters sh. The word-boundary in
+# SHEBANG_RE is the only thing keeping them out, and a careless loosening of
+# that regex would silently widen scope to every AppleScript in the tree.
+scope_control "a #!/usr/bin/osascript file is NOT in scope" "notify" 0 '#!/usr/bin/osascript
+display notification "hi"'
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 # Fail loud when a check did not EVALUATE. `set -u` without `-e` means a check
@@ -233,4 +299,4 @@ if [ "$((PASS + FAIL))" -ne "$EXPECTED_CHECKS" ]; then
   exit 1
 fi
 [ "$FAIL" -eq 0 ] || exit 1
-echo "PASS: every tracked *.sh runs on macOS /bin/bash 3.2 (scripts/PORTABILITY.md section 4)"
+echo "PASS: every tracked shell file runs on macOS /bin/bash 3.2 (scripts/PORTABILITY.md section 4)"
