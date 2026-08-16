@@ -42,6 +42,24 @@ ESCAPE HATCH
 on the offending line or the line above. A guard that refuses without a
 sanctioned path is an outage, not a safety net.
 
+WHAT THIS DOES NOT CATCH (say it here, so nobody trusts it further than it goes)
+
+This is a pattern matcher over source text, which makes it a denylist against
+an open set -- and a denylist against an open set always loses. It is an
+ACCIDENT catcher, not an adversary-proof control. Known evasions, none of them
+exotic:
+
+  REF=origin/main; git show "$REF:file"     # ref through a variable
+  git show "origin/main":file               # ref quoted separately
+  SHA=$(git rev-parse origin/main); git show "$SHA:file"   # resolved first
+
+Each of these is still the same bug, and this guard is silent on all three.
+The structural fix for the class is upstream of here: make the CI job that
+runs the tests resolve the same refs a push-to-main run does, so a
+before-state defect fails on the PR instead of after the merge. Until that
+lands, treat a green from this script as "the obvious spelling is absent",
+never as "the class is impossible".
+
 Usage:
   check-frozen-before-state.py [--root DIR]   scan (exit 1 on any finding)
   check-frozen-before-state.py --self-test    prove the guard fires and abstains
