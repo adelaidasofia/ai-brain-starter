@@ -95,13 +95,35 @@ def log_debug(msg: str) -> None:
 
 
 def read_hook_input() -> dict:
-    """Read JSON from stdin (Claude Code hook contract)."""
+    """Read JSON from stdin (Claude Code hook contract).
+
+    Reads RAW BYTES and decodes UTF-8 explicitly. Claude Code pipes the payload
+    as UTF-8, but text-mode ``sys.stdin`` decodes with the locale codepage —
+    cp1252 on a default Windows console. Every non-ASCII character in the prompt
+    is mangled before the patterns ever see it, so an accented close phrase
+    silently never matches: "cerrar sesión" arrives as "cerrar sesiÃ³n" and the
+    cascade does not fire. It is a read-side twin of the write-side cp1252 crash
+    guarded at ``__main__`` (#314/#483); the guard there reconfigures stdout and
+    stderr, not stdin, so this path stayed broken.
+
+    Failure mode is silent and total for the affected users: no crash, no log,
+    the hook just returns "no close signal" for every accented phrase. It only
+    looked fine on machines where PYTHONUTF8=1 happened to be set.
+
+    ``sys.stdin.buffer`` bypasses the text decoder, so the result is identical
+    on every OS and locale. ``errors="replace"`` keeps a malformed byte from
+    raising where the old text-mode path would have substituted too.
+    """
     try:
-        raw = sys.stdin.read()
+        buf = getattr(sys.stdin, "buffer", None)
+        if buf is not None:
+            raw = buf.read().decode("utf-8", errors="replace")
+        else:  # no binary buffer (stdin replaced, e.g. by a test harness)
+            raw = sys.stdin.read()
         if not raw.strip():
             return {}
         return json.loads(raw)
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError, UnicodeError) as e:
         log_debug(f"failed to read hook input: {e}")
         return {}
 

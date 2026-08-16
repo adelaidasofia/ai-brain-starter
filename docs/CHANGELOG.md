@@ -9,6 +9,22 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-16: on Windows, a goodbye with an accent in it never closed the session
+
+**Who this affects:** anyone on Windows who ends sessions in a language whose closing phrase carries an accent — Spanish, Portuguese, French, German.
+
+You type "cerrar sesión" and nothing happens. No error, no warning, no sign anything went wrong. The close cascade — the part that writes your session file, refreshes Last Session, files decisions with empty outcomes — simply never runs. Then you type "chao" and it works perfectly, which makes the whole thing feel random rather than broken.
+
+One line caused it. The hook that watches for closing phrases read your message using whatever text encoding Windows is configured for, which on a default console is not the one Claude Code sends. The accented characters arrived scrambled: "sesión" reached the hook as "sesiÃ³n". The phrases it compares against are stored correctly, so nothing ever matched — and because "no match" means "the user is not closing", the hook stayed quiet instead of reporting a problem. Silence is what a working hook looks like too.
+
+It appeared healthy on any machine that happened to have a particular Python setting switched on, which is how it lasted this long without being caught.
+
+The hook now reads your message as raw data and decodes it itself, identically on every operating system and every language setting.
+
+**What you should do:** nothing beyond updating. If you had worked around this by typing English goodbyes to force a close, you can stop.
+
+---
+
 ## 2026-08-15: the setup could stop halfway and tell you it was finished
 
 **Who this affects:** anyone whose install ended early, especially if you never reached the journaling interview or your CLAUDE.md came out mostly empty.
