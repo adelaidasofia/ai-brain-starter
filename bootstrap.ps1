@@ -50,6 +50,78 @@ function Err($msg)  { Write-Host "  X $msg" -ForegroundColor Red; $script:Failed
 function Dry($msg)  { Write-Host "  [dry-run] $msg" -ForegroundColor Magenta }
 function Have($cmd) { return [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
 
+# Is this process running elevated (Administrator)?
+# Decides per-MACHINE vs per-USER for every runtime we install. A per-machine
+# MSI run from a normal shell needs a UAC consent it can never obtain under
+# /quiet: msiexec aborts with 1925 ("insufficient privileges ... for all users
+# of the machine") or 1603, and Start-Process -Wait without -PassThru THREW
+# THAT AWAY. Net effect on a real Windows install: Node "installed" silently,
+# `Have node` was false, and the only surviving signal was a bare
+# "node install failed" with no reason. Cached once - elevation cannot change
+# mid-run.
+$script:IsElevated = $null
+function Test-Elevated {
+    if ($null -eq $script:IsElevated) {
+        try {
+            $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+            $script:IsElevated = ([Security.Principal.WindowsPrincipal]$id).IsInRole(
+                [Security.Principal.WindowsBuiltInRole]::Administrator)
+        } catch {
+            # Non-Windows PowerShell (pwsh on macOS/Linux) has no WindowsIdentity.
+            # Treat as unelevated: the user-scoped path works everywhere.
+            $script:IsElevated = $false
+        }
+    }
+    return $script:IsElevated
+}
+
+# Run an installer and return its REAL exit code (0 when it never launched is a
+# lie, so a launch failure returns a sentinel). Start-Process -Wait alone
+# discards the exit status entirely - the bug this closes.
+# -PassThru WITHOUT -Wait, then WaitForExit() on the object we hold. `-Wait
+# -PassThru` also reports exit codes correctly (both forms verified against a
+# script exiting 0/1/3/42), but holding the object and waiting on it ourselves
+# keeps the handle open explicitly, and the $null guard below is what actually
+# matters: an exit code we could not read must never come back as 0. Returning
+# a false 0 here would rebuild, one layer up, the exact silent-success bug this
+# function exists to remove.
+function Invoke-Installer([string]$FilePath, [string[]]$ArgumentList) {
+    try {
+        $p = Start-Process -PassThru -FilePath $FilePath -ArgumentList $ArgumentList
+        if ($null -eq $p) { return -1 }
+        $p.WaitForExit()
+        # A null ExitCode means we do not know what happened. That is the exact
+        # state this function exists to stop reading as success.
+        if ($null -eq $p.ExitCode) { return -1 }
+        return $p.ExitCode
+    } catch {
+        Warn "could not launch ${FilePath}: $_"
+        return -1
+    }
+}
+
+# Prepend a directory to the PERSISTED user PATH (and this process's PATH).
+# Used by the user-scoped runtime installs, which unpack somewhere the machine
+# PATH will never mention. Idempotent: re-running never duplicates the entry.
+#
+# Known tradeoff: SetEnvironmentVariable rewrites the USER Path as a plain
+# string, so a `%VAR%` inside it is stored expanded. Accepted deliberately -
+# `setx` truncates at 1024 characters, which silently DESTROYS a long PATH, and
+# that is the worse failure. The machine PATH, where expandable entries
+# actually live, is never touched here.
+function Add-UserPathEntry([string]$Dir) {
+    $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+    if ($null -eq $userPath) { $userPath = "" }
+    $already = $userPath -split ';' | Where-Object { $_.TrimEnd('\') -ieq $Dir.TrimEnd('\') }
+    if (-not $already) {
+        $newPath = if ($userPath.Trim()) { "$Dir;$userPath" } else { $Dir }
+        [System.Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+    }
+    if (-not (($env:Path -split ';') | Where-Object { $_.TrimEnd('\') -ieq $Dir.TrimEnd('\') })) {
+        $env:Path = "$Dir;$env:Path"
+    }
+}
+
 # Run a native command without letting benign stderr kill the install.
 # Under $ErrorActionPreference = "Stop", a native command that writes ANY
 # warning to stderr (pip's routine "not on PATH" note, npm progress, git
@@ -373,8 +445,30 @@ if (-not $pythonOk -and $CorporateProfile) {
         $pyInstaller = "$env:TEMP\python-installer.exe"
         try {
             Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe" -OutFile $pyInstaller -UseBasicParsing
-            Start-Process -Wait -FilePath $pyInstaller -ArgumentList "/quiet","InstallAllUsers=1","PrependPath=1"
+            # InstallAllUsers=1 is a per-machine install: it needs elevation,
+            # and under /quiet there is no UAC prompt to grant it, so it just
+            # fails. python.org's installer supports a per-user install with
+            # InstallAllUsers=0 and no privileges at all - use it when this
+            # shell is not already elevated.
+            $perUser = -not (Test-Elevated)
+            if ($perUser) {
+                Log (T "Not running as Administrator - installing Python for this user only." `
+                       "No estas como Administrador - instalando Python solo para este usuario.")
+            }
+            $pyArgs = @("/quiet", "PrependPath=1", "Include_pip=1",
+                        $(if ($perUser) { "InstallAllUsers=0" } else { "InstallAllUsers=1" }))
+            $code = Invoke-Installer $pyInstaller $pyArgs
             Remove-Item $pyInstaller -Force -ErrorAction SilentlyContinue
+            # 0 = installed, 3010 = installed, reboot pending. Anything else is
+            # a failure that used to be discarded silently.
+            if ($code -ne 0 -and $code -ne 3010) {
+                Err (T "Python installer exited $code (nothing was installed)." `
+                       "El instalador de Python salio con $code (no se instalo nada).")
+                if ($code -eq 1602 -or $code -eq 1603 -or $code -eq -1) {
+                    Warn (T "That is usually a denied elevation prompt. Re-run this script from an Administrator PowerShell, or install Python yourself from python.org." `
+                            "Normalmente es un prompt de elevacion denegado. Volve a correr este script desde un PowerShell como Administrador, o instala Python vos mismo desde python.org.")
+                }
+            }
         } catch {
             Err "Python install failed: $_"
         }
@@ -395,20 +489,98 @@ if (-not (Have node) -and $CorporateProfile) {
     Dry "would: winget install OpenJS.NodeJS.LTS (or direct download fallback)"
 } elseif (-not (Have node)) {
     Hdr "Installing Node.js"
+    $nodeVersion = "v20.18.0"
+    $wingetTried = $false
+    $userScopedNode = $false
     if ($UseWinget) {
+        $wingetTried = $true
         winget install -e --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements
-    } else {
-        Log "winget unavailable, downloading Node.js LTS installer directly."
-        $nodeInstaller = "$env:TEMP\node-installer.msi"
+        # winget's Node package is per-machine too, so an unelevated run hits
+        # the same denied-elevation wall. Before this, a winget failure ended
+        # the attempt: no fallback ran, and the only trace was "node install
+        # failed" three lines later. Now it falls through to the direct path.
+        if ($LASTEXITCODE -ne 0) {
+            Warn (T "winget could not install Node.js (exit $LASTEXITCODE) - falling back to a direct download." `
+                    "winget no pudo instalar Node.js (salio $LASTEXITCODE) - probando con descarga directa.")
+        }
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    }
+    if (-not (Have node)) {
+        if ($wingetTried) { Log "Downloading Node.js LTS directly." }
+        else { Log "winget unavailable, downloading Node.js LTS directly." }
         try {
-            Invoke-WebRequest -Uri "https://nodejs.org/dist/v20.18.0/node-v20.18.0-x64.msi" -OutFile $nodeInstaller -UseBasicParsing
-            Start-Process -Wait -FilePath "msiexec" -ArgumentList "/i","$nodeInstaller","/quiet","/norestart"
-            Remove-Item $nodeInstaller -Force -ErrorAction SilentlyContinue
+            if (Test-Elevated) {
+                # Elevated: the per-machine MSI is the right install, and the
+                # UAC consent this needs is already granted.
+                $nodeInstaller = "$env:TEMP\node-installer.msi"
+                Invoke-WebRequest -Uri "https://nodejs.org/dist/$nodeVersion/node-$nodeVersion-x64.msi" -OutFile $nodeInstaller -UseBasicParsing
+                $code = Invoke-Installer "msiexec" @("/i", "`"$nodeInstaller`"", "/quiet", "/norestart")
+                Remove-Item $nodeInstaller -Force -ErrorAction SilentlyContinue
+                if ($code -ne 0 -and $code -ne 3010) {
+                    Err (T "Node.js MSI exited $code (nothing was installed)." `
+                           "El MSI de Node.js salio con $code (no se instalo nada).")
+                }
+            } else {
+                # NOT elevated. The MSI is per-machine and CANNOT be granted
+                # elevation under /quiet - it aborts with 1925/1603, and that
+                # exit code used to be thrown away, so the install looked like
+                # it worked. The official ZIP build needs no privileges at all:
+                # unpack it under LOCALAPPDATA and put it on the USER PATH.
+                Log (T "Not running as Administrator - installing Node.js for this user only (no UAC needed)." `
+                       "No estas como Administrador - instalando Node.js solo para este usuario (sin UAC).")
+                $nodeZip     = "$env:TEMP\node-$nodeVersion-win-x64.zip"
+                $stagingDir  = "$env:TEMP\node-unpack-$([System.Guid]::NewGuid().ToString('N'))"
+                $nodeHome    = "$env:LOCALAPPDATA\nodejs"
+                Invoke-WebRequest -Uri "https://nodejs.org/dist/$nodeVersion/node-$nodeVersion-win-x64.zip" -OutFile $nodeZip -UseBasicParsing
+                Expand-Archive -LiteralPath $nodeZip -DestinationPath $stagingDir -Force
+                $unpacked = Join-Path $stagingDir "node-$nodeVersion-win-x64"
+                if (-not (Test-Path (Join-Path $unpacked "node.exe"))) {
+                    throw "unpacked archive has no node.exe at $unpacked"
+                }
+                # Move an existing folder aside rather than deleting it. We only
+                # get here because node is not on PATH, so whatever is there is
+                # broken or stale - but it is still the user's, and a silent
+                # recursive delete of a folder under LOCALAPPDATA is not ours to
+                # make. Same .bak-<stamp> convention the rest of the install uses.
+                if (Test-Path $nodeHome) {
+                    $shelved = "$nodeHome.bak-$(Get-Date -Format 'yyyy-MM-dd-HHmm')"
+                    Move-Item -LiteralPath $nodeHome -Destination $shelved -ErrorAction SilentlyContinue
+                    if (Test-Path $nodeHome) { throw "could not move the existing $nodeHome aside" }
+                    Warn (T "Moved a previous $nodeHome aside to $shelved." `
+                            "Se movio el $nodeHome anterior a $shelved.")
+                }
+                Move-Item -LiteralPath $unpacked -Destination $nodeHome
+                $userScopedNode = $true
+                Remove-Item $nodeZip -Force -ErrorAction SilentlyContinue
+                Remove-Item $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+                Add-UserPathEntry $nodeHome
+                # npm's global prefix on Windows is %APPDATA%\npm. The MSI adds
+                # that to PATH; a ZIP install does not, so `npm install -g
+                # @anthropic-ai/claude-code` (the very next step) would succeed
+                # and still leave `claude` unrunnable. Put it on PATH too.
+                $npmGlobal = "$env:APPDATA\npm"
+                if (-not (Test-Path $npmGlobal)) { New-Item -ItemType Directory -Path $npmGlobal -Force | Out-Null }
+                Add-UserPathEntry $npmGlobal
+                Ok (T "Node.js installed at $nodeHome (user-scoped)." `
+                       "Node.js instalado en $nodeHome (solo para este usuario).")
+            }
         } catch {
             Err "Node install failed: $_"
         }
     }
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    # A user-scoped install lives on the USER PATH, which the line above does
+    # pick up - but only after Add-UserPathEntry persisted it. Re-assert the
+    # in-process entries so this same run can call node/npm immediately.
+    #
+    # Gated on $userScopedNode, NOT on the folder existing: a LEFTOVER
+    # %LOCALAPPDATA%\nodejs from an earlier run would otherwise be prepended
+    # ahead of a per-machine install we just made, and the stale copy would win
+    # every `node` call from here on.
+    if ($userScopedNode) {
+        Add-UserPathEntry "$env:LOCALAPPDATA\nodejs"
+        Add-UserPathEntry "$env:APPDATA\npm"
+    }
 }
 if (Have node) { Ok "node $(node --version)" } else { Err "node install failed" }
 
@@ -610,6 +782,48 @@ if (Have graphify) { Ok "graphify" } else { Err "graphify install failed" }
 #   - Stashes local uncommitted changes before pulling
 #   - Detects DIVERGENT history (your fork has commits not on origin/main)
 #     and refuses to pull, so your fork is never silently overwritten
+# Adopt-ArchiveInstall DIR REPOURL - turn a directory that holds this repo's
+# files but no .git (the archive entry path, for a machine with no git) into a
+# real clone, so the self-update path below works on every later run. Returns
+# $true on success. A $false is NON-FATAL to the caller: archive content is
+# complete and functional, and only auto-update depends on this.
+#
+# NEVER destroys local edits. A bare `reset --hard` would silently discard a
+# hand-patched archive install, so the tree is staged and diffed against
+# origin/main first; anything that differs is copied aside under the same
+# .bak-<stamp> convention this installer already uses for Node.
+function Adopt-ArchiveInstall {
+    param([string]$Dir, [string]$RepoUrl)
+    # git writes progress/notices to stderr, which PowerShell 5.1 turns into a
+    # terminating error under Stop even with 2>$null. Same guard the self-update
+    # section below uses; $LASTEXITCODE checks are unaffected.
+    $eapAdopt = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    Push-Location $Dir
+    try {
+        Remove-Item -LiteralPath "$Dir\.adopt-backup-path" -Force -ErrorAction SilentlyContinue
+        git init -q 2>$null;                       if ($LASTEXITCODE -ne 0) { return $false }
+        git remote remove origin 2>$null | Out-Null
+        git remote add origin $RepoUrl 2>$null;    if ($LASTEXITCODE -ne 0) { return $false }
+        git fetch --quiet origin main 2>$null;     if ($LASTEXITCODE -ne 0) { return $false }
+        git add -A 2>$null | Out-Null
+        git diff --cached --quiet origin/main 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            $shelved = "$Dir.bak-$(Get-Date -Format 'yyyy-MM-dd-HHmm')"
+            Copy-Item -LiteralPath $Dir -Destination $shelved -Recurse -Force
+            if (-not (Test-Path -LiteralPath $shelved)) { return $false }
+            Set-Content -LiteralPath "$Dir\.adopt-backup-path" -Value $shelved
+        }
+        git reset --hard --quiet origin/main 2>$null; if ($LASTEXITCODE -ne 0) { return $false }
+        git branch -q -M main 2>$null | Out-Null
+        git branch -q --set-upstream-to=origin/main main 2>$null | Out-Null
+        return $true
+    } finally {
+        Pop-Location
+        $ErrorActionPreference = $eapAdopt
+    }
+}
+
 Hdr "Installing the ai-brain-starter skill"
 New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.claude\skills" | Out-Null
 if (Test-Path "$SkillDir\.git") {
@@ -675,6 +889,32 @@ if (Test-Path "$SkillDir\.git") {
     }
     Pop-Location
     $ErrorActionPreference = $eapSelfUpdate
+} elseif (Test-Path "$SkillDir\bootstrap.ps1") {
+    # The directory holds this repo's files but has no .git: the entry command
+    # fetched a zip because git was unavailable. `git clone` into a non-empty
+    # directory FAILS, and that failure used to land in the red actionable list -
+    # trading a missing-git block for a scary-looking one. Adopt instead.
+    if (-not (Have git)) {
+        Warn (T "Installed from an archive, and git isn't available yet - automatic updates stay off until git is installed." `
+                "Instalado desde un archivo, y git todavia no esta disponible - las actualizaciones automaticas quedan apagadas hasta instalar git.")
+        $script:Skipped += "ai-brain-starter clone (archive install, git unavailable)"
+    }
+    elseif ($DryRun) { Dry "would: adopt $SkillDir as a git clone of $RepoUrl" }
+    elseif (Adopt-ArchiveInstall -Dir $SkillDir -RepoUrl $RepoUrl) {
+        if (Test-Path "$SkillDir\.adopt-backup-path") {
+            Warn (T "Local changes were found in the archive install. A copy is at:" `
+                    "Se encontraron cambios locales en la instalacion por archivo. Hay una copia en:")
+            Warn ("  " + (Get-Content -LiteralPath "$SkillDir\.adopt-backup-path" -ErrorAction SilentlyContinue))
+        }
+        $script:Installed += "ai-brain-starter clone (adopted from archive install)"
+    }
+    else {
+        # Non-fatal: the archive content is complete and functional. Only
+        # auto-update needs the git wiring, so this is a Warn, never an Err.
+        Warn (T "Couldn't reconnect the archive install to the repository - automatic updates stay off. Everything else works." `
+                "No se pudo reconectar la instalacion por archivo al repositorio - las actualizaciones automaticas quedan apagadas. Todo lo demas funciona.")
+        $script:Skipped += "ai-brain-starter clone (archive install, adopt failed)"
+    }
 } else {
     if ($DryRun) { Dry "would: git clone $RepoUrl -> $SkillDir" }
     elseif (-not (Run-Native { git clone --quiet $RepoUrl $SkillDir })) { Err "ai-brain-starter clone failed (git exit $LASTEXITCODE)" }

@@ -8,9 +8,20 @@
 # `[ -f X ] &&` guard -- must NOT false-flag the hook as "missing". A genuinely
 # removed script MUST still warn.
 #
-# Fails on revert: if identity normalization, the v2 snapshot format, legacy
-# raw-string migration, or the --refresh flag regresses, an assertion flips and
-# the script exits non-zero.
+# Also guards the WINDOWS half (MYC-3880). The installer rewrites every hook into
+# a launcher shim -- `py -3 "<abs>\scripts\hook_runner.py" --fallback silent
+# "<abs>\hooks\<hook>.py"` -- which the old identity regex could not parse at all
+# (no `~`, no `/`), so all 19 Windows commands fell through to a `c[:100]` text
+# branch whose first 100 chars are the SAME launcher preamble for every hook.
+# Measured on a real install: 25 wired commands -> 7 identities, 19 of them fused
+# into one. Deleting any single one of those 19 could not be detected. Scenarios
+# 8-10 below drive that end to end; the hook's own --self-test (scenario 0)
+# carries the hermetic per-form controls.
+#
+# Fails on revert: if identity normalization, the v3 snapshot format, the
+# pre-v3 re-baseline, legacy raw-string migration, the Windows shim resolution,
+# or the --refresh flag regresses, an assertion flips and the script exits
+# non-zero.
 #
 # Isolation: each scenario runs the guard under a throwaway $HOME so it reads a
 # fake settings.json and writes a fake state file -- the real ~/.claude is never
@@ -52,8 +63,8 @@ with open(path, "w") as f:
 PY
 }
 
-# write_legacy_snapshot <home> <rawcommand...> -- the pre-fix format: a bare JSON
-# list of raw command strings (no {"v":2} wrapper). Must normalize on read.
+# write_legacy_snapshot <home> <rawcommand...> -- the pre-versioning format: a
+# bare JSON list of raw command strings (no {"v":N} wrapper). Must normalize on read.
 write_legacy_snapshot() {
   local home="$1"; shift
   mkdir -p "$home/.claude/state"
@@ -64,6 +75,27 @@ with open(path, "w") as f:
     f.write(json.dumps(sorted(cmds), indent=2))
 PY
 }
+
+# write_v2_snapshot <home> <identity...> -- a v2 snapshot, the format shipped
+# before the Windows shim fix. Its identities came from the OLD function, so they
+# are NOT comparable to v3 ones and must trigger a silent re-baseline.
+write_v2_snapshot() {
+  local home="$1"; shift
+  mkdir -p "$home/.claude/state"
+  python3 - "$home/.claude/state/sessionstart-hooks-snapshot.json" "$@" <<'PY'
+import json, sys
+path, idents = sys.argv[1], sys.argv[2:]
+with open(path, "w") as f:
+    f.write(json.dumps({"v": 2, "identities": sorted(idents)}, indent=2))
+PY
+}
+
+# win_cmd <hookbasename> -- exactly what install-hooks-user-level.py emits on
+# Windows. Hermetic absolute paths (never this machine's home) so the assertion
+# means the same thing on every runner.
+WIN_RUNNER='C:\Users\dev\.claude\skills\ai-brain-starter\scripts\hook_runner.py'
+WIN_HOOKS='C:\Users\dev\.claude\skills\ai-brain-starter\hooks'
+win_cmd() { printf 'py -3 "%s" --fallback silent "%s\\%s"' "$WIN_RUNNER" "$WIN_HOOKS" "$1"; }
 
 # run_guard <home> [args...] ; sets RC + OUT + ERR
 run_guard() {
@@ -77,7 +109,17 @@ run_guard() {
 echo "=== precondition ==="
 [ -f "$GUARD" ] && ok "guard exists" || bad "guard exists" "missing $GUARD"
 
-echo "=== scenario 1: first run baselines silently, writes v2 ==="
+echo "=== scenario 0: the guard's own hermetic identity controls ==="
+# Per-form controls for _script_identity() + the snapshot version rules: every
+# Windows launcher-shim flavour resolves to its TARGET basename, 19 distinct
+# Windows commands yield 19 distinct identities (the pre-fix function yielded 1),
+# identity keys are never truncated, and a pre-v3 snapshot re-baselines. Reads
+# neither settings.json nor the state file, so it needs no sandbox.
+SELFTEST_OUT="$(python3 "$GUARD" --self-test 2>&1)"; SELFTEST_RC=$?
+[ "$SELFTEST_RC" = 0 ] && ok "guard --self-test passes" \
+  || bad "guard --self-test passes" "rc=$SELFTEST_RC :: ${SELFTEST_OUT:0:400}"
+
+echo "=== scenario 1: first run baselines silently, writes v3 ==="
 H1="$(newhome)"
 # literal ~ is the raw settings.json command text under test, not a path to expand
 # shellcheck disable=SC2088
@@ -90,7 +132,7 @@ assert_rc     "first run exits 0" 0
 assert_silent "first run is silent (baseline)"
 SF1="$(state_file "$H1")"
 [ -f "$SF1" ] && ok "baseline writes snapshot" || bad "baseline writes snapshot" "absent"
-grep -q '"v": 2' "$SF1" 2>/dev/null && ok "snapshot is v2 format" || bad "snapshot is v2 format" "$(head -1 "$SF1" 2>/dev/null)"
+grep -q '"v": 3' "$SF1" 2>/dev/null && ok "snapshot is v3 format" || bad "snapshot is v3 format" "$(head -1 "$SF1" 2>/dev/null)"
 python3 -c "import json;d=json.load(open('$SF1'));assert sorted(d['identities'])==['bar.sh','baz.py||--flag','foo.py'],d" 2>/dev/null \
   && ok "baseline captured 3 script identities" || bad "baseline captured 3 script identities" "$(cat "$SF1" 2>/dev/null)"
 
@@ -160,6 +202,68 @@ assert_silent "new hook added -> absorbed silently"
 SF4="$(state_file "$H4")"
 python3 -c "import json;d=json.load(open('$SF4'));assert 'new.py' in d['identities'],d" 2>/dev/null \
   && ok "addition recorded in snapshot" || bad "addition recorded in snapshot" "$(cat "$SF4" 2>/dev/null)"
+
+echo "=== scenario 8: Windows shim form -> one identity PER HOOK, not per launcher ==="
+# The MYC-3880 regression, end to end. Before the fix these three commands shared
+# a single identity (the 100-char launcher preamble), so the baseline recorded
+# ONE hook where three are wired.
+H5="$(newhome)"
+write_settings "$H5" \
+  "$(win_cmd session-start-context.py)" \
+  "$(win_cmd heal-journal-guard.py)" \
+  "$(win_cmd lint-claude-settings.py)"
+run_guard "$H5"
+assert_rc     "windows baseline exits 0" 0
+assert_silent "windows baseline is silent"
+SF5="$(state_file "$H5")"
+python3 -c "import json;d=json.load(open('$SF5'));assert sorted(d['identities'])==['heal-journal-guard.py','lint-claude-settings.py','session-start-context.py'],d" 2>/dev/null \
+  && ok "windows form -> 3 TARGET basenames (not 1 launcher)" \
+  || bad "windows form -> 3 TARGET basenames (not 1 launcher)" "$(cat "$SF5" 2>/dev/null)"
+grep -q 'hook_runner' "$SF5" 2>/dev/null \
+  && bad "identity is the target, never the launcher" "snapshot names hook_runner: $(cat "$SF5")" \
+  || ok "identity is the target, never the launcher"
+
+echo "=== scenario 9: dropping ONE of the windows hooks warns (was undetectable) ==="
+# The whole point. Pre-fix, the two survivors kept the shared identity alive and
+# the guard stayed silent; it could only fire if ALL of them vanished at once.
+write_settings "$H5" \
+  "$(win_cmd session-start-context.py)" \
+  "$(win_cmd lint-claude-settings.py)"
+run_guard "$H5"
+assert_rc    "windows drop run exits 0" 0
+assert_warns "dropping 1 of 3 windows hooks warns"
+assert_has   "names the dropped TARGET hook" "heal-journal-guard.py"
+# A surviving sibling must NOT be reported missing -- that is the cry-wolf the
+# identity diff exists to prevent.
+case "$OUT" in
+  *lint-claude-settings.py*) bad "survivors not false-flagged" "reported a wired hook missing: ${OUT:0:120}" ;;
+  *) ok "survivors not false-flagged" ;;
+esac
+
+echo "=== scenario 10: a v2 snapshot re-baselines silently (no 19-hooks-missing) ==="
+# v2 identities came from the OLD function; the Windows ones were a collapsed
+# launcher preamble. Comparing or re-normalizing them against v3 identities would
+# hand every Windows user a fleet-wide false alarm on the first run after the fix.
+H6="$(newhome)"
+write_v2_snapshot "$H6" \
+  'py -3 "C:\Users\dev\.claude\skills\ai-brain-starter\scripts\hook_runner.py" --fallback silent "C:\' \
+  'check-claude-code-version.sh'
+write_settings "$H6" \
+  "$(win_cmd session-start-context.py)" \
+  "$(win_cmd heal-journal-guard.py)"
+run_guard "$H6"
+assert_rc     "v2 upgrade run exits 0" 0
+assert_silent "v2 snapshot -> silent re-baseline, no false 'missing'"
+SF6="$(state_file "$H6")"
+grep -q '"v": 3' "$SF6" 2>/dev/null && ok "v2 snapshot rewritten as v3" || bad "v2 snapshot rewritten as v3" "$(head -3 "$SF6" 2>/dev/null)"
+python3 -c "import json;d=json.load(open('$SF6'));assert sorted(d['identities'])==['heal-journal-guard.py','session-start-context.py'],d" 2>/dev/null \
+  && ok "re-baseline captures current identities" || bad "re-baseline captures current identities" "$(cat "$SF6" 2>/dev/null)"
+# And the NEXT drop after the re-baseline still warns -- the migration absorbs
+# one diff, it does not disarm the guard.
+write_settings "$H6" "$(win_cmd session-start-context.py)"
+run_guard "$H6"
+assert_warns "post-migration drop still warns"
+assert_has   "post-migration warning names the hook" "heal-journal-guard.py"
 
 echo ""
 echo "=== SUMMARY: $PASS passed, $FAIL failed ==="

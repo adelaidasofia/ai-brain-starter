@@ -74,9 +74,19 @@ _GUARD_PATH_RE = re.compile(
     r"|'([^'\n]*" + re.escape(GUARD_BASENAME) + r")'"
     r"|((?:~|/|[A-Za-z]:[\\/])[^\s'\"|&;]*" + re.escape(GUARD_BASENAME) + r")"
 )
-# The installed vault hooks embed the absolute vault path right before the meta folder;
-# same regex sync-vault-scripts.sh uses, so both resolve the identical root.
-_VAULT_FROM_CMD_RE = re.compile(r"(/[^'\"]+?)/(?:⚙️ Meta|Meta)/scripts/")
+# The installed vault hooks embed the absolute vault path right before the meta folder.
+# SAME three roots as the guard regex above (POSIX / drive letter / UNC share) and EITHER
+# separator, because the Windows installer writes `C:\...\<vault>\⚙️ Meta\scripts\...`.
+# A `/`-only pattern matched no Windows command at all, so resolve_vault() returned "" and
+# preflight_state() answered 'no-vault' on every Windows box -- which has_gap() does not
+# count, so the preflight check AND its repair were structurally dead there. That is the
+# quiet half of issues #370/#394: not a false nag, a SILENT no-op (a Windows account with
+# journal-preflight.py missing reads as healthy). Kept byte-identical to the regex inlined
+# in sync-vault-scripts.sh + .ps1 so all three resolve the identical root; the self-test
+# pins that parity. Over-matching stays harmless: the caller still is_dir()s the result.
+_VAULT_FROM_CMD_RE = re.compile(
+    r"((?:[A-Za-z]:)?[\\/][^'\"]+?)[\\/](?:⚙️ Meta|Meta)[\\/]scripts[\\/]"
+)
 
 
 # --------------------------------------------------------------------------- helpers
@@ -165,9 +175,70 @@ def healthy_matchers(settings: dict) -> "set":
     return ok
 
 
-def resolve_vault(settings: dict) -> "str":
-    """Vault root from $VAULT_ROOT, else parsed out of an installed vault-hook command.
-    Empty string when no vault can be resolved (a box with no vault set up yet)."""
+def _discover_vault() -> "str":
+    """The one unambiguous vault among home's immediate children, else "".
+
+    Last resort, reached only when BOTH of resolve_vault's ordinary sources are
+    unavailable -- which on Windows is the normal case, not an edge case (see
+    resolve_vault). A directory is a vault candidate only if it actually holds
+    `<meta>/scripts/`, so this is evidence, not the "guessed ~/vault" the module
+    has always refused to fall back to.
+
+    Deliberately refuses to choose when the evidence is ambiguous: EXACTLY ONE
+    candidate returns, zero or many return "". Healing the wrong vault would
+    write a preflight into someone else's notes, which is worse than staying
+    inert. Immediate children only -- never a corpus walk (this runs on every
+    SessionStart)."""
+    try:
+        home = Path.home()
+        found = []
+        for child in sorted(home.iterdir()):
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            for meta in ("⚙️ Meta", "Meta"):
+                if (child / meta / "scripts").is_dir():
+                    found.append(str(child))
+                    break
+        return found[0] if len(found) == 1 else ""
+    except (OSError, RuntimeError):
+        return ""
+
+
+def resolve_vault(settings: dict, explicit: "str | None" = None) -> "str":
+    """Vault root from an explicit --vault, else $VAULT_ROOT, else parsed out of an
+    installed vault-hook command, else the one unambiguous vault under home.
+    Empty string when no vault can be resolved (a box with no vault set up yet).
+
+    WHY THE LAST TWO SOURCES EXIST (MYC-3875). The command parse is structurally
+    dead on Windows: the only commands carrying `<vault>/<meta>/scripts/` are the
+    POSIX `bash` vault hooks, and platformize_for_windows() DROPS every bash hook
+    before settings.json is written. Measured on a real Windows install -- both a
+    fresh one and a long-lived one -- ZERO commands match. #485 widened the regex
+    to accept drive letters and backslashes, which was correct but insufficient: a
+    widened pattern cannot match input that is no longer present.
+
+    $VAULT_ROOT does not cover it either. Measured on the same box: unset in the
+    process, unset at User and Machine scope, and settings.json carries no `env`
+    block to export it to hooks. So on Windows BOTH ordinary sources returned ""
+    -> preflight_state() answered 'no-vault' -> has_gap() does not count that ->
+    the preflight check AND its repair were a silent no-op, and an account
+    genuinely missing journal-preflight.py read as healthy.
+
+    `explicit` comes first so the CHECK and the REPAIR agree about the vault:
+    repair_preflight() already honored --vault while diagnose() did not, so the
+    two could disagree on which vault was being talked about.
+
+    NOTE this function stays HERMETIC on purpose: it never touches the filesystem
+    looking for a vault nobody named. _discover_vault() is the production-only
+    last resort and is called by run_session_start(), not from here -- folding it
+    in here would make the hermetic 'no-vault' controls in self_test() depend on
+    whatever vaults happen to sit in the developer's real home."""
+    # Each source is honored only when it names a real directory.
+    if explicit and Path(explicit).is_dir():
+        return str(explicit)
+    # vault-root-ok: per-ACCOUNT healer (it repairs ~/.claude, not a vault file), so
+    # there is no target file to resolve a root from - the installed commands ARE the
+    # per-vault signal, and they are the next fallback below.
     env = os.environ.get("VAULT_ROOT")
     if env and Path(env).is_dir():
         return env
@@ -180,9 +251,9 @@ def resolve_vault(settings: dict) -> "str":
     return ""
 
 
-def preflight_state(settings: dict) -> str:
+def preflight_state(settings: dict, explicit_vault: "str | None" = None) -> str:
     """'ok' | 'missing' | 'no-vault' for journal-preflight.py in the vault's meta scripts."""
-    vault = resolve_vault(settings)
+    vault = resolve_vault(settings, explicit_vault)
     if not vault:
         return "no-vault"
     for meta in ("⚙️ Meta", "Meta"):
@@ -191,15 +262,15 @@ def preflight_state(settings: dict) -> str:
     return "missing"
 
 
-def diagnose(settings: dict, clone: Path) -> dict:
+def diagnose(settings: dict, clone: Path, explicit_vault: "str | None" = None) -> dict:
     """Pure. Returns the gap report; no side effects, no subprocess, no filesystem walk."""
     want = wanted_matchers(clone)
     have = healthy_matchers(settings)
     return {
         "missing_matchers": sorted(want - have),
         "want_matchers": sorted(want),
-        "preflight": preflight_state(settings),
-        "vault": resolve_vault(settings),
+        "preflight": preflight_state(settings, explicit_vault),
+        "vault": resolve_vault(settings, explicit_vault),
     }
 
 
@@ -359,6 +430,15 @@ def run_session_start() -> None:
         settings_path = Path.home() / ".claude" / "settings.json"
         settings = _read_json(settings_path)
         report = diagnose(settings, clone)
+        # On Windows BOTH of resolve_vault's ordinary sources are normally absent
+        # (the bash vault hooks are dropped at install, and VAULT_ROOT is unset),
+        # so the preflight half would silently never run. Fall back to discovering
+        # the one unambiguous vault under home. Production-only: kept out of
+        # resolve_vault() so the hermetic controls stay hermetic (MYC-3875).
+        if report["preflight"] == "no-vault":
+            discovered = _discover_vault()
+            if discovered:
+                report = diagnose(settings, clone, discovered)
     except Exception:
         _emit_silent()
         return
@@ -430,13 +510,19 @@ def cmd_check_only(args) -> int:
         Path(args.settings).expanduser() if args.settings
         else Path.home() / ".claude" / "settings.json"
     )
-    report = diagnose(_read_json(settings_path), clone)
+    report = diagnose(_read_json(settings_path), clone, args.vault)
     gap = has_gap(report)
     print(
         "GAP" if gap else "OK",
         "missing_matchers=" + ",".join(report["missing_matchers"] or ["-"]),
         "preflight=" + report["preflight"],
     )
+    if report["preflight"] == "no-vault":
+        # Not a gap (fail-open by design), but never silent: 'no-vault' means the
+        # preflight half of this check did not RUN, and the pre-#485 symptom was
+        # exactly a clean 'OK' that had verified nothing (MYC-3875).
+        print("  note: vault unresolved, so the preflight half of this check did "
+              "NOT run. Pass --vault, or set VAULT_ROOT, to make it meaningful.")
     return 1 if gap else 0
 
 
@@ -449,7 +535,11 @@ def cmd_heal_now(args) -> int:
         else Path.home() / ".claude" / "settings.json"
     )
     settings = _read_json(settings_path)
-    report = diagnose(settings, clone)
+    # --vault threads into the DIAGNOSIS too, not just the repair below. Before
+    # MYC-3875 it reached only repair_preflight(), so the check could answer
+    # 'no-vault' about one vault while the repair targeted another -- and since
+    # 'no-vault' is not a gap, the repair then never ran at all.
+    report = diagnose(settings, clone, args.vault)
     if report["missing_matchers"]:
         repair_registration(settings_path, clone)
     if report["preflight"] == "missing":
@@ -565,6 +655,63 @@ def self_test() -> int:
         check("path-win-space-in-home",
               guard_path_in(f'py "{runner}" --fallback allow "{win_s}"') == win_s)
         check("path-absent-is-none", guard_path_in("python3 /some/other-hook.py") is None)
+
+        # VAULT-PATH controls (issues #370, #394). resolve_vault() parses the vault root
+        # out of an installed vault-hook command. A `/`-only pattern matched NO Windows
+        # command, so preflight_state() answered 'no-vault' on every Windows box and the
+        # preflight check + repair branch never ran there. That is a SILENT no-op, not a
+        # visible nag: a Windows account MISSING journal-preflight.py reads as healthy.
+        # The win-*/unc-* cases below FAIL on the pre-fix regex - they are its negative
+        # control; the posix-* ones pin that widening it did not regress macOS/Linux.
+        def vroot(cmd):
+            m = _VAULT_FROM_CMD_RE.search(cmd)
+            return m.group(1) if m else None
+
+        win_v = "C:\\Users\\dev\\vault"
+        unc_v = "\\\\server\\share\\vault"
+        check("vault-posix-decorated",
+              vroot(f"python3 /Users/d/vault/⚙️ Meta/scripts/{PREFLIGHT_BASENAME}")
+              == "/Users/d/vault")
+        check("vault-posix-plain-meta",
+              vroot(f"python3 /home/u/v/Meta/scripts/{PREFLIGHT_BASENAME}") == "/home/u/v")
+        check("vault-posix-quoted-space",
+              vroot(f'python3 "/Users/d/my vault/⚙️ Meta/scripts/{PREFLIGHT_BASENAME}"')
+              == "/Users/d/my vault")
+        check("vault-win-quoted",
+              vroot(f'py -3 "{win_v}\\⚙️ Meta\\scripts\\{PREFLIGHT_BASENAME}"') == win_v)
+        check("vault-win-space-in-home",
+              vroot(f'py -3 "C:\\Users\\dev user\\vault\\⚙️ Meta\\scripts\\{PREFLIGHT_BASENAME}"')
+              == "C:\\Users\\dev user\\vault")
+        # Full installed Windows form. The runner path ALSO contains `\scripts\`, so this
+        # proves the anchor is <meta>\scripts\ and we pick the VAULT, not the first path.
+        check("vault-win-full-command",
+              vroot(f'py -3 "{runner}" --fallback allow '
+                    f'"{win_v}\\⚙️ Meta\\scripts\\{PREFLIGHT_BASENAME}"') == win_v)
+        check("vault-unc-share",
+              vroot(f'py -3 "{unc_v}\\⚙️ Meta\\scripts\\{PREFLIGHT_BASENAME}"') == unc_v)
+        # Over-matching is the other failure mode: a path regex that matches arbitrary
+        # text is its own bug. Neither of these names a vault.
+        check("vault-absent-is-none", vroot("python3 /some/other-hook.py") is None)
+        check("vault-absent-win-is-none",
+              vroot('py -3 "C:\\Users\\dev\\.claude\\hooks\\other.py"') is None)
+        # END-TO-END on THIS platform: resolve_vault() must still return a REAL directory
+        # parsed out of a command. Its is_dir() half can only hold where the path exists,
+        # so the Windows forms above are proven at the PARSE layer - which is where the
+        # bug lived - and this control proves the parse still feeds the real resolver.
+        e2e_vault = root / "e2e vault"
+        (e2e_vault / "⚙️ Meta" / "scripts").mkdir(parents=True)
+        check("vault-resolve-end-to-end", resolve_vault({"hooks": {"SessionStart": [
+            {"hooks": [{"type": "command", "command":
+                        f'python3 "{e2e_vault}/⚙️ Meta/scripts/{PREFLIGHT_BASENAME}"'}]}]}})
+              == str(e2e_vault))
+        # PARITY: the identical regex is inlined in sync-vault-scripts.sh and .ps1, which
+        # resolve the same vault for the repair this healer invokes. Pin the three together
+        # so a fix to one can never silently leave the others POSIX-only.
+        for _sib in ("sync-vault-scripts.sh", "sync-vault-scripts.ps1"):
+            _p = clone_root() / "scripts" / _sib
+            if _p.is_file():
+                check("vault-regex-parity-" + _sib,
+                      _VAULT_FROM_CMD_RE.pattern in _p.read_text(encoding="utf-8"))
 
         # PREFLIGHT diagnose: no vault -> 'no-vault'; vault with the file -> 'ok'; without
         # -> 'missing'. (The subprocess repair is exercised end-to-end in the .sh test.)

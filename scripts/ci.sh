@@ -170,6 +170,7 @@ INTEGRATION_TESTS=(
   test_detect_closing_signal_repo_aware_vault
   test_detect_closing_signal_goal_clear
   test_close_phase_numbering_aligned
+  test_phase_chain_contract
   test_closing_claim_shared
   test_meta_resolver
   test_meta_resolution_guard
@@ -193,9 +194,12 @@ INTEGRATION_TESTS=(
   test_windows_platformize
   test_memory_routing_guard
   test_bootstrap_omits_vault_hooks
+  test_bootstrap_archive_entry
   test_bootstrap_brew_terminal_step
   test_bootstrap_optional_packs_soft_fail
   test_bootstrap_corporate_profile
+  test_bootstrap_userspace_fallback
+  test_preflight_git_and_it_request
   test_remediate_runaway_procs
   test_scan_prior_single_instance
   test_scan_prior_failclosed_scrub
@@ -206,6 +210,7 @@ INTEGRATION_TESTS=(
   test_vault_safety_guards
   test_vault_backup_conf_bom
   test_backup_staleness_surfaces
+  test_home_fingerprint_noise
   test_scheduled_task_registration
   test_vault_backup_task_healing
   test_resource_aware_session_close
@@ -236,6 +241,7 @@ INTEGRATION_TESTS=(
   # Wired 2026-07-02 — found dormant by the gate-coverage invariant below.
   # These existed on disk, passed locally, and never ran in CI.
   test_detect_closing_signal_strict_guards
+  test_detect_closing_signal_es_guards
   test_journal_index_localized_dir
   test_inject_meeting_workflow_truncation_flag
   test_install_path_verification
@@ -310,6 +316,15 @@ INTEGRATION_TESTS=(
   # every tool call. This static half runs on Linux CI, where the runtime
   # tripwire below cannot see the bug because HOME works there.
   test_home_sandbox_hermeticity
+  # bash-3.2 portability (2026-08-15): the guard above built its offender list
+  # with `mapfile`, a bash-4 builtin macOS /bin/bash does not have. Under
+  # `set -u` without `-e` that is non-fatal, so its primary check evaluated
+  # NOTHING on every Mac while the file still printed PASS and exited 0; the
+  # same defect left hooks/rotate-logs.sh rotating no logs at all. Neither
+  # existing gate can see the class: the bash32-syntax job is `-n` only and all
+  # of these PARSE on 3.2 (they fail at run time), and shellcheck has no
+  # bash-version model. Static, so it gives the same verdict on any runner.
+  test_bash32_portability
   # Root cause of the same incident: the runner path baked into settings.json
   # came from Path(__file__), so installing from a throwaway worktree wired ~95
   # hooks to a path that vanished with it. Pins the resolution to the INSTALLED
@@ -330,6 +345,17 @@ INTEGRATION_TESTS=(
   # and the shipped command actually BLOCKS a seeded secret while passing a
   # clean payload.
   test_installer_registers_mcp_secret_guards
+  # Skip-prefix privacy guard: a `__SKIP` line is content the user told the
+  # assistant NOT to persist, and a persisted line cannot be un-persisted (file
+  # + git history + any index over the vault). Every assertion carries a
+  # negative control, because a guard that blocks everything and one that blocks
+  # the right thing produce identical PASSes on a block-only suite.
+  test_skip_prefix_guard
+  # Journal-context guard vs Windows paths. Its patterns are forward-slash only,
+  # so a `C:\vault\Journals\...` write matched nothing and the gate never opened
+  # — silently, on a whole platform. Two layers must hold (the path gate AND the
+  # vault-root resolve); fixing only the first looks right and still fails open.
+  test_journal_guard_windows_paths
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new
@@ -457,7 +483,32 @@ WATCH_GLOBS = [
 #   trips    installer backup left behind (.bak-*)
 #   trips    the SessionStart snapshot rewritten
 #   ignores  append-only .log / .jsonl grows, lock dir churns, per-session
-#            scratch appears
+#            scratch appears, a hook runtime-state DOTFILE is rewritten
+#
+# DOTFILES, added 2026-08-13. ~/.claude/hooks/ is shared ground: this repo's
+# deployed hooks sit there alongside whatever private tooling the operator has
+# installed, and that tooling drops last-run stamps right beside them. Measured
+# on one machine: 8 dotfiles, 7 of them pure runtime state --
+# .mcp-config-secret-scan-last, .last-secret-scan, .last-secret-scan-full,
+# .secret-scan-findings.json, .pre-push-doubt-heeding.stamp,
+# .deployed-manifest.sha256, .secret-scan.lock. Only .gitignore is durable, and
+# nothing this gate protects is a dotfile.
+#
+# CHURN_SUFFIXES cannot catch them: .stamp, .sha256, .json and a bare
+# extensionless marker are four spellings of one behaviour, and the next hook
+# adds a fifth. That is the open set this file's own comment warns about ("a
+# denylist against an open set always loses"), so exclude by the PROPERTY that
+# separates them: deployed hook code is never a dotfile. Every entry in
+# install-hooks-user-level.py's HOME_HOOKS_INSTALLER_DEPLOYS and every
+# ABS-owned basename is a named *.py / *.sh.
+#
+# Caught live: a background secret-scan hook rewrote
+# hooks/.mcp-config-secret-scan-last 91 seconds into a gate run and reddened
+# test_bootstrap_dry_run -- a test that touches neither file. Re-running that
+# test alone, on that branch AND on a pristine origin/main, tripped nothing.
+# That is precisely the "reddens an unrelated test and trains a bypass" outcome
+# the quiet control below exists to prevent, arriving through a gap in the walk
+# the quiet control does not inspect.
 CHURN_SUFFIXES = (".log", ".jsonl")
 
 seen = []
@@ -473,6 +524,8 @@ for tree in WATCH_TREES:
             fp = Path(root) / name
             if fp.suffix in CHURN_SUFFIXES:
                 continue
+            if name.startswith("."):
+                continue  # hook runtime state, never deployed hook code
             try:
                 st = fp.stat()
             except OSError:
@@ -486,9 +539,26 @@ for pattern in WATCH_GLOBS:
             continue
         seen.append(f"{os.path.basename(match)}:{st.st_size}:{st.st_mtime!r}")
 
-parts.append("tree=" + hashlib.sha256("\n".join(seen).encode()).hexdigest()[:16])
-parts.append("files=%d" % len(seen))
-print(" ".join(parts))
+# MANIFEST mode names the paths the digest only summarises (MYC-3721 work item
+# 1: "print WHAT changed, not just that something did"). Same walk, same trees,
+# same exclusions -- deliberately one function, because a second implementation
+# would drift from the digest it exists to explain, and would then name paths
+# the gate never actually compared.
+#
+# Emitted as one sortable line per watched entry so callers can diff two
+# manifests and print only what moved. The three settings.json components are
+# spelled out rather than hashed together, so a content rewrite, a pure mtime
+# touch and a stray .bak-* are told apart on sight.
+if os.environ.get("FINGERPRINT_MANIFEST"):
+    print("settings.json content=%s" % parts[0])
+    for extra in parts[1:]:
+        print("settings.json %s" % extra)
+    for line in seen:
+        print(line)
+else:
+    parts.append("tree=" + hashlib.sha256("\n".join(seen).encode()).hexdigest()[:16])
+    parts.append("files=%d" % len(seen))
+    print(" ".join(parts))
 PY
 }
 
@@ -550,6 +620,12 @@ else:
                    "fingerprint walk")
     if 'endswith(".lock")' not in src:
         bad.append("the runtime lock-dir pruning is gone from the walk")
+    if 'name.startswith(".")' not in src:
+        bad.append('the dotfile exclusion is gone from the walk — ~/.claude/'
+                   'hooks/ is shared with the operator\'s private tooling, '
+                   'which drops last-run stamps (.stamp/.sha256/.json/no '
+                   'suffix) beside the deployed hooks; without this the gate '
+                   'reddens on whichever test happens to be running')
 
 if bad:
     print("::error::real-home tripwire quiet-control FAILED — the watched set "
@@ -559,14 +635,147 @@ if bad:
         print("::error::  - " + b)
     sys.exit(1)
 print("    tripwire quiet-control: fingerprint still excludes append-only "
-      "logs, lock dirs and per-session scratch")
+      "logs, lock dirs, runtime-state dotfiles and per-session scratch")
 PY
 }
+# ---- The tripwire watches a DECOY home, not the shared one ------------------
+#
+# WHY THE PER-TEST CHECK MOVED OFF THE REAL ~/.claude (2026-08-15)
+#
+# Everything above is about WHAT to watch. This is about WHOSE home, and it is
+# the half that kept failing. Fingerprinting the real ~/.claude before and after
+# each test and blaming the test that was running is attribution by WALL CLOCK,
+# not by causation. The real ~/.claude is shared ground: on a developer machine
+# the operator's own tooling writes to it continuously and asynchronously, so
+# whichever test happens to be executing when that lands is named as the
+# culprit. Three such failures were captured inside 30 minutes, each naming a
+# DIFFERENT innocent test:
+#
+#   blamed test_offmain_strand_guard   a launchd agent (StartInterval 900)
+#                                      re-derived settings.json
+#   blamed test_vault_safety_guards    a skill auto-sync ran the installer,
+#                                      which rewrote settings.json + a .bak-*
+#   blamed test_vault_root_read_guard  __pycache__/*.pyc rewritten by hooks
+#                                      firing in a concurrent session
+#
+# The third is the tell: settings.json content hash, mtime, baks count AND file
+# count were all IDENTICAL before and after — only tree= moved. No test did
+# anything. The comment block above already documents this exact shape twice
+# ("reddened test_bootstrap_dry_run — a test that touches neither file"), and
+# each time the answer was to widen the exclusions. That approach cannot finish:
+# the loudest remaining writers rewrite settings.json ITSELF, which is the one
+# file this gate exists to watch and can never exclude.
+#
+# So stop watching a resource other processes write. Point HOME and USERPROFILE
+# at a throwaway decoy for the duration of each test, and fingerprint THAT. The
+# decoy is private to one test, so nothing else on the machine can move it and a
+# mismatch is CAUSAL — no timing, no sleeps, no re-runs, no denylist.
+#
+# This also upgrades the gate from detection to PREVENTION. Previously a test
+# that escaped its sandbox really did corrupt the developer's live config and
+# the gate told you afterwards. Now that write lands in a tmpdir that is deleted
+# seconds later, and the gate still names the test.
+#
+# Coverage is unchanged: the same real_home_fingerprint() runs, with the same
+# watched trees, globs and exclusions, so real_home_quiet_control and
+# test_home_fingerprint_noise.sh keep asserting exactly what they always did.
+# Only Path.home() resolves somewhere safe.
+#
+# Verified before switching, against the whole suite: every test still passes
+# under a decoy home; ZERO change their assertion count (so nothing starts
+# passing vacuously because the deployed install is absent); and no test writes
+# any WATCHED path of the decoy — the only ~/.claude writes at all are three
+# tests creating empty dirs under projects/, which is already excluded.
+# (Measured at 106 tests, then re-swept at 111 once the suite grew; the sole
+# failure in the re-sweep was the pre-existing red the parent commit fixes.)
+#
+# The real home is still measured once around the whole suite, but ADVISORY:
+# with tests unable to reach it through "~", a change there is ambient by
+# construction, and failing on it is the bug this section fixes.
+_SANDBOX_LIB="$SCRIPT_DIR/../tests/integration/lib/sandbox_home.sh"
+if [ ! -f "$_SANDBOX_LIB" ]; then
+  # Fail loud. Without it there is no decoy, and every check below would compare
+  # an untouched empty dir against itself and pass vacuously.
+  echo "::error::missing $_SANDBOX_LIB — the integration tripwire cannot sandbox HOME without it, and would pass vacuously"
+  exit 1
+fi
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$_SANDBOX_LIB"
+
+# Fingerprint a decoy home with the real function. The subshell keeps the
+# sandbox exports from leaking into the gate itself.
+decoy_fingerprint() { ( sandbox_home "$1" >/dev/null; real_home_fingerprint ); }
+
+# The same two walks in MANIFEST mode, naming paths instead of digesting them.
+# Both run only on a mismatch, so they cost nothing at rest.
+decoy_manifest()     { ( sandbox_home "$1" >/dev/null; FINGERPRINT_MANIFEST=1 real_home_fingerprint ); }
+real_home_manifest() { FINGERPRINT_MANIFEST=1 real_home_fingerprint; }
+
+# Print only the manifest lines that differ, capped so a large drift cannot bury
+# the failure it is explaining.
+_manifest_delta() {
+  local before="$1" after="$2" delta n
+  # diff exits 1 whenever the two differ, which is the only case this is called
+  # in; set -e must not read that as an error.
+  delta="$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") || true)"
+  delta="$(printf '%s\n' "$delta" | sed -n -e 's/^> /      + /p' -e 's/^< /      - /p')"
+  [ -n "$delta" ] || { echo "      (no path-level delta — the change was in a component the manifest folds, e.g. settings.json mtime)"; return 0; }
+  n="$(printf '%s\n' "$delta" | wc -l | tr -d ' ')"
+  # `sed -n 1,20p`, never `head -20`: head closes the pipe at line 20, printf
+  # takes SIGPIPE, and under this script's `set -o pipefail` that aborts the
+  # whole gate. On the ADVISORY path that would kill a run over ambient churn —
+  # precisely the misattribution this section exists to prevent. sed reads to
+  # EOF, so it cannot SIGPIPE.
+  printf '%s\n' "$delta" | sed -n '1,20p'
+  [ "$n" -gt 20 ] && echo "      ... and $((n - 20)) more"
+  return 0
+}
+
+# Name the exact paths a test wrote into its decoy.
+#
+# The decoy's "before" state is RECONSTRUCTED rather than guessed: sandbox_home
+# only creates an empty <dir>/.claude, so a freshly-made decoy is byte-identical
+# to how this one started. Manifest lines are relative to ~/.claude (never the
+# tmpdir path) and an absent tree emits a bare "name:ABSENT" carrying no mtime,
+# so the two are directly comparable. That makes this a real diff, not a guess.
+decoy_written_paths() {
+  local fresh
+  fresh="$(mktemp -d)"
+  _manifest_delta "$(decoy_manifest "$fresh")" "$(decoy_manifest "$1")"
+  rm -rf "$fresh"
+}
+
+# BITE control for the decoy tripwire. The quiet control above proves the
+# fingerprint stays silent at rest; this proves it still SPEAKS. It runs a
+# synthetic test through the SAME run_sandboxed wrapper the real tests use, so
+# it exercises the wrapper too — a wrapper that failed to redirect HOME would
+# make every check below compare an empty decoy against itself and pass.
+decoy_tripwire_bite_control() {
+  local d before after
+  d="$(mktemp -d)"
+  before="$(decoy_fingerprint "$d")"
+  run_sandboxed "$d" bash -c 'mkdir -p "$HOME/.claude/hooks" && printf "print(1)\n" > "$HOME/.claude/hooks/escaped.py"'
+  after="$(decoy_fingerprint "$d")"
+  rm -rf "$d"
+  if [ "$before" = "$after" ]; then
+    echo "::error::decoy tripwire BITE control FAILED — a synthetic test wrote \$HOME/.claude/hooks/escaped.py and the tripwire did not see it. Every per-test check below is inert; a green run proves nothing."
+    return 1
+  fi
+  echo "    tripwire bite control: a test writing \$HOME/.claude/hooks/ is still caught"
+  return 0
+}
+
 _home_before_suite="$(real_home_fingerprint)"
+# One extra walk, once, so the advisory below can name paths instead of printing
+# two opaque digests. An advisory nobody can act on becomes background noise,
+# and this one is the ONLY remaining detector for a test that writes by absolute
+# path — the single escape a decoy home cannot intercept.
+_home_before_suite_manifest="$(real_home_manifest)"
 
 echo "==> (b) Shell integration: ${#INTEGRATION_TESTS[@]} tests"
-echo "    real-home tripwire watching: $(dirname "$REAL_SETTINGS") (settings.json, installed skill, deployed hooks; state/ only its SessionStart snapshot)"
+echo "    tripwire: each test runs against a throwaway decoy home (settings.json, installed skill, deployed hooks; state/ only its SessionStart snapshot)"
 real_home_quiet_control || exit 1
+decoy_tripwire_bite_control || exit 1
 for t in "${INTEGRATION_TESTS[@]}"; do
   script="tests/integration/$t.sh"
   if [ ! -f "$script" ]; then
@@ -574,20 +783,32 @@ for t in "${INTEGRATION_TESTS[@]}"; do
     exit 1
   fi
   echo "--- $t"
-  _home_before="$(real_home_fingerprint)"
-  bash "$script"
-  _home_after="$(real_home_fingerprint)"
+  _decoy="$(mktemp -d)"
+  _home_before="$(decoy_fingerprint "$_decoy")"
+  # NOT inside an `if`: set -e must still abort the gate when a test fails.
+  # Wrapping this in a condition would silently disable that.
+  run_sandboxed "$_decoy" bash "$script"
+  _home_after="$(decoy_fingerprint "$_decoy")"
   if [ "$_home_before" != "$_home_after" ]; then
-    echo "::error::$t wrote into the real $(dirname "$REAL_SETTINGS") — the suite must sandbox HOME *and* USERPROFILE (source tests/integration/lib/sandbox_home.sh and use sandbox_home/run_sandboxed). before=[$_home_before] after=[$_home_after]"
+    echo "::error::$t wrote into ~/.claude — the suite must sandbox HOME *and* USERPROFILE (source tests/integration/lib/sandbox_home.sh and use sandbox_home/run_sandboxed). It was already running under a decoy home, so the developer's real config is intact and this is the test's own write."
+    echo "::error::  it wrote these paths (relative to ~/.claude):"
+    decoy_written_paths "$_decoy"
+    echo "      digests: before=[$_home_before] after=[$_home_after]"
+    rm -rf "$_decoy"
     exit 1
   fi
+  rm -rf "$_decoy"
 done
-# Belt and braces: catches a test that restores the file itself but leaves the
-# suite as a whole having moved it (e.g. mtime churn across several tests).
+# The real home, measured once around the whole suite. ADVISORY on purpose: the
+# tests just ran against a decoy, so they could not reach this through "~", and
+# anything that moved here came from outside the suite. Reported rather than
+# swallowed, because silence would hide a test that writes by ABSOLUTE path —
+# the one escape a decoy cannot intercept.
 _home_after_suite="$(real_home_fingerprint)"
 if [ "$_home_before_suite" != "$_home_after_suite" ]; then
-  echo "::error::the integration suite wrote into the real $(dirname "$REAL_SETTINGS"). before=[$_home_before_suite] after=[$_home_after_suite]"
-  exit 1
+  echo "    note: the real $(dirname "$REAL_SETTINGS") changed while the suite ran. The tests ran against a decoy home, so this is an out-of-band writer on this machine (a settings assembler on a timer, a skill auto-sync running the installer, __pycache__ churn from a concurrent session), not the suite. Not failing the gate on it — that misattribution is what this section exists to prevent."
+  echo "    what moved (read it: an entry under skills/ai-brain-starter/ or a settings.json content= change is NOT ordinary churn, and would mean a test wrote by ABSOLUTE path, which a decoy home cannot intercept):"
+  _manifest_delta "$_home_before_suite_manifest" "$(real_home_manifest)"
 fi
 
 # ---- (c) Shell static analysis gate ----------------------------------------

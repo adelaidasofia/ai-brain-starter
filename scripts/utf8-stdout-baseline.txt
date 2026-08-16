@@ -23,6 +23,20 @@
 #     user, so an emoji vault folder reaches stderr from the filesystem), which
 #     staled its row and forced the choice this file already documents below:
 #     guard it and delete the row, never re-pin. Deleted, per that rule.
+#   - every SEV-1-hard-crash and SEV-2-ascii-pipe row  guarded + unpinned for
+#     ai-brain-starter#314. Those two tags are the population where the guard is
+#     unambiguously the right remedy: each does a RAW console write (not through
+#     json.dumps) of a live literal the target codec cannot encode, so the crash
+#     is reachable on a real console today. The negative control is
+#     check-sync-folder-machinery.py, which printed its "MACHINERY FOUND IN
+#     CLOUD-SYNCED FOLDERS" banner and died exit=1 with `UnicodeEncodeError:
+#     'charmap' codec can't encode characters in position 13-14` under
+#     PYTHONIOENCODING=cp1252, and exits 0 with the guard.
+#     SEV-3-doc-only and SEV-4-json-encoded were deliberately NOT swept: this
+#     file already rules that bulk-guarding SEV-4 "is the bulk grep-driven edit
+#     MYC-3520 forbids" and that SEV-3 wants a per-file read (several want
+#     `# utf8-stdout-ok: <reason>`, not the guard). They remain pinned, and come
+#     off only per file, with a reviewer, as those rules require.
 #
 # THE RATCHET (same mechanism as scripts/vault-root-read-baseline.txt #407 and
 # scripts/cloud-safe-walker-baseline.txt #411)
@@ -76,34 +90,10 @@
 # Counts at the time of pinning (MYC-3530): 21 SEV-1, 9 SEV-2, 6 SEV-3,
 # 42 SEV-4, 78 total. Every row is under hooks/ - scripts/ is already clean.
 
-# ---- SEV-1-hard-crash  (21 file(s)) ----
-8bc966829771eacee94612474d456db112f30a70811ca7ffee4939bde2cd26cd SEV-1-hard-crash hooks/block-worktree-shared-edit.py
-b552b16724232b207192f04461c11804ba77007d77f2d264390e42050fbdc798 SEV-1-hard-crash hooks/build-runbook-check.py
-bc33d8d8e22fa7ce1ef99656851c6db0288aa5c0bddd2351daa1b361849f1a08 SEV-1-hard-crash hooks/check-sync-folder-machinery.py
-a6f38ebfd1745f9f5e7f6e07ed36985b1bc926e484768e7e7fd17dfaf4dc8257 SEV-1-hard-crash hooks/context-budget-measure.py
-bfa9ef01137e3f61aa2c1fae86bfb387630fbc7e05713bd1653845a37f1bbbf4 SEV-1-hard-crash hooks/detect-closing-signal.py
-9c067bd908bf5c7fca7fa27a53f05f01e79a20899326363c50705263fdac19ae SEV-1-hard-crash hooks/detect-secrets-in-bash-output.py
-77b5a0e0d935036329159316ff2b43b6047090ebc1450e15914f9af4a3d78d7d SEV-1-hard-crash hooks/observe-tool-calls.py
-aaa7afc8c853cf4fe5801a1c336a3373404affd530e3ec713f29abf5172483c7 SEV-1-hard-crash hooks/post-tool-use-learnings.py
-6c2285ef516c019faa3f8a1cd2183f178b86d3622177b3268ff8d3fefe2c4d5e SEV-1-hard-crash hooks/sunday-review-nudge.py
-06e6d93077a5d21e19ace2d368ba2f8b385ba6768a6980d9c53e6db075f1871c SEV-1-hard-crash hooks/test_claim_surface_honesty.py
-d08aadf9dfa1db19269f8866ac0b35a787dbae82baa510b41c323c3d7582b414 SEV-1-hard-crash hooks/test_footprint_aggregate_bloat.py
-0e0c411a3187e40e800a042f4911b0fec095e4ae6f5caecd15453c83012a31bf SEV-1-hard-crash hooks/test_unpushed_drift_surface.py
-62b8c0391f03aefe44ebf7a17a79063325d41eddae6a77150e4a2feb5e02800d SEV-1-hard-crash hooks/validate-calendar-timezone.py
-21173c16a8465b41d6d0d112453433541df97470beb22c9d9bd73d9b547a2ff4 SEV-1-hard-crash hooks/verify-discoverability-on-close.py
-cc08c6d1c065ae338cf5934cfae3c8489aa35814ba489bc63c16158b2c19711a SEV-1-hard-crash hooks/verify-session-close-cascade.py
-8d2689812e1ca9e8dcb9b1a984e0759d6a6f5d397516a0a9ad1293bead26f15c SEV-1-hard-crash hooks/warn-recreate-deleted-file.test.py
-119ddca9ef724cbca09f98222f8fce7b6560b51e0d58de4d7a991086cced0203 SEV-1-hard-crash hooks/worktree-archive-autoprep.py
-
-# ---- SEV-2-ascii-pipe  (9 file(s)) ----
-235eb6e4d88ab882324859d7a36a696b4a5eafae0658b93dd1921f460c32df36 SEV-2-ascii-pipe hooks/agent-briefing-check.py
-efe49cd9c30e287eea120d88cc9941e38f3133ec0429ff50bd1d9761fe3fd565 SEV-2-ascii-pipe hooks/check-cd-outside-worktree.py
-a81fcb075dedb8e0f3dcf449b848df59e2844a4eb5701201c413d9d1edfc5f8a SEV-2-ascii-pipe hooks/check-py-import-precommit.py
-4fca1425ffd9aacdbab80b6e6288877ce97c84cd2f6d11d3d61ac6d2f62fce25 SEV-2-ascii-pipe hooks/lint-claude-settings.py
-75deb6801de640f2d51a3a0a2979595e08749e16dd4a8c5f28710a40f4757654 SEV-2-ascii-pipe hooks/remediate-runaway-procs.py
-da873a5f63aafaa04901e77e41ec9e570e57fa5379c5cd76451a49b21e3d2c70 SEV-2-ascii-pipe hooks/scrub-session-jsonl-secrets.py
-61b5ccea257dfaeafe03d71e09434a200730d3eae3fb4b1e949fd7b5fb0914a2 SEV-2-ascii-pipe hooks/test_secret_patterns_fp_filter.py
-c6ca0766f6a0ac0aed97544f79a173149184c3ce493b281e210c46d45f7fbd67 SEV-2-ascii-pipe hooks/validate-subagent-return.py
+# (SEV-1-hard-crash and SEV-2-ascii-pipe are fully burned down - see the log
+# above. Their section headers are gone rather than left at zero, so nobody has
+# to trust a hand-written count; `python3 scripts/check-utf8-stdout.py` prints
+# the live split.)
 
 # ---- SEV-3-doc-only  (6 file(s)) ----
 028b9d634e09a6515f64176895cb35fc1415eae2ab1b74692aefa4a96da27e4f SEV-3-doc-only hooks/_lib/secret_patterns.py
@@ -144,6 +134,5 @@ ef44e1e697864634bd4f41c5041e9d3c445aa429c37d35bb7dbdb613c76c3592 SEV-4-json-enco
 bde2c3d7a3b64f2828d4b6a7be9e33381c7496877cf11eea0fdbb6068382b4e1 SEV-4-json-encoded hooks/vault-context.py
 381d8c9eec790997f7736fc89e088fdb12f7dd1606b4be8e753ba0bf0d43e497 SEV-4-json-encoded hooks/warn-learning-to-tool-private-memory.py
 6141c3d8cc8a60cf6ae1c9a3d8fcde728808188e2bbe4cfedd581276076bf1c3 SEV-4-json-encoded hooks/warn-recreate-deleted-file.py
-a201c72df70798c65e0a3db62587a38eec99b1989b83b808826604dcf2f42fd2 SEV-4-json-encoded hooks/warn-stale-dev-checkout.py
 effe9f0dc7226a8ea9456ec6be5112ea357ef8795adde5375499f19c6db000fc SEV-4-json-encoded hooks/warn-uncommitted-builds-on-stop.py
 dfba549e5cd609ddde59d63aac175d884d0224a6703265e0b04c1a0eac315b20 SEV-4-json-encoded hooks/whatsapp-mcp-auto-export.py

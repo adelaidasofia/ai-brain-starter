@@ -66,14 +66,14 @@ jobs:
             '\b[Aa]delaida\b'
             '\b[Dd]iaz-[Rr]oa\b'
             '\bSergio\b'
-            '\bSneider\b'
-            '\bAlfonso\b'
-            '\bPanorama\b'
+            '\b[Ss]neider\b'
+            '\b[Aa]lfonso\b'
+            '\b[Pp]anorama\b'
             '\bDiana\b'
             '\bPaola\b'
-            '\bBeverly\b'
-            '\bNatalia\b'
-            '\bSilvia\b'
+            '\b[Bb]everly\b'
+            '\b[Nn]atalia\b'
+            '\b[Ss]ilvia\b'
             '\bAccenture\b'
             '\bCentre415\b'
             '\bvinitos\b'
@@ -83,19 +83,71 @@ jobs:
             'tech@onde'
             'After the Shock'
           )
-          fail=0
+          # ONE scan implementation, called with the patterns to scan for. The
+          # positive control below runs THIS function, so it exercises the real
+          # engine, the real pathspecs and the real invocation shape rather than
+          # a copy that could drift from them.
           # Scan source files. Exclude markdown docs (README, CHANGELOG,
           # docs/), vendored deps, lock files, and the workflows themselves
           # (this file MENTIONS the patterns by definition).
-          for p in "${PATTERNS[@]}"; do
-            matches=$(git grep -nE "$p"               -- ':!README*' ':!CHANGELOG*' ':!docs/' ':!*.md'               ':!LICENSE*' ':!COPYING*' ':!NOTICE*'               ':!AUTHORS*' ':!MAINTAINERS*'               ':!*pyproject.toml' ':!*setup.py' ':!*setup.cfg'               ':!*package.json' ':!*Cargo.toml' ':!*manifest.json' ':!*server.json'               ':!.claude-plugin/'               ':!.env.example' ':!*.env.example'               ':!tests/integration/test_smoke.py'               ':!vendor/' ':!node_modules/' ':!*.lock'               ':!package-lock.json' ':!pnpm-lock.yaml'               ':!.github/workflows/personal-pii-scrub.yml' 2>/dev/null || true)
-            if [ -n "$matches" ]; then
-              echo "::error::personal-data pattern leaked into source: $p"
-              echo "$matches"
-              fail=1
+          scan_for() {
+            local p m
+            for p in "$@"; do
+              m=$(git grep -nE "$p"                 -- ':!README*' ':!CHANGELOG*' ':!docs/' ':!*.md'                 ':!LICENSE*' ':!COPYING*' ':!NOTICE*'                 ':!AUTHORS*' ':!MAINTAINERS*'                 ':!*pyproject.toml' ':!*setup.py' ':!*setup.cfg'                 ':!*package.json' ':!*Cargo.toml' ':!*manifest.json' ':!*server.json'                 ':!.claude-plugin/'                 ':!.env.example' ':!*.env.example'                 ':!tests/integration/test_smoke.py'                 ':!vendor/' ':!node_modules/' ':!*.lock'                 ':!package-lock.json' ':!pnpm-lock.yaml'                 ':!.github/workflows/personal-pii-scrub.yml' 2>/dev/null || true)
+              if [ -n "$m" ]; then
+                printf '%s\n' "::error::personal-data pattern leaked into source: $p"
+                printf '%s\n' "$m"
+              fi
+            done
+            return 0
+          }
+          # POSITIVE CONTROL. A scan that can no longer match ANYTHING reports
+          # the same green as a genuinely clean tree, so the gate must first
+          # prove it can still catch a known plant. Most patterns above lean on
+          # \b, which is a GNU regex EXTENSION: glibc honors it, a BSD/macOS
+          # regex silently matches nothing (measured: on macOS git grep -E for
+          # a \b pattern returns zero while the token is plainly present). If
+          # this runner image ever moves to such a regex, every \b pattern would
+          # quietly stop matching and this gate would pass on every tree,
+          # forever. Same shape as the bash 3.2 runner control in lint.yml.
+          if [ "${#PATTERNS[@]}" -lt 1 ]; then
+            echo "::error::PATTERNS rendered EMPTY. This gate would report clean on any tree. Refusing to run vacuous."
+            exit 1
+          fi
+          canary=pii-scrub-positive-control.txt
+          trap 'git rm -q -f --cached "$canary" >/dev/null 2>&1 || true; rm -f "$canary"' EXIT
+          # Both production pattern shapes: bare word-boundary, and the
+          # bracket-class first letter used by the widened name patterns.
+          printf 'PiiCanaryProbe\n' > "$canary"
+          git add -f "$canary" >/dev/null
+          for probe in '\bPiiCanaryProbe\b' '\b[Pp]iiCanaryProbe\b'; do
+            if [ -z "$(scan_for "$probe")" ]; then
+              echo "::error::POSITIVE CONTROL FAILED: the scan did not find a planted token matching $probe."
+              echo "::error::Word boundary is a GNU regex extension. If this runner regex drops it, every \b pattern matches NOTHING and this gate passes on every tree."
+              echo "::error::Do not leave it green and vacuous. Switch the engine to git grep -P (PCRE) or pipe through plain grep -E, then re-verify with this control."
+              exit 1
             fi
           done
-          if [ $fail -eq 1 ]; then
+          # The boundary must also CONSTRAIN. An engine that silently DROPS \b
+          # over-matches instead, which turns the fleet red on its own published
+          # content (the AUTO-MANAGED-GATE-SELF-DOS incident).
+          printf 'xPiiCanaryProbex\n' > "$canary"
+          git add -f "$canary" >/dev/null
+          for probe in '\bPiiCanaryProbe\b' '\b[Pp]iiCanaryProbe\b'; do
+            if [ -n "$(scan_for "$probe")" ]; then
+              echo "::error::POSITIVE CONTROL FAILED: $probe matched xPiiCanaryProbex, so the word boundary is NOT constraining."
+              echo "::error::This engine over-matches and would fail the gate on legitimately published content."
+              exit 1
+            fi
+          done
+          git rm -q -f --cached "$canary" >/dev/null 2>&1 || true
+          rm -f "$canary"
+          trap - EXIT
+          echo "Positive control OK: the scan finds a planted token, and word boundaries constrain."
+          # --- the real scan, same function, same engine, same pathspecs ---
+          hits="$(scan_for "${PATTERNS[@]}")"
+          if [ -n "$hits" ]; then
+            printf '%s\n' "$hits"
             echo "::error::Personal-data scrub failed (source files). See CLAUDE.md 'Personal-data scrub' section + repo-evaluation.md cherry-pick A."
             exit 1
           fi
@@ -109,11 +161,6 @@ jobs:
         # the next regression).
         run: |
           set -e
-          ARCHIVES=$(git ls-files '*.mcpb' '*.zip' 2>/dev/null || true)
-          if [ -z "$ARCHIVES" ]; then
-            echo "No tracked .mcpb / .zip archives. Skipping archive scan."
-            exit 0
-          fi
           # Same single-source pattern list as the source-files step above
           # (both arrays are injected from one placeholder, so they cannot
           # drift).
@@ -121,14 +168,14 @@ jobs:
             '\b[Aa]delaida\b'
             '\b[Dd]iaz-[Rr]oa\b'
             '\bSergio\b'
-            '\bSneider\b'
-            '\bAlfonso\b'
-            '\bPanorama\b'
+            '\b[Ss]neider\b'
+            '\b[Aa]lfonso\b'
+            '\b[Pp]anorama\b'
             '\bDiana\b'
             '\bPaola\b'
-            '\bBeverly\b'
-            '\bNatalia\b'
-            '\bSilvia\b'
+            '\b[Bb]everly\b'
+            '\b[Nn]atalia\b'
+            '\b[Ss]ilvia\b'
             '\bAccenture\b'
             '\bCentre415\b'
             '\bvinitos\b'
@@ -138,6 +185,60 @@ jobs:
             'tech@onde'
             'After the Shock'
           )
+          # Same exclusions as the source-file step (LICENSE/COPYING/
+          # NOTICE legitimately attribute the author; README/CHANGELOG/
+          # *.md are docs; vendored deps + lock files don't count).
+          # -a forces grep to treat binary-detected files as text so
+          # extracted scripts with non-UTF8 bytes still get scanned.
+          # ONE scan implementation, shared by the positive control and the real
+          # per-archive scan. $1 is the directory to scan; the rest are patterns.
+          archive_scan_for() {
+            local dir="$1"; shift
+            local p m
+            for p in "$@"; do
+              m=$(grep -rnaE                 --exclude='README*' --exclude='CHANGELOG*' --exclude='*.md'                 --exclude='LICENSE*' --exclude='COPYING*' --exclude='NOTICE*'                 --exclude='AUTHORS*' --exclude='MAINTAINERS*'                 --exclude='pyproject.toml' --exclude='setup.py'                 --exclude='setup.cfg' --exclude='package.json'                 --exclude='Cargo.toml' --exclude='manifest.json'                 --exclude='.env.example'                 --exclude='test_smoke.py'                 --exclude='*.lock' --exclude='package-lock.json'                 --exclude='pnpm-lock.yaml'                 --exclude-dir='vendor' --exclude-dir='node_modules'                 --exclude-dir='docs' --exclude-dir='.claude-plugin'                 "$p" "$dir" 2>/dev/null || true)
+              if [ -n "$m" ]; then
+                printf '%s\n' "::error::personal-data pattern leaked into archive: $p"
+                printf '%s\n' "$m"
+              fi
+            done
+            return 0
+          }
+          # POSITIVE CONTROL on the archive scanner. This deliberately runs
+          # BEFORE the no-archives early exit: a repo that ships no bundle today
+          # can ship one tomorrow, and a scanner proven only where archives
+          # already exist is unproven exactly where it starts to matter. This
+          # tier uses plain grep -E, a DIFFERENT engine from the git grep tiers,
+          # so it needs its own proof rather than inheriting theirs.
+          if [ "${#PATTERNS[@]}" -lt 1 ]; then
+            echo "::error::PATTERNS rendered EMPTY. This tier would report clean on any archive. Refusing to run vacuous."
+            exit 1
+          fi
+          ctldir=$(mktemp -d)
+          trap 'rm -rf "$ctldir"' EXIT
+          printf 'PiiCanaryProbe\n' > "$ctldir/canary.txt"
+          for probe in '\bPiiCanaryProbe\b' '\b[Pp]iiCanaryProbe\b'; do
+            if [ -z "$(archive_scan_for "$ctldir" "$probe")" ]; then
+              echo "::error::POSITIVE CONTROL FAILED (archive tier): grep -E did not find a planted token matching $probe."
+              echo "::error::This scanner cannot see inside bundles any more. Do not leave it green and vacuous."
+              exit 1
+            fi
+          done
+          printf 'xPiiCanaryProbex\n' > "$ctldir/canary.txt"
+          for probe in '\bPiiCanaryProbe\b' '\b[Pp]iiCanaryProbe\b'; do
+            if [ -n "$(archive_scan_for "$ctldir" "$probe")" ]; then
+              echo "::error::POSITIVE CONTROL FAILED (archive tier): $probe matched xPiiCanaryProbex, so the word boundary is NOT constraining."
+              exit 1
+            fi
+          done
+          rm -rf "$ctldir"
+          trap - EXIT
+          echo "Positive control OK (archive tier)."
+          ARCHIVES=$(git ls-files '*.mcpb' '*.zip' 2>/dev/null || true)
+          if [ -z "$ARCHIVES" ]; then
+            echo "No tracked .mcpb / .zip archives. Skipping archive scan."
+            exit 0
+          fi
           fail=0
           while IFS= read -r archive; do
             [ -z "$archive" ] && continue
@@ -149,19 +250,11 @@ jobs:
               rm -rf "$tmp"
               continue
             fi
-            # Same exclusions as the source-file step (LICENSE/COPYING/
-            # NOTICE legitimately attribute the author; README/CHANGELOG/
-            # *.md are docs; vendored deps + lock files don't count).
-            # -a forces grep to treat binary-detected files as text so
-            # extracted scripts with non-UTF8 bytes still get scanned.
-            for p in "${PATTERNS[@]}"; do
-              matches=$(grep -rnaE                 --exclude='README*' --exclude='CHANGELOG*' --exclude='*.md'                 --exclude='LICENSE*' --exclude='COPYING*' --exclude='NOTICE*'                 --exclude='AUTHORS*' --exclude='MAINTAINERS*'                 --exclude='pyproject.toml' --exclude='setup.py'                 --exclude='setup.cfg' --exclude='package.json'                 --exclude='Cargo.toml' --exclude='manifest.json'                 --exclude='.env.example'                 --exclude='test_smoke.py'                 --exclude='*.lock' --exclude='package-lock.json'                 --exclude='pnpm-lock.yaml'                 --exclude-dir='vendor' --exclude-dir='node_modules'                 --exclude-dir='docs' --exclude-dir='.claude-plugin'                 "$p" "$tmp" 2>/dev/null || true)
-              if [ -n "$matches" ]; then
-                echo "::error::personal-data pattern leaked into $archive: $p"
-                echo "$matches" | sed "s|^$tmp/|$archive::|"
-                fail=1
-              fi
-            done
+            hits="$(archive_scan_for "$tmp" "${PATTERNS[@]}")"
+            if [ -n "$hits" ]; then
+              printf '%s\n' "$hits" | sed "s|^$tmp/|$archive::|"
+              fail=1
+            fi
             rm -rf "$tmp"
           done <<< "$ARCHIVES"
           if [ $fail -eq 1 ]; then
@@ -185,14 +278,14 @@ jobs:
           set -e
           MD_PATTERNS=(
             '\bSergio\b'
-            '\bSneider\b'
-            '\bAlfonso\b'
-            '\bPanorama\b'
+            '\b[Ss]neider\b'
+            '\b[Aa]lfonso\b'
+            '\b[Pp]anorama\b'
             '\bDiana\b'
             '\bPaola\b'
-            '\bBeverly\b'
-            '\bNatalia\b'
-            '\bSilvia\b'
+            '\b[Bb]everly\b'
+            '\b[Nn]atalia\b'
+            '\b[Ss]ilvia\b'
             '\bAccenture\b'
             '\bCentre415\b'
             '\bvinitos\b'
@@ -201,16 +294,53 @@ jobs:
             'adelaida@'
             'tech@onde'
           )
-          fail=0
-          for p in "${MD_PATTERNS[@]}"; do
-            matches=$(git grep -nE "$p"               -- '*.md'               ':!README*' ':!LICENSE*' ':!COPYING*' ':!NOTICE*'               ':!AUTHORS*' ':!MAINTAINERS*' ':!CONTRIBUTING*'               ':!CONTRIBUTORS*' ':!CITATION*'               ':!vendor/' ':!node_modules/'               ':!.github/workflows/personal-pii-scrub.yml' 2>/dev/null || true)
-            if [ -n "$matches" ]; then
-              echo "::error::private-data pattern leaked into markdown prose: $p"
-              echo "$matches"
-              fail=1
+          # ONE scan implementation, shared by the positive control and the real
+          # scan below (see the source-files step for why the control matters).
+          # This tier has its OWN pathspec set, so it needs its OWN control: a
+          # control on the source step proves nothing about this one.
+          md_scan_for() {
+            local p m
+            for p in "$@"; do
+              m=$(git grep -nE "$p"                 -- '*.md'                 ':!README*' ':!LICENSE*' ':!COPYING*' ':!NOTICE*'                 ':!AUTHORS*' ':!MAINTAINERS*' ':!CONTRIBUTING*'                 ':!CONTRIBUTORS*' ':!CITATION*'                 ':!vendor/' ':!node_modules/'                 ':!.github/workflows/personal-pii-scrub.yml' 2>/dev/null || true)
+              if [ -n "$m" ]; then
+                printf '%s\n' "::error::private-data pattern leaked into markdown prose: $p"
+                printf '%s\n' "$m"
+              fi
+            done
+            return 0
+          }
+          if [ "${#MD_PATTERNS[@]}" -lt 1 ]; then
+            echo "::error::MD_PATTERNS rendered EMPTY. This tier would report clean on any tree. Refusing to run vacuous."
+            exit 1
+          fi
+          mdcanary=pii-scrub-positive-control.md
+          trap 'git rm -q -f --cached "$mdcanary" >/dev/null 2>&1 || true; rm -f "$mdcanary"' EXIT
+          printf 'PiiCanaryProbe\n' > "$mdcanary"
+          git add -f "$mdcanary" >/dev/null
+          for probe in '\bPiiCanaryProbe\b' '\b[Pp]iiCanaryProbe\b'; do
+            if [ -z "$(md_scan_for "$probe")" ]; then
+              echo "::error::POSITIVE CONTROL FAILED (markdown tier): the scan did not find a planted .md token matching $probe."
+              echo "::error::Either the regex engine dropped the word boundary, or the *.md pathspec set no longer reaches published markdown."
+              echo "::error::Do not leave it green and vacuous."
+              exit 1
             fi
           done
-          if [ $fail -eq 1 ]; then
+          printf 'xPiiCanaryProbex\n' > "$mdcanary"
+          git add -f "$mdcanary" >/dev/null
+          for probe in '\bPiiCanaryProbe\b' '\b[Pp]iiCanaryProbe\b'; do
+            if [ -n "$(md_scan_for "$probe")" ]; then
+              echo "::error::POSITIVE CONTROL FAILED (markdown tier): $probe matched xPiiCanaryProbex, so the word boundary is NOT constraining."
+              exit 1
+            fi
+          done
+          git rm -q -f --cached "$mdcanary" >/dev/null 2>&1 || true
+          rm -f "$mdcanary"
+          trap - EXIT
+          echo "Positive control OK (markdown tier)."
+          # --- the real scan, same function, same engine, same pathspecs ---
+          hits="$(md_scan_for "${MD_PATTERNS[@]}")"
+          if [ -n "$hits" ]; then
+            printf '%s\n' "$hits"
             echo "::error::Markdown-prose scrub failed. A private third-party name or vault path leaked into published .md. Author attribution (README/LICENSE/CHANGELOG) + published-feature tokens are exempt — this is a real third-party leak. See CLAUDE.md 'Personal-data scrub' + auto-managed-gate-self-dos.md."
             exit 1
           fi

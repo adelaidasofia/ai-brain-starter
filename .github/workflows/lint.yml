@@ -150,12 +150,38 @@ jobs:
       # the wrong vault and skips the file it exists for. Shipped that way in
       # hooks/validate-handoff-frontmatter.py and was inert on every install
       # (#375/#404) - two unrelated users had already hand-patched it identically.
+      # A worktree is fresh when it is CREATED, not forever. This guard's
+      # discriminator is "has work started on this branch", NOT "is it behind",
+      # so its self-test runs two worktrees that are EQUALLY behind and differ
+      # only by one commit. A regression in either direction (warn on behind
+      # alone / never warn) fails it; a one-case test could not tell them apart.
+      - name: unstarted-worktree staleness negative controls (the guard must still bite)
+        run: python3 hooks/warn-stale-dev-checkout.py --self-test
+
       # Self-test first (cheap, and proves the guard still bites), then the tree.
       - name: naive VAULT_ROOT read negative controls (the guard must still bite)
         run: python3 scripts/check-vault-root-reads.py --self-test
 
       - name: no naive VAULT_ROOT reads (resolve via _resolve_vault_root)
         run: python3 scripts/check-vault-root-reads.py
+
+      # A negative control needs a "before" source. Read it from a MOVING ref
+      # (`git show origin/main:file`) and the control is guaranteed to pass in
+      # the PR that adds it and guaranteed to fail forever after it lands --
+      # merging is what turns origin/main into the fixed code, after which the
+      # control runs the fix against itself. Measured 2026-08-16: five straight
+      # commits red on main, every merge in the repo blocked.
+      #
+      # It is unrunnable-to-catch: green every time you run it pre-merge. Only
+      # reading it, or this guard, finds it. Vendor the before-state under
+      # tests/fixtures/ instead -- a fixture is immune to ref movement, history
+      # rewrites AND clone depth, which a pinned SHA is not (the `ci` job below
+      # checks out shallow, so old objects are simply absent there).
+      - name: frozen-before-state negative controls (the guard must still bite)
+        run: python3 scripts/check-frozen-before-state.py --self-test
+
+      - name: no moving ref as a test's before-state (vendor a fixture)
+        run: python3 scripts/check-frozen-before-state.py
 
       # Same SILENT-NO-OP family: hooks.json wires several hooks by their
       # ~/.claude/hooks/ path behind a `[ -f <path> ] &&` guard. The guard is
@@ -181,6 +207,15 @@ jobs:
 
       - name: every shipped hook is wired, and every wired hook is owned
         run: python3 scripts/check-hook-activation.py
+
+      # The fourth, disjoint question: a hook can be wired, owned and able to
+      # speak, and still have a matcher that never fires on any real input.
+      # Only a negative control separates a QUIET guard from a DEAD one.
+      - name: hook negative-control checks (this check must go RED on its own cases)
+        run: python3 scripts/check-hook-negative-control.py --selftest
+
+      - name: no shipped hook lacks a test surface
+        run: python3 scripts/check-hook-negative-control.py
 
       # The READ half of the UTF-8 console guard below. That one fails a CLI that
       # PRINTS non-ASCII without reconfiguring stdout; this fails one that READS a

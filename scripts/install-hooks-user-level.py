@@ -48,6 +48,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 import tempfile
@@ -79,8 +80,30 @@ _TEXT_UTF8 = {"text": True, "encoding": "utf-8", "errors": "replace"}
 
 # Fingerprint substrings — any hook command containing one of these is
 # considered "owned by ai-brain-starter" and may be replaced or removed.
-# Extend this list when adding new hooks; the name must be unique enough
-# that no third-party hook would accidentally include it.
+# The name must be unique enough that no third-party hook would accidentally
+# include it.
+#
+# !! THIS LIST DOES NOT INSTALL ANYTHING. !!
+#
+# Membership here confers OWNERSHIP only: dedup, replace, retire, uninstall
+# recognition. `merge_hooks()` wires exactly what `hooks.json` declares and
+# nothing else, so **hooks.json is the ONLY activation predicate**. A hook
+# added here but not to hooks.json is an "owned dormant hook": the installer
+# claims it, inspection makes it look registered, and it never fires.
+#
+# Adding a hook therefore takes BOTH:
+#   1. an entry in hooks.json  <- this is what actually installs it
+#   2. an entry here (+ ABS_OWNED_BASENAMES) so re-installs dedup it properly
+#
+# If it signals by EXIT CODE 2 (a blocking gate), wire it in hooks.json as
+# `if [ -f <path> ]; then <path>; else <allow-json>; fi` — the common
+# `<path> 2>/dev/null || echo <allow-json>` idiom discards the stderr message
+# AND rewrites the block into an allow.
+#
+# This comment replaced "Extend this list when adding new hooks", which read as
+# the complete instruction and is how the most recent dormant hook happened:
+# the author registered in both lists below, believed it was active, and said
+# so in the commit message. Tracked as MYC-1031 (structural CI gate).
 ABS_FINGERPRINTS = [
     "ai-brain-starter/hooks/detect-closing-signal.py",
     "ai-brain-starter/hooks/verify-session-close-cascade.py",
@@ -141,6 +164,12 @@ ABS_FINGERPRINTS = [
     "ai-brain-starter/hooks/remediate-runaway-procs.py",
     # Write-time secret guard:
     "ai-brain-starter/hooks/block-secret-in-note.py",
+    # Write-time privacy guard: a `__SKIP` line is content the user told the
+    # assistant NOT to persist. MODEL-GENERAL -- any agent drafting a life
+    # record from conversation can carry the line through to the file, and a
+    # persisted line cannot be un-persisted (file + git history + any index
+    # over the vault). Blocks, because a warning that is ignored still writes.
+    "ai-brain-starter/hooks/block-skip-prefix-in-vault-write.py",
     # Handoff lifecycle guard (issue #375). Shipped since the handoff-files rule
     # existed but was never registered here, so templates/rules/handoff-files.md
     # documented an enforcement that did nothing on every install
@@ -165,6 +194,13 @@ ABS_FINGERPRINTS = [
     # Client-side deployed==committed drift detector (MYC-2507): surfaces when this
     # deploy step itself failed silently and settings.json fell behind hooks.json.
     "ai-brain-starter/hooks/surface-deployed-hooks-behind.py",
+    # Its sibling, for the other direction (MYC-1031 item 1 / MYC-3880): the one
+    # above catches settings.json falling BEHIND hooks.json; this one catches a
+    # SessionStart hook being pruned OUT of settings.json by a linter, a manual
+    # edit, or a parallel session -- drift hooks.json cannot see. Shipped dormant
+    # since MYC-1031 and wired here now that its identity function actually works
+    # on Windows; before that it was a guard about drift that was itself drifting.
+    "ai-brain-starter/hooks/sessionstart-hook-snapshot-guard.py",
     # Journal Step-0 context guard (2026-07-07) + its SessionStart self-heal. OWNED so
     # the installer dedups the guard (skill-path vs a ~/.claude/hooks/ copy) PER MATCHER,
     # verifies both scripts on disk, and can retire/relocate them. Registered under two
@@ -202,6 +238,7 @@ ABS_OWNED_BASENAMES = {
     "snapshot-pending-work-on-stop.py", "surface-orphan-worktree-snapshots.py",
     "remove-ended-worktree.py", "enforce-worktree-cap.py",
     "worktree-footprint-signal.py", "remediate-runaway-procs.py",
+    "sessionstart-hook-snapshot-guard.py",
     # Worktree HEAD-isolation gate (MYC-782). Basename listed so a copy wired at
     # ~/.claude/hooks/ — the hand-wired form on pre-registration machines —
     # dedups against the skill-path copy instead of double-firing.
@@ -213,7 +250,8 @@ ABS_OWNED_BASENAMES = {
     # MCP secret-leak guards (MYC-3560): same basename-dedup reasoning as the
     # two gates above.
     "block-claude-mcp-inline-secret.py", "block-mcp-config-inline-secret.py",
-    "block-secret-in-note.py", "context-budget-measure.py",
+    "block-secret-in-note.py", "block-skip-prefix-in-vault-write.py",
+    "context-budget-measure.py",
     "validate-handoff-frontmatter.py",
     "block-populated-public-skill.py",
     "warn-workflow-call-permission-elevation.py",
@@ -244,6 +282,11 @@ ABS_OWNED_BASENAMES = {
     # committed basenames against owned deployed ones — every Windows user would
     # get a "1 background helper is not active" nag that no action can clear.
     "pre-write-settings-lint.py", "lint-claude-settings.py",
+    # Phase-05 hooks, moved to the installer route 2026-08-13 (see
+    # HOME_HOOKS_INSTALLER_DEPLOYS). Owned for the same reason as the two
+    # above: unowned means verify_paths_on_disk() never looks at them, and a
+    # never-deployed hook then reports as a clean install forever.
+    "retry-budget.py", "validate-mcp-json.py", "vault-context.py",
 }
 
 # Hooks that hooks.json invokes from ~/.claude/hooks/ and that THIS INSTALLER is
@@ -257,15 +300,51 @@ ABS_OWNED_BASENAMES = {
 # settings.json, present on disk 0 times, reported OK. Shipped-but-never-once-
 # executed, on every install, since they were merged (#313's follow-on).
 #
-# The complement — retry-budget.py, validate-mcp-json.py, vault-context.py — is
-# deliberately NOT here: phase-05 copies those during /setup-brain, some only
-# when the user opts in. scripts/check-home-hook-deploy.py asserts that every
-# ~/.claude/hooks/ reference in hooks.json is covered by exactly one of the two
-# routes, so the next hook added to the template cannot land in neither.
+# retry-budget.py, validate-mcp-json.py and vault-context.py joined this set
+# 2026-08-13, from a field report on a Windows install where all three were
+# absent from ~/.claude/hooks/. They used to take the PHASE-DOC route: three
+# literal `cp` lines in phases/phase-05-context-layer.md, executed by the MODEL
+# during /setup-brain. Three things were wrong with that:
+#
+#   1. POSIX-ONLY. `cp` and `mkdir -p` are not commands on native Windows, so
+#      the step could not run there at all — and its failure is invisible,
+#      because the `[ -f ]` guard turns every missing hook into silence.
+#   2. MODEL-EXECUTED. A copy step that depends on an agent reading a markdown
+#      table and choosing to run it is not a deploy route; it is a suggestion.
+#      Nothing verified it afterwards on any platform.
+#   3. THE DEPENDENCY WAS NEVER SHIPPED. vault-context.py does
+#      `from _lib.vault_root import vault_root_for` and falls back to a stub
+#      returning None when that import fails. Nothing ever copied hooks/_lib/
+#      to ~/.claude/hooks/, so even a SUCCESSFUL `cp` of the .py landed a hook
+#      that resolved no vault and injected nothing, on every platform, forever
+#      — fail-open, exit 0, no output. See HOME_HOOKS_LIB_DEPS.
+#
+# The phase doc no longer copies them (its `cp` lines are gone). Do not add one
+# back: scripts/check-home-hook-deploy.py fails on BOTH routes as loudly as on
+# neither, because a phase doc offering a choice the installer already made is
+# a documented lie.
 HOME_HOOKS_INSTALLER_DEPLOYS = {
     "pre-write-settings-lint.py",   # PreToolUse(Write|Edit) settings-integrity blocker
     "lint-claude-settings.py",      # SessionStart settings drift lint (+ --test self-check)
     "check-claude-code-version.sh",  # SessionStart version check (POSIX only; bash)
+    "retry-budget.py",              # PreToolUse(Bash) 4th-identical-command blocker
+    "validate-mcp-json.py",         # PreToolUse(Write|Edit) .mcp.json parse gate
+    "vault-context.py",             # UserPromptSubmit vault-context injector
+}
+
+# Package files under hooks/_lib/ that a HOME_HOOKS_INSTALLER_DEPLOYS hook
+# imports, and that therefore have to land in ~/.claude/hooks/_lib/ in the SAME
+# install. "Ship the dep with the consumer, same commit."
+#
+# A deployed hook does `sys.path.insert(0, <its own dir>)` and then
+# `from _lib.X import ...`. Deploy the hook alone and that import raises
+# ImportError inside a try/except whose fallback is a silent no-op — the hook
+# runs, exits 0, and does nothing, which is indistinguishable from a hook with
+# nothing to say. scripts/check-home-hook-deploy.py statically asserts that
+# every `_lib` module imported by a deployed hook appears here.
+HOME_HOOKS_LIB_DEPS = {
+    "__init__.py",     # makes _lib a package; without it the import fails
+    "vault_root.py",   # vault-context.py -> vault_root_for()
 }
 
 # Hooks ai-brain-starter USED TO ship and has deliberately RETIRED. The
@@ -311,6 +390,73 @@ def _owned_basenames(cmd: str) -> set[str]:
     return {os.path.basename(m) for m in _SCRIPT_RE.findall(cmd)} & ABS_OWNED_BASENAMES
 
 
+# Extracts .py script paths from a hook command. Paths are unquoted or quoted;
+# unquoted paths never contain spaces in our template. Used both to identify a
+# command's target script and to rewrite that command for Windows.
+_WIN_PY_PATH_RE = re.compile(r"(~?[^\s'\"|&;]+\.py)\b")
+
+# A token holding any of these is shell syntax, not a script argument. Reaching
+# one ENDS the argument list: everything past it belongs to the POSIX masking
+# clause (`|| true`, `2>/dev/null || echo '{...}'`, `; else ...; fi`), not to the
+# hook. Forwarding `2>/dev/null` or `true` to a hook is worse than dropping args.
+_SHELL_SYNTAX_CHARS = set("|&;<>()`$\n")
+
+
+def _hook_script_args(cmd: str) -> list[str]:
+    """The arguments a hook command passes to the LAST .py script it names.
+
+    Both command forms this installer handles put the hook's own script last —
+    POSIX `[ -f X ] && python3 X --test || true`, and the Windows runner form
+    `py -3 "hook_runner.py" --fallback silent "X" --test` — so one scan reads
+    both and a hook's identity stays the same across platforms.
+
+    Everything after that path is tokenized left to right and kept until the
+    first shell-syntax token (see _SHELL_SYNTAX_CHARS). Backslashes are literal,
+    not escapes: on Windows these tails sit next to real `C:\\...` paths.
+
+    Returns [] when there is no .py path, no arguments, or the tail does not
+    tokenize — the conservative answer in every case."""
+    matches = list(_WIN_PY_PATH_RE.finditer(cmd))
+    if not matches:
+        return []
+    m = matches[-1]
+    tail = cmd[m.end():]
+    # The path regex excludes quote characters, so a QUOTED path leaves its
+    # closing quote at the head of the tail. Drop it, or that quote opens a new
+    # string and the whole masking clause tokenizes as one bogus argument.
+    quote = cmd[m.start() - 1] if m.start() else ""
+    if quote in ("'", '"') and tail[:1] == quote:
+        tail = tail[1:]
+    lex = shlex.shlex(tail, posix=True)
+    lex.whitespace_split = True
+    lex.commenters = ""  # '#' is a legal character inside an argument
+    lex.escape = ""      # a backslash is a path separator here, not an escape
+    args: list[str] = []
+    try:
+        for token in lex:
+            if not token or _SHELL_SYNTAX_CHARS & set(token):
+                break
+            args.append(token)
+    except ValueError:  # unbalanced quote — claim no arguments rather than guess
+        return []
+    return args
+
+
+def _owned_hook_key(cmd: str) -> tuple[frozenset, tuple] | None:
+    """Dedup identity of an OWNED hook: which script, run with which arguments.
+
+    None for a command running no owned script (a user hook — never deduped).
+
+    Arguments belong in the key because one script under two argument lists is
+    two registrations. hooks.json wires lint-claude-settings.py twice on
+    SessionStart — plain, and `--test` for its self-test — and keying on the
+    basename alone collapses the pair, silently retiring the self-test."""
+    owned = frozenset(_owned_basenames(cmd))
+    if not owned:
+        return None
+    return owned, tuple(_hook_script_args(cmd))
+
+
 def find_repo_root() -> Path:
     here = Path(__file__).resolve().parent
     candidates = [
@@ -340,7 +486,14 @@ def is_abs_owned(command: str) -> bool:
 def is_same_command(a: str, b: str) -> bool:
     """Two commands count as the same hook if they share an ABS fingerprint OR
     an owned script basename (so a skill-path entry and a ~/.claude/hooks/ entry
-    for the same script dedup to one), else if the literal text matches."""
+    for the same script dedup to one), else if the literal text matches.
+
+    The same script with DIFFERENT arguments is NOT the same hook. merge_hooks()
+    REPLACES on a match, so reading the pair as duplicates means whichever one
+    the merge happened to keep is the only one that ever runs — for the
+    lint-claude-settings.py pair that silently retired one of the two."""
+    if _hook_script_args(a) != _hook_script_args(b):
+        return False
     for fp in ABS_FINGERPRINTS:
         if fp in a and fp in b:
             return True
@@ -583,9 +736,15 @@ def substitute_python_interpreter(template: dict) -> dict:
     return json.loads(s)
 
 
-# Extracts .py script paths from a POSIX hook command. Paths are unquoted or
-# quoted; unquoted paths never contain spaces in our template.
-_WIN_PY_PATH_RE = re.compile(r"(~?[^\s'\"|&;]+\.py)\b")
+def _win_quote_arg(arg: str) -> str:
+    """Quote a forwarded hook argument only when it needs it.
+
+    A bare token is the one shape PowerShell 5.1/7, cmd.exe and Git Bash all
+    parse identically, so flags like `--test` stay bare. Arguments come from our
+    own template, so the only case needing quotes is an embedded space; an
+    argument whose CONTENT holds a quote character has no form all four shells
+    parse alike, and none is attempted here."""
+    return f'"{arg}"' if (not arg or any(c.isspace() for c in arg)) else arg
 
 
 def _runner_path() -> str:
@@ -651,6 +810,13 @@ def platformize_template_for_windows(template: dict) -> tuple[dict, list[str]]:
         chains (`python3 vault-copy || python3 home-copy`) the LAST path wins:
         it is the ~/.claude home copy, the one guaranteed space-free and
         present on every install.
+      - the target's own ARGUMENTS follow it, forwarded through the runner
+        (whose argv contract is `[--fallback MODE] <target> [extra...]`). Only
+        real arguments survive, never the POSIX masking noise that trails every
+        template command — see _hook_script_args. Dropping them made
+        `lint-claude-settings.py --test` platformize to a byte-identical copy of
+        the plain entry, so dedup collapsed the pair and the linter's self-test
+        never ran on Windows.
       - fallback flavor: `allow` when the original masked to a PreToolUse
         permissionDecision, else `silent`.
 
@@ -697,7 +863,8 @@ def platformize_template_for_windows(template: dict) -> tuple[dict, list[str]]:
                 fb = "allow" if "permissionDecision" in cmd else "silent"
                 h = dict(h)
                 h["command"] = " ".join(
-                    [*launcher, f'"{runner}"', "--fallback", fb, f'"{target}"'])
+                    [*launcher, f'"{runner}"', "--fallback", fb, f'"{target}"',
+                     *(_win_quote_arg(a) for a in _hook_script_args(cmd))])
                 new_hooks.append(h)
             if new_hooks:
                 g = dict(group)
@@ -948,7 +1115,9 @@ def dedupe_owned_hooks(existing: dict) -> tuple[dict, int]:
     shim-safe path left two copies before this hook was owned), the replace touches only
     the first and a duplicate persists. This pass is the idempotent cleanup that self-heals
     such duplicates on the next install. Non-owned (user) hooks and DISTINCT owned hooks
-    are never touched. Groups emptied are dropped. Returns (cleaned, count_removed)."""
+    are never touched — and one script wired twice with different ARGUMENTS is two
+    distinct hooks, not a duplicate (see _owned_hook_key).
+    Groups emptied are dropped. Returns (cleaned, count_removed)."""
     cleaned = json.loads(json.dumps(existing))
     removed = 0
     if "hooks" not in cleaned:
@@ -957,19 +1126,81 @@ def dedupe_owned_hooks(existing: dict) -> tuple[dict, int]:
         new_groups = []
         for g in groups:
             hooks = g.get("hooks", [])
-            # Last index per owned-basename set within THIS group. Only owned hooks
-            # (non-empty key) are eligible; a user hook (empty key) is always kept.
+            # Last index per owned (script, args) key within THIS group. Only owned
+            # hooks (non-None key) are eligible; a user hook (None) is always kept.
             last_idx: dict = {}
             for i, h in enumerate(hooks):
-                key = frozenset(_owned_basenames(h.get("command", "")))
+                key = _owned_hook_key(h.get("command", ""))
                 if key:
                     last_idx[key] = i
             kept = []
             for i, h in enumerate(hooks):
-                key = frozenset(_owned_basenames(h.get("command", "")))
+                key = _owned_hook_key(h.get("command", ""))
                 if key and last_idx.get(key) != i:
                     removed += 1
                     continue  # an earlier duplicate of an owned hook kept later in-group
+                kept.append(h)
+            if kept:
+                ng = dict(g)
+                ng["hooks"] = kept
+                new_groups.append(ng)
+        if new_groups:
+            cleaned["hooks"][event] = new_groups
+        else:
+            del cleaned["hooks"][event]
+    return cleaned, removed
+
+
+def dedupe_identical_hooks(existing: dict) -> tuple[dict, int]:
+    """Collapse BYTE-IDENTICAL hook commands sharing an (event, matcher). Keeps the
+    first occurrence.
+
+    WHY THIS EXISTS SEPARATELY FROM dedupe_owned_hooks(). That pass keys on
+    `_owned_basenames()`, so it only ever collapses hooks the template still
+    declares. A hook wired by an OLDER hooks.json but since dropped from both the
+    template and ABS_OWNED_BASENAMES resolves to an empty key, is read as a user
+    hook, and is therefore immortal -- every subsequent install appends another
+    copy that nothing will ever reap. Measured on a real long-lived account
+    (MYC-3876): 111 entries where a fresh install writes 56, with NINE hooks
+    present SEVEN times each -- one POSIX form plus six byte-identical Windows
+    forms -- while `Deduped:` reported 0 on every run.
+
+    Identity, not ownership, is the safe warrant here. Two byte-identical command
+    strings under the same matcher fire the same process on the same event; there
+    is no configuration in which running it twice is what the user meant. So this
+    pass needs no allowlist and cannot drift out of date with one.
+
+    Deliberately narrow, because the entries it touches are UNOWNED and may be the
+    user's own:
+      * only EXACT string matches collapse. A POSIX `python3 ~/...` variant and a
+        Windows `py -3 "C:\\..."` variant of the same script are left alone -- they
+        differ, and settings.json may be shared with a machine where the other one
+        is the live form.
+      * scoped by matcher, so the same command under two different matchers (two
+        genuinely different trigger conditions) is preserved.
+
+    Returns (cleaned, count_removed). Locked by tests/test_install_idempotent.py."""
+    cleaned = json.loads(json.dumps(existing))
+    removed = 0
+    if "hooks" not in cleaned:
+        return cleaned, 0
+    for event, groups in list(cleaned["hooks"].items()):
+        # seen per matcher, so identical commands are collapsed both WITHIN a group
+        # and ACROSS groups that share a matcher (a later install can append a new
+        # group rather than growing the existing one).
+        seen: dict[str, set] = {}
+        new_groups = []
+        for g in groups:
+            matcher = g.get("matcher", "")
+            bucket = seen.setdefault(matcher, set())
+            kept = []
+            for h in g.get("hooks", []):
+                cmd = h.get("command", "")
+                if cmd and cmd in bucket:
+                    removed += 1
+                    continue
+                if cmd:
+                    bucket.add(cmd)
                 kept.append(h)
             if kept:
                 ng = dict(g)
@@ -995,9 +1226,33 @@ def backup_settings(settings_path: Path) -> Path | None:
 
 
 def write_settings_with_verify(settings_path: Path, settings: dict, backup: Path | None) -> bool:
-    """Write settings.json, verify it parses, rollback on failure."""
+    """Write settings.json, verify it parses, rollback on failure.
+
+    ensure_ascii=True (JSON's default) is load-bearing, not style (#397). This is
+    the ONE place settings become BYTES, and those bytes are read back by a
+    consumer whose encoding we do not control. On Windows, Claude Code hands hook
+    commands to a shell running a legacy code page: a settings.json carrying raw
+    UTF-8 gets decoded there as cp1252/cp437, an account directory named "Ñoño"
+    comes back as "Ã‘oÃ±o", the absolute hook path stops resolving, and EVERY hook
+    fails — which blocks Bash and Grep for the whole session (47, then 132, then
+    104 dead paths across one reporter's three reinstalls). Escaping non-ASCII to
+    \\uXXXX makes the file pure ASCII, which decodes identically under UTF-8,
+    cp1252, cp437 and latin-1, so no consumer's code page can corrupt a path.
+
+    JSON semantics are untouched — "\\u00f3" and "ó" parse to the same string — so
+    merge/dedup/uninstall, which all match on these command strings, see exactly
+    what they saw before. Same escaping already relied on as cp1252 protection
+    elsewhere in this repo (SEV-4-json-encoded, scripts/utf8-stdout-baseline.txt).
+
+    This is the byte-level half of the fix whose path-level half is
+    _ascii_safe_win_path() (#430). That one is necessary but not sufficient: 8.3
+    short-name creation is disabled by default on many modern volumes, and there
+    it degrades to returning the path unchanged; it also covers only the Windows
+    hook-command rewrite, never the substituted vault path or the user's own
+    pre-existing entries. Locked by scripts/test_settings_json_codepage_safe.py.
+    """
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    new_text = json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
+    new_text = json.dumps(settings, indent=2, ensure_ascii=True) + "\n"
     try:
         settings_path.write_text(new_text, encoding="utf-8")
     except OSError as e:
@@ -1126,6 +1381,11 @@ def deploy_home_hooks(
     ever writes is a hook that cannot fire; the `[ -f ]` guard then makes the
     absence look like health.
 
+    Also deploys HOME_HOOKS_LIB_DEPS into <config_dir>/hooks/_lib/. A hook that
+    imports `_lib.<mod>` and finds it missing does not crash — it falls into a
+    try/except stub and silently does nothing, which reads exactly like a hook
+    with nothing to report. The dependency ships with its consumer.
+
     Contract:
       - COPY-IF-DIFFERENT: an identical destination is a no-op, so re-runs and
         the daily update pass are quiet and idempotent.
@@ -1141,9 +1401,20 @@ def deploy_home_hooks(
     """
     notes: list[str] = []
     dest_dir = config_dir / "hooks"
-    for name in sorted(HOME_HOOKS_INSTALLER_DEPLOYS):
-        src = repo_hooks_dir / name
-        dest = dest_dir / name
+
+    targets: list[tuple[str, Path, Path]] = [
+        (name, repo_hooks_dir / name, dest_dir / name)
+        for name in sorted(HOME_HOOKS_INSTALLER_DEPLOYS)
+    ]
+    # _lib is a package, not a hook: same copy contract, no executable bit, and
+    # its own subdirectory. Deployed BEFORE nothing in particular — order does
+    # not matter, since the import only runs when a hook fires.
+    targets += [
+        (f"_lib/{name}", repo_hooks_dir / "_lib" / name, dest_dir / "_lib" / name)
+        for name in sorted(HOME_HOOKS_LIB_DEPS)
+    ]
+
+    for name, src, dest in targets:
         if not src.is_file():
             notes.append(f"  ! {name}: not in {repo_hooks_dir} — hook will not fire")
             continue
@@ -1154,16 +1425,24 @@ def deploy_home_hooks(
             if dry_run:
                 notes.append(f"  + {name} (would {'update' if dest.is_file() else 'deploy'})")
                 continue
-            dest_dir.mkdir(parents=True, exist_ok=True)
+            # dest.parent, not dest_dir: an entry under _lib/ needs its own
+            # subdirectory created, and a FileNotFoundError here is swallowed by
+            # the OSError handler below — the hook would deploy and its library
+            # would not, which is the exact silent half-install being fixed.
+            dest.parent.mkdir(parents=True, exist_ok=True)
             if dest.is_file():
+                # dest.name, not name: `name` may carry a subdirectory
+                # ("_lib/vault_root.py") and Path.with_name() raises ValueError
+                # on a separator — an exception this except-clause does not
+                # catch, which would abort the whole install.
                 backup = dest.with_name(
-                    f"{name}.bak-{datetime.now().strftime('%Y-%m-%d-%H%M')}")
+                    f"{dest.name}.bak-{datetime.now().strftime('%Y-%m-%d-%H%M')}")
                 shutil.copyfile(dest, backup)
                 notes.append(f"  ~ {name} (updated; previous copy at {backup.name})")
             else:
                 notes.append(f"  + {name} (deployed)")
             shutil.copyfile(src, dest)
-            if os.name != "nt":
+            if os.name != "nt" and "/" not in name:
                 try:
                     dest.chmod(dest.stat().st_mode | 0o111)
                 except OSError:
@@ -1453,6 +1732,10 @@ def main() -> int:
     # (a byte-changed command the owned-basename dedup recognizes only AFTER the hook is
     # owned, so merge replaced the first copy but a second stale one persisted).
     merged, deduped_count = dedupe_owned_hooks(merged)
+    # Collapse byte-identical copies regardless of ownership. dedupe_owned_hooks
+    # above cannot see a hook the template no longer declares, which is exactly
+    # the copy that accumulates forever (MYC-3876).
+    merged, identical_count = dedupe_identical_hooks(merged)
 
     if not args.quiet:
         print(f"Merging into: {settings_path}")
@@ -1463,6 +1746,7 @@ def main() -> int:
         print(f"Retired:      {retired_count} stale hook(s) removed")
         print(f"Relocated:    {moved_count} moved-event stale copy(ies) removed")
         print(f"Deduped:      {deduped_count} duplicate owned hook(s) removed")
+        print(f"Collapsed:    {identical_count} byte-identical hook(s) removed")
         print(f"Preserved:    {len(set(summary['kept']))} non-ABS hook(s) untouched")
         if win_skipped:
             print(f"Skipped:      {len(win_skipped)} POSIX-only (bash) hook(s) not "

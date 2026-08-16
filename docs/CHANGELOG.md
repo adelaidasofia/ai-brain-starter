@@ -9,6 +9,52 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-15: the setup could stop halfway and tell you it was finished
+
+**Who this affects:** anyone whose install ended early, especially if you never reached the journaling interview or your CLAUDE.md came out mostly empty.
+
+Setup runs in phases, 0 through 24, and each phase lives in its own file so Claude only loads the part it is working on. Which file comes next was written down in exactly one place: the routing table at the top of the setup guide.
+
+That works right up until the install gets long. By the time Claude has finished creating your folders it has read tens of thousands of words of setup instructions plus your own answers, and the routing table is no longer the thing steering it. The current file ends. Nothing tells Claude there are fifteen more phases. So it stops, and because stopping looks exactly like finishing, it tells you the install is complete.
+
+Nothing errors. No file is missing. You are left with a folder structure, a skeleton CLAUDE.md, and none of the parts that make this a second brain: the context layer, the journal, the advisory panel, the weekly insights. One person's CLAUDE.md recorded "phases completed: folder structure + profile" while fifteen phases had never run, and they had no way to know that was wrong.
+
+**Every phase file now ends by naming the next one.** The instruction travels with the file being read, so it cannot fall out of context the way a table at the top can. A new check, run on every change, walks the whole sequence and fails the build if any phase does not point somewhere, if any phase is unreachable, or if the chain loops or runs off the end. Adding a phase and forgetting to wire it in is now a build failure instead of a feature nobody ever receives.
+
+**And you can now pick up where you stopped.** Ask Claude to "resume my ai-brain-starter install" (or "retoma mi instalación") in a fresh session. It works out how far you actually got by looking at what exists in your vault rather than asking you, tells you where it landed, and carries on from there. It also records your progress as it goes, so the next interruption costs you nothing. That detection had to read the vault directly, because the people most affected by this bug are precisely the ones whose progress was never recorded.
+
+**What you should do:** if your install ended early, update, then start a fresh session and ask Claude to resume your ai-brain-starter install. Step-by-step, including a self-contained prompt that works even if you cannot update yet: [`docs/RESUME_INSTALL.md`](RESUME_INSTALL.md).
+
+---
+
+## 2026-08-13: three helpers that were never actually installed, and a Windows setup that could fail without saying so
+
+**Who this affects:** everyone, for the second half. Windows users especially, for the first.
+
+Both of these came out of one real Windows install, where a person hit them, worked around them by hand, and told us.
+
+**Setup could fail to install Node.js and not say why.** Node's installer puts itself in a location that belongs to the whole machine, which Windows only allows after you approve a permission prompt. Setup ran that installer in silent mode, where no prompt can appear, so on a normal (non-Administrator) PowerShell the install simply refused. Worse, setup was throwing away the installer's answer entirely: whether it succeeded, failed, or never started, the next line of output looked the same. All you saw, several lines later, was a bare "node install failed" with no reason attached.
+
+Now setup checks whether it is running as Administrator first. If it is, nothing changes. If it is not, it installs Node just for you, from the official ZIP build, into your own user folder, and adds it to your PATH. That path needs no permission prompt at all, so it cannot fail this way. It also adds the folder npm uses for global tools, which the machine-wide installer would normally have added, so Claude Code installs and runs straight afterward. If winget was tried first and could not do it, setup now falls back to the direct download instead of giving up. And every installer's real exit code is now read and reported, so a failure says what happened and what to do about it. The same fix is applied to the Python installer beside it, which had the identical problem.
+
+**Three background helpers were being wired up but never copied into place.** `vault-context.py` (reads your priorities and open loops and puts them in front of Claude before it answers a strategic question), `retry-budget.py` (stops Claude looping on the same failing command), and `validate-mcp-json.py` (catches a broken `.mcp.json` before it silently disables every connector you have).
+
+Setup listed them in your settings, so they looked installed. But the actual copying was a `cp` command written inside one of the setup guides, meant to be run while Claude walked you through setup. `cp` is not a command on Windows, so there it could not run at all. And because each of these hooks is deliberately wired as "run this only if the file exists", a missing file produces no error, no warning, and no output. Nothing to notice, on any platform.
+
+There was a second layer to it. `vault-context.py` reads a small shared library that ships beside it, and nothing ever copied that library anywhere. So even where the `cp` did run, the hook loaded, found no library, fell back to its own do-nothing branch, and exited cleanly. It has been reporting healthy and injecting nothing, on every operating system, since it shipped.
+
+All three now install with everything else, on every platform, along with the library they need. Setup verifies them afterward instead of assuming.
+
+**What you should do:** run this once, and you are current:
+
+```
+python3 ~/.claude/skills/ai-brain-starter/scripts/install-hooks-user-level.py
+```
+
+If your session start mentions "background helpers not active", this is what it was pointing at. Nothing else changes, and re-running is safe: anything you edited by hand is backed up to `<file>.bak-YYYY-MM-DD-HHMM` before it is replaced.
+
+---
+
 ## 2026-08-05: on Mac and Linux, "daily backup scheduled" now means it really is
 
 **Who this affects:** anyone on macOS or Linux who set up the daily vault backup.
@@ -52,6 +98,20 @@ Every hook on Windows runs through one wrapper, `scripts/hook_runner.py`, and th
 Day-to-day work looked fine, because most tool calls mention only plain-ASCII paths. Then you'd say "close the session" — the one workflow where nearly every step reads or writes under `⚙️ Meta` — and each step froze for exactly 10 minutes. One measured close took 59 minutes, about 40 of them frozen. People killed the stuck session and got an empty session stub instead of their captured work; the stubs then piled up because the close that cleans them never finished either.
 
 The wrapper now passes the payload through as raw bytes (nothing to mis-translate), tells the hook's Python to speak UTF-8 (`PYTHONUTF8=1`, which also defuses the cp1252 print-crash class tracked in #314), and gives each hook a hard 45-second budget — so even a hook that hangs for an unrelated reason can never again stall a tool call to the 10-minute ceiling. Exit-code semantics are unchanged: 0 forwards output, 2 still blocks with its reason, everything else falls back to the neutral "continue".
+
+---
+
+## 2026-08-01: a graphify stage looked like it worked, then charged you twice
+
+**Who this affects:** anyone who runs `/graphify` with more than one chunk.
+
+Finishing a graphify stage crashed at the very last step, and the crash landed in the one place where it did the most damage while looking like the least. By the time it fired, the merged graph had already been written to disk. What had *not* run yet was the step that saves the semantic cache. So you got a healthy-looking graph, a stack trace you could reasonably read as "the report failed, no big deal" — and a cache that never recorded any of the work. The next `--update` re-extracted every one of those files from scratch and re-paid the full token cost. On a real run that was thousands of files silently re-billed.
+
+The cause was a single wrong key. The function that ranks your most-connected nodes returns each one's `degree`; the report step asked for `edges`, which has never existed on it. Three lines asked for it.
+
+**And the check that was supposed to catch it counted zero every time.** After saving the cache, the script reports how many entries it touched, so you can confirm the run landed. It looked for cache files directly inside the cache folder — but the cache is nested, in `semantic/` and `ast/` subfolders. So the count was always zero, whether the run had upgraded nothing or upgraded thousands. A verification step that cannot distinguish success from failure is worse than no verification, because you stop looking.
+
+Both are fixed. The report reads `degree` (and still falls back to the older key names if a future version renames it), and the cache check walks the nested folders. If a stage ever crashes again, it will crash *before* the merge instead of after.
 
 ## 2026-08-01: WhatsApp chats that were all filed as one-on-ones
 
@@ -124,6 +184,19 @@ Now it does. When a session set a goal that was never cleared, the close ends by
 **The fix:** the entry template now opens with `type: journal`, and the capture-first save names it as a required field. Nothing else about the entry changed.
 
 **What you should do:** nothing for new entries. If you journaled before this fix, ask Claude to backfill `type: journal` into your existing entries' frontmatter so extraction sees them too.
+
+## 2026-07-16: the Spanish close detector stopped firing mid-conversation and started hearing "cierra esta sesión"
+
+**Who this affects:** anyone journaling or working in Spanish (or Portuguese) — the session-close detector was misbehaving in both directions for you, and English users never saw it.
+
+**The bug:** two failures, same root cause. The close detector lets its strong tiers (explicit, high-confidence sign-offs) override the false-positive guards — and the guard tier that's *allowed* to override them (`strict_guards`) existed only in the English pack. So in Spanish, every false-positive guard was dead code:
+
+- **Fired when it shouldn't:** "¿Ya está en el prompt o no está creado?" — a question in the middle of a working session — triggered the full close cascade, because `ya (está|estuvo|fue)` was unanchored and matched inside any sentence.
+- **Stayed silent when it should have fired:** "cierra esta sesión" did nothing. The pattern was built on the stem `cerr`, which covers *cerrar/cerremos/cerramos* but not the imperative *cierra* — Spanish *cerrar* is an e→ie stem-changing verb, so the command form is *cierr-*, not *cerr-*.
+
+**The fix:** ported the `strict_guards` tier to `es.json` (meta-discussion of the cascade, technical references, "close the *database* session", questions *about* closing), anchored `ya está/estuvo/fue/quedó` to end-of-message, and added the imperative `cierra/cierre/cierren` (plus Argentine `cerrá`) to the close-session pattern.
+
+**New test:** `tests/integration/test_detect_closing_signal_es_guards.sh`, wired into `scripts/ci.sh`. The English `strict_guards` test is unchanged and still passes.
 
 ---
 
