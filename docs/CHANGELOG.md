@@ -9,6 +9,20 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-16: "cierro sesión" did not close the session
+
+**Who this affects:** anyone who closes their session in Spanish.
+
+Spanish has several ways to say you are closing, and the list the close detector matched against had a hole in it. "cierra la sesión" worked. "cerremos la sesión" worked. **"cierro sesión"** — first person, one of the most natural ways to put it — matched nothing at all, and the session simply never closed.
+
+The verb is the reason. "Cerrar" changes its stem when it conjugates: *cerramos* keeps the `cerr`, but *cierro* and *cierra* switch to `cierr`. The pattern had been extended once already to catch `cierra`, `cierre`, `cierren` and `cierras`, and `cierro` was the one form left out.
+
+Two related patterns had the same gap, and they matter more than they look. They are the ones that stop a close from firing when you are plainly talking about closing *something else* — "cierro la sesión de la base de datos" should not end your session. Widening the main pattern without widening those would have swapped a missed close for a wrong one, so all three moved together.
+
+**What you should do:** nothing beyond updating.
+
+---
+
 ## 2026-08-15: the setup could stop halfway and tell you it was finished
 
 **Who this affects:** anyone whose install ended early, especially if you never reached the journaling interview or your CLAUDE.md came out mostly empty.
