@@ -352,4 +352,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313): this file's own source carries
+    # non-ASCII (em dashes), and a failure detail echoes hook command text, so
+    # force UTF-8 rather than let a legacy code page crash the run.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())
