@@ -183,8 +183,33 @@ rc="$(run_checker "$TMP/does-not-exist")"
 [ "$rc" = "2" ] && ok "a missing phases dir exits 2 (fail loud)" \
   || fail "missing phases dir should exit 2, got $rc"
 
+# --- 11. NEGATIVE: the chain and SKILL.md's routing table disagree ----------
+# Two sources of truth for one order. The footers drive execution now, so a
+# table that drifts is documentation that lies, and every check above passes.
+mk_chain "$TMP/tabledrift"
+cat > "$TMP/tabledrift/SKILL.md" <<'EOF'
+# Routing table
+| 0 | `phases/phase-00-a.md` |
+| 2 | `phases/phase-02-c.md` |
+| 1 | `phases/phase-01-b.md` |
+EOF
+rc="$(python3 "$CHECKER" --phases-dir "$TMP/tabledrift" --skill-md "$TMP/tabledrift/SKILL.md" >/dev/null 2>&1; echo $?)"
+[ "$rc" = "1" ] && ok "a routing table that disagrees with the chain is rejected" \
+  || fail "chain/table order drift NOT caught (exit $rc)"
+
+# --- 12. POSITIVE: a table that agrees passes -------------------------------
+cat > "$TMP/tabledrift/SKILL.md" <<'EOF'
+# Routing table
+| 0 | `phases/phase-00-a.md` |
+| 1 | `phases/phase-01-b.md` |
+| 2 | `phases/phase-02-c.md` |
+EOF
+rc="$(python3 "$CHECKER" --phases-dir "$TMP/tabledrift" --skill-md "$TMP/tabledrift/SKILL.md" >/dev/null 2>&1; echo $?)"
+[ "$rc" = "0" ] && ok "a routing table that agrees passes (not just always-red)" \
+  || fail "agreeing table wrongly rejected (exit $rc)"
+
 if [ "$failed" -eq 0 ]; then
-  echo "PASS: phase-chain contract holds, and the checker rejects all 7 break modes."
+  echo "PASS: phase-chain contract holds, and the checker rejects all 8 break modes."
   exit 0
 fi
 echo "FAILED" >&2
