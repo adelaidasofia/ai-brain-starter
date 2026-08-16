@@ -248,25 +248,88 @@ grep -qF '.local/python/bin' "$POST_HOME/.bashrc" || fail "4: python's user-spac
 
 # ── 5. NEGATIVE CONTROL: the identical harness against the PRE-FIX source
 # must fail the way the bug actually failed (err() called, node absent) —
-# proving check 4 exercises real logic, not a tautology. Requires origin/main
-# fetched already (true in CI and any normal dev checkout); skips loudly,
-# never silently, if it truly cannot be resolved. ──
-PREFIX_SRC="$TMP/bootstrap-prefix.sh"
-if git -C "$REPO_ROOT" show origin/main:bootstrap.sh > "$PREFIX_SRC" 2>/dev/null && [ -s "$PREFIX_SRC" ]; then
-  PRE_HOME="$TMP/pre-home"; mkdir -p "$PRE_HOME"
-  PRE_HARNESS="$TMP/pre-harness.sh"
-  build_harness "$PREFIX_SRC" "$PRE_HARNESS" "$PRE_HOME"
-  PRE_OUT="$(PATH="$POST_STUB:/usr/bin:/bin" bash "$PRE_HARNESS" 2>&1)" || true
-  echo "$PRE_OUT" | grep -q 'RESULT_FAILED_COUNT=2' \
-    || fail "5 (negative control): the pre-fix source was expected to call err() exactly twice (python + node) with brew absent + no sudo, so this harness would have caught the original bug. Output:
-$PRE_OUT"
-  echo "$PRE_OUT" | grep -q 'RESULT_NODE=NONE' \
-    || fail "5 (negative control): the pre-fix source was expected to leave node completely absent. Output:
-$PRE_OUT"
-  echo "PASS: negative control confirmed against pre-fix bootstrap.sh (origin/main) — RESULT_FAILED_COUNT=2, RESULT_NODE=NONE"
-else
-  echo "SKIP: 5 (negative control) — origin/main not resolvable here (no network / shallow clone); check 4 still ran for real"
+# proving check 4 exercises real logic, not a tautology.
+#
+# THE "BEFORE" SOURCE IS A FROZEN FIXTURE, NEVER A MOVING REF.
+#
+# This check used to read it with `git show origin/main:bootstrap.sh`. That was
+# true exactly once: while the fix sat on a feature branch and origin/main still
+# held the pre-fix code. The moment #502 merged, origin/main:bootstrap.sh BECAME
+# the fixed code, so the control ran the fix against itself, observed success
+# where it demands failure, and went red — on main, on every commit after it, for
+# four commits, blocking every push and every merge in the repo.
+#
+# The shape is worth naming, because it is invisible in review: a control whose
+# "before" is a moving ref is GUARANTEED to pass in the PR that introduces it and
+# GUARANTEED to fail forever once that PR lands. It cannot be caught by running
+# it; it can only be caught by reading it, or by the identity assertion below.
+#
+# A pinned SHA would fix the mutability but not the reachability: the `ci` job's
+# checkout takes no fetch-depth, so it is shallow, and an old SHA is simply not
+# in the object store there. Hence a vendored fixture — a snapshot of history,
+# correct forever, immune to ref movement, history rewrites and clone depth.
+#
+# That same shallowness is why this survived four commits, and it is the
+# strongest argument for the fixture. `origin/main` does not resolve in the
+# shallow `ci` job either, so on every PR the old code took its `else` branch,
+# printed "SKIP: 5 (negative control) — origin/main not resolvable here", and
+# reported PASS. The control had therefore NEVER run in a gating context since
+# it was written: green on every PR, red only on push-to-main, where origin/main
+# finally resolves and it compares the fix against itself. A required check that
+# can only fail AFTER the merge blocks nothing. That SKIP branch is gone for
+# exactly this reason — an unresolvable "before" source now fails loud, because
+# a control that cannot run must not report success.
+#
+# The fixture also makes PR and main SYMMETRIC: a vendored file resolves the
+# same way in a shallow checkout and a full one, so this control now runs where
+# it can still stop something.
+#
+# The fixture is named .sh.txt, not .sh, deliberately: it is frozen DATA, never
+# executed, and scripts/shellcheck.sh lints every tracked *.sh. A historical
+# snapshot must not be edited to satisfy a linter.
+PREFIX_SRC="$REPO_ROOT/tests/fixtures/bootstrap-prefix-27d5243-parent.sh.txt"
+if [ ! -s "$PREFIX_SRC" ]; then
+  fail "5 (negative control): the frozen pre-fix fixture is missing or empty at $PREFIX_SRC. Without a 'before' source this control cannot run, and a control that cannot run must not report success."
 fi
+# The assertion that would have caught the origin/main bug on day one: if the
+# "before" and "after" sources are the same bytes, this control is comparing the
+# fix to itself and proves nothing, whatever its other assertions then say.
+if [ "$(cksum < "$PREFIX_SRC")" = "$(cksum < "$BOOTSTRAP")" ]; then
+  fail "5 (negative control): the pre-fix fixture is byte-identical to $BOOTSTRAP, so this control is comparing the fix against itself and cannot fail. Restore a genuine pre-fix snapshot."
+fi
+# The byte check alone is nearly inert, because the fixture is a ~70-line
+# EXTRACT and bootstrap.sh is the whole 2000+ line script: those two can never
+# be byte-equal in the intended design, so that check only catches someone
+# literally copying bootstrap.sh over the fixture.
+#
+# The likelier regression is subtler and the byte check is blind to it: a future
+# maintainer sees a fixture that looks stale next to bootstrap.sh and
+# "refreshes" it by re-running the extraction against CURRENT source. That
+# produces a ~70-line extract of POST-fix code, which is not byte-equal to
+# anything, so the check above stays silent — and check 5 then fails on
+# RESULT_FAILED_COUNT with a message pointing at bootstrap.sh, sending the next
+# person to debug the wrong file. This repo has already paid for a
+# wrong-repair-pointer once (6ac8364).
+#
+# So assert PROVENANCE, not merely difference. What makes this fixture pre-fix
+# is precisely that the user-space installers did not exist yet; the setup loop
+# above already proves all four DO exist in $BOOTSTRAP, so this binds the pair.
+for _fn in install_node_userspace install_python_userspace user_space_platform fetch_tarball; do
+  if grep -q "$_fn" "$PREFIX_SRC"; then
+    fail "5 (negative control): the pre-fix fixture references ${_fn}, which did not exist until the fix (27d5243). It was probably regenerated from post-fix source. It must stay a frozen snapshot of 27d5243^, never a re-extraction from HEAD."
+  fi
+done
+PRE_HOME="$TMP/pre-home"; mkdir -p "$PRE_HOME"
+PRE_HARNESS="$TMP/pre-harness.sh"
+build_harness "$PREFIX_SRC" "$PRE_HARNESS" "$PRE_HOME"
+PRE_OUT="$(PATH="$POST_STUB:/usr/bin:/bin" bash "$PRE_HARNESS" 2>&1)" || true
+echo "$PRE_OUT" | grep -q 'RESULT_FAILED_COUNT=2' \
+  || fail "5 (negative control): the pre-fix source was expected to call err() exactly twice (python + node) with brew absent + no sudo, so this harness would have caught the original bug. Output:
+$PRE_OUT"
+echo "$PRE_OUT" | grep -q 'RESULT_NODE=NONE' \
+  || fail "5 (negative control): the pre-fix source was expected to leave node completely absent. Output:
+$PRE_OUT"
+echo "PASS: negative control confirmed against the frozen pre-fix fixture (27d5243^) — RESULT_FAILED_COUNT=2, RESULT_NODE=NONE"
 
 # ── 6. Linux wiring: both sections gate on is_linux && have_sudo, and fall
 # back to the same install_*_userspace() functions on that branch ──
