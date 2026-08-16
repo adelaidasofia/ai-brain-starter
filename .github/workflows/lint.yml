@@ -165,6 +165,24 @@ jobs:
       - name: no naive VAULT_ROOT reads (resolve via _resolve_vault_root)
         run: python3 scripts/check-vault-root-reads.py
 
+      # A negative control needs a "before" source. Read it from a MOVING ref
+      # (`git show origin/main:file`) and the control is guaranteed to pass in
+      # the PR that adds it and guaranteed to fail forever after it lands --
+      # merging is what turns origin/main into the fixed code, after which the
+      # control runs the fix against itself. Measured 2026-08-16: five straight
+      # commits red on main, every merge in the repo blocked.
+      #
+      # It is unrunnable-to-catch: green every time you run it pre-merge. Only
+      # reading it, or this guard, finds it. Vendor the before-state under
+      # tests/fixtures/ instead -- a fixture is immune to ref movement, history
+      # rewrites AND clone depth, which a pinned SHA is not (the `ci` job below
+      # checks out shallow, so old objects are simply absent there).
+      - name: frozen-before-state negative controls (the guard must still bite)
+        run: python3 scripts/check-frozen-before-state.py --self-test
+
+      - name: no moving ref as a test's before-state (vendor a fixture)
+        run: python3 scripts/check-frozen-before-state.py
+
       # Same SILENT-NO-OP family: hooks.json wires several hooks by their
       # ~/.claude/hooks/ path behind a `[ -f <path> ] &&` guard. The guard is
       # correct at runtime (a deleted optional hook should be silent) and lethal
