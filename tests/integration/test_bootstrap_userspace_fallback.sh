@@ -145,6 +145,10 @@ build_harness() {
   {
     echo 'set -uo pipefail'
     echo "HOME=\"$fakehome\""
+    echo "USERPROFILE=\"$fakehome\""   # Windows Python resolves ~ via USERPROFILE, not HOME (MYC-3536) — the
+                                       # generated harness is bash-only today, but pairing it here matches every
+                                       # other sandboxed HOME site in this suite and survives a future edit that
+                                       # adds a python3 call.
     echo 'SHELL=/bin/bash'
     echo 'FAILED=()'
     echo 'LANG_CODE=en'
@@ -187,6 +191,7 @@ AUPE_HOME="$TMP/aupe-home"; mkdir -p "$AUPE_HOME"
 AUPE_HARNESS="$TMP/aupe.sh"
 {
   echo "HOME=\"$AUPE_HOME\""
+  echo "USERPROFILE=\"$AUPE_HOME\""   # paired per MYC-3536 (see build_harness above)
   echo 'SHELL=/bin/bash'
   extract_fn add_user_path_entry "$BOOTSTRAP"
   echo 'add_user_path_entry "/fake/tool/bin"'
