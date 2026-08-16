@@ -23,7 +23,7 @@ Nothing errors. No file is missing. You are left with a folder structure, a skel
 
 **And you can now pick up where you stopped.** Ask Claude to "resume my ai-brain-starter install" (or "retoma mi instalación") in a fresh session. It works out how far you actually got by looking at what exists in your vault rather than asking you, tells you where it landed, and carries on from there. It also records your progress as it goes, so the next interruption costs you nothing. That detection had to read the vault directly, because the people most affected by this bug are precisely the ones whose progress was never recorded.
 
-**What you should do:** if your install ended early, update, then start a fresh session and ask Claude to resume your ai-brain-starter install.
+**What you should do:** if your install ended early, update, then start a fresh session and ask Claude to resume your ai-brain-starter install. Step-by-step, including a self-contained prompt that works even if you cannot update yet: [`docs/RESUME_INSTALL.md`](RESUME_INSTALL.md).
 
 ---
 
