@@ -190,6 +190,15 @@ jobs:
       - name: every shipped hook is wired, and every wired hook is owned
         run: python3 scripts/check-hook-activation.py
 
+      # The fourth, disjoint question: a hook can be wired, owned and able to
+      # speak, and still have a matcher that never fires on any real input.
+      # Only a negative control separates a QUIET guard from a DEAD one.
+      - name: hook negative-control checks (this check must go RED on its own cases)
+        run: python3 scripts/check-hook-negative-control.py --selftest
+
+      - name: no shipped hook lacks a test surface
+        run: python3 scripts/check-hook-negative-control.py
+
       # The READ half of the UTF-8 console guard below. That one fails a CLI that
       # PRINTS non-ASCII without reconfiguring stdout; this fails one that READS a
       # child's output with text=True and no encoding=, so the decode uses the

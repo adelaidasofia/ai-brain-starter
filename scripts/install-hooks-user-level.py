@@ -163,6 +163,12 @@ ABS_FINGERPRINTS = [
     "ai-brain-starter/hooks/remediate-runaway-procs.py",
     # Write-time secret guard:
     "ai-brain-starter/hooks/block-secret-in-note.py",
+    # Write-time privacy guard: a `__SKIP` line is content the user told the
+    # assistant NOT to persist. MODEL-GENERAL -- any agent drafting a life
+    # record from conversation can carry the line through to the file, and a
+    # persisted line cannot be un-persisted (file + git history + any index
+    # over the vault). Blocks, because a warning that is ignored still writes.
+    "ai-brain-starter/hooks/block-skip-prefix-in-vault-write.py",
     # Handoff lifecycle guard (issue #375). Shipped since the handoff-files rule
     # existed but was never registered here, so templates/rules/handoff-files.md
     # documented an enforcement that did nothing on every install
@@ -243,7 +249,8 @@ ABS_OWNED_BASENAMES = {
     # MCP secret-leak guards (MYC-3560): same basename-dedup reasoning as the
     # two gates above.
     "block-claude-mcp-inline-secret.py", "block-mcp-config-inline-secret.py",
-    "block-secret-in-note.py", "context-budget-measure.py",
+    "block-secret-in-note.py", "block-skip-prefix-in-vault-write.py",
+    "context-budget-measure.py",
     "validate-handoff-frontmatter.py",
     "block-populated-public-skill.py",
     "warn-workflow-call-permission-elevation.py",
