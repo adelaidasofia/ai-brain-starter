@@ -327,9 +327,10 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 # have_sudo — true only if this shell could elevate WITHOUT a password prompt
 # right now (root, or cached/passwordless sudo). A non-interactive run (Claude
-# Code's Bash tool, or curl|bash) can never answer a prompt, so that is the
-# right question here, not "is the user in the admin group" (preflight.sh's
-# Section 5 answers that broader one for a human reading the report).
+# Code's Bash tool, or a piped remote installer) can never answer a prompt, so
+# that is the right question here, not "is the user in the admin group"
+# (preflight.sh's Section 5 answers that broader one for a human reading the
+# report).
 have_sudo() { [[ "$EUID" -eq 0 ]] || sudo -n true 2>/dev/null; }
 
 # quiet_retry CMD... — run with FULL output captured to $BOOTSTRAP_LOG (never

@@ -99,7 +99,24 @@ STUB
 #!/usr/bin/env bash
 exit 1
 STUB
-  chmod +x "$stubdir/uname" "$stubdir/sudo"
+  # `have node` is naturally false everywhere (neither /usr/bin nor /bin ships
+  # a node), so the Node branch triggers deterministically on any runner. The
+  # Python guard is NOT naturally deterministic the same way: it checks the
+  # ambient python3's VERSION, and that ambient version differs by platform
+  # (macOS's /usr/bin/python3 stub is 3.9.x — always triggers the fallback;
+  # Ubuntu, incl. GitHub Actions runners, ships 3.12+ by default — the guard
+  # is satisfied WITHOUT installing anything, so the fallback branch this test
+  # exists to prove never runs). Reproduced: this exact gap shipped green
+  # locally and FAILED on the GitHub Actions ci-gate job for precisely this
+  # reason. Stub python3 to fail the version assertion unconditionally, so
+  # the fallback branch fires the same way regardless of the runner's real
+  # ambient interpreter.
+  cat > "$stubdir/python3" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = "-c" ] && exit 1
+echo "Python 3.9.0"
+STUB
+  chmod +x "$stubdir/uname" "$stubdir/sudo" "$stubdir/python3"
 }
 
 build_fixtures() { # build_fixtures DEST_DIR -> writes node.tar.gz + python.tar.gz there
