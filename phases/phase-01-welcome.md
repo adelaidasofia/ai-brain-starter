@@ -301,3 +301,22 @@ bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh verify --vault "<
 
 **If the user genuinely wants to defer** (no external disk handy, wants to decide on a cloud folder later): do not fight them, but do not let it pass silently either. Say plainly: *"Okay — just so you know, your brain currently has no off-machine backup, so right now one disk failure would lose everything. I've left it un-set-up at your call. You'll see a reminder at the start of every session until a backup exists, and the one command to fix it is `bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh setup`."* The SessionStart signal (`surface-backup-status.py`) then keeps it visible until it's done — it is advisory and never blocks, but it does not go quiet. See `docs/BACKUP.md`.
 
+---
+
+## → Next phase (the install is not finished)
+
+You have just completed **Phase 1**. Do not stop here, do not summarise the
+install as complete, and do not wait to be asked to continue.
+
+1. **Record progress.** Write `~/.claude/.ai-brain-starter-progress.json`:
+   `{"last_completed_phase": "1", "ts": "<ISO-8601 timestamp for now>", "version": 1}`
+   This one line is what lets a resumed install pick up here instead of starting over.
+2. **Run the next phase.** Read `phases/phase-02-03-plugins-folders.md` from this skill's own directory
+   and execute **Phase 2-3**.
+
+If you are running low on context, say so out loud and tell the user to open a
+fresh session and ask to resume the ai-brain-starter install; the progress file
+above is what makes that work. Ending here silently leaves them with a
+half-built brain that looks finished.
+
+<!-- phase-chain: next=phase-02-03-plugins-folders.md -->

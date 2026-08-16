@@ -9,6 +9,24 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-15: the setup could stop halfway and tell you it was finished
+
+**Who this affects:** anyone whose install ended early, especially if you never reached the journaling interview or your CLAUDE.md came out mostly empty.
+
+Setup runs in phases, 0 through 24, and each phase lives in its own file so Claude only loads the part it is working on. Which file comes next was written down in exactly one place: the routing table at the top of the setup guide.
+
+That works right up until the install gets long. By the time Claude has finished creating your folders it has read tens of thousands of words of setup instructions plus your own answers, and the routing table is no longer the thing steering it. The current file ends. Nothing tells Claude there are fifteen more phases. So it stops, and because stopping looks exactly like finishing, it tells you the install is complete.
+
+Nothing errors. No file is missing. You are left with a folder structure, a skeleton CLAUDE.md, and none of the parts that make this a second brain: the context layer, the journal, the advisory panel, the weekly insights. One person's CLAUDE.md recorded "phases completed: folder structure + profile" while fifteen phases had never run, and they had no way to know that was wrong.
+
+**Every phase file now ends by naming the next one.** The instruction travels with the file being read, so it cannot fall out of context the way a table at the top can. A new check, run on every change, walks the whole sequence and fails the build if any phase does not point somewhere, if any phase is unreachable, or if the chain loops or runs off the end. Adding a phase and forgetting to wire it in is now a build failure instead of a feature nobody ever receives.
+
+**And you can now pick up where you stopped.** Ask Claude to "resume my ai-brain-starter install" (or "retoma mi instalación") in a fresh session. It works out how far you actually got by looking at what exists in your vault rather than asking you, tells you where it landed, and carries on from there. It also records your progress as it goes, so the next interruption costs you nothing. That detection had to read the vault directly, because the people most affected by this bug are precisely the ones whose progress was never recorded.
+
+**What you should do:** if your install ended early, update, then start a fresh session and ask Claude to resume your ai-brain-starter install.
+
+---
+
 ## 2026-08-13: three helpers that were never actually installed, and a Windows setup that could fail without saying so
 
 **Who this affects:** everyone, for the second half. Windows users especially, for the first.

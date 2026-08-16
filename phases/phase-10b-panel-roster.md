@@ -193,3 +193,23 @@ Substitute `[VAULT_PATH]` and the time placeholders with the actual values saved
 > "Daily journal trigger is installed. Every day at [TIME] I'll check if you've already journaled — if you haven't, I'll start a conversation. If you have, I stay out of your way. You can still run `/journal` manually anytime, or change the time by saying 'change my journal trigger time.'"
 
 **If the user wants to change the time later:** they can say "change my journal trigger time to [new time]" and you'll update the scheduled task in place using the same mechanism (schedule skill → `update_scheduled_task` on the `daily-journal-reminder` task, or edit the cron line). Don't make them re-run setup.
+
+---
+
+## → Next phase (the install is not finished)
+
+You have just completed **Phase 10b**. Do not stop here, do not summarise the
+install as complete, and do not wait to be asked to continue.
+
+1. **Record progress.** Write `~/.claude/.ai-brain-starter-progress.json`:
+   `{"last_completed_phase": "10b", "ts": "<ISO-8601 timestamp for now>", "version": 1}`
+   This one line is what lets a resumed install pick up here instead of starting over.
+2. **Run the next phase.** Read `phases/phase-11-external-tools.md` from this skill's own directory
+   and execute **Phase 11**.
+
+If you are running low on context, say so out loud and tell the user to open a
+fresh session and ask to resume the ai-brain-starter install; the progress file
+above is what makes that work. Ending here silently leaves them with a
+half-built brain that looks finished.
+
+<!-- phase-chain: next=phase-11-external-tools.md -->
