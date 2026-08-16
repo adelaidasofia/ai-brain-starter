@@ -111,7 +111,6 @@ b647243fdf0a358d46a6a79b0bf7f817ee121f68d5d685fabe4b0ee2a93af94d SEV-4-json-enco
 9384c96d288eb31a5f59cc7e985ec4b79e723309595d48a09a87e30d7907c5eb SEV-4-json-encoded hooks/check-fabricated-verification.py
 25d963d25e1e2e6844a35133bbad1d0aad8d03de424e29d4a406a67cb1d4c1cb SEV-4-json-encoded hooks/check-rule-conflicts-on-write.py
 85006d7e25f42ba787b2ce616bd1c71590c3990f89f3153a6f958156c93029ed SEV-4-json-encoded hooks/coach-auto-prescribe-on-journal.py
-6cf831608a79f218c2c62b94a125562a034eebef167d1979b26aa04fb2ddcf96 SEV-4-json-encoded hooks/dev-hub-refresh-on-session-start.py
 e34a230865351b20e13bfc64cd8c67f06931fac79f8129beb84471cce434cb58 SEV-4-json-encoded hooks/first-week-checkin.py
 a04ec6c84be6756813f4cde517ff379338b57ec9bf4c9c4172172951e62f91c3 SEV-4-json-encoded hooks/imessage-mcp-auto-export.py
 7eea06988957bbacac62bc43c9ebcb8067cc1cadd5184375f6d60d46ee99c4cc SEV-4-json-encoded hooks/inject-best-of-best-on-consulting.py

@@ -345,6 +345,8 @@ HOME_HOOKS_INSTALLER_DEPLOYS = {
 HOME_HOOKS_LIB_DEPS = {
     "__init__.py",     # makes _lib a package; without it the import fails
     "vault_root.py",   # vault-context.py -> vault_root_for()
+    "standing_report.py",  # dev-hub-refresh + orphan-claude-branches -> condense()
+    "session_echo.py",     # available to any per-prompt injector -> should_emit()
 }
 
 # Hooks ai-brain-starter USED TO ship and has deliberately RETIRED. The
