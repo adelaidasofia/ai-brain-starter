@@ -72,6 +72,15 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+
+from _lib.safe_read import safe_read_text  # noqa: E402
+
+# Bounds for the shared safe_read primitive. Test sources are small; 4 MB is
+# far above any real one and still refuses a runaway or a cloud placeholder.
+READ_TIMEOUT_S = 5.0
+MAX_TEST_BYTES = 4 * 1024 * 1024
+
 # Refs whose contents change as the branch advances. HEAD~N / HEAD^ are moving
 # for the same reason: they are relative to whatever HEAD happens to be.
 MOVING_REF = r"(?:origin/(?:main|master|HEAD)|@\{upstream\}|HEAD[~^]\d*|(?<![\w/.-])(?:main|master)(?=:))"
@@ -161,12 +170,21 @@ def scan_tree(root: Path) -> list[str]:
             continue
         if "fixtures" in path.relative_to(root).parts:
             continue  # a fixture IS the frozen snapshot; its contents are data
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:  # unreadable file is a finding, never a silent pass
-            findings.append(f"{path.relative_to(root)}: could not read ({exc})")
+        # Bounded, symlink-refusing read through the shared safe_read primitive
+        # rather than a bare read_text. A recursive rglob can reach a FIFO, a
+        # cloud-placeholder file that blocks on materialisation, or something
+        # far larger than any test source; safe_read is the one reviewed reader
+        # in this repo that handles all three, and check-cloud-safe-file-walkers
+        # enforces its use on exactly this shape (recursive walk -> content read).
+        res = safe_read_text(
+            path, timeout=READ_TIMEOUT_S, max_bytes=MAX_TEST_BYTES, errors="replace"
+        )
+        if not res.ok:
+            # Unreadable is a FINDING, never a silent pass: a file this guard
+            # cannot read is a file it cannot clear.
+            findings.append(f"{path.relative_to(root)}: could not read ({res.status})")
             continue
-        findings.extend(scan_text(text, str(path.relative_to(root))))
+        findings.extend(scan_text(res.text, str(path.relative_to(root))))
     return findings
 
 
