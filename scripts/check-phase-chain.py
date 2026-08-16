@@ -79,6 +79,14 @@ def cannot_check(msg: str) -> int:
 
 
 def main() -> int:
+    # Windows cp1252 consoles raise UnicodeEncodeError on the em dashes this
+    # script prints (ai-brain-starter#313). Guard the streams at the entrypoint.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
+
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
         "--phases-dir",
