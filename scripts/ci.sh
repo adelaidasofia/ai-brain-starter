@@ -621,11 +621,100 @@ print("    tripwire quiet-control: fingerprint still excludes append-only "
       "logs, lock dirs, runtime-state dotfiles and per-session scratch")
 PY
 }
+# ---- The tripwire watches a DECOY home, not the shared one ------------------
+#
+# WHY THE PER-TEST CHECK MOVED OFF THE REAL ~/.claude (2026-08-15)
+#
+# Everything above is about WHAT to watch. This is about WHOSE home, and it is
+# the half that kept failing. Fingerprinting the real ~/.claude before and after
+# each test and blaming the test that was running is attribution by WALL CLOCK,
+# not by causation. The real ~/.claude is shared ground: on a developer machine
+# the operator's own tooling writes to it continuously and asynchronously, so
+# whichever test happens to be executing when that lands is named as the
+# culprit. Three such failures were captured inside 30 minutes, each naming a
+# DIFFERENT innocent test:
+#
+#   blamed test_offmain_strand_guard   a launchd agent (StartInterval 900)
+#                                      re-derived settings.json
+#   blamed test_vault_safety_guards    a skill auto-sync ran the installer,
+#                                      which rewrote settings.json + a .bak-*
+#   blamed test_vault_root_read_guard  __pycache__/*.pyc rewritten by hooks
+#                                      firing in a concurrent session
+#
+# The third is the tell: settings.json content hash, mtime, baks count AND file
+# count were all IDENTICAL before and after — only tree= moved. No test did
+# anything. The comment block above already documents this exact shape twice
+# ("reddened test_bootstrap_dry_run — a test that touches neither file"), and
+# each time the answer was to widen the exclusions. That approach cannot finish:
+# the loudest remaining writers rewrite settings.json ITSELF, which is the one
+# file this gate exists to watch and can never exclude.
+#
+# So stop watching a resource other processes write. Point HOME and USERPROFILE
+# at a throwaway decoy for the duration of each test, and fingerprint THAT. The
+# decoy is private to one test, so nothing else on the machine can move it and a
+# mismatch is CAUSAL — no timing, no sleeps, no re-runs, no denylist.
+#
+# This also upgrades the gate from detection to PREVENTION. Previously a test
+# that escaped its sandbox really did corrupt the developer's live config and
+# the gate told you afterwards. Now that write lands in a tmpdir that is deleted
+# seconds later, and the gate still names the test.
+#
+# Coverage is unchanged: the same real_home_fingerprint() runs, with the same
+# watched trees, globs and exclusions, so real_home_quiet_control and
+# test_home_fingerprint_noise.sh keep asserting exactly what they always did.
+# Only Path.home() resolves somewhere safe.
+#
+# Verified before switching, against the whole suite: every test still passes
+# under a decoy home; ZERO change their assertion count (so nothing starts
+# passing vacuously because the deployed install is absent); and no test writes
+# any WATCHED path of the decoy — the only ~/.claude writes at all are three
+# tests creating empty dirs under projects/, which is already excluded.
+# (Measured at 106 tests, then re-swept at 111 once the suite grew; the sole
+# failure in the re-sweep was the pre-existing red the parent commit fixes.)
+#
+# The real home is still measured once around the whole suite, but ADVISORY:
+# with tests unable to reach it through "~", a change there is ambient by
+# construction, and failing on it is the bug this section fixes.
+_SANDBOX_LIB="$SCRIPT_DIR/../tests/integration/lib/sandbox_home.sh"
+if [ ! -f "$_SANDBOX_LIB" ]; then
+  # Fail loud. Without it there is no decoy, and every check below would compare
+  # an untouched empty dir against itself and pass vacuously.
+  echo "::error::missing $_SANDBOX_LIB — the integration tripwire cannot sandbox HOME without it, and would pass vacuously"
+  exit 1
+fi
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$_SANDBOX_LIB"
+
+# Fingerprint a decoy home with the real function. The subshell keeps the
+# sandbox exports from leaking into the gate itself.
+decoy_fingerprint() { ( sandbox_home "$1" >/dev/null; real_home_fingerprint ); }
+
+# BITE control for the decoy tripwire. The quiet control above proves the
+# fingerprint stays silent at rest; this proves it still SPEAKS. It runs a
+# synthetic test through the SAME run_sandboxed wrapper the real tests use, so
+# it exercises the wrapper too — a wrapper that failed to redirect HOME would
+# make every check below compare an empty decoy against itself and pass.
+decoy_tripwire_bite_control() {
+  local d before after
+  d="$(mktemp -d)"
+  before="$(decoy_fingerprint "$d")"
+  run_sandboxed "$d" bash -c 'mkdir -p "$HOME/.claude/hooks" && printf "print(1)\n" > "$HOME/.claude/hooks/escaped.py"'
+  after="$(decoy_fingerprint "$d")"
+  rm -rf "$d"
+  if [ "$before" = "$after" ]; then
+    echo "::error::decoy tripwire BITE control FAILED — a synthetic test wrote \$HOME/.claude/hooks/escaped.py and the tripwire did not see it. Every per-test check below is inert; a green run proves nothing."
+    return 1
+  fi
+  echo "    tripwire bite control: a test writing \$HOME/.claude/hooks/ is still caught"
+  return 0
+}
+
 _home_before_suite="$(real_home_fingerprint)"
 
 echo "==> (b) Shell integration: ${#INTEGRATION_TESTS[@]} tests"
-echo "    real-home tripwire watching: $(dirname "$REAL_SETTINGS") (settings.json, installed skill, deployed hooks; state/ only its SessionStart snapshot)"
+echo "    tripwire: each test runs against a throwaway decoy home (settings.json, installed skill, deployed hooks; state/ only its SessionStart snapshot)"
 real_home_quiet_control || exit 1
+decoy_tripwire_bite_control || exit 1
 for t in "${INTEGRATION_TESTS[@]}"; do
   script="tests/integration/$t.sh"
   if [ ! -f "$script" ]; then
@@ -633,20 +722,27 @@ for t in "${INTEGRATION_TESTS[@]}"; do
     exit 1
   fi
   echo "--- $t"
-  _home_before="$(real_home_fingerprint)"
-  bash "$script"
-  _home_after="$(real_home_fingerprint)"
+  _decoy="$(mktemp -d)"
+  _home_before="$(decoy_fingerprint "$_decoy")"
+  # NOT inside an `if`: set -e must still abort the gate when a test fails.
+  # Wrapping this in a condition would silently disable that.
+  run_sandboxed "$_decoy" bash "$script"
+  _home_after="$(decoy_fingerprint "$_decoy")"
   if [ "$_home_before" != "$_home_after" ]; then
-    echo "::error::$t wrote into the real $(dirname "$REAL_SETTINGS") — the suite must sandbox HOME *and* USERPROFILE (source tests/integration/lib/sandbox_home.sh and use sandbox_home/run_sandboxed). before=[$_home_before] after=[$_home_after]"
+    echo "::error::$t wrote into ~/.claude — the suite must sandbox HOME *and* USERPROFILE (source tests/integration/lib/sandbox_home.sh and use sandbox_home/run_sandboxed). It was already running under a decoy home, so the developer's real config is intact and this is the test's own write. before=[$_home_before] after=[$_home_after]"
+    rm -rf "$_decoy"
     exit 1
   fi
+  rm -rf "$_decoy"
 done
-# Belt and braces: catches a test that restores the file itself but leaves the
-# suite as a whole having moved it (e.g. mtime churn across several tests).
+# The real home, measured once around the whole suite. ADVISORY on purpose: the
+# tests just ran against a decoy, so they could not reach this through "~", and
+# anything that moved here came from outside the suite. Reported rather than
+# swallowed, because silence would hide a test that writes by ABSOLUTE path —
+# the one escape a decoy cannot intercept.
 _home_after_suite="$(real_home_fingerprint)"
 if [ "$_home_before_suite" != "$_home_after_suite" ]; then
-  echo "::error::the integration suite wrote into the real $(dirname "$REAL_SETTINGS"). before=[$_home_before_suite] after=[$_home_after_suite]"
-  exit 1
+  echo "    note: the real $(dirname "$REAL_SETTINGS") changed while the suite ran. The tests ran against a decoy home, so this is an out-of-band writer on this machine (a settings assembler on a timer, a skill auto-sync running the installer, __pycache__ churn from a concurrent session), not the suite. Not failing the gate on it — that misattribution is what this section exists to prevent. before=[$_home_before_suite] after=[$_home_after_suite]"
 fi
 
 # ---- (c) Shell static analysis gate ----------------------------------------
