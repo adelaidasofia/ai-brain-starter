@@ -19,6 +19,15 @@ from __future__ import annotations
 import json
 import os
 import sys
+
+# Windows consoles default to cp1252; this hook prints non-ASCII, and an
+# unreconfigured stream raises UnicodeEncodeError mid-write (ai-brain-starter#313).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+    except (AttributeError, ValueError):
+        pass
+
 import time
 from pathlib import Path
 
