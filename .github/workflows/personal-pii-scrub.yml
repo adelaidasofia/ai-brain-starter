@@ -140,10 +140,52 @@ jobs:
               exit 1
             fi
           done
+          # VOCABULARY CONTROL. Everything above proves the ENGINE: that \b is
+          # honored, and that it constrains. None of it proves the VOCABULARY,
+          # because it probes a synthetic token that is not in PATTERNS. A
+          # pattern that was deleted, mistyped or malformed leaves all of the
+          # above green while the gate is blind to exactly that token. So every
+          # pattern must also catch a specimen synthesized from ITSELF.
+          # The specimens are derived HERE from the same PATTERNS array the scan
+          # uses, rather than injected as a second array, so there is no parallel
+          # list that can drift from the one being tested. Both ends of each
+          # bracket class are planted, which is what keeps the lowercase widening
+          # (\bSneider\b became \b[Ss]neider\b) proven rather than assumed.
+          # Bug class: SILENT-FALSE-CLEAN-FROM-INCOMPLETE-VOCABULARY.
+          # NOTE: written with if/else, never a case statement. This heredoc sits
+          # inside a $( ) command substitution, and bash counts parens there
+          # BEFORE heredoc processing, so a bare `last)` case label closes the
+          # substitution early and breaks the whole script. Measured 2026-08-16:
+          # zsh parsed it happily and rendered valid YAML while bash -n failed,
+          # so the render succeeding is NOT proof the template is well-formed.
+          specimen_of() {
+            if [ "${2:-first}" = "last" ]; then
+              printf '%s' "$1" | sed -E 's/^\\b//; s/\\b$//; s/\[[^]]*(.)\]/\1/g'
+            else
+              printf '%s' "$1" | sed -E 's/^\\b//; s/\\b$//; s/\[(.)[^]]*\]/\1/g'
+            fi
+          }
+          : > "$canary"
+          for p in "${PATTERNS[@]}"; do
+            printf ' %s \n' "$(specimen_of "$p" first)" >> "$canary"
+            printf ' %s \n' "$(specimen_of "$p" last)"  >> "$canary"
+          done
+          git add -f "$canary" >/dev/null
+          vocab_fail=0
+          for p in "${PATTERNS[@]}"; do
+            if [ -z "$(scan_for "$p")" ]; then
+              echo "::error::VOCABULARY CONTROL FAILED: pattern cannot catch its own specimen: $p"
+              vocab_fail=1
+            fi
+          done
+          if [ "$vocab_fail" != "0" ]; then
+            echo "::error::A pattern in this gate cannot detect the token it names, so a CLEAN result here would be a silent no-op rather than a measurement."
+            exit 1
+          fi
           git rm -q -f --cached "$canary" >/dev/null 2>&1 || true
           rm -f "$canary"
           trap - EXIT
-          echo "Positive control OK: the scan finds a planted token, and word boundaries constrain."
+          echo "Positive control OK: boundaries bind and constrain, and all ${#PATTERNS[@]} patterns catch their own specimen."
           # --- the real scan, same function, same engine, same pathspecs ---
           hits="$(scan_for "${PATTERNS[@]}")"
           if [ -n "$hits" ]; then
@@ -231,9 +273,42 @@ jobs:
               exit 1
             fi
           done
+          # VOCABULARY CONTROL for this tier. The probe above proves the engine;
+          # it cannot prove the token list (see the source step for the full
+          # reasoning). This tier runs plain grep -E rather than git grep, so it
+          # needs its OWN vocabulary proof and cannot inherit the source tier.
+          # NOTE: written with if/else, never a case statement. This heredoc sits
+          # inside a $( ) command substitution, and bash counts parens there
+          # BEFORE heredoc processing, so a bare `last)` case label closes the
+          # substitution early and breaks the whole script. Measured 2026-08-16:
+          # zsh parsed it happily and rendered valid YAML while bash -n failed,
+          # so the render succeeding is NOT proof the template is well-formed.
+          specimen_of() {
+            if [ "${2:-first}" = "last" ]; then
+              printf '%s' "$1" | sed -E 's/^\\b//; s/\\b$//; s/\[[^]]*(.)\]/\1/g'
+            else
+              printf '%s' "$1" | sed -E 's/^\\b//; s/\\b$//; s/\[(.)[^]]*\]/\1/g'
+            fi
+          }
+          : > "$ctldir/canary.txt"
+          for p in "${PATTERNS[@]}"; do
+            printf ' %s \n' "$(specimen_of "$p" first)" >> "$ctldir/canary.txt"
+            printf ' %s \n' "$(specimen_of "$p" last)"  >> "$ctldir/canary.txt"
+          done
+          vocab_fail=0
+          for p in "${PATTERNS[@]}"; do
+            if [ -z "$(archive_scan_for "$ctldir" "$p")" ]; then
+              echo "::error::VOCABULARY CONTROL FAILED (archive tier): pattern cannot catch its own specimen: $p"
+              vocab_fail=1
+            fi
+          done
+          if [ "$vocab_fail" != "0" ]; then
+            echo "::error::An archive-tier pattern cannot detect the token it names, so a CLEAN archive result would be a silent no-op."
+            exit 1
+          fi
           rm -rf "$ctldir"
           trap - EXIT
-          echo "Positive control OK (archive tier)."
+          echo "Positive control OK (archive tier): boundaries bind and constrain, and all ${#PATTERNS[@]} patterns catch their own specimen."
           ARCHIVES=$(git ls-files '*.mcpb' '*.zip' 2>/dev/null || true)
           if [ -z "$ARCHIVES" ]; then
             echo "No tracked .mcpb / .zip archives. Skipping archive scan."
@@ -333,10 +408,44 @@ jobs:
               exit 1
             fi
           done
+          # VOCABULARY CONTROL for this tier. Same reasoning as the source step.
+          # This tier has its own pathspec set and its own DERIVED token list
+          # (canonical minus the md-exempt set), so a proof on the source tier
+          # says nothing about whether these patterns still reach markdown.
+          # NOTE: written with if/else, never a case statement. This heredoc sits
+          # inside a $( ) command substitution, and bash counts parens there
+          # BEFORE heredoc processing, so a bare `last)` case label closes the
+          # substitution early and breaks the whole script. Measured 2026-08-16:
+          # zsh parsed it happily and rendered valid YAML while bash -n failed,
+          # so the render succeeding is NOT proof the template is well-formed.
+          specimen_of() {
+            if [ "${2:-first}" = "last" ]; then
+              printf '%s' "$1" | sed -E 's/^\\b//; s/\\b$//; s/\[[^]]*(.)\]/\1/g'
+            else
+              printf '%s' "$1" | sed -E 's/^\\b//; s/\\b$//; s/\[(.)[^]]*\]/\1/g'
+            fi
+          }
+          : > "$mdcanary"
+          for p in "${MD_PATTERNS[@]}"; do
+            printf ' %s \n' "$(specimen_of "$p" first)" >> "$mdcanary"
+            printf ' %s \n' "$(specimen_of "$p" last)"  >> "$mdcanary"
+          done
+          git add -f "$mdcanary" >/dev/null
+          vocab_fail=0
+          for p in "${MD_PATTERNS[@]}"; do
+            if [ -z "$(md_scan_for "$p")" ]; then
+              echo "::error::VOCABULARY CONTROL FAILED (markdown tier): pattern cannot catch its own specimen: $p"
+              vocab_fail=1
+            fi
+          done
+          if [ "$vocab_fail" != "0" ]; then
+            echo "::error::A markdown-tier pattern cannot detect the token it names, so a CLEAN markdown result would be a silent no-op."
+            exit 1
+          fi
           git rm -q -f --cached "$mdcanary" >/dev/null 2>&1 || true
           rm -f "$mdcanary"
           trap - EXIT
-          echo "Positive control OK (markdown tier)."
+          echo "Positive control OK (markdown tier): boundaries bind and constrain, and all ${#MD_PATTERNS[@]} patterns catch their own specimen."
           # --- the real scan, same function, same engine, same pathspecs ---
           hits="$(md_scan_for "${MD_PATTERNS[@]}")"
           if [ -n "$hits" ]; then
