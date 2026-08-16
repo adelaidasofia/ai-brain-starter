@@ -539,9 +539,26 @@ for pattern in WATCH_GLOBS:
             continue
         seen.append(f"{os.path.basename(match)}:{st.st_size}:{st.st_mtime!r}")
 
-parts.append("tree=" + hashlib.sha256("\n".join(seen).encode()).hexdigest()[:16])
-parts.append("files=%d" % len(seen))
-print(" ".join(parts))
+# MANIFEST mode names the paths the digest only summarises (MYC-3721 work item
+# 1: "print WHAT changed, not just that something did"). Same walk, same trees,
+# same exclusions -- deliberately one function, because a second implementation
+# would drift from the digest it exists to explain, and would then name paths
+# the gate never actually compared.
+#
+# Emitted as one sortable line per watched entry so callers can diff two
+# manifests and print only what moved. The three settings.json components are
+# spelled out rather than hashed together, so a content rewrite, a pure mtime
+# touch and a stray .bak-* are told apart on sight.
+if os.environ.get("FINGERPRINT_MANIFEST"):
+    print("settings.json content=%s" % parts[0])
+    for extra in parts[1:]:
+        print("settings.json %s" % extra)
+    for line in seen:
+        print(line)
+else:
+    parts.append("tree=" + hashlib.sha256("\n".join(seen).encode()).hexdigest()[:16])
+    parts.append("files=%d" % len(seen))
+    print(" ".join(parts))
 PY
 }
 
@@ -689,6 +706,45 @@ fi
 # sandbox exports from leaking into the gate itself.
 decoy_fingerprint() { ( sandbox_home "$1" >/dev/null; real_home_fingerprint ); }
 
+# The same two walks in MANIFEST mode, naming paths instead of digesting them.
+# Both run only on a mismatch, so they cost nothing at rest.
+decoy_manifest()     { ( sandbox_home "$1" >/dev/null; FINGERPRINT_MANIFEST=1 real_home_fingerprint ); }
+real_home_manifest() { FINGERPRINT_MANIFEST=1 real_home_fingerprint; }
+
+# Print only the manifest lines that differ, capped so a large drift cannot bury
+# the failure it is explaining.
+_manifest_delta() {
+  local before="$1" after="$2" delta n
+  # diff exits 1 whenever the two differ, which is the only case this is called
+  # in; set -e must not read that as an error.
+  delta="$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") || true)"
+  delta="$(printf '%s\n' "$delta" | sed -n -e 's/^> /      + /p' -e 's/^< /      - /p')"
+  [ -n "$delta" ] || { echo "      (no path-level delta — the change was in a component the manifest folds, e.g. settings.json mtime)"; return 0; }
+  n="$(printf '%s\n' "$delta" | wc -l | tr -d ' ')"
+  # `sed -n 1,20p`, never `head -20`: head closes the pipe at line 20, printf
+  # takes SIGPIPE, and under this script's `set -o pipefail` that aborts the
+  # whole gate. On the ADVISORY path that would kill a run over ambient churn —
+  # precisely the misattribution this section exists to prevent. sed reads to
+  # EOF, so it cannot SIGPIPE.
+  printf '%s\n' "$delta" | sed -n '1,20p'
+  [ "$n" -gt 20 ] && echo "      ... and $((n - 20)) more"
+  return 0
+}
+
+# Name the exact paths a test wrote into its decoy.
+#
+# The decoy's "before" state is RECONSTRUCTED rather than guessed: sandbox_home
+# only creates an empty <dir>/.claude, so a freshly-made decoy is byte-identical
+# to how this one started. Manifest lines are relative to ~/.claude (never the
+# tmpdir path) and an absent tree emits a bare "name:ABSENT" carrying no mtime,
+# so the two are directly comparable. That makes this a real diff, not a guess.
+decoy_written_paths() {
+  local fresh
+  fresh="$(mktemp -d)"
+  _manifest_delta "$(decoy_manifest "$fresh")" "$(decoy_manifest "$1")"
+  rm -rf "$fresh"
+}
+
 # BITE control for the decoy tripwire. The quiet control above proves the
 # fingerprint stays silent at rest; this proves it still SPEAKS. It runs a
 # synthetic test through the SAME run_sandboxed wrapper the real tests use, so
@@ -710,6 +766,11 @@ decoy_tripwire_bite_control() {
 }
 
 _home_before_suite="$(real_home_fingerprint)"
+# One extra walk, once, so the advisory below can name paths instead of printing
+# two opaque digests. An advisory nobody can act on becomes background noise,
+# and this one is the ONLY remaining detector for a test that writes by absolute
+# path — the single escape a decoy home cannot intercept.
+_home_before_suite_manifest="$(real_home_manifest)"
 
 echo "==> (b) Shell integration: ${#INTEGRATION_TESTS[@]} tests"
 echo "    tripwire: each test runs against a throwaway decoy home (settings.json, installed skill, deployed hooks; state/ only its SessionStart snapshot)"
@@ -729,7 +790,10 @@ for t in "${INTEGRATION_TESTS[@]}"; do
   run_sandboxed "$_decoy" bash "$script"
   _home_after="$(decoy_fingerprint "$_decoy")"
   if [ "$_home_before" != "$_home_after" ]; then
-    echo "::error::$t wrote into ~/.claude — the suite must sandbox HOME *and* USERPROFILE (source tests/integration/lib/sandbox_home.sh and use sandbox_home/run_sandboxed). It was already running under a decoy home, so the developer's real config is intact and this is the test's own write. before=[$_home_before] after=[$_home_after]"
+    echo "::error::$t wrote into ~/.claude — the suite must sandbox HOME *and* USERPROFILE (source tests/integration/lib/sandbox_home.sh and use sandbox_home/run_sandboxed). It was already running under a decoy home, so the developer's real config is intact and this is the test's own write."
+    echo "::error::  it wrote these paths (relative to ~/.claude):"
+    decoy_written_paths "$_decoy"
+    echo "      digests: before=[$_home_before] after=[$_home_after]"
     rm -rf "$_decoy"
     exit 1
   fi
@@ -742,7 +806,9 @@ done
 # the one escape a decoy cannot intercept.
 _home_after_suite="$(real_home_fingerprint)"
 if [ "$_home_before_suite" != "$_home_after_suite" ]; then
-  echo "    note: the real $(dirname "$REAL_SETTINGS") changed while the suite ran. The tests ran against a decoy home, so this is an out-of-band writer on this machine (a settings assembler on a timer, a skill auto-sync running the installer, __pycache__ churn from a concurrent session), not the suite. Not failing the gate on it — that misattribution is what this section exists to prevent. before=[$_home_before_suite] after=[$_home_after_suite]"
+  echo "    note: the real $(dirname "$REAL_SETTINGS") changed while the suite ran. The tests ran against a decoy home, so this is an out-of-band writer on this machine (a settings assembler on a timer, a skill auto-sync running the installer, __pycache__ churn from a concurrent session), not the suite. Not failing the gate on it — that misattribution is what this section exists to prevent."
+  echo "    what moved (read it: an entry under skills/ai-brain-starter/ or a settings.json content= change is NOT ordinary churn, and would mean a test wrote by ABSOLUTE path, which a decoy home cannot intercept):"
+  _manifest_delta "$_home_before_suite_manifest" "$(real_home_manifest)"
 fi
 
 # ---- (c) Shell static analysis gate ----------------------------------------
