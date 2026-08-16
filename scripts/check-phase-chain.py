@@ -93,12 +93,28 @@ def main() -> int:
         default=None,
         help="directory holding phase-*.md (default: <repo>/phases)",
     )
+    ap.add_argument(
+        "--skill-md",
+        default=None,
+        help="SKILL.md to cross-check the routing-table order against "
+             "(default: the sibling of --phases-dir; 'none' to skip)",
+    )
     args = ap.parse_args()
 
     if args.phases_dir:
         phases_dir = Path(args.phases_dir)
     else:
         phases_dir = Path(__file__).resolve().parent.parent / "phases"
+
+    if args.skill_md == "none":
+        skill_md = None
+    elif args.skill_md:
+        skill_md = Path(args.skill_md)
+    else:
+        # Default: the SKILL.md beside the phases dir. Absent (a bare temp
+        # fixture) means "nothing to cross-check", not a failure.
+        candidate = phases_dir.parent / "SKILL.md"
+        skill_md = candidate if candidate.is_file() else None
 
     if not phases_dir.is_dir():
         return cannot_check(f"phases directory not found: {phases_dir}")
@@ -203,6 +219,47 @@ def main() -> int:
                 "these phase files are never reached by walking the chain from "
                 f"{heads[0]}: {', '.join(unreached)}. A phase nothing points to "
                 "never runs for anybody."
+            )
+
+    # ---- 7: the chain must agree with SKILL.md's routing table --------------
+    # Two sources of truth for the same order is the drift this repo already
+    # learned about on close phases (#400/#415): each file stays internally
+    # consistent while they disagree with each other, and nothing errors. The
+    # footers now DRIVE execution, so a table that disagrees is documentation
+    # that lies -- and a reordered footer would pass every check above.
+    if len(heads) == 1 and not violations and skill_md is not None:
+        if not skill_md.is_file():
+            return cannot_check(f"SKILL.md not found at {skill_md}")
+        try:
+            skill_text = skill_md.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            return cannot_check(f"cannot read {skill_md}: {exc}")
+
+        # Document order, de-duplicated (23.5 and 24 re-cite the final file).
+        table: list[str] = []
+        for m in re.finditer(r"phases/(phase-[A-Za-z0-9._-]+\.md)", skill_text):
+            name = m.group(1)
+            if name not in table:
+                table.append(name)
+
+        walked = []
+        cur = heads[0]
+        while cur is not None:
+            walked.append(cur)
+            cur = nxt.get(cur)
+
+        if not table:
+            violations.append(
+                f"{skill_md.name} names no phase files at all; the routing table "
+                f"cannot be cross-checked against the chain."
+            )
+        elif table != walked:
+            violations.append(
+                "the phase chain and the SKILL.md routing table disagree about "
+                "order.\n         chain: " + " -> ".join(walked) +
+                "\n         table: " + " -> ".join(table) +
+                "\n         The footers drive execution, so the table is the one "
+                "describing something that no longer happens."
             )
 
     if violations:
