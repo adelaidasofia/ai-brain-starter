@@ -31,10 +31,59 @@ PUBLIC_FIGURE_RELATIONSHIP_HINTS = {
     "teacher", "public intellectual", "academic",
 }
 
-JOURNALS_ROOT = os.path.join(VAULT, "📓 Journals")
+# Journals folder: self-locating. English installs use "📓 Journals";
+# es-CO vaults use "📓 Diarios". Pick the first that actually exists so the
+# mention index never silently scans a non-existent path (bug found 2026-07-29:
+# a hardcoded English path produced person_journal_mention_count=0 vault-wide,
+# which killed 4 of the 8 insight-engine sections).
+_JOURNAL_CANDIDATES = ("📓 Journals", "📓 Diarios", "Journals", "Diarios")
+JOURNALS_ROOT = next(
+    (os.path.join(VAULT, c) for c in _JOURNAL_CANDIDATES
+     if os.path.isdir(os.path.join(VAULT, c))),
+    os.path.join(VAULT, _JOURNAL_CANDIDATES[0]),
+)
 
 # Per-run cache: person_name → [(journal_iso, floor_num), ...]
 _JOURNAL_INDEX = None
+
+
+# Floor name → number (34-floor High-Rise scale, ES + EN aliases).
+# Bug found 2026-07-29: journals write `floor: Entusiasmo` (a NAME) while this
+# extractor only read `floor_num` (a NUMBER), so floor co-occurrence was always
+# empty and the lucky-charm / drag-people insight sections never fired.
+FLOOR_NAME_TO_NUM = {
+    "asco": 1, "disgust": 1, "verguenza": 2, "vergüenza": 2, "shame": 2,
+    "bochorno": 3, "embarrassment": 3, "culpa": 4, "guilt": 4,
+    "apatia": 5, "apatía": 5, "apathy": 5, "resignacion": 6, "resignación": 6,
+    "resignation": 6, "confusion": 7, "confusión": 7, "soledad": 8,
+    "loneliness": 8, "aburrimiento": 9, "boredom": 9, "duelo": 10, "grief": 10,
+    "decepcion": 11, "decepción": 11, "disappointment": 11, "herida": 12,
+    "hurt": 12, "miedo": 13, "fear": 13, "frustracion": 14, "frustración": 14,
+    "frustration": 14, "deseo": 15, "desire": 15, "rabia": 16, "anger": 16,
+    "desprecio": 17, "contempt": 17, "orgullo": 18, "pride": 18,
+    "valentia": 19, "valentía": 19, "courage": 19, "esperanza": 20, "hope": 20,
+    "neutralidad": 21, "neutrality": 21, "disposicion": 22, "disposición": 22,
+    "willingness": 22, "aceptacion": 23, "aceptación": 23, "acceptance": 23,
+    "razon": 24, "razón": 24, "reason": 24, "confianza": 25, "trust": 25,
+    "compasion": 26, "compasión": 26, "compassion": 26, "humildad": 27,
+    "humility": 27, "pertenencia": 28, "belonging": 28, "amor": 29, "love": 29,
+    "gratitud": 30, "gratitude": 30, "entusiasmo": 31, "excitement": 31,
+    "asombro": 32, "wonder": 32, "alegria": 33, "alegría": 33, "joy": 33,
+    "paz": 34, "peace": 34,
+}
+
+
+def _floor_num_from(fm):
+    """Prefer explicit floor_num; else translate the floor NAME to its number."""
+    n = fm.get("floor_num")
+    if isinstance(n, int):
+        return n
+    raw = fm.get("floor")
+    if isinstance(raw, list):
+        raw = raw[-1] if raw else None
+    if not isinstance(raw, str):
+        return None
+    return FLOOR_NAME_TO_NUM.get(raw.strip().lower())
 
 
 def _build_journal_index():
@@ -63,7 +112,7 @@ def _build_journal_index():
             continue
 
         date_iso = fm.get("date_iso") or iso_date_from(fm.get("creationDate"))
-        floor_num = fm.get("floor_num")
+        floor_num = _floor_num_from(fm)
         if not date_iso:
             continue
 

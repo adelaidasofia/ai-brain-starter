@@ -184,6 +184,22 @@ def load_vault_index():
         doc_type = (fm.get("type") or "").strip().lower().replace("-", "_")
         if not doc_type:
             continue
+        # Derive floor_num from the floor NAME when absent. es-CO vaults write
+        # `floor: Entusiasmo`; every floor-based finding here reads `floor_num`.
+        # Without this, journal_floor_mean is None and 4 sections return early.
+        # (Bug found 2026-07-29.)
+        if fm.get("floor_num") is None and fm.get("floor") is not None:
+            try:
+                from extractors.person import FLOOR_NAME_TO_NUM as _FN
+            except Exception:
+                _FN = {}
+            raw = fm.get("floor")
+            if isinstance(raw, list):
+                raw = raw[-1] if raw else None
+            if isinstance(raw, str):
+                n = _FN.get(raw.strip().lower())
+                if n is not None:
+                    fm["floor_num"] = n
         index.append({"path": fp, "type": doc_type, "fm": fm, "in_scope": True})
     return index
 

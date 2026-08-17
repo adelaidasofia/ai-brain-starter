@@ -42,6 +42,13 @@ INFRASTRUCTURE_TYPES = {
 
 # Alias map: users write whatever type feels natural; we route to a real extractor.
 TYPE_ALIASES = {
+    # es-CO, agregados 2026-08-05: tipos que existian en el vault de Lucas sin
+    # extractor y caian fuera del indice en silencio.
+    "rise": "journal",                 # entradas de manana de /rise: llevan floor y prioridades
+    "profile": "person",               # 🏠 Casa/Sobre Mi.md
+    "documento_juridico": "reference",
+    "documento-juridico": "reference",
+    "obligacion-personal": "reference",
     "place": "travel",
     "trip": "travel",
     "chat": "ai_chat",
@@ -55,6 +62,48 @@ TYPE_ALIASES = {
     "framework": "concept",
     "analysis": "strategy",
     "tracker": "dashboard",  # treat as infra
+
+    # ── Vault de Lucas (es-CO) — agregado 2026-07-29 ──────────────
+    # Consolida 50 tipos observados en 23 extractores. NO edita ningun
+    # archivo del vault: la traduccion ocurre en memoria, al vuelo.
+    "reunion": "meeting",
+    "reunion_prep": "meeting",
+    "prep_reunion": "meeting",
+    "nota_reunion": "meeting",
+    "agenda_reunion": "meeting",
+    "meeting_prep": "meeting",
+    "meeting_note": "meeting",
+    "extraccion_comite": "meeting",
+    "prep": "meeting",
+    "nota": "reference",
+    "referencia": "reference",
+    "datos": "reference",
+    "indice": "reference",
+    "index": "reference",
+    "brief": "reference",
+    "sistema": "reference",
+    "estrategia": "strategy",
+    "analisis": "strategy",
+    "plan": "strategy",
+    "propuesta": "strategy",
+    "metodologia": "strategy",
+    "growth_plan": "strategy",
+    "content_strategy": "strategy",
+    "content_plan": "strategy",
+    "content_scripts": "playbook",
+    "content_bank": "playbook",
+    "content_calendar": "playbook",
+    "content_playbook": "playbook",
+    "platform_playbook": "playbook",
+    "proceso": "playbook",
+    "proyecto": "business",
+    "financiero": "business",
+    "viaje": "travel",
+    "sociedad": "company",
+    "perfil": "person",
+    "rol": "person",
+    "obligacion_personal": "asset",
+    "activo_personal": "asset",
 }
 
 
