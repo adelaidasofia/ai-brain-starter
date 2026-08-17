@@ -161,6 +161,51 @@ else
   bad "fail-loud on missing settings.json" "expected exit 2"
 fi
 
+echo "=== 6. WINDOWS launcher-shim command form is audited end-to-end (MYC-3879) ==="
+# On Windows the installer wires EVERY hook through a launcher shim:
+#   py -3 "<abs>/scripts/hook_runner.py" --fallback silent "<abs>/<hook>.py"
+# The pre-fix resolver matched no part of that shape, so the effective-set audit
+# skipped 19 of 25 wired commands on a real box and still printed OK. Worse, where
+# `py` is absent the installer falls back to a `python`/`python3` launcher, which
+# the old matcher DID resolve -- to the LAUNCHER. hook_runner.py is walk-free, so
+# an unguarded corpus walker behind it read as a clean hook. Both legs below.
+RUNNER="$REPO_ROOT/scripts/hook_runner.py"
+cat > "$EFF/settings_win_bad.json" <<JSON
+{"hooks": {"SessionStart": [{"hooks": [
+  {"type": "command", "command": "py -3 \"$RUNNER\" --fallback silent \"$EFF/evil-eff.py\""}
+]}]}}
+JSON
+cat > "$EFF/settings_win_py3.json" <<JSON
+{"hooks": {"SessionStart": [{"hooks": [
+  {"type": "command", "command": "python3 \"$RUNNER\" --fallback silent \"$EFF/evil-eff.py\""}
+]}]}}
+JSON
+cat > "$EFF/settings_win_ok.json" <<JSON
+{"hooks": {"SessionStart": [{"hooks": [
+  {"type": "command", "command": "py -3 \"$RUNNER\" --fallback silent \"$EFF/good-eff.py\""}
+]}]}}
+JSON
+# The walker is BEHIND the shim. Resolving to the shim (or to nothing) yields
+# OK:*; only resolving to the TARGET can produce UNGUARDED. One assertion, both
+# failure modes.
+for leg in win_bad win_py3; do
+  if python3 "$AUDIT" --settings "$EFF/settings_$leg.json" --porcelain 2>/dev/null \
+     | grep -q '^UNGUARDED:1:evil-eff.py'; then
+    ok "shim form ($leg): unguarded walker behind the launcher is CAUGHT"
+  else
+    bad "shim form ($leg) caught" \
+      "audit resolved the launcher or nothing, not the target hook (MYC-3879 regression)"
+  fi
+done
+# ...and a bounded hook behind the shim resolves and passes, with 0 unresolved:
+# a resolver that skipped the whole form would report OK:0:0:1 here.
+if python3 "$AUDIT" --settings "$EFF/settings_win_ok.json" --porcelain 2>/dev/null \
+   | grep -q '^OK:1:0:0'; then
+  ok "shim form: bounded hook resolves (0 unresolved)"
+else
+  bad "shim form resolves" "expected OK:1:0:0 (a skipped shim form would be OK:0:0:1)"
+fi
+
 echo
 echo "=== summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" -eq 0 ]
