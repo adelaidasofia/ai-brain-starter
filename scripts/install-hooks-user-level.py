@@ -191,6 +191,13 @@ ABS_FINGERPRINTS = [
     # Bare ~/dev hub-rot guard (read-time detection) + surfacer (MYC-1893):
     "ai-brain-starter/hooks/warn-stale-dev-checkout.py",
     "ai-brain-starter/hooks/dev-hub-refresh-on-session-start.py",
+    # NOTE: hooks/surface-sync-guard-findings.py (MYC-1133) is deliberately NOT
+    # listed here. It is not its own SessionStart hook -- SessionStart is at its
+    # fan-out budget, and buying budget to fit one more cold start would hide the
+    # cost the footprint gate exists to surface. worktree-footprint-signal.py
+    # calls its build_report() instead, so the findings reach a human at zero
+    # added fan-out. The file still ships (skill payload) and runs standalone
+    # with --self-test as a diagnostic.
     # Client-side deployed==committed drift detector (MYC-2507): surfaces when this
     # deploy step itself failed silently and settings.json fell behind hooks.json.
     "ai-brain-starter/hooks/surface-deployed-hooks-behind.py",

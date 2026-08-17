@@ -48,6 +48,11 @@ from _lib.worktree_safety import drive_mirror_root_paths  # noqa: E402
 
 HOME = os.path.expanduser("~")
 
+# Verdict snapshot. SessionStart reads THIS instead of re-walking: a per-session
+# walk of every cloud root becomes N concurrent full walks under N sessions,
+# which is the exact freeze mechanism this guard exists to prevent.
+STATE_PATH = os.path.join(HOME, ".claude", "state", "sync-guard-last.json")
+
 # Directory names that mean "machinery, never sync this"
 MARKER_DIRS = {".git", "node_modules", ".venv", "venv", "target",
                "__pycache__", ".next", "dist", "build", ".tox", ".gradle"}
@@ -68,8 +73,13 @@ DRIVE_MIRROR_SYNC_TYPE = 1
 
 def _defaults_bool(domain, key):
     try:
+        # Decode explicitly: text=True alone uses the LOCALE encoding, which on a
+        # non-UTF-8 console raises UnicodeDecodeError on any non-ASCII path (vault
+        # folders carry emoji). errors="replace" keeps a mangled byte from turning
+        # an advisory probe into a crash.
         out = subprocess.run(["defaults", "read", domain, key],
-                             capture_output=True, text=True, timeout=5)
+                             capture_output=True, text=True, timeout=5,
+                             encoding="utf-8", errors="replace")
         return out.returncode == 0 and out.stdout.strip() == "1"
     except Exception:
         return False
@@ -151,6 +161,32 @@ def run_scan():
     for root, provider in synced_roots():
         findings.extend(scan_root(root, provider))
     return findings
+
+
+def truncated_roots(findings):
+    """Roots whose walk hit the time budget -> coverage is PARTIAL, not clean."""
+    return [f["path"] for f in findings if "budget" in f.get("reason", "")]
+
+
+def write_snapshot(findings, high):
+    """Persist the verdict so SessionStart can report it without re-walking.
+
+    Fail-open: a snapshot we cannot write must never break the scan.
+    """
+    try:
+        os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+        tmp = STATE_PATH + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump({
+                "scanned_at": time.time(),
+                "roots": [{"path": p, "provider": prov} for p, prov in synced_roots()],
+                "findings": findings,
+                "high_count": len(high),
+                "truncated_roots": truncated_roots(findings),
+            }, fh, indent=2)
+        os.replace(tmp, STATE_PATH)   # atomic: a reader never sees a half-written file
+    except Exception:
+        pass
 
 
 def self_test():
@@ -256,11 +292,22 @@ def main():
         return self_test()
     findings = run_scan()
     high = [f for f in findings if f["severity"] == "high"]
+    partial = truncated_roots(findings)
+    write_snapshot(findings, high)
     if "--json" in sys.argv:
-        print(json.dumps({"findings": findings, "high_count": len(high)}, indent=2))
+        print(json.dumps({"findings": findings, "high_count": len(high),
+                          "truncated_roots": partial}, indent=2))
         return 0
     if not high:
-        print("[sync-guard] clean — no machinery found in any cloud-synced folder.")
+        # A truncated walk saw only PART of the tree. Never call that clean:
+        # an unscanned root and a genuinely empty one look identical from here.
+        if partial:
+            print("[sync-guard] ⚠️  PARTIAL SCAN — no machinery found in the part "
+                  "that was walked, but these roots timed out and were NOT fully checked:")
+            for p in partial:
+                print(f"[sync-guard]     {p}")
+        else:
+            print("[sync-guard] clean — no machinery found in any cloud-synced folder.")
         for f in findings:
             print(f"[sync-guard] note: {f['reason']} @ {f['path']}")
         return 0
@@ -269,6 +316,11 @@ def main():
     for f in high:
         print(f"[sync-guard]   • [{f['provider']}] {f['reason']}")
         print(f"[sync-guard]     {f['path']}")
+    # info-severity notes were previously printed ONLY on the clean path, so a
+    # truncated root was invisible whenever any high finding existed.
+    for f in findings:
+        if f["severity"] != "high":
+            print(f"[sync-guard]   note: {f['reason']} @ {f['path']}")
     print("[sync-guard] FIX: move it to a local home-root path (e.g. ~/dev, ~/code),")
     print("[sync-guard]      back up via git remote + a verified backup. Cloud sync is")
     print("[sync-guard]      for documents only — and sync is not a backup.")

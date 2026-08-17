@@ -84,6 +84,15 @@ TEMPLATE_ONLY: Dict[str, str] = {
     "check_fab_shim.py":
         "not a hook: an import shim so tests can load the hyphenated guard "
         "module (hyphens are not importable identifiers).",
+    "surface-sync-guard-findings.py":
+        "not a hook: a report BUILDER (build_report) called by "
+        "worktree-footprint-signal.py at its single emission point, plus a "
+        "standalone --self-test diagnostic. Deliberately unwired -- wiring it "
+        "as its own SessionStart entry put that event at 20/19 on the "
+        "footprint SLA gate, and buying budget to fit one more cold start "
+        "would hide the cost that gate exists to surface. Checkable: grep "
+        "surface-sync-guard-findings hooks/worktree-footprint-signal.py "
+        "(MYC-1133).",
 }
 
 # --- A: pre-existing debt (ratchet, may only shrink) -------------------------
