@@ -65,6 +65,7 @@ Behavior:
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path, PureWindowsPath
@@ -375,6 +376,25 @@ def _self_test() -> int:
         fails.append("snapshot: a v2 snapshot must re-baseline, never re-normalize -- "
                      "its collapsed Windows entry matches no current identity")
 
+    # -- the remediation line must be runnable on the platform that PRINTS it ---
+    # A warning whose one prescribed action cannot be run is a warning that trains
+    # people to ignore it -- the same cry-wolf failure this guard's de-noising
+    # exists to prevent.
+    hint = _refresh_hint()
+    if "~" in hint:
+        fails.append(f"refresh hint: carries an unexpanded `~` (PowerShell does not "
+                     f"expand it in an argument): {hint!r}")
+    if str(Path(__file__).resolve()) not in hint:
+        fails.append(f"refresh hint: must name THIS copy's absolute path: {hint!r}")
+    if hint.startswith(('"', "'")):
+        fails.append(f"refresh hint: a quoted FIRST token is a string literal in "
+                     f"PowerShell, so the launcher must stay bare: {hint!r}")
+    if not hint.endswith(" --refresh"):
+        fails.append(f"refresh hint: does not actually pass --refresh: {hint!r}")
+    if (hint.split()[0] == "py") != (os.name == "nt"):
+        fails.append(f"refresh hint: launcher does not match this platform "
+                     f"(os.name={os.name!r}): {hint!r}")
+
     if fails:
         print("SELF-TEST FAIL:")
         for f in fails:
@@ -385,6 +405,26 @@ def _self_test() -> int:
           f"identities), POSIX de-noise forms still collapse, keys are untruncated, and "
           f"a pre-v{SNAPSHOT_V} snapshot re-baselines instead of crying wolf.")
     return 0
+
+
+def _refresh_hint() -> str:
+    """The remediation command, in a form the LOCAL shell actually parses.
+
+    This line was hardcoded as `python3 ~/.claude/hooks/<this>.py --refresh`, which
+    is unrunnable on Windows three ways over: there is no `python3` on PATH (the
+    installer probes `py -3` first for exactly that reason), PowerShell does not
+    expand `~` in an argument, and the hook is installed under
+    ~/.claude/skills/ai-brain-starter/hooks/, not ~/.claude/hooks/. So the single
+    action this warning asks for could not be performed on the platform where the
+    guard was ALSO silently broken (MYC-3880) -- and now that the guard is actually
+    wired, that is the first thing a Windows user sees when it fires.
+
+    The launcher stays BARE and only the path is quoted: a quoted first token is a
+    string literal in PowerShell, the same rule scripts/hook_runner.py documents.
+    __file__ rather than a literal path, so it names wherever this copy really is."""
+    script = Path(__file__).resolve()
+    launcher = "py -3" if os.name == "nt" else "python3"
+    return f'{launcher} "{script}" --refresh'
 
 
 def main() -> int:
@@ -410,7 +450,7 @@ def main() -> int:
         print(f"[sessionstart-hook-guard] WARNING: {len(missing)} SessionStart hook(s) missing since last snapshot:")
         for ident in sorted(missing):
             print(f"  - {_label(ident)}")
-        print("[sessionstart-hook-guard] If intentional: `python3 ~/.claude/hooks/sessionstart-hook-snapshot-guard.py --refresh`. If not: re-add the missing hook(s).")
+        print(f"[sessionstart-hook-guard] If intentional: `{_refresh_hint()}`. If not: re-add the missing hook(s).")
         # Do NOT update snapshot - leave it so the warning persists until reconciled.
         return 0
 
