@@ -9,6 +9,24 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-16: on a Spanish vault, people never met your journal and floors never became numbers
+
+**Who this affects:** anyone journaling in Spanish (or in any vault whose journal folder is not literally `📓 Journals`), plus everyone who tags a journal entry with one of the 16 floors added when the framework grew from 16 to 34 — Trust, Frustration, Loneliness, Gratitude and the rest.
+
+**The bug, in three parts, all silent:**
+
+1. **The wrong journal folder.** The CRM extractor counts how often each person appears in your journals and on which floors. It looked for those journals in a folder hardcoded as `📓 Journals`. A Spanish install creates `📓 Diarios` (that is what the setup interview says to create), so the scan found nothing: every person got zero mentions and an empty floor list, and the insight engine's lucky-charm / drag-people / stale-relationship sections, which are built on those, never fired. Everything ran green. (`/weekly` and `/monthly` had the same problem in July and were fixed for `📓 Diario`, singular; the plural the installer actually creates is now recognised there too.)
+2. **Names, not numbers.** The journal tags each entry with the floor's *name* (`floor: Esperanza`, `floor: Hope`); every floor-based computation wants its *number*. The only translation table lived inside the journal extractor and was the pre-expansion 17-level English list — Fear was 5, Peace was 16, Excitement was 15, and Trust, Frustration, Loneliness, Gratitude and a dozen more did not exist. Spanish names never resolved. So floor co-occurrence was empty and the engine's floor baseline was `None`, which switches off four of its sections.
+3. **Note types with nowhere to go.** A Spanish vault types its notes in Spanish — `reunion`, `nota`, `estrategia`, `proyecto` — and a couple of this repo's own skills write types no extractor claimed (`/rise` writes `type: rise`, About Me is `type: profile`). Those notes dropped out of the metadata index with no message.
+
+**The fix:** one floor table, `scripts/extractors/_floors.py`, mirrored from the canonical 34-floor list in `vendor/high-rise/floors.md` with English and Spanish names (accents optional), used by the journal extractor, the CRM extractor and the insight engine alike — the name on the entry always wins over a stored number, so an old `floor_num` from the 17-level days cannot skew anything. A CI check fails if that table and the canonical one ever disagree. The CRM extractor now finds the journal folder the same way `/weekly` does (`📓 Journals`, `📓 Diarios`, `📓 Diário`, plain or with the emoji). And the type-alias map learned Spanish plus `rise`, `profile`, `meeting_prep`, `plan`, `brief`, `index` and the `content_*` family — while an extractor you wrote yourself for a type always beats an alias.
+
+**What changes for you:** journal entries extracted from now on carry `floor_num` on the 34-floor scale (Hope is 20, not 9). Entries extracted earlier keep their old number in the file until you re-run extraction with `--force`; nothing that reads floors uses that stored number anymore when the name is there, so your insights are right either way. `/setup-vault-types` now also links `_floors.py` into your vault; existing installs pick it up automatically without re-running it.
+
+**New tests:** `tests/integration/test_floor_name_map_canonical.sh` (the table matches the vendored canon, with a planted drift as negative control) and `tests/integration/test_extractors_localized_vault.sh` (a Spanish vault, end to end: 11 of its assertions fail on the previous code). Both wired into `scripts/ci.sh`, which now installs PyYAML on the CI runner (and only there) so the extractors can actually run in CI.
+
+---
+
 ## 2026-08-15: the setup could stop halfway and tell you it was finished
 
 **Who this affects:** anyone whose install ended early, especially if you never reached the journaling interview or your CLAUDE.md came out mostly empty.

@@ -276,6 +276,7 @@ scripts/
   second-brain-mapping.sh         # orchestrator (all four phases)
   extractors/
     _base.py                      # shared helpers
+    _floors.py                    # floor NAME → number (34-floor scale, en + es)
     _dispatcher.py                # type → extractor routing
     schemas.yaml                  # declares fields per type
     journal.py  book.py  person.py  concept.py  article.py

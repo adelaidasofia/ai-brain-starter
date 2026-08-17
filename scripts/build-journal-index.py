@@ -78,7 +78,8 @@ def _parse_inline_list(v):
 JOURNAL_DIR_CANDIDATES = (
     "📓 Journals", "Journals",       # en (Phase 3 default)
     "📔 Journal", "Journal",
-    "📓 Diario", "Diario",           # es
+    "📓 Diarios", "Diarios",         # es (what Phase 1 tells the installer to create)
+    "📓 Diario", "Diario",           # es, singular variant
     "📓 Diário", "Diário",           # pt
 )
 

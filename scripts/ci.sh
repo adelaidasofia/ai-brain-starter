@@ -124,6 +124,17 @@ if [ -z "$(git config user.email 2>/dev/null || true)" ]; then
   export GIT_COMMITTER_NAME="ci" GIT_COMMITTER_EMAIL="ci@example.com"
 fi
 
+# PyYAML, in CI only. The metadata extractors and the insight engine `import
+# yaml`, and test_extractors_localized_vault runs them end to end; setup-python
+# ships without PyYAML, so on the runner that suite would SKIP forever. On a
+# contributor's machine nothing is installed: the test finds an interpreter that
+# has yaml or says SKIP, and running the extractors already required it anyway.
+if [ -n "${GITHUB_ACTIONS:-}" ] && ! python3 -c "import yaml" >/dev/null 2>&1; then
+  python3 -m pip install --user --quiet pyyaml >/dev/null 2>&1 \
+    || python3 -m pip install --quiet pyyaml >/dev/null 2>&1 \
+    || echo "    (PyYAML install failed; test_extractors_localized_vault will SKIP)"
+fi
+
 # ---- (a) Python syntax gate ------------------------------------------------
 if command -v python3.9 >/dev/null 2>&1; then
   PY=python3.9
@@ -357,6 +368,21 @@ INTEGRATION_TESTS=(
   # — silently, on a whole platform. Two layers must hold (the path gate AND the
   # vault-root resolve); fixing only the first looks right and still fails open.
   test_journal_guard_windows_paths
+  # Floor name -> number map (2026-08-16): the journal extractor hand-kept the
+  # pre-expansion 17-level English map while the framework has 34 floors with
+  # Spanish names, so Spanish floors and 16 English ones scored nothing and the
+  # rest scored on the wrong scale. _floors.py is now the one map, a COPY of
+  # vendor/high-rise/floors.md (the extractors are symlinked into vaults where
+  # vendor/ is absent); this asserts the copy matches the table, with a planted
+  # drift as negative control. Pure stdlib.
+  test_floor_name_map_canonical
+  # The same fix end to end on a Spanish vault: journals found in 📓 Diarios,
+  # floor names (es + en) scored, es/rise types routed to real extractors, a
+  # user's own extractor beating an alias, and the engine's floor baseline.
+  # 11 assertions fail on the pre-fix tree. Needs PyYAML (the extractors import
+  # it); says SKIP and exits 0 when no interpreter has it, and the CI-only
+  # bootstrap near the top of this script installs it so CI never takes that path.
+  test_extractors_localized_vault
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new
