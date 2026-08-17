@@ -183,8 +183,18 @@ with tempfile.TemporaryDirectory() as td2:
               len(heal._vault_candidates()) == 2)
 
         # One un-stat-able child must not abort the whole scan. Previously the
-        # try/except wrapped the entire loop, so a single permission-denied entry
-        # turned discovery off for the account.
+        # try/except wrapped the entire loop, so a single unreadable entry (an
+        # ACL we cannot stat, a stale network mount) turned discovery off for the
+        # whole account.
+        #
+        # Wording note: keep hook BASENAMES out of prose in this file.
+        # check-hook-negative-control.py decides a hook is covered when its
+        # basename appears anywhere in the test corpus, so merely naming one in a
+        # COMMENT makes an untested hook look tested and trips the ratchet that
+        # asks for its removal from NO_TEST_BASELINE. Prose must not be able to
+        # manufacture coverage -- that is the failure this whole file guards
+        # against, and the check is substring-based, so it cannot tell the
+        # difference between a test and a sentence.
         import shutil as _shutil
         _shutil.rmtree(fake_home / "SecondVault")
         _real_is_dir = Path.is_dir
