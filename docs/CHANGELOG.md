@@ -9,6 +9,20 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-16: pasting a long note no longer closes your session because one line ended in "listo" or "done"
+
+**Who this affects:** anyone who pastes multi-line text into a session — a brief, a spec, a handoff, meeting notes. Spanish and Portuguese users saw it most, but the cause was language-independent.
+
+**The bug:** the session-close detector decides whether your message is a goodbye by matching it against sign-off patterns like `listo`, `ya está`, `bye`, `done for today`. Many of those patterns are anchored to the *end of the message* — that is what makes "listo, gracias" a close and "listo el borrador, sigamos" not one. But the matcher ran in a mode where "end of the message" meant "end of any line". So a 60-line handoff whose third line happened to read `Borrador listo` was treated as a farewell, and the whole close cascade ran in the middle of your work. Three real cases in nine days on one vault, all the same shape: a sign-off word ending an inner line of something long. Length was never considered either — a wave and a pasted document were scored the same way.
+
+**The fix:** the shared sign-off patterns now match against the whole message (so "end" means the real end) and against its last line alone (so a goodbye on the last line — "All good.\nbye" — still counts). A sign-off word ending an inner line satisfies neither. And the natural-language tiers only look at short messages, up to 300 characters; a sign-off is a few words, and anything longer is work being pasted in. Two things deliberately keep their old reach: slash commands (`/close`, `/cerrar`, `/wrap-up`) fire at any length because typing a command is deliberate, and your own `closingSignals.custom` phrases keep their original semantics for the same reason.
+
+**Also fixed, Spanish pack:** "estoy listo" / "estoy lista" ("I'm ready") is a statement of readiness — "estoy listo para el día" after a morning routine — never a goodbye. It now sits in the strict guard tier of `es.json`, because the bare word `listo` is a high-confidence sign-off and the weaker guards cannot override that.
+
+**New test:** `tests/integration/test_detect_closing_signal_length_gate.sh` — every "must not fire" case has a "must fire" twin, so a change that mutes the detector outright cannot pass it. Against the previous code, thirteen of its assertions fail.
+
+---
+
 ## 2026-08-15: the setup could stop halfway and tell you it was finished
 
 **Who this affects:** anyone whose install ended early, especially if you never reached the journaling interview or your CLAUDE.md came out mostly empty.

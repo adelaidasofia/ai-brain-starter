@@ -357,6 +357,13 @@ INTEGRATION_TESTS=(
   # — silently, on a whole platform. Two layers must hold (the path gate AND the
   # vault-root resolve); fixing only the first looks right and still fails open.
   test_journal_guard_windows_paths
+  # Close detector, whole-message anchoring + length gate (2026-08-16): the
+  # shared pack tiers ran under re.MULTILINE, so every `$`-anchored sign-off
+  # matched the end of ANY line and a 60-line handoff whose third line read
+  # "Borrador listo" fired the full cascade. Every must-not-fire assertion has a
+  # must-fire twin (same words, last line / short prompt), so a change that
+  # mutes the detector cannot pass; 13 assertions fail on the pre-fix hook.
+  test_detect_closing_signal_length_gate
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new
