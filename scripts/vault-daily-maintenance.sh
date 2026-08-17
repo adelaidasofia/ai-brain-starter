@@ -235,6 +235,16 @@ PASSIVE="$SCRIPT_DIR/passive-capture.py"
 RELOCWATCH="$SCRIPT_DIR/relocate-sweep.py"
 [ -f "$RELOCWATCH" ] && run "relocate-watch" /usr/bin/env python3 "$RELOCWATCH" --watch
 
+# Cloud-sync machinery scan (MYC-1133). Walks every synced root for git repos /
+# node_modules / build trees -- the sync-daemon storm + silent-corruption class.
+# Heavy (full walk of every cloud root) so it belongs here and NOT on SessionStart:
+# a per-session walk becomes N concurrent full walks under N sessions, which is the
+# storm itself. It writes ~/.claude/state/sync-guard-last.json; the SessionStart
+# surfacer reads that snapshot. Scheduling this is what gives the surfacer anything
+# to say -- without it the surfacer is silent forever and the guard is decoration.
+SYNCGUARD="$SCRIPT_DIR/../hooks/check-sync-folder-machinery.py"
+[ -f "$SYNCGUARD" ] && run "sync-folder-machinery" /usr/bin/env python3 "$SYNCGUARD" --json
+
 # === AUTO-GC (MYC-2363) =====================================================
 # The reclaim tier. Every piece below already existed and every one was OPT-IN,
 # so on a default install NOTHING ever ran them and the machine only ever got

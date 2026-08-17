@@ -111,7 +111,39 @@ def _read_text_bounded(path: Path) -> str | None:
     return result.text if result.ok else None
 
 
+def _sync_guard_lines() -> str | None:
+    """Cloud-sync machinery findings from the daily scan's snapshot (MYC-1133).
+
+    Folded into THIS hook rather than given its own SessionStart entry: a
+    separate hook costs another cold start on an event already at its fan-out
+    budget (footprint-sla-check), and buying budget to fit a new hook would hide
+    the very cost this hook exists to observe. Same domain, too — local
+    footprint and cloud-sync melt.
+
+    Reads the snapshot ONLY; it must never walk the cloud roots. Best-effort:
+    the findings are advisory and must never break SessionStart.
+    """
+    try:
+        import importlib.util
+        p = Path(__file__).with_name("surface-sync-guard-findings.py")
+        if not p.exists():
+            return None
+        spec = importlib.util.spec_from_file_location("_sync_guard_surface", p)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)          # top level only defines; __main__ guarded
+        snap_text = _read_text_bounded(Path(mod.STATE_PATH))
+        if not snap_text:
+            return None
+        lines = mod.build_report(json.loads(snap_text))
+        return "\n".join(lines) if lines else None
+    except Exception:
+        return None
+
+
 def _emit(ctx: str | None) -> int:
+    extra = _sync_guard_lines()
+    if extra:
+        ctx = f"{ctx}\n\n{extra}" if ctx else extra
     if ctx:
         print(json.dumps({"continue": True, "additionalContext": ctx}))
     else:

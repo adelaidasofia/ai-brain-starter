@@ -191,6 +191,7 @@ INTEGRATION_TESTS=(
   test_installer_relocates_moved_hooks
   test_installer_shim_safe_interpreter
   test_deployed_hooks_behind
+  test_sync_guard_surface
   test_windows_platformize
   test_memory_routing_guard
   test_bootstrap_omits_vault_hooks
