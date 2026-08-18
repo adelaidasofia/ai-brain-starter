@@ -63,12 +63,40 @@ __all__ = [
     "vault_root_for",
 ]
 
-# Matches "## Session End", "## Session end", "# Session Close", etc. Deliberately
-# does NOT match "Session Protocol" or other session-adjacent headings — a vault
-# can discuss sessions without declaring itself the owner of a close cascade for
-# THIS purpose, and headings like that are exactly how the default/fallback
-# vault stays reachable only through the fallback path, never a false walk-up win.
-_SESSION_HEADING_RE = re.compile(r"^#+\s*Session\s+(?:End|Close)\b", re.IGNORECASE | re.MULTILINE)
+# Matches a heading that declares THIS folder owns a session-close cascade, in
+# the same three languages the close-signal packs already ship (en/es/pt). The
+# detector used to be English-only while the rest of the cascade was trilingual,
+# so a Spanish- or Portuguese-authored CLAUDE.md silently failed to declare
+# itself and — for an operator with a global VAULT_ROOT exported — resolved to
+# the WRONG vault with no signal. That is the LatAm multi-client delivery shape
+# (one operator, several client brains on one machine), so it is the default
+# case there, not an edge case. MYC-2457.
+#
+# Deliberately does NOT match "Session Protocol" or other session-adjacent
+# headings — a vault can discuss sessions without owning a close cascade for
+# THIS purpose, and such headings are exactly how the default/fallback vault
+# stays reachable only through the fallback path, never a false walk-up win.
+#
+# Accent-less spellings (sesion, sessao) are accepted because people type them.
+_SESSION_HEADING_RE = re.compile(
+    r"^#+\s*(?:"
+    r"Session\s+(?:End|Close)"                      # en
+    r"|(?:Cierre|Fin)\s+de\s+sesi[oó]n"             # es
+    r"|Fim\s+de\s+sess[aã]o"                        # pt
+    r"|Encerramento(?:\s+d[eao]\s+sess[aã]o)?"      # pt
+    r")\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Prose-independent opt-in. A heading is translation-, rename- and reword-proof
+# only up to the next time someone edits it; these two are not. Either form
+# declares the folder a session-close root:
+#   - a `.session-close-root` sentinel file beside CLAUDE.md, or
+#   - `sessionCloseRoot: true` in CLAUDE.md's frontmatter.
+_SESSION_ROOT_SENTINEL = ".session-close-root"
+_SESSION_ROOT_KEY_RE = re.compile(
+    r"^\s*sessionCloseRoot\s*:\s*(?:true|yes)\s*$", re.IGNORECASE | re.MULTILINE
+)
 
 # Defensive bound on the walk-up, independent of the $HOME/filesystem-root
 # stop conditions below — cheap insurance against an unexpected filesystem
@@ -116,19 +144,56 @@ def _has_meta_dir(candidate: Path) -> bool:
         return False
 
 
+def _frontmatter(text: str) -> str:
+    """The leading `---` fenced block, or "" when the file has none.
+
+    Scoped on purpose: `sessionCloseRoot: true` quoted in prose further down a
+    CLAUDE.md (documenting the feature, say) must not declare the folder a root.
+    """
+    if not text.startswith("---"):
+        return ""
+    end = text.find("\n---", 3)
+    return text[:end] if end != -1 else ""
+
+
+def _declares_session_root_explicitly(candidate: Path) -> bool:
+    """True iff `candidate` carries the prose-independent opt-in marker.
+
+    Unlike the heading path this does NOT require a Meta dir. An explicit
+    declaration is an instruction, not a hint: honoring it and then failing
+    loudly about the missing Meta dir (see detect-closing-signal's
+    unscaffolded-vault notice) tells the operator exactly what to fix. Falling
+    back to some other vault because the folder is half-built is the silent
+    cross-vault write this whole resolver exists to prevent.
+    """
+    if (candidate / _SESSION_ROOT_SENTINEL).is_file():
+        return True
+    claude_md = candidate / "CLAUDE.md"
+    if not claude_md.is_file():
+        return False
+    try:
+        text = claude_md.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return bool(_SESSION_ROOT_KEY_RE.search(_frontmatter(text)))
+
+
 def _declares_own_session_close_cascade(candidate: Path) -> bool:
     """True iff `candidate` is a self-contained vault for session-close purposes.
 
-    Both signals required:
-      - a CLAUDE.md documenting its OWN "Session End"/"Session Close" cascade
-        (heading match, case-insensitive), AND
-      - an existing Meta folder to write into.
-    Either alone is too weak: a CLAUDE.md can mention sessions without owning
-    a cascade for this purpose (a default vault's own CLAUDE.md may use a
-    different heading — e.g. "Session Protocol" — precisely so it keeps
-    reaching itself through the fallback, not a walk-up match); a Meta
+    Precedence (MYC-2457):
+      1. The explicit marker wins outright — see _declares_session_root_explicitly.
+      2. Otherwise the zero-config heading path, which needs BOTH signals:
+         a CLAUDE.md whose heading declares its OWN close cascade (en/es/pt,
+         case-insensitive), AND an existing Meta folder to write into.
+    Either heading signal alone is too weak: a CLAUDE.md can mention sessions
+    without owning a cascade for this purpose (a default vault's own CLAUDE.md
+    may use a different heading — e.g. "Session Protocol" — precisely so it
+    keeps reaching itself through the fallback, not a walk-up match); a Meta
     folder can exist without any CLAUDE.md ever declaring it canonical.
     """
+    if _declares_session_root_explicitly(candidate):
+        return True
     claude_md = candidate / "CLAUDE.md"
     if not claude_md.is_file():
         return False
