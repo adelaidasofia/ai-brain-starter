@@ -168,6 +168,7 @@ INTEGRATION_TESTS=(
   test_verify_real_hooksjson_healthy_install
   test_detect_closing_signal_worktree
   test_detect_closing_signal_repo_aware_vault
+  test_detect_closing_signal_unscaffolded_vault
   test_detect_closing_signal_goal_clear
   test_close_phase_numbering_aligned
   test_phase_chain_contract
