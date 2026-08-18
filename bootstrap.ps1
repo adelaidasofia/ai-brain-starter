@@ -424,11 +424,133 @@ if (Have winget) {
 }
 
 # ─── Python 3.10+ ─────────────────────────────────────────────────────────────
-$pythonOk = $false
-try {
-    $v = (python --version 2>&1) -replace 'Python ',''
-    if ([version]$v -ge [version]"3.10") { $pythonOk = $true }
-} catch {}
+# Windows offers three separate ways to be wrong about "is Python here?", and
+# testing the single name `python` walked into all three:
+#   1. The Python Launcher (`py -3.12`) is the canonical multi-version resolver
+#      on Windows and was never consulted, so a machine with 3.12 installed but
+#      `python` unset or shadowed read as "no Python at all".
+#   2. Windows ships a `python` STUB in WindowsApps that opens the Microsoft
+#      Store instead of running an interpreter. It IS on PATH, so a presence
+#      check passes; it prints no parseable version, so the [version] cast threw
+#      and $pythonOk stayed $false. Result: install a Python already present.
+#   3. A real but too-old `python` (3.9) can shadow a newer one later in PATH.
+#      Installing 3.12 cannot fix that, because it cannot change what the NAME
+#      `python` resolves to - the same trap fixed on the shell side in #538.
+# So resolve ONE interpreter up front by EXECUTING each candidate and letting
+# Python itself answer the >= 3.10 question, then use that exact interpreter for
+# every call below. Mirrors pick_python() in bootstrap.sh. AI_BRAIN_PYTHON names
+# one directly, for a prefix no search would guess (pyenv-win, conda).
+#
+# ai-brain:pick-python:start
+# Everything between these two markers is extracted VERBATIM and dot-sourced by
+# tests/integration/test_bootstrap_ps1_python_discovery.ps1, so it must stay
+# self-contained: no Log/Warn/T or any other bootstrap-only helper in here.
+$PythonExe             = $null
+$PythonArgs            = @()
+$PythonOverrideIgnored = $false
+
+function Test-PythonCandidate($Exe, $PrefixArgs) {
+    # Executing the candidate is the only honest test. Presence on PATH is not
+    # evidence (the Store alias is present and is not an interpreter), and
+    # parsing --version is not evidence (the alias prints no version at all).
+    # Let the interpreter decide and read the answer off its exit code.
+    if (-not $PrefixArgs) { $PrefixArgs = @() }
+    # EAP is "Stop" for the whole script, and Windows PowerShell 5.1 turns a
+    # native command's STDERR into a terminating NativeCommandError under it -
+    # the crash class that killed this installer once already (Bug 1, see
+    # windows-install.yml). A pyenv/conda shim printing a deprecation warning
+    # would then be REJECTED as "not a Python" and earn the user the redundant
+    # install this whole change exists to prevent. Exit code decides, not
+    # stderr, so neutralise EAP here exactly as Run-Native does.
+    $eapSaved = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        # Sentinel, not 0: if the process somehow never runs WITHOUT throwing,
+        # $LASTEXITCODE keeps the sentinel and the candidate is rejected. Seeding
+        # 0 here would make that same silence read as a pass.
+        $global:LASTEXITCODE = 9009
+        & $Exe @PrefixArgs -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3,10) else 1)' 2>$null | Out-Null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        # CommandNotFound, or a file that is not a valid executable image: the
+        # process never ran, so $LASTEXITCODE still holds whatever it held
+        # before this call. Never read it here - the throw IS the answer.
+        return $false
+    } finally {
+        $ErrorActionPreference = $eapSaved
+    }
+}
+
+function Resolve-Python {
+    # Generic names first, so a machine bootstrap already worked on keeps the
+    # interpreter it was already using; then the launcher newest-first.
+    # Candidates are objects, NOT nested arrays: PowerShell flattens
+    # @("py", @()) down to a 1-element array, which would silently drop every
+    # prefix argument and turn `py -3.12` back into a bare `py`.
+    $candidates = @()
+    if ($env:AI_BRAIN_PYTHON) {
+        $candidates += [pscustomobject]@{ Name = $env:AI_BRAIN_PYTHON; Prefix = @(); IsOverride = $true }
+    }
+    foreach ($n in @("python", "python3")) {
+        $candidates += [pscustomobject]@{ Name = $n; Prefix = @(); IsOverride = $false }
+    }
+    foreach ($v in @("3.14", "3.13", "3.12", "3.11", "3.10")) {
+        $candidates += [pscustomobject]@{ Name = "py"; Prefix = @("-$v"); IsOverride = $false }
+    }
+    # Bare `py` last: honours the machine's configured default and catches a
+    # version newer than anything enumerated above.
+    $candidates += [pscustomobject]@{ Name = "py"; Prefix = @(); IsOverride = $false }
+
+    foreach ($c in $candidates) {
+        $prefix = $c.Prefix
+        if (-not $prefix) { $prefix = @() }
+        $found = Get-Command $c.Name -ErrorAction SilentlyContinue
+        if (-not $found) {
+            if ($c.IsOverride) { $script:PythonOverrideIgnored = $true }
+            continue
+        }
+        $exe = $found.Source
+        if (-not $exe) { $exe = $found.Name }
+        if (-not (Test-PythonCandidate $exe $prefix)) {
+            if ($c.IsOverride) { $script:PythonOverrideIgnored = $true }
+            continue
+        }
+        # Collapse `py -3.12` to the interpreter the launcher actually selected,
+        # so every call site downstream is a plain exe. Otherwise one forgotten
+        # prefix argument silently runs the machine's DEFAULT python instead.
+        $real = $null
+        $eapSaved = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"   # same stderr-under-Stop reason as above
+        try {
+            $global:LASTEXITCODE = 9009
+            # Capture in full, THEN take the first line. Piping a native command
+            # straight into `Select-Object -First 1` stops the pipeline early, and
+            # an early-stopped pipeline never updates $LASTEXITCODE - so the check
+            # below read the seeded sentinel and threw away a good answer every
+            # single time. Measured on pwsh 7.5: -First 1 leaves LASTEXITCODE at
+            # 9009, the same call without it leaves 0.
+            $out = & $exe @prefix -c 'import sys; print(sys.executable)' 2>$null
+            if ($LASTEXITCODE -eq 0) { $real = ($out | Select-Object -First 1) }
+        } catch { $real = $null } finally { $ErrorActionPreference = $eapSaved }
+        if ($real) { $real = "$real".Trim() }
+        if ($real -and (Test-Path -LiteralPath $real)) {
+            $script:PythonExe  = $real
+            $script:PythonArgs = @()
+        } else {
+            $script:PythonExe  = $exe
+            $script:PythonArgs = @($prefix)
+        }
+        return $true
+    }
+    return $false
+}
+# ai-brain:pick-python:end
+
+$pythonOk = Resolve-Python
+if ($PythonOverrideIgnored) {
+    Warn (T "AI_BRAIN_PYTHON is set to '$env:AI_BRAIN_PYTHON' but that is not a Python 3.10+ interpreter - ignoring it and searching PATH." `
+            "AI_BRAIN_PYTHON apunta a '$env:AI_BRAIN_PYTHON' pero no es un interprete Python 3.10+ - se ignora y se busca en el PATH.")
+}
 if (-not $pythonOk -and $CorporateProfile) {
     Warn (T "Corporate profile: Python 3.10+ not found - NOT auto-installing (user-space, pinned-version policy)." `
             "Perfil corporativo: no se encontro Python 3.10+ - NO se instala automaticamente (espacio de usuario, version fija).")
@@ -475,7 +597,29 @@ if (-not $pythonOk -and $CorporateProfile) {
     }
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 }
-if (Have python) { Ok "python $(python --version)" } else { Err "python install failed" }
+# The install branch above refreshed $env:Path, so a Python that was invisible a
+# moment ago may be resolvable now. Re-resolve rather than trusting the earlier
+# miss; when nothing was installed this is a handful of cheap Get-Command misses.
+if (-not $pythonOk) { $pythonOk = Resolve-Python }
+if ($PythonExe) {
+    $pyVerRaw = $null
+    # Capture first, select after: see the note in Resolve-Python about
+    # `Select-Object -First 1` short-circuiting a native-command pipeline.
+    $eapSaved = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"   # same stderr-under-Stop reason as in Resolve-Python
+    try { $pyVerOut = & $PythonExe @PythonArgs --version 2>$null } catch { $pyVerOut = $null } finally { $ErrorActionPreference = $eapSaved }
+    $pyVerRaw = $pyVerOut | Select-Object -First 1
+    if ($pyVerRaw) { $pyVer = "$pyVerRaw".Trim() } else { $pyVer = "(version unavailable)" }
+    # Print the resolved PATH, not just the version: "which python is this?" is
+    # the question every report about this area has turned on.
+    Ok "$pyVer  [$PythonExe]"
+} elseif ($CorporateProfile -or $DryRun) {
+    Warn (T "No Python 3.10+ resolved - steps that need python will be skipped." `
+            "No se resolvio Python 3.10+ - los pasos que necesitan python se omitiran.")
+} else {
+    Err (T "No Python 3.10+ available after install (tried python, python3, py -3.14..-3.10)." `
+           "No hay Python 3.10+ disponible despues de instalar (se probo python, python3, py -3.14..-3.10).")
+}
 
 # ─── Node.js ──────────────────────────────────────────────────────────────────
 if (-not (Have node) -and $CorporateProfile) {
@@ -615,13 +759,18 @@ if (Have claude) { Ok (T "Claude Code installed" "Claude Code instalado") }
 
 # ─── pipx ─────────────────────────────────────────────────────────────────────
 if (-not (Have pipx) -and $DryRun) {
-    Dry "would: python -m pip install --user pipx"
+    Dry "would: <resolved-python> -m pip install --user pipx"
+} elseif (-not (Have pipx) -and -not $PythonExe) {
+    # Previously this ran a bare `python`, which under EAP=Stop raised
+    # CommandNotFound and killed the whole bootstrap. Name the cause instead.
+    Err (T "pipx needs Python 3.10+ and none was resolved - skipping pipx." `
+           "pipx necesita Python 3.10+ y no se resolvio ninguno - se omite pipx.")
 } elseif (-not (Have pipx)) {
     Hdr "Installing pipx"
     # Run-Native: pip's routine "scripts not on PATH" stderr warning aborted a
     # real install here under EAP=Stop. Exit code decides success, not stderr.
-    if (-not (Run-Native { python -m pip install --user pipx })) { Err "pip install pipx failed" }
-    [void](Run-Native { python -m pipx ensurepath })
+    if (-not (Run-Native { & $PythonExe @PythonArgs -m pip install --user pipx })) { Err "pip install pipx failed" }
+    [void](Run-Native { & $PythonExe @PythonArgs -m pipx ensurepath })
     $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
 }
 if (Have pipx) { Ok "pipx" } else { Err "pipx install failed" }
@@ -1044,8 +1193,13 @@ if 'chatprd' not in m['mcpServers']:
     m['mcpServers']['chatprd'] = {'type': 'url', 'url': 'https://app.chatprd.ai/mcp'}
 with open(p, 'w') as f: json.dump(m, f, indent=2)
 "@
-    $pyMcp | python -
-    if ($LASTEXITCODE -eq 0) { Ok "MCPs registered: granola, chatprd (Granola needs an account to use)" } else { Err "MCP registration failed" }
+    if (-not $PythonExe) {
+        Err (T "No Python 3.10+ resolved - skipping MCP registration." `
+               "No se resolvio Python 3.10+ - se omite el registro de MCPs.")
+    } else {
+        $pyMcp | & $PythonExe @PythonArgs -
+        if ($LASTEXITCODE -eq 0) { Ok "MCPs registered: granola, chatprd (Granola needs an account to use)" } else { Err "MCP registration failed" }
+    }
 }
 }  # end corporate-profile MCP gate
 
@@ -1089,8 +1243,13 @@ if corporate:
         env[k] = v
 with open(p, 'w') as f: json.dump(s, f, indent=2)
 "@
-    $pyPlugins | python -
-    if ($LASTEXITCODE -eq 0) { Ok "Marketplace + plugins registered (settings.json backed up)" } else { Err "settings.json plugin registration failed" }
+    if (-not $PythonExe) {
+        Err (T "No Python 3.10+ resolved - skipping marketplace/plugin registration." `
+               "No se resolvio Python 3.10+ - se omite el registro de marketplace/plugins.")
+    } else {
+        $pyPlugins | & $PythonExe @PythonArgs -
+        if ($LASTEXITCODE -eq 0) { Ok "Marketplace + plugins registered (settings.json backed up)" } else { Err "settings.json plugin registration failed" }
+    }
 }
 
 # ─── Verification ────────────────────────────────────────────────────────────
@@ -1176,15 +1335,15 @@ if ((Test-Path $userHookInstaller) -and -not $DryRun) {
     Write-Host ("━━━ " + (T "Installing hooks at user level (so they fire inside worktrees)" `
                               "Instalando hooks a nivel de usuario (para que disparen dentro de worktrees)") + " ━━━") -ForegroundColor Cyan
 
-    # py first: the launcher is always real. A bare `python3`/`python` on PATH
-    # can be the Microsoft Store alias STUB (opens the Store instead of running),
-    # so every candidate is validated by actually executing it.
-    $pythonCmd = $null
-    foreach ($candidate in @("py", "python", "python3")) {
-        $resolved = Get-Command $candidate -ErrorAction SilentlyContinue
-        if (-not $resolved) { continue }
-        & $resolved.Source -c "import sys" 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) { $pythonCmd = $resolved.Source; break }
+    # One answer to "which Python" for the whole install: Resolve-Python already
+    # walked python/python3/py -3.x, executed each candidate, and enforced
+    # >= 3.10. This block used to repeat a weaker version of that search (no
+    # version floor), so it could pick a 3.9 the rest of the script had rejected.
+    $pythonCmd = $PythonExe
+    if ($PythonArgs -and $PythonArgs.Count) {
+        $pyCmdDisplay = "$PythonExe $($PythonArgs -join ' ')"
+    } else {
+        $pyCmdDisplay = "$PythonExe"
     }
 
     if (-not $pythonCmd) {
@@ -1197,7 +1356,7 @@ if ((Test-Path $userHookInstaller) -and -not $DryRun) {
         try {
             # --fail-on-missing (parity with bootstrap.sh): verifies every wired
             # hook script exists on disk and escalates divergent-fork strands.
-            & $pythonCmd $userHookInstaller --quiet --fail-on-missing
+            & $pythonCmd @PythonArgs $userHookInstaller --quiet --fail-on-missing
             if ($LASTEXITCODE -eq 0) {
                 Write-Host ("  OK " + (T "User-level hooks installed (~/.claude/settings.json)" `
                                           "Hooks a nivel de usuario instalados (~/.claude/settings.json)")) -ForegroundColor Green
@@ -1206,8 +1365,8 @@ if ((Test-Path $userHookInstaller) -and -not $DryRun) {
                                          "La instalación de hooks a nivel de usuario FALLÓ (exit $LASTEXITCODE).")) -ForegroundColor Red
                 Write-Host ("  X " + (T "The meeting trigger + 6 other UserPromptSubmit hooks will not fire." `
                                          "El trigger de meetings + 6 hooks UserPromptSubmit no van a disparar.")) -ForegroundColor Red
-                Write-Host ("  X " + (T "Re-run manually: & `"$pythonCmd`" `"$userHookInstaller`" --fail-on-missing" `
-                                         "Volvé a correr manualmente: & `"$pythonCmd`" `"$userHookInstaller`" --fail-on-missing")) -ForegroundColor Red
+                Write-Host ("  X " + (T "Re-run manually: $pyCmdDisplay `"$userHookInstaller`" --fail-on-missing" `
+                                         "Volvé a correr manualmente: $pyCmdDisplay `"$userHookInstaller`" --fail-on-missing")) -ForegroundColor Red
                 $Failed += "user-level hook install (exit $LASTEXITCODE) - meeting trigger + 6 other hooks WILL NOT FIRE"
             }
         } catch {

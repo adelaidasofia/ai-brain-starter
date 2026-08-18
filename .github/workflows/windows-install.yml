@@ -88,6 +88,37 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      # Which Python does bootstrap pick? (ai-brain-starter#290)
+      # scripts/ci.sh runs this SAME suite on ubuntu under pwsh 7. That proves
+      # the resolver's logic and structurally cannot express the two things
+      # that only exist here: Windows PowerShell 5.1 semantics, and a real `py`
+      # launcher. Neither runner alone is the gate.
+      # Placed before the e2e run below so a resolver regression names itself
+      # instead of surfacing as a confusing failure in the middle of an install.
+      # Costs seconds and shares this job's already-paid runner, rather than
+      # adding a second windows-latest job floor at the 2x multiplier.
+      - name: bootstrap.ps1 Python discovery (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($PSVersionTable.PSEdition -ne "Desktop") {
+            Write-Host "::error::Expected Windows PowerShell 5.1 (Desktop edition) for this suite; got $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)."
+            exit 1
+          }
+          # Informational only: the suite seals PATH to its own stubs, so the
+          # runner's interpreters decide nothing. Logged so that "is this runner
+          # still representative of a real Windows box?" is answerable from the
+          # run, without turning an image change into a red gate.
+          $realPy = Get-Command py -ErrorAction SilentlyContinue
+          if ($realPy) { Write-Host "runner has a real py launcher at $($realPy.Source)" }
+          else { Write-Host "runner has NO py launcher on PATH (suite is unaffected; it uses sealed stubs)" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\tests\integration\test_bootstrap_ps1_python_discovery.ps1"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::bootstrap.ps1 Python discovery suite failed (exit $LASTEXITCODE)"
+            exit $LASTEXITCODE
+          }
+          exit 0
+
       # A clean, known Python interpreter. The user-level hook installer is a
       # Python script, so SOME python must be present for the hook-install
       # assertion to mean anything; Bug 2 is a path-ENCODING bug, independent of
