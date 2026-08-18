@@ -78,15 +78,17 @@ from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
-    from _lib.vault_root import resolve_vault_root  # noqa: E402
+    from _lib.vault_root import collapse_worktree, resolve_vault_root  # noqa: E402
 except Exception:  # fail-open: if the lib cannot load, behave as before
-    def resolve_vault_root(cwd: Path, env_vault_root: str | None) -> Path:  # type: ignore
-        text = str(Path(env_vault_root) if env_vault_root else cwd)
-        norm = text.replace("\\", "/")  # marker must match Windows paths too
+    def collapse_worktree(path: Path) -> Path:  # type: ignore
+        norm = str(path).replace("\\", "/")  # marker must match Windows paths too
         marker = "/.claude/worktrees/"
         if marker in norm:
             return Path(norm.split(marker, 1)[0])
-        return Path(text)
+        return Path(path)
+
+    def resolve_vault_root(cwd: Path, env_vault_root: str | None) -> Path:  # type: ignore
+        return collapse_worktree(Path(env_vault_root) if env_vault_root else cwd)
 
 
 def log_debug(msg: str) -> None:
@@ -685,6 +687,89 @@ def write_marker(
     return marker
 
 
+def path_contains(parent: Path, child: Path) -> bool:
+    """True iff `child` is `parent` or sits underneath it.
+
+    Deliberately string/parts based rather than Path.is_relative_to (3.9+) or
+    os.path.commonpath (raises on mixed drives): a hook must not crash on an
+    exotic path, and a False here only costs an advisory line.
+    """
+    try:
+        pp = os.path.normcase(os.path.abspath(str(parent))).replace("\\", "/")
+        cp = os.path.normcase(os.path.abspath(str(child))).replace("\\", "/")
+    except (OSError, ValueError):
+        return False
+    if pp == cp:
+        return True
+    return cp.startswith(pp.rstrip("/") + "/")
+
+
+def offsite_vault_warning(vault_root: Path, cwd: Path) -> str:
+    """Advisory line when the cascade will write OUTSIDE the working folder.
+
+    resolve_vault_root falls back to $VAULT_ROOT (then cwd) when the current
+    folder does not declare its own cascade. That fallback is intended, but it
+    is silent: with a global VAULT_ROOT configured, a session in an unrelated
+    folder pre-builds its session file inside that other vault, and the model
+    is told a "Vault root:" that reads perfectly normal. Naming the mismatch is
+    what lets the model stop before it files one project's work in another's.
+
+    Returns "" when the resolution is in-scope (the common case).
+    """
+    base = collapse_worktree(cwd)
+    if path_contains(vault_root, base):
+        return ""
+    return (
+        "\n  ⚠ HETEROTOPIC RESOLUTION — the vault root above is NOT this session's\n"
+        f"    working folder ({base}).\n"
+        "    This folder does not declare its own cascade, so resolution fell back\n"
+        "    to $VAULT_ROOT. Every artifact below will be written into the OTHER\n"
+        "    vault. Before writing anything: confirm with the user that this\n"
+        "    session's notes belong there. If they do not, STOP and offer to\n"
+        "    scaffold this folder (Meta/ + a `## Session End` section in its own\n"
+        "    CLAUDE.md) so it owns its cascade — do not silently cross vaults."
+    )
+
+
+def build_unscaffolded_vault_notice(
+    matched: str,
+    confidence: str,
+    vault_root: Path,
+    meta_dir: Path,
+    reason: str,
+) -> str:
+    """Fail LOUD when the resolved vault has nowhere to write.
+
+    Previously this path logged to stderr behind CLOSING_SIGNAL_DEBUG and
+    emitted a passthrough: the user said "bye", the cascade did nothing, and
+    nothing anywhere said why. A silent no-op and a healthy close are
+    indistinguishable from the outside, which is the failure mode this
+    codebase treats as the worst one.
+    """
+    return (
+        f"SESSION CLOSE detected (signal: {matched!r}, confidence: {confidence}) — "
+        f"but the cascade CANNOT RUN here, so NOTHING has been written.\n\n"
+        f"  Resolved vault root: {vault_root}\n"
+        f"  Expected Meta dir:   {meta_dir}\n"
+        f"  Reason:              {reason}\n\n"
+        f"This folder is not scaffolded as a vault, so there is no Sessions/ or\n"
+        f"Decisions/ directory to write session artifacts into.\n\n"
+        f"TELL THE USER THIS PLAINLY in your closing message — do not report a\n"
+        f"normal close, and do not invent somewhere else to write. Then offer\n"
+        f"the fix:\n"
+        f"  1. Make this folder own its cascade — create {meta_dir}/Sessions/ and\n"
+        f"     {meta_dir}/Decisions/, AND add a `## Session End` (or\n"
+        f"     `## Session Close`) section to a CLAUDE.md at {vault_root}.\n"
+        f"     BOTH are required: the Meta dir alone gives the cascade somewhere\n"
+        f"     to write, but only the CLAUDE.md heading makes this folder resolve\n"
+        f"     to ITSELF instead of falling back to $VAULT_ROOT.\n"
+        f"  2. Or, if these notes belong to an existing vault, point VAULT_ROOT\n"
+        f"     at it for this project.\n\n"
+        f"Still give the user a normal verbal wrap-up. Just do not claim the\n"
+        f"cascade ran."
+    )
+
+
 def build_injected_context(
     confidence: str,
     matched: str,
@@ -700,6 +785,7 @@ def build_injected_context(
     is_trivial: bool,
     is_ambiguous: bool,
     goal_condition: str | None = None,
+    offsite_warning: str = "",
 ) -> str:
     """Compose the system block injected into the model's context.
 
@@ -729,7 +815,7 @@ def build_injected_context(
             + _full_cascade_block(
                 timestamp_human, timestamp_file, worktree, vault_root,
                 meta_dir, session_file, decisions_dir, captures_file,
-                pending_outcomes,
+                pending_outcomes, offsite_warning=offsite_warning,
             )
         )
 
@@ -740,6 +826,7 @@ def build_injected_context(
             timestamp_human, timestamp_file, worktree, vault_root,
             meta_dir, session_file, decisions_dir, captures_file,
             pending_outcomes, goal_condition,
+            offsite_warning=offsite_warning,
         )
     )
 
@@ -792,6 +879,7 @@ def _full_cascade_block(
     captures_file: Path,
     pending_outcomes: list[str],
     goal_condition: str | None = None,
+    offsite_warning: str = "",
 ) -> str:
     """The reusable cascade-instruction block."""
     pending = ", ".join(pending_outcomes) if pending_outcomes else "(none)"
@@ -840,7 +928,7 @@ Then walk Phases 0b -> 1 -> 2 -> 2b -> 3 below."""
 
   Timestamp:        {timestamp_human}
   Worktree:         {worktree}
-  Vault root:       {vault_root}
+  Vault root:       {vault_root}{offsite_warning}
   Session file:     {session_file}  (already pre-built with frontmatter + headers; fill in the body)
   Decisions dir:    {decisions_dir}  (write per-decision files here, slug-named)
   Captures file:    {captures_file}
@@ -1073,8 +1161,15 @@ def main() -> int:
         meta_dir = find_meta_dir(vault_root)
         ok, reason = verify_meta_dir(meta_dir)
         if not ok:
-            log_debug(f"meta_dir verification failed, skipping cascade: {reason}")
-            emit_passthrough()
+            # Fail LOUD. Skipping the WRITE is right (a phantom meta_dir would
+            # swallow the model's writes); skipping in SILENCE is not — the user
+            # signalled close and would otherwise get a clean-looking goodbye
+            # with no cascade behind it, indistinguishable from a healthy one.
+            log_debug(f"meta_dir verification failed, cascade cannot run: {reason}")
+            emit_context(build_unscaffolded_vault_notice(
+                matched=matched or "", confidence=confidence,
+                vault_root=vault_root, meta_dir=meta_dir, reason=reason,
+            ))
             return 0
         sessions_dir = meta_dir / "Sessions"
         decisions_dir = meta_dir / "Decisions"
@@ -1134,6 +1229,7 @@ def main() -> int:
             is_trivial=is_trivial,
             is_ambiguous=is_ambiguous,
             goal_condition=active_session_goal(transcript_path),
+            offsite_warning=offsite_vault_warning(vault_root, cwd),
         )
         emit_context(context)
         log_debug(f"injected context for {confidence} signal in {int((time.time() - start) * 1000)}ms")
