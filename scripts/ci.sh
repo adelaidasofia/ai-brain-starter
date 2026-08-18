@@ -203,6 +203,9 @@ INTEGRATION_TESTS=(
   test_bootstrap_corporate_profile
   test_bootstrap_userspace_fallback
   test_bootstrap_python_discovery
+  # Windows half of the same bug (#290): bootstrap.ps1 tested the single name
+  # `python`, never the `py -3.x` launcher, so a box with 3.12 read as no-Python.
+  test_bootstrap_ps1_python_discovery
   test_preflight_git_and_it_request
   test_remediate_runaway_procs
   test_scan_prior_single_instance
