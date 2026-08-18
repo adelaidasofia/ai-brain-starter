@@ -34,7 +34,23 @@ FULL_B = "[x] 91 items a fresh install will not reproduce. Run the sweep.\n" + _
 SUMMARY = "[x] 90 items a fresh install will not reproduce. Run the sweep."
 
 with tempfile.TemporaryDirectory() as td:
-    sr.STATE_DIR = pathlib.Path(td) / "sr"
+    # Pin the state dir through the ENV OVERRIDE, which is the same channel a
+    # real caller uses - not by assigning a module global. The old form set
+    # sr.STATE_DIR directly, so it bound only while the module happened to read
+    # that global; the moment resolution moved into a function the assignment
+    # went INERT and this suite silently began writing the developer's real
+    # ~/.claude/.standing-reports while still printing ok. Pinning the way
+    # production configures it means this file cannot drift out of binding
+    # again without failing.
+    os.environ[sr.STATE_DIR_ENV] = str(pathlib.Path(td) / "sr")
+
+    print("the pin BINDS (control: everything below is vacuous if it does not)")
+    sr.report("bind-probe", FULL_A, SUMMARY)
+    check("state landed in the pinned dir, not real HOME",
+          (pathlib.Path(td) / "sr" / "bind-probe.json").is_file())
+    check("nothing was written to the real state dir",
+          not (pathlib.Path.home() / ".claude" / ".standing-reports"
+               / "bind-probe.json").exists())
 
     print("first sight renders IN FULL")
     check("first call returns full", sr.report("k", FULL_A, SUMMARY) == FULL_A)
@@ -84,13 +100,21 @@ with tempfile.TemporaryDirectory() as td:
     check("bypass returns full", sr.report("k", FULL_A, SUMMARY) == FULL_A)
     del os.environ[sr.BYPASS_ENV]
 
-    sr.STATE_DIR = pathlib.Path("/proc/cannot-create-here/sr")
+    # A path under an unwritable root: mkdir raises inside _write, report()
+    # catches, and the caller gets the FULL text rather than a wrong digest.
+    # /dev/null is a FILE on every POSIX box, so a child directory of it can
+    # never be created - portable where /proc is not (it does not exist on
+    # macOS, which made this control vacuous there).
+    os.environ[sr.STATE_DIR_ENV] = str(pathlib.Path("/dev/null") / "sr")
     check("unwritable state returns full", sr.report("k", FULL_A, SUMMARY) == FULL_A)
 
-    sr.STATE_DIR = pathlib.Path(td) / "sr2"
-    sr.STATE_DIR.mkdir(parents=True, exist_ok=True)
-    (sr.STATE_DIR / "k.json").write_text("{corrupt")
+    sr2 = pathlib.Path(td) / "sr2"
+    sr2.mkdir(parents=True, exist_ok=True)
+    (sr2 / "k.json").write_text("{corrupt")
+    os.environ[sr.STATE_DIR_ENV] = str(sr2)
     check("corrupt state returns full", sr.report("k", FULL_A, SUMMARY) == FULL_A)
+
+    del os.environ[sr.STATE_DIR_ENV]
 
 print()
 if fails:
