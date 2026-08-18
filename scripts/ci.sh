@@ -996,6 +996,7 @@ PY_DIRECT=(
   # platform-only import, because a Linux runner structurally cannot observe a
   # Windows-only import crash.
   hooks/test_hook_smoke.py
+  hooks/test_close_catchall_not_silent.py
   # block-raw-vault-git resolved a `cd` only when it was the first token of the
   # whole command, because it split statements on && || ; but not on a NEWLINE.
   # `set -e` on line 1 was enough to make the cd invisible, so the hook read the

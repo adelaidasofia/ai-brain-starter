@@ -731,6 +731,36 @@ def offsite_vault_warning(vault_root: Path, cwd: Path) -> str:
     )
 
 
+def build_crashed_after_signal_notice(matched: str, err: str) -> str:
+    """Fail LOUD when the hook dies AFTER deciding the user is closing.
+
+    The catch-all below exists so a hook bug never blocks the user, and that is
+    right. But it returned a passthrough, and a passthrough after a matched
+    close signal is indistinguishable from a healthy close: the user says
+    "bye", the cascade never runs, and nothing anywhere says why. That is the
+    same defect #534 fixed for the KNOWN refusal, left open for the UNKNOWN
+    one — and it is not theoretical. A NameError introduced while writing #534
+    took exactly this path, and every scenario looked quiet and fine until a
+    negative control caught it.
+
+    Only fires once a signal has matched. No signal means the hook has no
+    business speaking, and the passthrough stays.
+    """
+    return (
+        f"SESSION CLOSE detected (signal: {matched!r}) — but the close hook "
+        f"CRASHED before it could emit the cascade, so NOTHING has been "
+        f"written.\n\n"
+        f"  Error: {err}\n\n"
+        f"This is a bug in the hook itself, not in the vault. TELL THE USER "
+        f"PLAINLY that the automatic close did not run — do not report a "
+        f"normal close.\n\n"
+        f"Then close the session MANUALLY: write the session file, decisions "
+        f"and captures by hand per the vault's own close rule, and report the "
+        f"error above so it can be fixed. Re-running with "
+        f"CLOSING_SIGNAL_DEBUG=1 prints the full trace."
+    )
+
+
 def build_unscaffolded_vault_notice(
     matched: str,
     confidence: str,
@@ -1073,6 +1103,7 @@ narration.{_goal_clear_block(goal_condition)}"""
 
 def main() -> int:
     start = time.time()
+    signal_seen: dict[str, str | None] = {"matched": None}
     try:
         hook_input = read_hook_input()
         prompt = (hook_input.get("prompt") or "").strip()
@@ -1143,6 +1174,9 @@ def main() -> int:
         confidence, matched = classify_signal(
             prompt, packs, custom, suppress, custom_only
         )
+        # Visible to the catch-all below: once a signal matches, going silent
+        # on an unexpected error is itself a failure the user must see.
+        signal_seen["matched"] = matched
 
         # Hybrid: ambiguous matches OR no match get a Haiku second look
         if confidence in (None, "ambiguous"):
@@ -1236,6 +1270,15 @@ def main() -> int:
         return 0
     except Exception as e:  # never block the user on hook errors
         log_debug(f"unexpected error: {e!r}")
+        # Never block — but never go SILENT once a close signal has matched.
+        if signal_seen["matched"] is not None:
+            try:
+                emit_context(build_crashed_after_signal_notice(
+                    signal_seen["matched"], f"{type(e).__name__}: {e}"
+                ))
+                return 0
+            except Exception:  # notice itself failed — fall through, still never block
+                log_debug("failed to emit crash notice")
         emit_passthrough()
         return 0
 
