@@ -181,7 +181,17 @@ build_harness() {
     done
     echo 'DRY_RUN=0'
     echo 'CORPORATE_PROFILE=0'   # inert on the post-fix code; required under set -u on the pre-fix code
-    awk '/^if ! python3 -c "import sys; assert sys.version_info >= \(3,10\)" 2>\/dev\/null; then$/,/^fi$/' "$src"
+    # The section resolves its interpreter through $PY, which is set at the top
+    # of bootstrap.sh -- far outside the range extracted here. Seed it, and pull
+    # in the picker the section re-runs after an install. extract_fn yields
+    # nothing on the pre-fix source, which never mentions either; harmless there.
+    echo 'PY="python3"'
+    extract_fn pick_python "$src"
+    # Anchored on the version assertion rather than on the interpreter token, so
+    # the SAME builder still extracts the section from the pre-fix source (which
+    # spells it `python3`) and the post-fix one (which spells it `"$PY"`). That
+    # dual match is what keeps check 5's negative control honest.
+    awk '/^if ! .* -c "import sys; assert sys.version_info >= \(3,10\)" 2>\/dev\/null; then$/,/^fi$/' "$src"
     echo 'have python3 && ok "python3 $(python3 --version | awk "{print \$2}")"'
     awk '/^if ! have node; then$/,/^fi$/' "$src"
     echo 'have node && ok "node $(node --version)"'
@@ -335,7 +345,8 @@ echo "PASS: negative control confirmed against the frozen pre-fix fixture (27d52
 # back to the same install_*_userspace() functions on that branch ──
 grep -q 'is_linux && have_sudo' "$BOOTSTRAP" \
   || fail "6: no section gates its Linux admin path on 'is_linux && have_sudo'"
-PY_BLOCK="$(awk '/^if ! python3 -c "import sys; assert sys.version_info >= \(3,10\)" 2>\/dev\/null; then$/,/^fi$/' "$BOOTSTRAP")"
+# Interpreter-token-agnostic, for the same reason as build_harness above.
+PY_BLOCK="$(awk '/^if ! .* -c "import sys; assert sys.version_info >= \(3,10\)" 2>\/dev\/null; then$/,/^fi$/' "$BOOTSTRAP")"
 NODE_BLOCK="$(awk '/^if ! have node; then$/,/^fi$/' "$BOOTSTRAP")"
 printf '%s' "$PY_BLOCK"   | grep -q 'is_linux && have_sudo' || fail "6: the Python section does not gate on is_linux && have_sudo"
 printf '%s' "$NODE_BLOCK" | grep -q 'is_linux && have_sudo' || fail "6: the Node section does not gate on is_linux && have_sudo"

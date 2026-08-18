@@ -201,6 +201,7 @@ INTEGRATION_TESTS=(
   test_bootstrap_optional_packs_soft_fail
   test_bootstrap_corporate_profile
   test_bootstrap_userspace_fallback
+  test_bootstrap_python_discovery
   test_preflight_git_and_it_request
   test_remediate_runaway_procs
   test_scan_prior_single_instance
