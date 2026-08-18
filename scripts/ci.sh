@@ -995,6 +995,14 @@ PY_DIRECT=(
   # platform-only import, because a Linux runner structurally cannot observe a
   # Windows-only import crash.
   hooks/test_hook_smoke.py
+  # block-raw-vault-git resolved a `cd` only when it was the first token of the
+  # whole command, because it split statements on && || ; but not on a NEWLINE.
+  # `set -e` on line 1 was enough to make the cd invisible, so the hook read the
+  # harness cwd and allowed raw git straight into the vault. The control also
+  # pins the fail-open half: _targets_vault_repo allows when it cannot resolve a
+  # repo, so honouring an unresolvable `cd` (now reachable, since newlines split)
+  # would turn a blocked op into an allowed one.
+  hooks/test_block_raw_vault_git_cd.py
 )
 dormant_py=()
 while IFS= read -r -d '' f; do
