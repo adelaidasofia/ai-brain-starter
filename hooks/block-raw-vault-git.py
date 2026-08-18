@@ -176,7 +176,7 @@ def _targets_vault_repo(cwd: str) -> bool:
     try:
         out = subprocess.run(
             ["git", "-C", cwd, "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
         )
     except Exception:
         return False
@@ -213,7 +213,7 @@ def _git_dir_is_vault(git_dir: str) -> bool:
     try:
         out = subprocess.run(
             ["git", "--git-dir", git_dir, "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
             cwd=git_dir if os.path.isdir(git_dir) else None,
         )
         if out.returncode == 0 and out.stdout.strip():

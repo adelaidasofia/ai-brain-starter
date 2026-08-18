@@ -55,7 +55,9 @@ MUTATE = "git add -A"
 
 def _init_repo(path: str) -> None:
     os.makedirs(path, exist_ok=True)
-    subprocess.run(["git", "init", "-q", path], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "init", "-q", path], check=True,
+                   capture_output=True, text=True,
+                   encoding="utf-8", errors="replace")
 
 
 def _blocked(cmd: str, cwd: str, vault: str) -> bool:
@@ -66,7 +68,7 @@ def _blocked(cmd: str, cwd: str, vault: str) -> bool:
         input=json.dumps({"tool_name": "Bash",
                           "tool_input": {"command": cmd},
                           "cwd": cwd}),
-        capture_output=True, text=True, env=env,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
     )
     return p.returncode != 0 or "BLOCKED" in (p.stdout + p.stderr)
 
