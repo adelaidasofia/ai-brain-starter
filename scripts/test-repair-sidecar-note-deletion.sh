@@ -94,7 +94,7 @@ files_on_disk()  { find "$1/$2" -type f 2>/dev/null | wc -l | tr -d ' '; }
 echo "--- 1. full chain: relocate → auto-commit → push → repair -----------------"
 V1="$ROOT/v1"; S1="$ROOT/side1"; R1="$ROOT/remote1.git"
 make_vault "$V1" 4
-git init --bare -q "$R1"
+git init --bare -q -b main "$R1"
 gitq "$V1" remote add origin "$R1"
 gitq "$V1" push -u origin main
 
@@ -161,14 +161,16 @@ echo "--- 2. the SECOND computer: only ever pulled the deletion ----------------
 V2="$ROOT/v2"; S2="$ROOT/side2"; R2="$ROOT/remote2.git"
 VX="$ROOT/vx"
 make_vault "$VX" 3
-git init --bare -q "$R2"
+git init --bare -q -b main "$R2"
 gitq "$VX" remote add origin "$R2"; gitq "$VX" push -u origin main
 old_style_relocate "$VX" "$SESS" "$ROOT/sidex"
 auto_snapshot "$VX"; gitq "$VX" push origin main
 # the second computer never had the sidecar — that is the whole point of this case
-rm -rf "$ROOT/sidex"
+rm -rf "${ROOT:?}/sidex"
 
 git clone -q "$R2" "$V2"
+[ -f "$V2/note.md" ] && pass "second-computer clone actually checked out a tree" \
+  || fail "second-computer clone produced no checkout — everything below would test nothing"
 gitq "$V2" config user.email "t@t.test"; gitq "$V2" config user.name "Test"
 gitq "$V2" config commit.gpgsign false
 
@@ -231,7 +233,7 @@ out="$(bash "$SUT" "$VC" --sidecar "$SC" 2>&1)"; rc=$?
 
 # a person deleting a notes folder on purpose
 VH="$ROOT/byhand"; make_vault "$VH" 3
-rm -rf "$VH/$SESS"; auto_snapshot "$VH"
+rm -rf "${VH:?}/$SESS"; auto_snapshot "$VH"
 out="$(bash "$SUT" "$VH" --sidecar "$ROOT/nosidecar" 2>&1)"; rc=$?
 [ "$rc" = "0" ] && pass "a deliberate deletion by hand is NOT flagged" \
                 || fail "flagged a hand deletion (rc=$rc): $out"
