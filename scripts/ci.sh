@@ -73,6 +73,15 @@
 #                           subprocess.run(). Shipped twice: #313 (write side) and
 #                           #430 (read side, memory stranded outside the vault).
 #                           Content-pinned in scripts/utf8-subprocess-baseline.txt.
+#   (e7) ps1 UTF-8 BOM    - scripts/check-ps1-bom.sh fails a *.ps1 that does not
+#                           start with EF BB BF. Windows PowerShell 5.1 reads a
+#                           BOM-less .ps1 as the console ANSI code page instead of
+#                           UTF-8 and dies on the first non-ASCII byte. lint.yml
+#                           holds the enforcing copy but used to hold the ONLY
+#                           copy, as an inline loop no local command could run -
+#                           so the class was caught one full CI round-trip AFTER
+#                           the push. Both callers now run the same script and
+#                           scripts/test_ps1_bom_gate.py pins that (2026-08-19).
 #   (f) Python unit tests - the scripts/test_*.py stdlib suites (the claude-router
 #                           structured-envelope gate, the graph-liveness
 #                           STAMP-GREEN-WHILE-GONE guard). Gate (a) py_compiles them,
@@ -86,12 +95,15 @@
 #                           Unlike (c)/(d)/(e) it has no dedicated CI job, so it runs
 #                           in BOTH CI and the local pre-push gate (like (a) and (b)).
 #
-# It does NOT run the OTHER pure-lint jobs (bash -n, pwsh ParseFile, BOM, em-dash,
+# It does NOT run the OTHER pure-lint jobs (bash -n, pwsh ParseFile, em-dash,
 # JSON, privacy, references, no-remote-pipe-install). Those stay as their own
-# lint.yml jobs - they are lint, not the unit/type gate. Two are exceptions,
+# lint.yml steps - they are lint, not the unit/type gate. Three are exceptions,
 # enforced pre-push because they are cross-platform CORRECTNESS gates, not style:
-# the shell static-analysis gate (the GNU-vs-BSD `stat` mtime class) and the UTF-8
-# console guard (the Windows cp1252 print-crash class).
+# the shell static-analysis gate (the GNU-vs-BSD `stat` mtime class), the UTF-8
+# console guard (the Windows cp1252 print-crash class), and the .ps1 BOM gate
+# (the Windows PS 5.1 parse-crash class). Each of the three is a defect a Linux
+# runner or a Mac laptop structurally cannot observe at RUN time, so a byte/static
+# assertion is the only thing that can see it before a user does.
 #
 # Environment the integration tests need (lint.yml provides these in the `ci`
 # job; this script adds a non-invasive fallback so a fresh `bash scripts/ci.sh`
@@ -965,6 +977,28 @@ echo "==> (e6) py3.9 annotation parity: $PY scripts/check-py39-annotations.py"
 "$PY" scripts/check-py39-annotations.py --self-test >/dev/null
 "$PY" scripts/check-py39-annotations.py
 
+# ---- (e7) UTF-8 BOM on *.ps1 -----------------------------------------------
+# Windows PowerShell 5.1 reads a BOM-less .ps1 as the console ANSI code page,
+# not UTF-8, so the first non-ASCII byte decodes wrong and the parser dies on a
+# file that is valid UTF-8 everywhere else. A Linux runner cannot observe that
+# crash, which is why this is a byte assertion rather than a parse.
+#
+# lint.yml carries the ENFORCING copy, but until now that was the ONLY copy: the
+# rule was an inline shell loop in the workflow, unreachable from any local
+# command. So a BOM-less .ps1 passed a full green `bash scripts/ci.sh` and went
+# red only after a push - a whole CI round-trip per occurrence (measured
+# 2026-08-19 on tests/integration/test_bootstrap_ps1_slash_commands.ps1).
+# Both callers now run scripts/check-ps1-bom.sh, so neither can drift; the
+# delegation itself is pinned by scripts/test_ps1_bom_gate.py.
+#
+# Unlike (c)/(d)/(e) this is NOT skipped in CI. Those skip because a dedicated
+# lint.yml job owns them and double-running muddies attribution; here the cost
+# is a millisecond byte read over 14 files, and the local gate is the entire
+# point. Self-test first (proves the check still bites), then the fleet.
+echo "==> (e7) ps1 UTF-8 BOM: bash scripts/check-ps1-bom.sh"
+bash scripts/check-ps1-bom.sh --self-test >/dev/null
+bash scripts/check-ps1-bom.sh
+
 # ---- (f) Python unit tests (scripts/ + hooks/ + tests/) --------------------
 # Every Python unit suite in the repo, run under the SAME interpreter as the rest
 # of the gate. Gate (a) py_compiles them (proves they parse); this proves their
@@ -1058,4 +1092,4 @@ done
 echo "    OK - ${#PY_DIRECT[@]} hooks/+tests/ direct suite(s) passed; dormancy invariant clean"
 
 echo
-echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed] + home-hook deploy [passed] + subprocess decode [passed] + py3.9 annotation parity [passed]."
+echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed] + home-hook deploy [passed] + subprocess decode [passed] + py3.9 annotation parity [passed] + ps1 UTF-8 BOM [passed]."
