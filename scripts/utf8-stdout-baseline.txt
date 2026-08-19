@@ -99,9 +99,6 @@
 028b9d634e09a6515f64176895cb35fc1415eae2ab1b74692aefa4a96da27e4f SEV-3-doc-only hooks/_lib/secret_patterns.py
 ed1d68dba02ab76c99907e8efc27ac0aac8c98a14dad261da73fa5d8e1610369 SEV-3-doc-only hooks/_lib/template_purity.py
 8dea18caf79e387a2fbeddca90403ef8af0d0ff1e6395e3b1f00e1b396491a4b SEV-3-doc-only hooks/inject-instinct-context.py
-064b231a9112d29447473a50f5eb90803a242a2ab85d8c18fdfe0c84124a3015 SEV-3-doc-only hooks/lint-vault-frontmatter.py
-462d557ee64a4292e8f49e6081b2195df0607cb8f8d8cc46393aa95edae3c208 SEV-3-doc-only hooks/pre-write-settings-lint.py
-2de0609b6f6e570a51c57e2eca4d47f0441ad40cd2d1a39ab9c1320426565486 SEV-3-doc-only hooks/test_scan_prior_sessions.py
 
 # ---- SEV-4-json-encoded  (42 file(s)) ----
 02627cdfcde451edc91149f9092154b2b846cb1a19d30f1f5ca01d66258791b2 SEV-4-json-encoded hooks/block-branch-switch-with-untracked-build.py
@@ -111,20 +108,16 @@ b647243fdf0a358d46a6a79b0bf7f817ee121f68d5d685fabe4b0ee2a93af94d SEV-4-json-enco
 9384c96d288eb31a5f59cc7e985ec4b79e723309595d48a09a87e30d7907c5eb SEV-4-json-encoded hooks/check-fabricated-verification.py
 25d963d25e1e2e6844a35133bbad1d0aad8d03de424e29d4a406a67cb1d4c1cb SEV-4-json-encoded hooks/check-rule-conflicts-on-write.py
 85006d7e25f42ba787b2ce616bd1c71590c3990f89f3153a6f958156c93029ed SEV-4-json-encoded hooks/coach-auto-prescribe-on-journal.py
-e34a230865351b20e13bfc64cd8c67f06931fac79f8129beb84471cce434cb58 SEV-4-json-encoded hooks/first-week-checkin.py
 a04ec6c84be6756813f4cde517ff379338b57ec9bf4c9c4172172951e62f91c3 SEV-4-json-encoded hooks/imessage-mcp-auto-export.py
 7eea06988957bbacac62bc43c9ebcb8067cc1cadd5184375f6d60d46ee99c4cc SEV-4-json-encoded hooks/inject-best-of-best-on-consulting.py
 33804a89b8c6ac80575f93ea2a5e0f9f6e47aeb3bb6e8dab0413729fd3fc8c94 SEV-4-json-encoded hooks/inject-love-language-context.py
 439b81f59712732d566301a7a1fe2b7f4f61c8f49a48c56a2b45f69a331c3087 SEV-4-json-encoded hooks/inject-meeting-workflow-on-trigger.py
 ff65d244e721a3952150a2faf259728a64309c5855b71be54a0096972c3080a7 SEV-4-json-encoded hooks/list-wip-stashes-on-session-start.py
-70309bf2345e98a287851ef5ce9a36ecb1add36480c5bc45f48c3ffa457eac33 SEV-4-json-encoded hooks/log-skill-usage.py
-4f562c8d9a91119be9b6c1d99835014945820592b6cd4f6bc3fd2f357bf05a12 SEV-4-json-encoded hooks/migrate-to-user-level.py
 adad427e89295283853dd1dfb9963e698eb45fe5c4ca3c302adce4a3d47b5b35 SEV-4-json-encoded hooks/nudge-checkpoint-after-pytest-pass.py
 056a2f7966b8c4f75a62e80be906bd899956f9871a92eb98738e262988bc8dc5 SEV-4-json-encoded hooks/reconcile-worktree-shared.py
 d293427274a02ef33d15ec50b17860aa305405adc9f372fde46a46454267becd SEV-4-json-encoded hooks/relocate-watch-surface.py
 8ed780b62186a0142813b71fb610ce0a1d2650ff900766fb08c4236ea1132f41 SEV-4-json-encoded hooks/route-suggest.py
 f8528465aef417373bf26591b9fcc7d0b76814d19b39142b4908ddaa1d003347 SEV-4-json-encoded hooks/session-start-context.py
-ab96a2f6b21c756727282b058c6bd99b417badf6db40c42f88a58de1998d7fbe SEV-4-json-encoded hooks/session-turn-counter.py
 58eaf3668330264cdb9095dda2c7a425e3f69009c5ecbb1d764a6f40340f7ca8 SEV-4-json-encoded hooks/surface-connector-liveness.py
 64eae7b79237dab8b0b8b666b5a7d8b0a26b7c38bafd18313556c790ddf622bc SEV-4-json-encoded hooks/surface-dependabot-backlog.py
 6a55aed5c658a5361501e1144b26c501d95fd1f359383af4499e8894be76ff93 SEV-4-json-encoded hooks/surface-orphan-claude-branches.py

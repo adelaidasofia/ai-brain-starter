@@ -281,6 +281,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # A cp1252 Windows console raises UnicodeEncodeError the moment this prints a
+    # non-ASCII character, and the hook dies with no legible cause
+    # (ai-brain-starter#313). Idempotent; a no-op on an already-UTF-8 console.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     try:
         main()
     except Exception:
