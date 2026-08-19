@@ -235,6 +235,17 @@ foreach ($root in $searchRoots) {
 if ($ps1Files.Count -eq 0) {
   Ok "No .ps1 files to check"
 } else {
+  # The BOM byte check stays NATIVE here on purpose, and is the one place in
+  # this repo that duplicates scripts/check-ps1-bom.sh.
+  #
+  # This script's whole job is to run on a Windows box - `pwsh diagnose.ps1
+  # -Vault C:\path` - and such a box need not have bash at all. Delegating to a
+  # .sh would break the diagnostic on the exact platform the BOM rule exists to
+  # protect. No .ps1 in this repo shells out to bash; the established idiom for
+  # sh/ps1 parity here is a shared data source plus a test that reads both (see
+  # sync-vault-scripts.ps1), which is what scripts/test_ps1_bom_gate.py does:
+  # it pins these three bytes to the shell implementation's, and fails if either
+  # side changes the rule alone or reintroduces a cap on the enumeration.
   $bomFail = 0; $emFail = 0; $parseFail = 0
   foreach ($f in $ps1Files) {
     $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
