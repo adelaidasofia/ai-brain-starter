@@ -9,6 +9,28 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-18: everything felt slower on Windows, and now it is about twice as fast
+
+**Who this affects:** Windows users, most of all anyone on a work laptop with antivirus running. Mac and Linux are unaffected.
+
+Before Claude runs a tool for you, it runs a set of small background checks. They are the guards that keep a secret out of a config file, stop a command being run in the middle of a git operation, and so on. Each one is quick. There are a lot of them, and they all run before you see anything happen.
+
+On Windows they were costing twice what they should have. The reason turned out to be embarrassing and easy to miss: the small program that runs each check was itself a Python program, and it started a *second* Python program to do the actual check. Starting Python is the expensive part, especially with antivirus watching every file it opens, so every check paid that price twice. Measured on a four-core Windows 11 laptop with two antivirus products running: 97 milliseconds to run a check directly, 189 through the wrapper. Multiplied across every check, that was about 1.6 seconds of waiting before every single tool call, and roughly 3 seconds at the start of a session.
+
+Two things were fixed.
+
+**The wrapper now does the work itself** instead of handing it to a second copy of Python. That is the bigger half. Nothing about what the checks can do has changed: one that blocks a dangerous action still blocks it, one that crashes is still ignored quietly instead of shouting at you, and what each one prints still comes back on the same channel it always did. That is not a claim, it is tested: 28 different situations are run through both the old and the new version and the results have to come out identical, down to the byte.
+
+**And the Python it starts is now worked out once, when you install, instead of on every check.** Windows ships a small helper called `py` whose whole job is to look up where Python actually lives. Looking that up takes about 21 milliseconds, and it was being looked up again for every check, forever, to get the same answer. The installer now works it out once and writes the real answer down.
+
+That second change had to be careful, because Windows may hand these commands to any of four different shells, and they disagree about what a file path looks like. Git Bash, for instance, silently eats the backslashes. So the installer does not guess: it runs the exact command it is about to write, in every shell it can find on your machine, and if any of them will not run it, it keeps the old safe version and skips the optimization. You get the speed when it is provably safe and the status quo when it is not.
+
+**Together: roughly half the waiting, gone.** The wrapper change on its own, measured on a Mac over 40 runs, took the per-check cost from 34 ms to 19 ms, which is one Python start exactly as intended. A Mac starts Python in about a sixth of the time an antivirus-laden Windows laptop does, so on the machines this was reported from the same change is worth far more, and the second fix takes another 21 ms per check on top of it.
+
+**What you should do:** update once and re-run the installer, so your settings pick up the resolved path. Tell Claude "update the ai-brain-starter skill". Nothing else changes, and re-running is safe as many times as you like.
+
+---
+
 ## 2026-08-15: the setup could stop halfway and tell you it was finished
 
 **Who this affects:** anyone whose install ended early, especially if you never reached the journaling interview or your CLAUDE.md came out mostly empty.

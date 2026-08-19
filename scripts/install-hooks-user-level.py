@@ -976,11 +976,17 @@ def platformize_template_for_windows(template: dict) -> tuple[dict, list[str]]:
     prompt for Windows users. The one shape they all parse identically is a
     bare PATH command with quoted arguments:
 
-        py -3 "<abs>/scripts/hook_runner.py" --fallback silent "<abs>/<hook>.py"
+        <interpreter> "<abs>/scripts/hook_runner.py" --fallback silent "<abs>/<hook>.py"
+
+    <interpreter> comes from _windows_launcher(): the absolute path `py -3`
+    resolves to when that path can be PROVEN to parse bare in every shell on
+    this machine, else the bare `py -3` / `python` / `python3` it came from.
+    See that function for why the spelling is not a free choice.
 
     hook_runner.py reproduces the masking semantics of the shell forms (see
     its docstring): missing script -> fallback JSON; exit 2 -> real block
-    propagates; any other failure -> fallback JSON.
+    propagates; any other failure -> fallback JSON. It runs the hook IN ITS OWN
+    PROCESS: one interpreter per hook, never two (MYC-3877).
 
     Rules per command:
       - references a .sh script  -> OMIT (bash-only; reported to the caller)
