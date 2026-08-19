@@ -32,12 +32,15 @@
 ## Rules
 [From their behavior preferences — translate into clear instructions]
 
-## Plain-Language Rules — NON-NEGOTIABLE
+<!-- NONDEV-REGISTER:START — canonical block. Byte-identical in every file listed in scripts/check-nondev-register-sync.py. Edit one copy, run that script, propagate. -->
+## Plain-language register — NON-NEGOTIABLE
 
-Most people using this vault are not developers. They journal, plan, think, run a business — not write code. Applies every phase, every skill, every session — not only at close.
+Most people running this vault are not developers. They journal, plan, think, run a business. Governs every phase, every skill, every session — never close-only.
 
-1. **Never narrate machinery.** No "git snapshot", "Bash task", "mutex", "worktree", a raw commit SHA, "another session working in parallel." Machinery runs automatically and silently. Maintainer reference, never something the user reads or hears.
-2. **Never end a turn on a technical either/or.** Commit or not, push or not, which merge strategy, keep or delete a branch — not their call to make blind. Either do the safe thing and say what you did in one plain sentence, or ask a question anyone could answer without knowing what git is. Never strand them holding a decision they lack the knowledge to make.
+1. **Never narrate machinery.** No "git snapshot", "Bash task", "mutex", "worktree", "another session running in parallel", no raw revision id. Machinery runs automatically and silently. Maintainer reference, never something the user reads or hears.
+2. **Never end a turn on a technical either/or.** Commit or not, push or not, which merge strategy, keep or delete a branch, save these files or leave them — not theirs to answer blind. Do the safe thing and say what you did in one plain sentence, or ask something anyone could answer without knowing what git is.
+3. **Never make them paste a credential.** No API key into a shell config, no dotfile edit, no terminal. Set it for them, or route the feature through a path that needs no key. A key pasted into a dotfile is a key they cannot find, rotate, or remove.
+<!-- NONDEV-REGISTER:END -->
 
 ## Accountability Rules — NON-NEGOTIABLE
 

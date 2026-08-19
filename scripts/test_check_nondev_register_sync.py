@@ -1,30 +1,36 @@
 #!/usr/bin/env python3
 """Unit suite for scripts/check-nondev-register-sync.py.
 
-Proves the checker (a) is GREEN on the real shipped files today, and (b) is
-not vacuously green -- it actually catches every drift shape it exists to
-catch. A guard earns trust only by failing on the thing it catches, so every
-positive assertion below is paired with the negative control that would have
-shipped silently before this existed.
+The checker's whole job is to prove the non-dev register REACHES an installed
+vault. Its predecessor compared two repo files to each other and stayed green
+while the rule reached zero users, so the assertions that matter here are the
+REACH ones: the generated CLAUDE.md template is on no drift-check propagation
+scope, a home moved off a scope must fail, and a scope deleted from
+drift-check.sh must fail too.
 
-Run directly (the ci.sh gate globs scripts/test_*.py):
+Every positive assertion is paired with the negative control that would have
+shipped silently before this existed. Run directly (the ci.sh gate globs
+scripts/test_*.py):
     python3 scripts/test_check_nondev_register_sync.py
 """
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
-import sys
+import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _HERE = Path(__file__).resolve().parent
+_REPO = _HERE.parent
 
 
 def _load_checker():
-    """Load check-nondev-register-sync.py (hyphenated -> importlib) so we test
-    the SHIPPED module, not a copy. Mirrors test_skill_copy_drift.py's pattern."""
+    """Load check-nondev-register-sync.py (hyphenated -> importlib) so the tests
+    grade the SHIPPED module, not a copy."""
     path = _HERE / "check-nondev-register-sync.py"
     spec = importlib.util.spec_from_file_location("nondev_register_sync_under_test", path)
     assert spec is not None and spec.loader is not None, f"cannot load {path}"
@@ -35,35 +41,69 @@ def _load_checker():
 
 CHK = _load_checker()
 
-# A minimal but structurally realistic template section, matching what
-# claude-md-template.md actually ships, so edits to it exercise the real
-# heading/body-extraction logic rather than a toy fixture.
-GOOD_TEMPLATE = """# Memory
+REAL_DRIFT_TEXT = (_REPO / CHK.DRIFT_CHECK).read_text(encoding="utf-8")
 
-## Rules
-[From their behavior preferences]
+GOOD_BLOCK = (
+    f"{CHK.MARK_START} canonical -->\n"
+    "## Plain-language register — NON-NEGOTIABLE\n"
+    "\n"
+    "Governs every phase, every skill, every session.\n"
+    "\n"
+    "1. **Never narrate machinery.** No raw revision id.\n"
+    "2. **Never end a turn on a technical either/or.** Do the safe thing.\n"
+    "3. **Never make them paste a credential.** Set it for them.\n"
+    f"{CHK.MARK_END}"
+)
 
-## Plain-Language Rules — NON-NEGOTIABLE
-
-Most people using this vault are not developers. Applies every phase.
-
-1. **Never narrate machinery.** No jargon at them.
-2. **Never end a turn on a technical either/or.** Do the safe thing and say so.
-
-## Accountability Rules — NON-NEGOTIABLE
-
-You are not a yes-machine.
+# drift-check with Scopes A and B intact but the templates/rules source gone --
+# the shape of "someone deleted Scope C and D".
+DRIFT_WITHOUT_RULES_SCOPE = """#!/usr/bin/env bash
+STARTER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+if [[ -d "$STARTER_DIR/skills" ]]; then
+  for skill_dir in "$STARTER_DIR/skills"/*/; do :; done
+fi
+src="$STARTER_DIR/scripts/$name"
+extra="$STARTER_DIR/docs/CHANGELOG.md"
 """
 
-GOOD_SESSION_CLOSE = """# Session close protocol
 
-**Most people running this are not developers.** Plain-language register and the no-blind-technical-decision rule are promoted to CLAUDE.md (`## Plain-Language Rules — NON-NEGOTIABLE`) — always loaded, governs every phase, not just this one. The git/resource detail in the final step runs automatically and silently.
+def _run(repo_root: Path):
+    """(exit_code, combined_output) from one checker run."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = CHK.check(repo_root)
+    return rc, out.getvalue() + err.getvalue()
 
-## How it runs
-"""
+
+class ScopeParserTests(unittest.TestCase):
+    def test_parses_the_real_drift_check(self):
+        scopes = CHK.parse_propagation_scopes(REAL_DRIFT_TEXT)
+        self.assertGreaterEqual(len(scopes), CHK.MIN_EXPECTED_SCOPES, scopes)
+        self.assertTrue(
+            any(s.startswith("templates/rules") for s in scopes),
+            f"drift-check propagates templates/rules; parser saw {scopes}")
+
+    def test_rules_templates_are_covered(self):
+        scopes = CHK.parse_propagation_scopes(REAL_DRIFT_TEXT)
+        self.assertIsNotNone(
+            CHK.scope_covering("templates/rules/session-close.md", scopes))
+        self.assertIsNotNone(
+            CHK.scope_covering("templates/rules/session-start-checks.md", scopes))
+
+    def test_generated_claude_md_template_is_covered_by_nothing(self):
+        """The measured finding that started this: the generated template is on
+        NO propagation scope, so it reaches no existing install."""
+        scopes = CHK.parse_propagation_scopes(REAL_DRIFT_TEXT)
+        self.assertIsNone(
+            CHK.scope_covering("templates/generated/claude-md-template.md", scopes),
+            "if this ever passes, drift-check gained a scope for the generated "
+            "template and the NEW_INSTALL_COPIES comment needs re-measuring")
+
+    def test_parser_finds_nothing_in_an_empty_file(self):
+        self.assertEqual(CHK.parse_propagation_scopes(""), [])
 
 
-class NondevRegisterSyncTests(unittest.TestCase):
+class CheckerTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmp.name)
@@ -71,138 +111,107 @@ class NondevRegisterSyncTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _write(self, name: str, text: str) -> Path:
-        p = self.tmp / name
-        p.write_text(text, encoding="utf-8")
-        return p
+    def _repo(self, blocks=None, drift_text=REAL_DRIFT_TEXT, extra_files=()):
+        """A fixture repo carrying every declared copy of the block."""
+        blocks = blocks or {}
+        root = self.tmp / "repo"
+        (root / "scripts").mkdir(parents=True, exist_ok=True)
+        (root / CHK.DRIFT_CHECK).write_text(drift_text, encoding="utf-8")
+        for rel in tuple(CHK.HOMES) + tuple(CHK.NEW_INSTALL_COPIES) + tuple(extra_files):
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            body = blocks.get(rel, GOOD_BLOCK)
+            p.write_text(f"# heading\n\nintro\n\n{body}\n\ntail\n", encoding="utf-8")
+        return root
 
-    # --- positive: the real shipped files -----------------------------------
-    def test_real_shipped_files_pass(self):
-        rc = CHK.check(CHK.DEFAULT_TEMPLATE, CHK.DEFAULT_SESSION_CLOSE)
-        self.assertEqual(rc, 0,
-                          "the checker must be green against the files this repo actually ships")
+    # --- positive: the real shipped repo -------------------------------------
+    def test_real_repo_passes(self):
+        rc, out = _run(_REPO)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("drift-check scope source", out)
 
-    # --- positive: a minimal correct fixture also passes ---------------------
     def test_minimal_good_fixture_passes(self):
-        t = self._write("template.md", GOOD_TEMPLATE)
-        s = self._write("session-close.md", GOOD_SESSION_CLOSE)
-        self.assertEqual(CHK.check(t, s), 0)
+        rc, out = _run(self._repo())
+        self.assertEqual(rc, 0, out)
 
-    # --- negative: the rule vanished from the template entirely -------------
-    def test_rule_deleted_from_template_cannot_check(self):
-        no_rule = GOOD_TEMPLATE.replace(
-            "## Plain-Language Rules — NON-NEGOTIABLE\n\n"
-            "Most people using this vault are not developers. Applies every phase.\n\n"
-            "1. **Never narrate machinery.** No jargon at them.\n"
-            "2. **Never end a turn on a technical either/or.** Do the safe thing and say so.\n\n",
-            "",
-        )
-        self.assertNotIn("not developers", no_rule.lower())  # fixture sanity
-        t = self._write("template.md", no_rule)
-        s = self._write("session-close.md", GOOD_SESSION_CLOSE)
-        self.assertEqual(CHK.check(t, s), 2,
-                          "a template missing the rule anchor entirely must fail loud (2), never pass")
+    # --- REACH negatives -----------------------------------------------------
+    def test_home_moved_off_every_scope_fails(self):
+        """The exit criterion: the verifier fails if the rule leaves a
+        propagation scope."""
+        off_scope = "templates/generated/claude-md-template.md"
+        with mock.patch.object(CHK, "HOMES", (off_scope,)), \
+             mock.patch.object(CHK, "NEW_INSTALL_COPIES", ()):
+            rc, out = _run(self._repo())
+        self.assertEqual(rc, 1, out)
+        self.assertIn("REACH", out)
 
-    # --- negative: half the rule silently deleted (machinery-ban half) ------
-    def test_machinery_ban_half_deleted_fails(self):
-        half = GOOD_TEMPLATE.replace(
-            "1. **Never narrate machinery.** No jargon at them.\n", "")
-        t = self._write("template.md", half)
-        s = self._write("session-close.md", GOOD_SESSION_CLOSE)
-        self.assertEqual(CHK.check(t, s), 1)
+    def test_scope_deleted_from_drift_check_fails(self):
+        """Parsing drift-check rather than hardcoding a filename means deleting
+        the templates/rules scope is caught here, not discovered by a user."""
+        rc, out = _run(self._repo(drift_text=DRIFT_WITHOUT_RULES_SCOPE))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("REACH", out)
 
-    # --- negative: half the rule silently deleted (no-blind-decision half) --
-    def test_no_blind_decision_half_deleted_fails(self):
-        half = GOOD_TEMPLATE.replace(
-            "2. **Never end a turn on a technical either/or.** Do the safe thing and say so.\n",
-            "")
-        t = self._write("template.md", half)
-        s = self._write("session-close.md", GOOD_SESSION_CLOSE)
-        rc = CHK.check(t, s)
-        self.assertEqual(rc, 1)
+    # --- AGREE negative ------------------------------------------------------
+    def test_copies_that_disagree_fail(self):
+        drifted = GOOD_BLOCK.replace("Do the safe thing.", "Ask the user to choose.")
+        self.assertNotEqual(drifted, GOOD_BLOCK)  # fixture sanity
+        rc, out = _run(self._repo(
+            blocks={CHK.NEW_INSTALL_COPIES[0]: drifted}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("AGREE", out)
 
-    # --- negative: the incident's actual failure mode -- two diverging copies
-    def test_session_close_reverts_to_full_duplicate_fails(self):
-        # Someone pastes the old full paragraph back into session-close.md
-        # instead of leaving the pointer. This is the exact drift shape the
-        # task exists to prevent: two copies that will diverge.
-        duplicated = (
-            "# Session close protocol\n\n"
-            "**Most people running this are not developers.** They journal, plan, "
-            "think, run a business. Speak to them in plain language. Never narrate "
-            "machinery — \"git snapshot\", \"Bash task\", \"mutex\", \"worktree\" — "
-            "at them.\n\n## How it runs\n"
-        )
-        t = self._write("template.md", GOOD_TEMPLATE)
-        s = self._write("session-close.md", duplicated)
-        rc = CHK.check(t, s)
-        self.assertEqual(rc, 1,
-                          "a full duplicate copy in session-close.md must fail, "
-                          "not silently coexist with the promoted rule")
+    def test_second_home_that_disagrees_fails(self):
+        drifted = GOOD_BLOCK.replace("every phase", "the close phase")
+        rc, out = _run(self._repo(blocks={CHK.HOMES[1]: drifted}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("AGREE", out)
 
-    # --- negative: pointer removed entirely, nothing left behind ------------
-    def test_session_close_pointer_removed_fails(self):
-        stripped = "# Session close protocol\n\n## How it runs\n"
-        t = self._write("template.md", GOOD_TEMPLATE)
-        s = self._write("session-close.md", stripped)
-        self.assertEqual(CHK.check(t, s), 1)
+    # --- INTACT negatives ----------------------------------------------------
+    def test_each_pin_deleted_from_every_copy_fails(self):
+        removals = {
+            "narrate machinery": "1. **Never narrate machinery.** No raw revision id.\n",
+            "technical either/or":
+                "2. **Never end a turn on a technical either/or.** Do the safe thing.\n",
+            "paste a credential":
+                "3. **Never make them paste a credential.** Set it for them.\n",
+            "every phase": "Governs every phase, every skill, every session.\n",
+        }
+        for pin, line in removals.items():
+            with self.subTest(pin=pin):
+                gutted = GOOD_BLOCK.replace(line, "")
+                self.assertNotIn(pin, gutted.lower())  # fixture sanity
+                blocks = {rel: gutted
+                          for rel in tuple(CHK.HOMES) + tuple(CHK.NEW_INSTALL_COPIES)}
+                rc, out = _run(self._repo(blocks=blocks))
+                self.assertEqual(rc, 1, out)
+                self.assertIn("INTACT", out)
 
-    # --- negative: pointer survives a template rename but goes STALE --------
-    def test_stale_pointer_after_heading_rename_fails(self):
-        renamed = GOOD_TEMPLATE.replace(
-            "## Plain-Language Rules — NON-NEGOTIABLE",
-            "## Communication Register Rules — NON-NEGOTIABLE",
-        )
-        t = self._write("template.md", renamed)
-        s = self._write("session-close.md", GOOD_SESSION_CLOSE)  # still names the OLD heading
-        rc = CHK.check(t, s)
-        self.assertEqual(rc, 1,
-                          "a pointer naming a heading that no longer exists must fail, "
-                          "not pass because the anchor sentence alone still matches")
+    # --- CANNOT CHECK (fail loud, never a silent pass) -----------------------
+    def test_missing_drift_check_cannot_check(self):
+        root = self._repo()
+        (root / CHK.DRIFT_CHECK).unlink()
+        rc, out = _run(root)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("CANNOT CHECK", out)
 
-    # --- negative: ambiguous anchor (two sections both look like the rule) --
-    def test_duplicate_anchor_in_template_cannot_check(self):
-        doubled = GOOD_TEMPLATE + (
-            "\n## Some Other Section\n\nAlso mentions not developers by accident.\n"
-        )
-        t = self._write("template.md", doubled)
-        s = self._write("session-close.md", GOOD_SESSION_CLOSE)
-        self.assertEqual(CHK.check(t, s), 2)
+    def test_unparseable_drift_check_cannot_check(self):
+        rc, out = _run(self._repo(drift_text="#!/usr/bin/env bash\nexit 0\n"))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("propagation source", out)
 
-    # --- fail loud on unusable input ------------------------------------------
-    def test_missing_template_file_exits_2(self):
-        s = self._write("session-close.md", GOOD_SESSION_CLOSE)
-        rc = CHK.check(self.tmp / "does-not-exist.md", s)
-        self.assertEqual(rc, 2)
+    def test_block_missing_from_a_declared_copy_cannot_check(self):
+        rc, out = _run(self._repo(blocks={CHK.HOMES[0]: "no markers here"}))
+        self.assertEqual(rc, 2, out)
+        self.assertIn("CANNOT CHECK", out)
 
-    def test_missing_session_close_file_exits_2(self):
-        t = self._write("template.md", GOOD_TEMPLATE)
-        rc = CHK.check(t, self.tmp / "does-not-exist.md")
-        self.assertEqual(rc, 2)
-
-    # --- fail loud on a non-UTF-8 file, not an unhandled traceback -----------
-    # read_text(encoding="utf-8") raises UnicodeDecodeError, a ValueError
-    # subclass -- NOT an OSError. A bare `except OSError` would let this
-    # propagate as an unhandled exception instead of a clean exit 2.
-    def test_non_utf8_template_exits_2_not_traceback(self):
-        t = self.tmp / "template.md"
-        t.write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
-        s = self._write("session-close.md", GOOD_SESSION_CLOSE)
-        rc = CHK.check(t, s)
-        self.assertEqual(rc, 2)
-
-    def test_non_utf8_session_close_exits_2_not_traceback(self):
-        t = self._write("template.md", GOOD_TEMPLATE)
-        s = self.tmp / "session-close.md"
-        s.write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
-        rc = CHK.check(t, s)
-        self.assertEqual(rc, 2)
+    def test_non_utf8_input_cannot_check(self):
+        root = self._repo()
+        (root / CHK.HOMES[0]).write_bytes(b"\xff\xfe not utf-8 \x00")
+        rc, out = _run(root)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("CANNOT CHECK", out)
 
 
 if __name__ == "__main__":
-    for _stream in (sys.stdout, sys.stderr):
-        try:
-            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
-        except (AttributeError, ValueError):
-            pass
     unittest.main(verbosity=2)

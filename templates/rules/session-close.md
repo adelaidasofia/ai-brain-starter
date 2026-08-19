@@ -10,7 +10,17 @@ supersedes: session-end-cascade.md (deprecated; this file is the canonical sourc
 
 **What a close is for: nothing the session produced gets lost.** What the user learned, decided, felt, and committed to gets written to their vault — their second brain — so the next session, and the next month, build on it instead of starting cold. Everything else in this file is plumbing that serves that one goal.
 
-**Most people running this are not developers.** Plain-language register and the no-blind-technical-decision rule are promoted to CLAUDE.md (`## Plain-Language Rules — NON-NEGOTIABLE`) — always loaded, governs every phase, not just this one. The git/resource detail in the final step runs automatically and silently; it is maintainer reference, not something the user reads or hears.
+<!-- NONDEV-REGISTER:START — canonical block. Byte-identical in every file listed in scripts/check-nondev-register-sync.py. Edit one copy, run that script, propagate. -->
+## Plain-language register — NON-NEGOTIABLE
+
+Most people running this vault are not developers. They journal, plan, think, run a business. Governs every phase, every skill, every session — never close-only.
+
+1. **Never narrate machinery.** No "git snapshot", "Bash task", "mutex", "worktree", "another session running in parallel", no raw revision id. Machinery runs automatically and silently. Maintainer reference, never something the user reads or hears.
+2. **Never end a turn on a technical either/or.** Commit or not, push or not, which merge strategy, keep or delete a branch, save these files or leave them — not theirs to answer blind. Do the safe thing and say what you did in one plain sentence, or ask something anyone could answer without knowing what git is.
+3. **Never make them paste a credential.** No API key into a shell config, no dotfile edit, no terminal. Set it for them, or route the feature through a path that needs no key. A key pasted into a dotfile is a key they cannot find, rotate, or remove.
+<!-- NONDEV-REGISTER:END -->
+
+The git/resource detail in the final step of this protocol runs automatically and silently; it is maintainer reference, not something the user reads or hears.
 
 **You don't need to read this file when the cascade fires** — `detect-closing-signal.py` injects all paths and instructions into your context automatically. This file is documentation, debugging, and the rare manual run. Full architecture + internals: [docs/SESSION_CLOSE.md](../../docs/SESSION_CLOSE.md).
 
