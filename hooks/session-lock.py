@@ -395,7 +395,7 @@ def _flock(lock_path):
     try:
         try:
             os.makedirs(os.path.dirname(sidecar), exist_ok=True)
-            f = open(sidecar, "a+")
+            f = open(sidecar, "ab+")
         except OSError:
             yield
             return
@@ -995,7 +995,7 @@ def _lock_path_from_cache(session_id):
     if not session_id:
         return ""
     try:
-        with open(_cache_path(session_id), "r", encoding="utf-8") as f:
+        with open(_cache_path(session_id), "r", encoding="utf-8", errors="replace") as f:
             return f.read().strip()
     except OSError:
         return ""

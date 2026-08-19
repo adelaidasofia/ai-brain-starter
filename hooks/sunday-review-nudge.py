@@ -49,7 +49,7 @@ def resolve_log_path() -> Path | None:
 
 def fired_recently(log: Path, cutoff: datetime) -> bool:
     try:
-        with log.open() as f:
+        with log.open(encoding="utf-8", errors="replace") as f:
             for line in f:
                 try:
                     rec = json.loads(line)

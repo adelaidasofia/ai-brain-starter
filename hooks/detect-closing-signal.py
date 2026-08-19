@@ -162,7 +162,7 @@ def load_language_packs(langs: list[str]) -> dict:
             log_debug(f"language pack not found: {path}")
             continue
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
         except (json.JSONDecodeError, OSError) as e:
             log_debug(f"failed to load {path}: {e}")
             continue
@@ -197,7 +197,7 @@ def load_user_custom_signals(vault_root: Path) -> list[str]:
     if not claude_md.is_file():
         return []
     try:
-        text = claude_md.read_text(encoding="utf-8")
+        text = claude_md.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
     # Look for either YAML frontmatter array or inline list
@@ -226,7 +226,7 @@ def load_user_suppress_signals(vault_root: Path) -> list[str]:
     if not claude_md.is_file():
         return []
     try:
-        text = claude_md.read_text(encoding="utf-8")
+        text = claude_md.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
     match = re.search(
@@ -258,7 +258,7 @@ def load_user_custom_only(vault_root: Path) -> bool:
     if not claude_md.is_file():
         return False
     try:
-        text = claude_md.read_text(encoding="utf-8")
+        text = claude_md.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
     match = re.search(
@@ -429,7 +429,7 @@ def derive_worktree(cwd: Path) -> str:
     git_file = cwd / ".git"
     if git_file.is_file():
         try:
-            text = git_file.read_text(encoding="utf-8")
+            text = git_file.read_text(encoding="utf-8", errors="replace")
             m2 = re.search(r"worktrees/([^/\s]+)", text)
             if m2:
                 return m2.group(1).strip()
@@ -503,7 +503,7 @@ def count_user_messages(transcript_path: str | None) -> int:
         return 99
     count = 0
     try:
-        with p.open("r", encoding="utf-8") as f:
+        with p.open("r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -570,7 +570,7 @@ def active_session_goal(transcript_path: str | None) -> str | None:
         return None
     goal: str | None = None
     try:
-        with p.open("r", encoding="utf-8") as f:
+        with p.open("r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 if _GOAL_CMD not in line:
                     continue
@@ -602,7 +602,7 @@ def list_decisions_with_empty_outcome(meta_dir: Path) -> list[str]:
     out = []
     for path in sorted(decisions_dir.glob("*.md")):
         try:
-            text = path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         # Match `Outcome:` followed only by whitespace or a placeholder marker
