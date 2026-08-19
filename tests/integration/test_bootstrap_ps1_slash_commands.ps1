@@ -1,4 +1,4 @@
-# Regression test for bootstrap.ps1's slash-command install step.
+﻿# Regression test for bootstrap.ps1's slash-command install step.
 #
 # Bug class: ARTIFACT-WITHOUT-ACTIVATION, Windows leg. bootstrap.sh has copied
 # commands/*.md into ~/.claude/commands/ since the 2026-05-14 install report
