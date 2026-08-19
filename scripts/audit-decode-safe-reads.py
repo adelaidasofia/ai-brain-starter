@@ -57,6 +57,11 @@ import ast
 import sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "hooks"))
+
+from _lib.safe_read import safe_read_text  # noqa: E402
+
 # Handlers that genuinely catch a UnicodeDecodeError.
 DECODE_SAFE = {
     "UnicodeDecodeError",
@@ -233,11 +238,19 @@ def audit_source(src: str) -> dict:
 
 
 def audit_file(path: Path) -> dict:
-    try:
-        src = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        return {"violations": [], "unguarded": [], "error": f"unreadable: {exc}"}
-    out = audit_source(src)
+    # Through the shared bounded reader, because this recursively walks a tree
+    # that can live on a cloud-synced path — the same rule this repo enforces on
+    # every other recursive content walker, and one a guard has no standing to
+    # exempt itself from. A read that did not succeed is an ERROR, never an
+    # empty file that scans clean.
+    result = safe_read_text(path, timeout=5.0, max_bytes=2_000_000, errors="replace")
+    if not result.ok:
+        return {
+            "violations": [],
+            "unguarded": [],
+            "error": f"unreadable ({result.status}{': ' + result.detail if result.detail else ''})",
+        }
+    out = audit_source(result.text or "")
     out["path"] = path
     return out
 
@@ -408,8 +421,7 @@ def main() -> int:
     if args.check:
         files = [Path(f) for f in args.check]
     else:
-        repo = Path(__file__).resolve().parent.parent
-        roots = [Path(p) for p in (args.paths or [repo / "hooks"])]
+        roots = [Path(p) for p in (args.paths or [ROOT / "hooks"])]
         files = sorted(
             f
             for root in roots

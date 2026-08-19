@@ -27,6 +27,10 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _lib.safe_read import safe_read_text  # noqa: E402
+
 # NO VAULT_ROOT here on purpose (MYC-3529). This hook never touches the vault:
 # it matches BUILD_STANDARDS / MCP_RUNBOOK as bare FILENAME substrings against
 # `file_path` arguments recorded in the session transcript under
@@ -39,6 +43,10 @@ BUILD_STANDARDS = "Build Standards.md"
 MCP_RUNBOOK = "MCP Build Runbook.md"
 TRANSCRIPT_DIR = Path.home() / ".claude" / "projects"
 RECENT_LOOKBACK = 50  # tool calls
+# Transcripts are read through the shared bounded reader, so an outsized or
+# cloud-placeholder transcript cannot stall a PreToolUse hook. Matches the cap
+# scan-prior-sessions-for-secrets.py already uses on the same corpus.
+MAX_TRANSCRIPT_BYTES = 3 * 1024 * 1024
 BUILD_KEYWORDS = re.compile(
     r"\b(build|ship|skill|mcp|connector|hook|plugin|new agent|new workflow|new pipeline)\b",
     re.IGNORECASE,
@@ -66,11 +74,18 @@ def runbook_read_recently(transcript_path: Path | None, runbook_filename: str) -
     """Check if Build Standards.md (or other runbook) was Read in last RECENT_LOOKBACK tool calls."""
     if not transcript_path or not transcript_path.exists():
         return False
-    try:
-        with transcript_path.open(encoding="utf-8", errors="replace") as fh:
-            lines = fh.readlines()
-    except OSError:
+    # safe_read_text, not open(): this walks ~/.claude/projects, which can sit on
+    # a cloud-synced or network path where a plain read blocks a PreToolUse hook.
+    # It also classifies a decode failure instead of raising past `except OSError`
+    # — UnicodeDecodeError subclasses ValueError, and transcripts are full of
+    # non-ASCII paths. Any non-ok status means "I could not read it", and this
+    # guard's False is its conservative answer (the reminder still surfaces).
+    result = safe_read_text(
+        transcript_path, timeout=5.0, max_bytes=MAX_TRANSCRIPT_BYTES, errors="replace"
+    )
+    if not result.ok:
         return False
+    lines = (result.text or "").splitlines()
     # Walk backward, count tool calls, check if Read of runbook appears.
     tool_calls_seen = 0
     for line in reversed(lines):
