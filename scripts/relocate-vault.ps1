@@ -87,12 +87,29 @@ function Die  { param([string]$m, [int]$code = 1) Write-Host "relocate-vault: RE
 # Obsidian-running probe with a test seam (parity with the .sh sibling's
 # obsidian_running). Default is the real Get-Process probe, so production
 # behavior is unchanged. $env:RELOCATE_VAULT_OBSIDIAN: 'running' -> report
-# running, 'absent' -> report not running, unset/anything else -> real probe.
+# running, 'absent' -> report not running, 'unreadable' -> simulate a probe that
+# could not run, unset/anything else -> real probe.
+#
+# FAILS CLOSED. "I could not read the process list" is not "Obsidian is not
+# running". -ErrorAction SilentlyContinue used to swallow exactly that case:
+# Get-Process returned $null, [bool]$null is $false, and this soft gate waved
+# through the move of a vault Obsidian may have open (a move whose whole risk is
+# an open writer). Only the documented "no process by that name" error means
+# absent; every other failure means refuse.
 function Test-ObsidianRunning {
   switch ("$($env:RELOCATE_VAULT_OBSIDIAN)") {
-    "running" { return $true }
-    "absent"  { return $false }
-    default   { return [bool](Get-Process -Name Obsidian -ErrorAction SilentlyContinue) }
+    "running"    { return $true }
+    "absent"     { return $false }
+    "unreadable" { Warn "process-list probe unavailable (test seam) - treating Obsidian as RUNNING"; return $true }
+    default {
+      try {
+        return (@(Get-Process -Name Obsidian -ErrorAction Stop).Count -gt 0)
+      } catch {
+        if ("$($_.FullyQualifiedErrorId)" -like "NoProcessFoundForGivenName*") { return $false }
+        Warn "could not read the process list ($_) - treating Obsidian as RUNNING (pass -Force to override)"
+        return $true
+      }
+    }
   }
 }
 
