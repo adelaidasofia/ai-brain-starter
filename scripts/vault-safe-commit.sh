@@ -26,17 +26,36 @@
 # Vault-wide mutex: uses /tmp/vault-commit-<hash>.lock to serialize
 # concurrent vault-safe-commit.sh invocations. Prevents two sessions from
 # racing each other even if the index.lock check passes.
+#
+# The index-lock path is RESOLVED from git (vault_git_index_lock in
+# _session_close_guard.sh), never assembled as "$VAULT_ROOT/.git/index.lock". A
+# vault relocated by relocate-machinery-sidecar.sh has a .git POINTER FILE, so
+# the assembled path can never exist and this mutex would be silently disarmed.
+# An unresolvable git dir => refuse (fail closed).
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Shared git-dir / index-lock resolver. FAIL CLOSED when the guard is missing:
+# with no way to resolve the real lock path we cannot prove the vault is free,
+# and an unprovable mutex must refuse rather than assume free.
+CLOSE_GUARD="$SCRIPT_DIR/_session_close_guard.sh"
+if [ -f "$CLOSE_GUARD" ]; then
+    # shellcheck source=scripts/_session_close_guard.sh
+    . "$CLOSE_GUARD"
+else
+    vault_git_index_lock() { echo ""; return 1; }
+fi
 
 if [ -z "${VAULT_ROOT:-}" ]; then
     echo "vault-safe-commit: VAULT_ROOT env var not set" >&2
     exit 1
 fi
 
-LOCK_FILE="${VAULT_ROOT}/.git/index.lock"
+LOCK_FILE="$(vault_git_index_lock "${VAULT_ROOT}" || true)"
 LOG_FILE="${VAULT_ROOT}/.vault-snapshot.log"
-MAX_WAIT_SECONDS=60
+MAX_WAIT_SECONDS="${VAULT_GIT_LOCK_MAX_WAIT:-60}"
 VAULT_MUTEX="/tmp/vault-commit-$(echo "${VAULT_ROOT}" | md5 2>/dev/null | cut -c1-8 || echo "${VAULT_ROOT}" | md5sum | cut -c1-8).lock"
 GIT_BIN=$(command -v git)
 
@@ -49,6 +68,13 @@ die() {
     echo "vault-safe-commit: $1" >&2
     exit 1
 }
+
+# Fail closed: an unresolvable git dir means we cannot see the index lock at
+# all, so we cannot prove no other writer holds it. Refuse instead of
+# committing blind. (Checked here, not at assignment, so it can use die/log.)
+if [ -z "${LOCK_FILE}" ]; then
+    die "cannot resolve the git directory for ${VAULT_ROOT} — refusing to commit without a working index-lock mutex"
+fi
 
 # --- parse --kill-leaked flag ---
 KILL_LEAKED=0
@@ -115,11 +141,20 @@ _MUTEX_ACQUIRED=1
 log "acquired vault mutex ($$)"
 
 # --- is_real_write_process: check if any ACTUAL git binary write is running ---
+# Echoes a count, never a failure. The `|| n=0` is load-bearing under
+# `set -euo pipefail`: no match makes grep exit 1, pipefail propagates it, and
+# an unguarded `n=$(...)` would abort the whole script — silently, with the
+# vault mutex released and nothing committed. That was unreachable while the
+# lock path could never exist (the wait loop never ran); resolving the real git
+# dir makes this path live, so it has to be correct.
 is_real_write_process() {
-    ps -ax -o pid,command 2>/dev/null \
+    local n
+    n=$(ps -ax -o pid,command 2>/dev/null \
         | grep -E "^\s*[0-9]+ .*${GIT_BIN}.*(add|commit|checkout|reset|merge|rebase)" \
         | grep -v grep \
-        | wc -l | tr -d ' '
+        | wc -l | tr -d ' ') || n=0
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    echo "$n"
 }
 
 # --- lock safety check loop ---

@@ -184,6 +184,38 @@ yourself: run a `git gc` plus a full session and watch Activity Monitor —
 > sidecar. On iPhone there is no git, so the pointer is harmless — you just see
 > your notes.
 
+#### Writing to a relocated vault: locking resolves the real git dir
+
+Every vault writer here — the session-close snapshot, the daily-maintenance
+reconcile, `vault-safe-commit.sh`, `vault-multi-machine-sync.sh` — serializes on
+git's `index.lock` before it commits, so two sessions closing at once cannot lose
+each other's update. **That lock path must be RESOLVED from git, never assembled
+as `$VAULT/.git/index.lock`.** Once the machinery is in a sidecar, `.git` is a
+pointer *file*: the assembled path sits under a file, can never exist, and the
+check reports "free" forever. The mutex is then silently disarmed — no error, no
+log line, both sessions commit.
+
+The contract, one shared helper in `scripts/_session_close_guard.sh`:
+
+| Helper | Answers |
+|---|---|
+| `vault_git_dir <root>` | absolute git dir via `git rev-parse --absolute-git-dir`; correct for a directory, a pointer file, or a linked worktree. Empty + rc 1 when unresolvable |
+| `vault_git_index_lock <root>` | `<real-git-dir>/index.lock` |
+| `vault_git_locked <root>` | rc 0 = locked **or unresolvable**, rc 1 = provably free |
+| `vault_git_wait_unlocked <root> [secs]` | spins to `$VAULT_GIT_LOCK_MAX_WAIT` (default 60); rc 0 once free |
+
+**These fail CLOSED.** An unresolvable git dir reports *locked*, so the caller
+defers instead of committing blind — the work stays on disk and the
+daily-maintenance reconcile catches up. A mutex that fails open is the defect
+this contract exists to prevent, and it costs a lost update that nothing
+recovers. (The load gate and cascade mutex alongside them fail *open* by design;
+this asymmetry is deliberate.)
+
+Regression cover: `tests/integration/test_vault_lock_separated_gitdir.sh` builds
+a `--separate-git-dir` fixture vault, has a live writer hold the real lock, and
+asserts all four writers take their locked branch — plus that an unlocked vault
+still commits, so "always locked" cannot pass.
+
 > **`.gitignore` is not enough.** It stops you *committing* the machinery; it
 > does **not** stop a cloud daemon from *syncing* it. The bytes must physically
 > leave the synced tree (Shape B) or be flagged `.nosync` (the helper's

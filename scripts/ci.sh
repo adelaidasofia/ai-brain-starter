@@ -221,6 +221,7 @@ INTEGRATION_TESTS=(
   test_scheduled_task_registration
   test_vault_backup_task_healing
   test_resource_aware_session_close
+  test_vault_lock_separated_gitdir
   test_cloud_sync_guard
   test_cloud_safe_file_walkers
   test_delegated_task_needs_source
