@@ -162,8 +162,11 @@ KNOWN, ACCEPTED DIVERGENCES (all narrower than the bug they replace):
     a small range); the daemonize recipe that closes everything forks first, and
     the fork guard above hard-exits that child untouched.
   * A hook that reaches past the shim — `import _signal` and calling its signal
-    directly — can still make the runner ignore SIGTERM for the hook's window.
-    Nothing in this repo does; the outer `"timeout"` still bounds it.
+    directly — can still make the runner ignore SIGTERM for the hook's window,
+    and a hook that calls signal.alarm/setitimer itself disarms the watchdog.
+    Nothing in this repo does either; the `"timeout"` the installer writes on
+    every Windows entry is the outer bound that still applies in both cases,
+    which is why it exists on top of the watchdog rather than instead of it.
   * sys.stdin is replaced with the payload; a hook reading raw fd 0 (nothing in
     this repo does) sees the already-drained descriptor.
 """
@@ -382,26 +385,79 @@ class _Capture:
 
 
 def _hook_timeout() -> float:
-    """Seconds before the watchdog masks a hung hook. 0 (or junk) disables it."""
+    """Seconds before the watchdog masks a hung hook. 0 disables it.
+
+    Anything that is not a plain finite number in range falls back to the
+    default rather than being passed through: `inf` reaches setitimer as an
+    OverflowError and `nan` compares false against every bound, and either one
+    would take the arming code down a path that ends with the hook not running
+    at all. Junk in this variable must cost the default, never a hook."""
     raw = os.environ.get("ABS_HOOK_TIMEOUT")
     if raw is None:
         return DEFAULT_TIMEOUT
     try:
-        return float(raw)
+        value = float(raw)
     except (TypeError, ValueError):
         return DEFAULT_TIMEOUT
+    if not (0 <= value <= 86400):  # false for nan and inf as well as negatives
+        return DEFAULT_TIMEOUT
+    return value
 
 
-def _arm_watchdog(seconds: float, out_fd: int, payload: bytes) -> None:
+def _run_hook_atexit() -> None:
+    """Run the hook's atexit handlers WHILE the capture is still installed.
+
+    The child process used to do this at its own shutdown, so their output was
+    part of the hook's captured stdout: forwarded on a clean exit, discarded on
+    a masked one. Running them here reproduces both, and clears the registry so
+    nothing of the hook's can fire after the verdict has been written."""
+    import atexit
+    atexit._run_exitfuncs()
+
+
+def _arm_watchdog(seconds: float, out_fd: int, payload: bytes):
     """Bound a hang: emit the fallback on `out_fd` and hard-exit 0.
 
-    _thread, not threading: both are resident at interpreter start, but
-    `import threading` still costs ~0.6 ms of module execution and this file's
-    entire reason to exist is the milliseconds. A raw thread is also never
-    joined at shutdown, which is what we want — the runner hard-exits and the
-    watchdog goes with it."""
+    Returns a disarm callable — the watchdog must be off before the reporting
+    path closes `out_fd`, or a late firing would write nothing and exit anyway.
+
+    AN ITIMER, NOT A THREAD, WHEREVER ONE EXISTS. A watchdog thread makes the
+    runner multi-threaded, and a hook calling os.fork() in a multi-threaded
+    process gets a DeprecationWarning on 3.12+ — straight into the captured
+    stderr, which a BLOCK propagates verbatim to the user. Worse than the noise:
+    fork from a threaded process is the real deadlock hazard the warning names,
+    and this file must not introduce it into hooks that were single-threaded
+    before. SIGALRM costs no thread and no import. Windows has neither
+    setitimer nor fork, so the thread fallback there cannot cause either."""
     if seconds <= 0:
-        return
+        return lambda: None
+
+    if (_signal is not None and _REAL_SIGNAL is not None
+            and hasattr(_signal, "SIGALRM") and hasattr(_signal, "setitimer")):
+        def _on_alarm(signum, frame) -> None:
+            if _REPORTED[0]:
+                return
+            _write_bytes(out_fd, payload)
+            _REAL_OS_EXIT(0)
+
+        try:
+            _REAL_SIGNAL(_signal.SIGALRM, _on_alarm)
+            _signal.setitimer(_signal.ITIMER_REAL, seconds)
+        except Exception:  # noqa: BLE001 — no watchdog is a degradation, not a
+            return lambda: None  # reason to fail the hook
+
+        def _disarm() -> None:
+            try:
+                _signal.setitimer(_signal.ITIMER_REAL, 0)
+            except Exception:  # noqa: BLE001
+                pass
+
+        return _disarm
+
+    # Windows path. _thread, not threading: both are resident at interpreter
+    # start, but `import threading` still costs ~0.6 ms of module execution and
+    # this file's entire reason to exist is the milliseconds. A raw thread is
+    # also never joined at shutdown, which is what we want here.
     import _thread
     import time
 
@@ -419,6 +475,7 @@ def _arm_watchdog(seconds: float, out_fd: int, payload: bytes) -> None:
         _thread.start_new_thread(_fire, ())
     except BaseException:  # noqa: BLE001 — no watchdog is worse, not fatal
         pass
+    return lambda: None
 
 
 def _fatal_signums() -> frozenset:
@@ -660,6 +717,7 @@ def _execute(script: str, extra: list[str], payload: bytes,
     err_f = _Capture()
     dup_out = dup_err = None
     unshim = None
+    disarm = None
     rc = 1
     try:
         try:
@@ -681,7 +739,7 @@ def _execute(script: str, extra: list[str], payload: bytes,
 
             # Armed AFTER the real stdout is safely dup'ed: the watchdog writes
             # the fallback there, never into a capture nobody will read.
-            _arm_watchdog(_hook_timeout(), dup_out, fallback)
+            disarm = _arm_watchdog(_hook_timeout(), dup_out, fallback)
 
             sys.argv = [script, *extra]
             # CPython puts the script's own directory on sys.path[0]; hooks that
@@ -722,13 +780,25 @@ def _execute(script: str, extra: list[str], payload: bytes,
                     _quietly(_stream.flush)
                 _REAL_OS_EXIT(rc if isinstance(rc, int) else 0)
 
+            # Flush BEFORE the descriptors go back, or buffered hook output
+            # lands on the real stream instead of in the capture. Also before
+            # the teardown below, so the hook's own writes precede its
+            # teardown's — which is the order the child process produced.
+            for stream in (sys.stdout, sys.stderr):
+                _quietly(stream.flush)
+            # The hook's teardown, run HERE so its output is still captured —
+            # the child used to run it at its own shutdown, which is why a clean
+            # hook's atexit output was part of the stdout that got forwarded.
+            # Deliberately still under the watchdog: a hanging handler is a hang.
+            _quietly(_run_hook_atexit)
+            for stream in (sys.stdout, sys.stderr):
+                _quietly(stream.flush)
+            # ...watchdog off before the reporting path closes dup_out under it.
+            if disarm is not None:
+                _quietly(disarm)
             _quietly(setattr, os, "_exit", _REAL_OS_EXIT)
             if unshim is not None:
                 _quietly(unshim)
-            # Flush BEFORE the descriptors go back, or buffered hook output
-            # lands on the real stream instead of in the capture.
-            for stream in (sys.stdout, sys.stderr):
-                _quietly(stream.flush)
             # fd 1/2 still reference the capture files even if the hook closed
             # OUR handles on them, so re-acquire before restoring.
             _quietly(out_f.heal_from, 1)

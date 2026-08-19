@@ -29,6 +29,23 @@ That second change had to be careful, because Windows may hand these commands to
 
 **What you should do:** update once and re-run the installer, so your settings pick up the resolved path. Tell Claude "update the ai-brain-starter skill". Nothing else changes, and re-running is safe as many times as you like.
 
+### Follow-up the same day: six ways a check could have gone quiet, closed
+
+Two reviews went looking for what the speed-up above might have broken, and found six things. All six are fixed. None of them ever made a check say the wrong thing; the failure was always that a check's answer went missing, which looks exactly like everything being fine.
+
+When each check was its own separate program, the operating system kept it walled off. Running it in the same program is what made it fast, and it also removed that wall. These are the six places the wall turned out to be doing work nobody had noticed.
+
+- **A check that tidies up after itself could take its own answer with it.** A common cleanup step closes file handles a program is no longer using, and two of those handles were now the only way the wrapper had of talking back. The answer went into a scratch file nobody reads and you saw nothing at all. Those handles are now kept somewhere a cleanup step will not reach.
+- **Anything a check scheduled for "on my way out" landed after its answer had already been sent**, tacking stray text onto the end of it. The wrapper now finishes the check's shutdown while it is still listening, then stops the moment the answer is out.
+- **A check that splits itself in two reported twice.** Two answers arrive glued together and neither can be read. The copy now stops instead of reporting.
+- **A check that asked to be told about shutdown made the whole thing unstoppable.** Not a hostile check: an ordinary "let me save my work first" one was enough. It now gets to save its work, and then things shut down exactly as they used to.
+- **A stumble while the wrapper put things back could replace a real answer with "carry on".** Every step of that tidy-up is now independent, so one of them tripping cannot overwrite what a check decided.
+- **Two protections from a separate fix were carried over.** Checks read your files as UTF-8 again rather than whatever your console happens to use, which on Windows is the difference between working and a crash that was being swallowed as "carry on". And a check that hangs is bounded again: it gives up cleanly after 45 seconds instead of stalling the tool call until the harness gives up minutes later.
+
+The speed is unchanged. The test suite that stayed green through all six of these now has a section aimed squarely at them, and every new test was confirmed to fail against the morning's version before it was allowed to pass against this one.
+
+**What you should do:** nothing beyond the update and re-install above. Same instruction, same one time.
+
 ---
 
 ## 2026-08-15: the setup could stop halfway and tell you it was finished

@@ -77,13 +77,17 @@ from pathlib import Path
 # always better than losing the diagnostic.
 _TEXT_UTF8 = {"text": True, "encoding": "utf-8", "errors": "replace"}
 
-# Seconds Claude Code lets a Windows hook entry run before it kills it. Matches
-# the bound hook_runner.py used to get for free from subprocess.run(timeout=45)
-# and now enforces itself (PR #446). Two independent bounds on purpose: the
-# runner's watchdog masks a hung HOOK cleanly, this one still applies when the
-# RUNNER is what wedged. POSIX entries keep their shell form and no timeout key,
-# exactly as before.
-WINDOWS_HOOK_TIMEOUT_SECONDS = 45
+# Seconds Claude Code lets a Windows hook entry run before it kills it. The
+# OUTER of two bounds; hook_runner.py's own watchdog is the inner one, at 45 s
+# (the value subprocess.run(timeout=45) gave it for free before the hook moved
+# in-process, PR #446). Deliberately LARGER than the inner bound rather than
+# equal to it: the runner's watchdog masks a hung hook cleanly — fallback JSON,
+# exit 0, no visible error — and it only gets to do that if it fires first. An
+# equal value is a race, and the side that wins is the one that reports a killed
+# hook to the user. This bound is what still applies when the RUNNER is the
+# thing that wedged. Without it the harness default (~600 s) is the only bound
+# there is. POSIX entries keep their shell form and no timeout key, as before.
+WINDOWS_HOOK_TIMEOUT_SECONDS = 60
 
 
 # Fingerprint substrings — any hook command containing one of these is

@@ -65,7 +65,13 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-RUNNER = ROOT / "scripts" / "hook_runner.py"
+# ABS_TEST_RUNNER points this whole suite at a DIFFERENT hook_runner.py — the
+# one from a previous commit, checked out to a temp path. That is how the
+# section-11 regressions below are proven to bite: every one of them is red
+# against the runner that shipped them and green against this one, and the
+# proof is one command rather than a claim in a commit message.
+RUNNER = Path(os.environ.get("ABS_TEST_RUNNER")
+              or (ROOT / "scripts" / "hook_runner.py")).resolve()
 
 SILENT = '{"continue":true,"suppressOutput":true}'
 ALLOW = ('{"hookSpecificOutput":{"hookEventName":"PreToolUse",'
@@ -173,11 +179,13 @@ class Harness:
 
     def run(self, target: str, *extra: str, fallback: str = "silent",
             payload: bytes = b"{}", runner: Path | None = None,
-            timeout: int = 60):
-        cmd = [sys.executable, str(runner or RUNNER), "--fallback", fallback,
-               target, *extra]
+            timeout: int = 60, env: dict | None = None,
+            interpreter_args: tuple = ()):
+        cmd = [sys.executable, *interpreter_args, str(runner or RUNNER),
+               "--fallback", fallback, target, *extra]
         return subprocess.run(cmd, input=payload, capture_output=True,
-                              timeout=timeout)
+                              timeout=timeout,
+                              env=(dict(os.environ, **env) if env else None))
 
 
 # ---------------------------------------------------------------------------
@@ -701,6 +709,339 @@ def test_hang_is_at_least_as_killable(h: Harness) -> None:
         time.sleep(0.2)
 
 
+# ---------------------------------------------------------------------------
+# 11. THE RETURN PATH — everything the runner does AFTER the hook hands back.
+#
+# WHY THIS SECTION EXISTS. Sections 1-10 were 21/21 green while six measured
+# regressions were live in the file. Every hostile-hook case above uses a hook
+# that BLOCKS IMMEDIATELY (sys.exit(2) as its last statement), so the runner's
+# post-hook path — restore the descriptors, read the captures, decide the exit
+# code, emit — barely runs and can never be seen to be wrong. Each case below
+# needs the hook to RETURN, or to still be running, before the defect appears.
+#
+# Every test here is proven against the runner that shipped the defect:
+#     git show <sha>:scripts/hook_runner.py > /tmp/old.py
+#     ABS_TEST_RUNNER=/tmp/old.py python3 scripts/test_hook_runner_single_interpreter.py
+# ---------------------------------------------------------------------------
+def _parity(h: Harness, label_bodies: list, prefix: str, headline: str,
+            detail: str, streams: str = "all") -> None:
+    """Run each body through BOTH runners and demand the same observable.
+
+    Parity with the pre-fix runner is the only standard that means anything
+    here: the whole file exists to be indistinguishable from the shape it
+    replaced, so "what should it do?" is never a judgement call."""
+    broken = []
+    for i, (label, body) in enumerate(label_bodies):
+        target = h.hook(f"{prefix}_{i}.py", body)
+        new = h.run(target)
+        old = h.run(target, runner=h.pre_fix)
+        if streams == "stdout":
+            same = new.stdout == old.stdout
+        else:
+            same = (new.returncode, new.stdout, new.stderr) == (
+                old.returncode, old.stdout, old.stderr)
+        if not same:
+            broken.append(
+                f"{label}: new=({new.returncode}, {new.stdout!r}, "
+                f"{new.stderr!r}) pre-fix=({old.returncode}, {old.stdout!r}, "
+                f"{old.stderr!r})")
+    if broken:
+        for b in broken:
+            bad(headline, b)
+    else:
+        ok(f"all {len(label_bodies)} {detail}")
+
+
+def test_a_hook_that_closes_descriptors_still_reports(h: Harness) -> None:
+    """The old hook saw exactly [0,1,2]; subprocess passed close_fds=True.
+
+    In-process it also sees the two capture files AND the runner's only saved
+    handles on the real stdout/stderr. `os.close(3)` is the first line of every
+    daemonize recipe, and it made the restore raise — after which the verdict
+    was written into a temp file nobody reads and the caller got nothing at
+    all. A guard's answer disappearing without a trace."""
+    _parity(h, [
+        ("os.close(3), the daemonize idiom",
+         'import os, sys\n'
+         'try:\n'
+         '    os.close(3)\n'
+         'except OSError:\n'
+         '    pass\n'
+         'sys.stdout.write(\'{"continue":true}\')\n'),
+        ("os.closerange(3, 10)",
+         'import os, sys\n'
+         'os.closerange(3, 10)\n'
+         'sys.stdout.write(\'{"continue":true}\')\n'),
+        ("close 3 and 4, then BLOCK (the verdict that must survive)",
+         'import os, sys\n'
+         'for fd in (3, 4):\n'
+         '    try:\n'
+         '        os.close(fd)\n'
+         '    except OSError:\n'
+         '        pass\n'
+         'sys.stderr.write("BLOCKED-FOR-A-REASON\\n")\n'
+         'sys.exit(2)\n'),
+    ], "closefd",
+        "a hook that closes descriptors still gets its verdict out",
+        "descriptor-closing hooks report exactly what the pre-fix runner "
+        "reported (the runner's own fds are parked out of their reach)")
+
+
+def test_nothing_is_appended_after_the_verdict(h: Harness) -> None:
+    """The protocol JSON must be the LAST thing on stdout.
+
+    Restoring the descriptors puts the real stdout back while the hook's
+    teardown is still pending, so an atexit handler or a thread waking later
+    wrote its bytes AFTER the verdict. Claude Code parses stdout as one JSON
+    document; trailing garbage is a parse failure, and the fallback that was
+    supposed to keep a broken hook harmless becomes the thing that breaks."""
+    _parity(h, [
+        ("atexit handler, hook exits 1 (masked)",
+         'import atexit, os, sys\n'
+         'atexit.register(lambda: os.write(1, b"LATE-NOISE"))\n'
+         'sys.exit(1)\n'),
+        ("non-daemon thread waking 400 ms later, hook exits 1 (masked)",
+         'import os, sys, threading, time\n'
+         'def late():\n'
+         '    time.sleep(0.4)\n'
+         '    os.write(1, b"LATE-THREAD-NOISE")\n'
+         'threading.Thread(target=late).start()\n'
+         'sys.exit(1)\n'),
+        ("atexit handler on a CLEAN exit (nothing may follow the hook's own "
+         "output either)",
+         'import atexit, os, sys\n'
+         'atexit.register(lambda: os.write(1, b"LATE-NOISE"))\n'
+         'sys.stdout.write(\'{"continue":true}\')\n'),
+    ], "late",
+        "nothing is appended to stdout after the verdict",
+        "late writers are gone by the time the verdict is written — stdout is "
+        "byte-identical to the pre-fix runner", streams="stdout")
+
+
+def test_a_fork_reports_exactly_once(h: Harness) -> None:
+    """A forked child that does not hard-exit fell through the end of the hook
+    and ran the whole reporting path a second time: two concatenated JSON
+    documents on one pipe. Nothing rejects that at the source; it fails at the
+    parser, far from the hook that caused it."""
+    if not hasattr(os, "fork"):
+        ok("fork-report check skipped (no os.fork on this platform)")
+        return
+    _parity(h, [
+        ("fork, child falls through, parent waits",
+         'import os, sys\n'
+         'sys.stdout.write(\'{"continue":true}\')\n'
+         'sys.stdout.flush()\n'
+         'pid = os.fork()\n'
+         'if pid:\n'
+         '    os.waitpid(pid, 0)\n'),
+        ("fork, child falls through, parent BLOCKS",
+         'import os, sys\n'
+         'sys.stderr.write("REASON\\n")\n'
+         'sys.stderr.flush()\n'
+         'pid = os.fork()\n'
+         'if pid:\n'
+         '    os.waitpid(pid, 0)\n'
+         '    sys.exit(2)\n'),
+    ], "forked",
+        "a forked hook reports exactly once",
+        "forking hooks emit ONE verdict, byte-identical to the pre-fix runner "
+        "(the child never reaches the reporting path)")
+
+
+def test_a_broken_restore_cannot_replace_a_verdict(h: Harness) -> None:
+    """The restore runs in a finally, so anything it raises escapes _execute
+    and the hook's real answer is replaced by the fallback: "continue".
+
+    A hook does not have to be hostile to trip this. Replacing a stdlib module
+    in sys.modules is a normal test/mock idiom, and it turned a hook's own
+    {"continue":true,"HOOK-OUTPUT":1} into a silent allow."""
+    _parity(h, [
+        ("hook replaces sys.modules['signal'] with an empty module",
+         'import sys, types\n'
+         'sys.modules["signal"] = types.ModuleType("signal")\n'
+         'sys.stdout.write(\'{"continue":true,"HOOK-OUTPUT":1}\')\n'),
+        ("hook replaces sys.modules['signal'], then BLOCKS",
+         'import sys, types\n'
+         'sys.modules["signal"] = types.ModuleType("signal")\n'
+         'sys.stderr.write("STILL-BLOCKED\\n")\n'
+         'sys.exit(2)\n'),
+        ("hook makes sys.path un-sliceable",
+         'import sys\n'
+         'sys.path = None\n'
+         'sys.stdout.write(\'{"continue":true,"HOOK-OUTPUT":2}\')\n'),
+    ], "restore",
+        "a raise in the runner's own restore cannot replace the hook's verdict",
+        "hooks that break the runner's restore still get their real verdict "
+        "forwarded, never swapped for the fallback")
+
+
+def test_an_ordinary_signal_handler_does_not_outlive_terminate(h: Harness) -> None:
+    """test_hang_is_at_least_as_killable uses a HANDLER-FREE hook, so it cannot
+    see this: the hook IS the runner now, so any SIGTERM handler the hook
+    installs is the RUNNER's SIGTERM handler. Not only a hostile SIG_IGN — an
+    ordinary non-exiting cleanup handler does it, which is exactly what a hook
+    that wants to flush state on shutdown writes."""
+    if os.name == "nt":
+        ok("signal-handler killability skipped on Windows (POSIX semantics)")
+        return
+
+    pidfile = h.tmp / "sighang.pid"
+    handlers = [
+        ("a plain non-exiting cleanup handler",
+         'def _cleanup(signum, frame):\n    pass\n'),
+        ("SIG_IGN (the hostile form)", '_cleanup = signal.SIG_IGN\n'),
+    ]
+    slow = []
+    for i, (label, install) in enumerate(handlers):
+        target = h.hook(
+            f"sighang_{i}.py",
+            'import os, signal, sys, time\n'
+            + install +
+            'signal.signal(signal.SIGTERM, _cleanup)\n'
+            f'open({str(pidfile)!r}, "w").write(str(os.getpid()))\n'
+            'time.sleep(120)\n')
+        if pidfile.exists():
+            pidfile.unlink()
+        proc = subprocess.Popen(
+            [sys.executable, str(RUNNER), "--fallback", "silent", target],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE)
+        proc.stdin.write(b"{}")
+        proc.stdin.close()
+        deadline = time.time() + 30
+        while time.time() < deadline and not pidfile.exists():
+            time.sleep(0.05)
+        if not pidfile.exists():
+            bad("the hanging hook starts", label)
+            proc.kill()
+            proc.wait(timeout=30)
+            continue
+        started = time.time()
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=30)
+            slow.append(f"{label}: still alive 10 s after terminate()")
+            continue
+        elapsed = time.time() - started
+        if elapsed > 5:
+            slow.append(f"{label}: took {elapsed:.1f}s to die")
+    if slow:
+        for s in slow:
+            bad("a hook's SIGTERM handler does not make the runner unkillable",
+                s)
+    else:
+        ok(f"terminate() ends the runner promptly through all {len(handlers)} "
+           "hook-installed SIGTERM handlers (the hook's own cleanup still runs)")
+
+
+def test_a_hang_is_bounded(h: Harness) -> None:
+    """The child-process shape carried subprocess.run(..., timeout=45). Running
+    the hook in-process dropped that bound and put nothing in its place, so a
+    hook that never returns stalled the tool call until the harness gave up."""
+    target = h.hook("pure_hang.py", "import time\ntime.sleep(300)\n")
+    try:
+        res = h.run(target, timeout=25, env={"ABS_HOOK_TIMEOUT": "2"})
+    except subprocess.TimeoutExpired:
+        bad("a hung hook is bounded by the watchdog",
+            "still running 25 s into a 2 s budget — nothing bounds it")
+        return
+    if res.returncode == 0 and SILENT in res.stdout.decode():
+        ok("a hung hook is masked to the fallback JSON and exit 0 once its "
+           "budget is spent (ABS_HOOK_TIMEOUT)")
+    else:
+        bad("a hung hook is masked to the fallback",
+            f"rc={res.returncode} out={res.stdout!r}")
+
+    # NEGATIVE CONTROL: the bound is real, not an artifact of the hook ending on
+    # its own. With the watchdog off the same hook does NOT come back.
+    try:
+        h.run(target, timeout=6, env={"ABS_HOOK_TIMEOUT": "0"})
+        bad("negative control: the watchdog is what ended it",
+            "the hook returned on its own with the watchdog disabled, so the "
+            "assertion above proves nothing")
+    except subprocess.TimeoutExpired:
+        ok("negative control: with ABS_HOOK_TIMEOUT=0 the same hook runs past "
+           "the cap — the bound above came from the watchdog, not the hook")
+
+    # A hook that finishes normally must not be delayed, and must not get a
+    # second verdict written on top of its own later.
+    fast = h.hook("fast.py",
+                  'import sys\nsys.stdout.write(\'{"continue":true}\')\n')
+    started = time.time()
+    res = h.run(fast, timeout=20, env={"ABS_HOOK_TIMEOUT": "2"})
+    if res.stdout == b'{"continue":true}' and time.time() - started < 2:
+        ok("an armed watchdog costs a normal hook nothing and never appends a "
+           "second verdict to it")
+    else:
+        bad("the watchdog leaves a normal hook alone",
+            f"{res.stdout!r} in {time.time() - started:.1f}s")
+
+
+def test_utf8_mode_reaches_the_hook_and_its_children(h: Harness) -> None:
+    """PR #446 put PYTHONUTF8=1 in the CHILD's environment. There is no child
+    any more, and UTF-8 Mode is fixed at interpreter startup, so the flag moved
+    onto the launcher (`-X utf8`, asserted in
+    test_windows_launcher_resolution.py) and the env var is kept for whatever
+    the hook itself starts.
+
+    Why it matters: without UTF-8 Mode a hook's open(path).read() decodes with
+    the console code page, and cp1252 leaves 0x81/0x8D/0x8F/0x90/0x9D unmapped
+    — the gear emoji carries 0x8F. The resulting UnicodeDecodeError is a
+    ValueError, so it walks straight past the `except OSError` in two dozen
+    shipped hooks and the guard fails open as "continue"."""
+    grandchild = h.tmp / "report_utf8_mode.py"
+    grandchild.write_text("import sys\nprint(sys.flags.utf8_mode)\n",
+                          encoding="utf-8")
+    target = h.hook(
+        "utf8env.py",
+        'import json, os, subprocess, sys\n'
+        f'argv = [sys.executable, {str(grandchild)!r}]\n'
+        'child = subprocess.run(argv, capture_output=True, text=True)\n'
+        'sys.stdout.write(json.dumps({\n'
+        '    "env": os.environ.get("PYTHONUTF8"),\n'
+        '    "child_utf8_mode": child.stdout.strip(),\n'
+        '}))\n')
+    res = h.run(target)
+    try:
+        got = json.loads(res.stdout.decode())
+    except Exception as exc:  # noqa: BLE001
+        bad("the hook reports its UTF-8 environment", f"{res.stdout!r} {exc}")
+        return
+    if got.get("env") == "1":
+        ok("the hook runs with PYTHONUTF8=1 in its environment (carried "
+           "forward from PR #446, which set it on the child env)")
+    else:
+        bad("PYTHONUTF8 reaches the hook", repr(got))
+    if got.get("child_utf8_mode") == "1":
+        ok("an interpreter the HOOK itself starts inherits UTF-8 Mode, so a "
+           "vault path outside the console code page cannot crash it")
+    else:
+        bad("a grandchild interpreter inherits UTF-8 Mode", repr(got))
+
+    # THE MECHANISM, asserted directly: `-X utf8` on the runner is what lets the
+    # IN-PROCESS hook read a UTF-8 file. -X utf8=0 forces the opposite without
+    # needing a non-UTF-8 locale to exist on the machine running this.
+    data = h.tmp / "utf8_data.txt"
+    data.write_bytes("café ⚙️ Meta".encode("utf-8"))
+    reader = h.hook("utf8read.py",
+                    'import sys\n'
+                    f'sys.stdout.write(open({str(data)!r}).read())\n')
+    on = h.run(reader, interpreter_args=("-X", "utf8"))
+    off = h.run(reader, interpreter_args=("-X", "utf8=0"))
+    if on.stdout.decode("utf-8") != "café ⚙️ Meta":
+        bad("`-X utf8` reaches the in-process hook",
+            f"on={on.stdout!r} off={off.stdout!r}")
+    elif off.stdout != on.stdout:
+        ok("`-X utf8` on the runner is what lets the in-process hook read a "
+           "UTF-8 file (without it the same read decodes with the locale)")
+    else:
+        ok("the hook reads a UTF-8 file correctly under `-X utf8` (this "
+           "machine's locale is already UTF-8, so -X utf8=0 changes nothing)")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as td:
         h = Harness(Path(td))
@@ -714,6 +1055,14 @@ def main() -> int:
         test_payload_reaches_both_stdin_faces(h)
         test_runner_survives_a_hostile_hook(h)
         test_hang_is_at_least_as_killable(h)
+        # 11. The RETURN path — see the section header above.
+        test_a_hook_that_closes_descriptors_still_reports(h)
+        test_nothing_is_appended_after_the_verdict(h)
+        test_a_fork_reports_exactly_once(h)
+        test_a_broken_restore_cannot_replace_a_verdict(h)
+        test_an_ordinary_signal_handler_does_not_outlive_terminate(h)
+        test_a_hang_is_bounded(h)
+        test_utf8_mode_reaches_the_hook_and_its_children(h)
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
 
