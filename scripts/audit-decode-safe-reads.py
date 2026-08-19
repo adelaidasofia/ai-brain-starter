@@ -84,6 +84,15 @@ OSERROR_FAMILY = {
 
 NON_STRICT_ERRORS = {"replace", "ignore", "surrogateescape", "backslashreplace"}
 
+# Modules whose `open` takes the FILE first and the mode second, like the
+# builtin - unlike `Path.open`, where mode is first. Getting this backwards makes
+# `io.open(p)` look like a write and exempts it silently.
+MODULE_OPENERS = {
+    "io", "gzip", "bz2", "lzma", "codecs", "tarfile", "zipfile", "shelve", "dbm",
+}
+# `os.open` returns a file DESCRIPTOR. It decodes nothing.
+FD_OPENERS = {"os", "posix"}
+
 
 def _name_of(node: ast.AST) -> str:
     """Dotted or bare exception name, e.g. `OSError` or `json.JSONDecodeError`."""
@@ -139,17 +148,22 @@ def _text_read_label(call: ast.Call) -> str | None:
     """
     func = call.func
     builtin_open = isinstance(func, ast.Name) and func.id == "open"
-    # `Path.open(mode)` puts mode FIRST; builtin `open(file, mode)` puts it
-    # second. Reading the wrong slot silently mis-reads every append-only log
-    # writer as a text READ — four of them, on the first run of this audit.
+    # `Path.open(mode)` puts mode FIRST; builtin and module `open(file, mode)`
+    # put it second. Reading the wrong slot silently mis-reads every append-only
+    # log writer as a text READ (four of them, on the first run of this audit) —
+    # and, the other way, exempts every `io.open(p)` as if it were a write.
     method_open = isinstance(func, ast.Attribute) and func.attr == "open"
+    receiver = _name_of(func.value) if method_open and isinstance(func.value, ast.Name) else ""
+    if method_open and receiver in FD_OPENERS:
+        return None                       # a file descriptor decodes nothing
+    module_open = method_open and receiver in MODULE_OPENERS
     is_open = builtin_open or method_open
     is_read_text = isinstance(func, ast.Attribute) and func.attr == "read_text"
     if not (is_open or is_read_text):
         return None
 
     if is_open:
-        idx = 1 if builtin_open else 0
+        idx = 1 if (builtin_open or module_open) else 0
         mode_node = call.args[idx] if len(call.args) > idx else None
         mode = _const_str(mode_node) if mode_node is not None else None
         if mode is None:
@@ -278,6 +292,18 @@ _BITES = [
         "try:\n    d = p.open('r').read()\nexcept OSError:\n    d = None\n",
     ),
     (
+        "io.open takes the file first, like the builtin",
+        "try:\n    d = io.open(p).read()\nexcept OSError:\n    d = None\n",
+    ),
+    (
+        "io.open with a literal path is not a mode string",
+        "try:\n    d = io.open('config.json').read()\nexcept OSError:\n    d = None\n",
+    ),
+    (
+        "codecs.open likewise",
+        "try:\n    d = codecs.open(p, 'r').read()\nexcept OSError:\n    d = None\n",
+    ),
+    (
         "read-write mode can still decode",
         "try:\n    d = open(p, 'r+').read()\nexcept OSError:\n    d = None\n",
     ),
@@ -299,6 +325,14 @@ _PASSES = [
     (
         "errors= makes the read incapable of raising",
         "try:\n    d = p.read_text(errors='replace')\nexcept OSError:\n    d = None\n",
+    ),
+    (
+        "os.open returns a descriptor and decodes nothing",
+        "try:\n    fd = os.open(p, os.O_RDONLY)\nexcept OSError:\n    fd = -1\n",
+    ),
+    (
+        "io.open in binary is still binary",
+        "try:\n    d = io.open(p, 'rb').read()\nexcept OSError:\n    d = None\n",
     ),
     (
         "binary read decodes nothing",
