@@ -97,9 +97,10 @@ jobs:
           # PUBLIC tier, inline (auto-injected from a single source; this
           # array and the archive-step copy below are filled from the same
           # list, so they cannot drift). ONLY tokens that are already public
-          # by deliberate choice may appear here. NOT case-insensitive:
-          # 'wOnder' contains 'Onde' but \bOnde\b skips it (CLAUDE.md
-          # false-positive trap).
+          # by deliberate choice may appear here. NOT case-insensitive: a
+          # capitalised name pattern must keep skipping unrelated lowercase
+          # words that merely contain it (the CLAUDE.md false-positive trap;
+          # widen only the first letter, never the whole pattern).
           PUBLIC_PATTERNS=(
             '\b[Aa]delaida\b'
             '\b[Dd]iaz-[Rr]oa\b'
