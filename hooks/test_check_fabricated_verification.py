@@ -64,6 +64,10 @@ def run(final_text: str, commands=(), results=(), env=None):
         proc = subprocess.run(
             [sys.executable, str(HOOK)],
             input=payload, capture_output=True, text=True,
+            # A cp1252 Windows console decodes the hook's stdout/stderr with the
+            # locale encoding by default; text=True alone raises UnicodeDecodeError
+            # before we ever see a byte. See scripts/check-utf8-subprocess.py.
+            encoding="utf-8", errors="replace",
             env=env,
         )
     out = (proc.stdout or "").strip()
@@ -287,6 +291,47 @@ if _os.path.exists(_log2) and "bypassed" in open(_log2).read():
 else:
     FAIL += 1
     print("FAIL  24. bypass telemetry not recorded")
+
+# --- REGRESSION: "committed" is a WORD, not automatically a CLAIM ---------
+# The subject group in COMMITTED_CLAIM used to be optional, so any occurrence of
+# "committed" fired Detector C. Three honest closes were blocked in one session
+# (2026-08-18): a reduced relative about a hypothetical key, the English idiom,
+# and work attributed to a concurrent session. A gate that blocks honest prose
+# is how FAB_VERIFY_CHECK_BYPASS=1 gets learned, so each shape is locked here.
+for _label, _text, _want_block in [
+    ("25. reduced relative about a hypothetical object is not a claim",
+     "A scanner that stops reading a directory cannot see a real key committed "
+     "there, so I am not adding a blind skip-path.", False),
+    ("26. the English idiom 'committed to <plan>' is not a git claim",
+     "We are committed to the plan we agreed on last week.", False),
+    ("27. work attributed to another actor is not a self-claim",
+     "That file was committed by another session, not by this one.", False),
+    ("28. a real landed-state claim still blocks with no git read",
+     "The four files are committed.", True),
+    ("29. first-person active claim still blocks",
+     "I committed the fix with explicit paths.", True),
+    ("30. 'committed to main' IS a git target, so it still blocks",
+     "The change is committed to main.", True),
+]:
+    _blocked, _ = run(_text, commands=["rg -n 'pattern' ."], results=["3 matches"])
+    if _blocked == _want_block:
+        PASS += 1
+        print(f"PASS  {_label}")
+    else:
+        FAIL += 1
+        print(f"FAIL  {_label} :: blocked={_blocked}, expected {_want_block}")
+
+# A nearby idiom must not launder an adjacent REAL claim (tail-scoped exemption).
+_blocked, _ = run(
+    "We are committed to shipping this well. The four files are committed.",
+    commands=["ls -la"], results=["ok"],
+)
+if _blocked:
+    PASS += 1
+    print("PASS  31. an idiom next to a real claim does not launder it")
+else:
+    FAIL += 1
+    print("FAIL  31. idiom laundered an adjacent real claim")
 
 print()
 print(f"=== summary: {PASS} passed, {FAIL} failed ===")

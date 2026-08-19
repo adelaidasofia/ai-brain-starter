@@ -114,10 +114,28 @@ CI_RUN_EVIDENCE = re.compile(r"gh\s+run\b|gh_run|/actions/runs/", re.IGNORECASE)
 # "Committed" is a local claim: the commit command itself (or a local log/
 # rev-parse read) is adequate evidence, since git commit either succeeds or
 # errors loudly.
+# A CLAIM about landed git state, not the bare word. The subject group used to
+# be optional (`?` + `\s*`), so ANY occurrence of "committed" matched in any
+# grammatical role — a reduced relative ("a real key committed there"), the
+# English idiom ("committed to the plan"), or attribution to someone else
+# ("committed by another session"). All three blocked honest closes, which is
+# how a gate teaches FAB_VERIFY_CHECK_BYPASS=1. A claim needs an auxiliary, a
+# first-person subject, a sentence-initial assertion, or an explicit git target.
 COMMITTED_CLAIM = re.compile(
-    r"\b(?:is|are|was|were|got|has\s+been|have\s+been)?\s*committed\b"
+    r"\b(?:is|are|was|were|got|has\s+been|have\s+been|had\s+been)\s+committed\b"
+    r"|\b(?:i|we)(?:'ve|'d)?\s+(?:have\s+|had\s+)?committed\b"
+    r"|(?:^|[.!?]\s+|\n\s*(?:[-*]\s+)?)committed\b"
+    r"|\bcommitted\s+(?:to|onto|on)\s+(?:main|master|origin|the\s+repo|the\s+branch|the\s+vault)\b"
     r"|\bthe\s+commit\s+(?:landed|is\s+in|is\s+there)\b"
     r"|\bchanges?\s+(?:is|are)\s+committed\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+# "committed" that is NOT a claim about THIS session's git state: the English
+# idiom (committed to a plan/decision — anything but a git target), and work
+# attributed to another actor. Checked on the match plus its tail.
+COMMIT_NON_CLAIM = re.compile(
+    r"committed\s+to\s+(?!main\b|master\b|origin\b|the\s+repo\b|the\s+branch\b|the\s+vault\b)"
+    r"|committed\s+by\s+(?!me\b|us\b|this\s+session\b)",
     re.IGNORECASE,
 )
 COMMITTED_EVIDENCE = re.compile(
@@ -257,7 +275,7 @@ def main() -> None:
 
     # Detector C — external git/PR state claimed without a read of the record
     try:
-        if COMMITTED_CLAIM.search(last) and not _claim_exempt(last, COMMITTED_CLAIM):
+        if COMMITTED_CLAIM.search(last) and not _claim_exempt(last, COMMITTED_CLAIM, COMMIT_NON_CLAIM):
             if not COMMITTED_EVIDENCE.search(command_blob):
                 findings.append(
                     "the change is claimed COMMITTED, but no `git commit`/`git log`/"
@@ -332,16 +350,24 @@ def _has_any_claim(text: str) -> bool:
     return False
 
 
-def _claim_exempt(text: str, claim_re: "re.Pattern") -> bool:
+def _claim_exempt(text: str, claim_re: "re.Pattern", non_claim: "re.Pattern | None" = None) -> bool:
     """True if every match of claim_re sits near a forensic negation or a
-    not-yet-happened marker (plan/TODO), so it isn't a live landed-state claim."""
+    not-yet-happened marker (plan/TODO), so it isn't a live landed-state claim.
+
+    `non_claim`, when given, additionally exempts a match whose own span+tail
+    reads as a non-git use of the verb (idiom, or attribution to another actor).
+    Scoped to the match tail rather than the +-110 window so a nearby unrelated
+    idiom cannot launder a real adjacent claim."""
     matches = list(claim_re.finditer(text))
     if not matches:
         return False
     for m in matches:
         window = text[max(0, m.start() - 110): m.end() + 110]
-        if not (FORENSIC.search(window) or NOT_YET.search(window)):
-            return False
+        if FORENSIC.search(window) or NOT_YET.search(window):
+            continue
+        if non_claim is not None and non_claim.search(text[m.start(): m.end() + 60]):
+            continue
+        return False
     return True
 
 
@@ -427,4 +453,13 @@ def _flatten(content) -> str:
 
 
 if __name__ == "__main__":
+    # This hook carries non-ASCII source and prints its block reason to the
+    # console. On a cp1252 Windows console that write raises and the guard
+    # fails silently OPEN -- the exact ai-brain-starter#313 crash class.
+    # Idempotent; a no-op on an already-UTF-8 console.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     main()

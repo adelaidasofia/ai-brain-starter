@@ -108,7 +108,6 @@ ed1d68dba02ab76c99907e8efc27ac0aac8c98a14dad261da73fa5d8e1610369 SEV-3-doc-only 
 e943857ef9482c097b4357ee8abf2e4ede3ffcab3b9bae3a1a0687b0ae371e2b SEV-4-json-encoded hooks/block-populated-public-skill.py
 73ec7598cd563971fcafc2542818e297df5ed045714d7b66263de949f4619093 SEV-4-json-encoded hooks/block-secret-in-note.py
 b647243fdf0a358d46a6a79b0bf7f817ee121f68d5d685fabe4b0ee2a93af94d SEV-4-json-encoded hooks/check-fabricated-hook-attribution.py
-9384c96d288eb31a5f59cc7e985ec4b79e723309595d48a09a87e30d7907c5eb SEV-4-json-encoded hooks/check-fabricated-verification.py
 25d963d25e1e2e6844a35133bbad1d0aad8d03de424e29d4a406a67cb1d4c1cb SEV-4-json-encoded hooks/check-rule-conflicts-on-write.py
 85006d7e25f42ba787b2ce616bd1c71590c3990f89f3153a6f958156c93029ed SEV-4-json-encoded hooks/coach-auto-prescribe-on-journal.py
 e34a230865351b20e13bfc64cd8c67f06931fac79f8129beb84471cce434cb58 SEV-4-json-encoded hooks/first-week-checkin.py
