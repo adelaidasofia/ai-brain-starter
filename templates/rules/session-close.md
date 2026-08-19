@@ -10,7 +10,7 @@ supersedes: session-end-cascade.md (deprecated; this file is the canonical sourc
 
 **What a close is for: nothing the session produced gets lost.** What the user learned, decided, felt, and committed to gets written to their vault — their second brain — so the next session, and the next month, build on it instead of starting cold. Everything else in this file is plumbing that serves that one goal.
 
-**Most people running this are not developers.** They journal, plan, think, run a business. Speak to them in plain language. Never narrate machinery — "git snapshot", "Bash task", "mutex", "worktree" — at them. The git/resource detail in the final step runs automatically and silently; it is maintainer reference, not something the user reads or hears.
+**Most people running this are not developers.** Plain-language register and the no-blind-technical-decision rule are promoted to CLAUDE.md (`## Plain-Language Rules — NON-NEGOTIABLE`) — always loaded, governs every phase, not just this one. The git/resource detail in the final step runs automatically and silently; it is maintainer reference, not something the user reads or hears.
 
 **You don't need to read this file when the cascade fires** — `detect-closing-signal.py` injects all paths and instructions into your context automatically. This file is documentation, debugging, and the rare manual run. Full architecture + internals: [docs/SESSION_CLOSE.md](../../docs/SESSION_CLOSE.md).
 
