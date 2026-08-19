@@ -9,7 +9,7 @@
 # non-ASCII byte decodes wrong and the parser dies on a file that is valid UTF-8
 # everywhere else. The BOM is how 5.1 is told the encoding.
 #
-# ONE implementation, TWO callers, so the rule cannot drift between them:
+# ONE implementation, THREE callers, so the rule cannot drift between them:
 #
 #   1. .github/workflows/lint.yml - the ENFORCING gate. A red here blocks merge.
 #   2. scripts/ci.sh              - the locally-runnable pre-push gate, for fast
@@ -18,14 +18,29 @@
 #      `bash scripts/ci.sh` and failed only after a push - one full CI
 #      round-trip per occurrence. Measured 2026-08-19 on
 #      tests/integration/test_bootstrap_ps1_slash_commands.ps1.
+#   3. scripts/diagnose.sh        - the USER-facing health report, via
+#      --porcelain. Different target (an installed vault, which is usually not
+#      a git repo), different verdict (a warning, not a merge block), same rule.
+#      Its private copy was capped at `head -20`, so a vault with more than 20
+#      .ps1 files reported "All .ps1 files have UTF-8 BOM" while never reading
+#      the rest - and diagnose.ps1, which has no cap, reported the same vault
+#      honestly. Folding it in removed the copy and the truncation together.
 #
-# The drift invariant is pinned by scripts/test_ps1_bom_gate.py: it fails if
-# either caller stops delegating here, or if anyone re-inlines a private copy of
-# the byte comparison.
+# scripts/diagnose.ps1 is DELIBERATELY not a caller. It is the Windows-native
+# surface, run as `pwsh diagnose.ps1 -Vault C:\path` on a box that need not have
+# bash at all, and no .ps1 in this repo shells out to bash. This repo's idiom
+# for sh/ps1 parity is a shared data source plus a test that reads both (see
+# sync-vault-scripts.ps1), not a cross-language call - so the .ps1 keeps its own
+# byte check and scripts/test_ps1_bom_gate.py pins the two to the same bytes.
+#
+# The drift invariant is pinned by scripts/test_ps1_bom_gate.py: it fails if any
+# caller stops delegating here, if anyone re-inlines a private copy of the byte
+# comparison, or if either surface starts capping its enumeration again.
 #
 # Usage:
-#   bash scripts/check-ps1-bom.sh              # scan this repo
-#   bash scripts/check-ps1-bom.sh --self-test  # negative control: prove it bites
+#   bash scripts/check-ps1-bom.sh                    # scan this repo (gate)
+#   bash scripts/check-ps1-bom.sh --self-test        # negative control
+#   bash scripts/check-ps1-bom.sh --porcelain DIR... # report on arbitrary trees
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -93,6 +108,49 @@ _scan_repo() {
     return 1
   fi
   return "$rc"
+}
+
+# --- porcelain mode (arbitrary trees, e.g. an installed vault) ----------------
+#
+# `find`, not `git ls-files`, and deliberately so: this mode reports on a user's
+# VAULT, which diagnose.sh itself warns may not be a git repo. Asking git to
+# enumerate a non-repo returns nothing, and "nothing" is indistinguishable from
+# "clean" - the exact silent-green this file exists to prevent. The gate above
+# keeps its git enumeration because a repo checkout IS a repo.
+#
+# NO cap. The copy this replaced ended in `| head -20`, which is what let a
+# 25-file vault report green on 20 files. A scanner states how much of its input
+# it read, so the count travels with the verdict and the caller can print it.
+_ps1_files_find() {
+  find "$@" -name '*.ps1' -not -path '*/.git/*' -print0 2>/dev/null
+}
+
+# Emit ONE machine-readable line. Contract, matching check-cloud-sync.py's
+# --porcelain style so diagnose.sh can `case` on it:
+#
+#   NONE:0                       - no *.ps1 anywhere under the given roots
+#   OK:<scanned>                 - every file scanned carries the BOM
+#   MISSING_BOM:<missing>:<scanned>
+#
+# Exit is 0 for all three: this is a REPORT, not a gate. A caller that cannot
+# parse the line must warn ("could not evaluate"), never assume clean.
+_report() {
+  local abs head3 scanned=0 missing=0
+  while IFS= read -r -d '' abs; do
+    [ -f "$abs" ] || continue
+    scanned=$((scanned + 1))
+    head3="$(head -c 3 "$abs" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+    [ "$head3" != "efbbbf" ] && missing=$((missing + 1))
+  done < <(_ps1_files_find "$@")
+
+  if [ "$scanned" -eq 0 ]; then
+    echo "NONE:0"
+  elif [ "$missing" -eq 0 ]; then
+    echo "OK:$scanned"
+  else
+    echo "MISSING_BOM:$missing:$scanned"
+  fi
+  return 0
 }
 
 # --- negative control --------------------------------------------------------
@@ -192,17 +250,75 @@ _self_test() {
     failures=$((failures + 1))
   fi
 
+  # --- case 4: porcelain mode, on the tree diagnose.sh actually reports on -
+  #     a plain directory that is NOT a git repo. If this mode ever enumerated
+  #     with git it would return zero files here and print OK, which is the
+  #     silent-green the gate half already guards against.
+  local vault="$tmp/vault-not-a-repo"
+  mkdir -p "$vault"
+  cp "$with_bom" "$vault/ok.ps1"
+  if [ "$(_report "$vault")" != "OK:1" ]; then
+    echo "self-test FAILED: porcelain on a non-repo dir with one good file returned '$(_report "$vault")', expected OK:1." >&2
+    failures=$((failures + 1))
+  fi
+  cp "$no_bom" "$vault/bad.ps1"
+  if [ "$(_report "$vault")" != "MISSING_BOM:1:2" ]; then
+    echo "self-test FAILED: porcelain did not report 1 missing of 2 (got '$(_report "$vault")')." >&2
+    failures=$((failures + 1))
+  fi
+  rm -rf "$vault"
+  mkdir -p "$vault"
+  if [ "$(_report "$vault")" != "NONE:0" ]; then
+    echo "self-test FAILED: porcelain on an empty dir returned '$(_report "$vault")', expected NONE:0." >&2
+    failures=$((failures + 1))
+  fi
+
+  # --- case 5: the TRUNCATION class, which is why this mode exists. The copy
+  #     in diagnose.sh ended in `| head -20`, so a vault with more than 20 .ps1
+  #     files reported green while never reading the rest. Plant 25 good files
+  #     and exactly one bad one, and require the bad one to be found regardless
+  #     of where it lands in enumeration order.
+  local big="$tmp/big-vault" n
+  mkdir -p "$big"
+  for n in $(seq 1 25); do
+    cp "$with_bom" "$big/f$n.ps1"
+  done
+  cp "$no_bom" "$big/needle.ps1"
+  if [ "$(_report "$big")" != "MISSING_BOM:1:26" ]; then
+    echo "self-test FAILED: porcelain missed the one BOM-less file among 26 (got '$(_report "$big")', expected MISSING_BOM:1:26). A cap on the enumeration is back." >&2
+    failures=$((failures + 1))
+  fi
+
   if [ "$failures" -gt 0 ]; then
     echo "self-test FAILED ($failures)" >&2
     return 1
   fi
-  echo "    self-test OK - flags BOM-less .ps1 (tracked and not-yet-committed), stays quiet on BOM'd and gitignored files, goes green once fixed, and refuses to pass on an empty enumeration"
+  echo "    self-test OK - flags BOM-less .ps1 (tracked and not-yet-committed), stays quiet on BOM'd and gitignored files, goes green once fixed, refuses to pass on an empty enumeration, and reports honestly on a non-repo vault of 26 files with no cap"
   return 0
 }
 
 main() {
   if [ "${1:-}" = "--self-test" ]; then
     _self_test
+    return $?
+  fi
+  if [ "${1:-}" = "--porcelain" ]; then
+    shift
+    if [ "$#" -eq 0 ]; then
+      echo "usage: check-ps1-bom.sh --porcelain DIR [DIR...]" >&2
+      return 2
+    fi
+    # Drop roots that do not exist so `find` cannot fail the whole report over
+    # one absent path (an install without the skill dir is normal, not an error).
+    local roots=() d
+    for d in "$@"; do
+      [ -d "$d" ] && roots+=("$d")
+    done
+    if [ "${#roots[@]}" -eq 0 ]; then
+      echo "NONE:0"
+      return 0
+    fi
+    _report "${roots[@]}"
     return $?
   fi
   echo "==> UTF-8 BOM on *.ps1: $REPO_ROOT"

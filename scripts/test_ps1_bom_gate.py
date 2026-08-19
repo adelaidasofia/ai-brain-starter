@@ -36,6 +36,8 @@ REPO = Path(__file__).resolve().parent.parent
 CHECKER = REPO / "scripts" / "check-ps1-bom.sh"
 LINT_YML = REPO / ".github" / "workflows" / "lint.yml"
 CI_SH = REPO / "scripts" / "ci.sh"
+DIAGNOSE_SH = REPO / "scripts" / "diagnose.sh"
+DIAGNOSE_PS1 = REPO / "scripts" / "diagnose.ps1"
 FIXTURES = REPO / "tests" / "fixtures" / "ps1-bom"
 
 BOM = b"\xef\xbb\xbf"
@@ -50,6 +52,21 @@ INLINE_MARKER = "efbbbf"
 # So match the command, and strip comment lines before looking.
 SCAN_CALL = re.compile(r"(?:^|\s)bash\s+scripts/check-ps1-bom\.sh\s*$", re.M)
 SELFTEST_CALL = re.compile(r"(?:^|\s)bash\s+scripts/check-ps1-bom\.sh\s+--self-test\b")
+# diagnose.sh resolves the script through a candidate list rather than a fixed
+# repo-relative path (it also runs from an installed vault), so it is matched on
+# the porcelain invocation instead.
+PORCELAIN_CALL = re.compile(r'bash\s+"\$CHECK_BOM"\s+--porcelain\b')
+
+# diagnose.ps1 is the one intentional duplicate: it must run on a Windows box
+# with no bash. Pin it to the SAME three bytes as the shell implementation, so
+# the rule cannot be changed on one side alone.
+PS1_BOM_BYTES = re.compile(
+    r"0xEF.*?0xBB.*?0xBF", re.S | re.I
+)
+# `| head -N` / `-First N` on the enumeration is what silently truncated the
+# scan. Neither user-facing surface may cap again.
+SH_CAP = re.compile(r"-name\s+'\*\.ps1'[^\n]*\|\s*head\b")
+PS1_CAP = re.compile(r"Filter\s+'\*\.ps1'[^\n]*(-First|Select-Object)\b")
 
 
 def _executable_lines(text: str) -> str:
@@ -100,6 +117,64 @@ def test_both_callers_delegate() -> None:
             f"copy of the BOM rule. Call scripts/check-ps1-bom.sh instead - two copies drift, "
             f"and the local one is the half that goes stale silently.",
         )
+
+
+def test_diagnose_sh_delegates() -> None:
+    """The user-facing bash report must use the shared rule, not a private copy."""
+    body = DIAGNOSE_SH.read_text(encoding="utf-8")
+    code = _executable_lines(body)
+    rel = DIAGNOSE_SH.relative_to(REPO)
+
+    check(
+        PORCELAIN_CALL.search(code) is not None,
+        f"{rel} no longer calls check-ps1-bom.sh --porcelain. It carried its own copy of the "
+        f"BOM rule once and the two answers diverged; the shared script is the only owner.",
+    )
+    check(
+        INLINE_MARKER not in body,
+        f"{rel} contains the raw byte comparison '{INLINE_MARKER}' again. That is a re-inlined "
+        f"copy of the BOM rule - delegate to check-ps1-bom.sh --porcelain instead.",
+    )
+    # The absent-helper path must WARN, never fall through to a silent pass. A
+    # health report that cannot run a check has three states, not two.
+    check(
+        "check-ps1-bom.sh not found" in body,
+        f"{rel} does not warn when check-ps1-bom.sh is missing. A check that could not run "
+        f"must say so - reporting nothing reads exactly like reporting clean.",
+    )
+    check(
+        SH_CAP.search(code) is None,
+        f"{rel} caps its *.ps1 enumeration with `| head` again. That is the truncation that "
+        f"made a 25-file vault report 'All .ps1 files have UTF-8 BOM' after reading 20.",
+    )
+
+
+def test_diagnose_ps1_stays_native_and_pinned() -> None:
+    """The Windows surface keeps its own check - but pinned to the same bytes.
+
+    Folding this one in would break it: it runs as `pwsh diagnose.ps1` on a box
+    that need not have bash. So the duplicate is deliberate, and this is what
+    stops the two implementations from drifting apart silently.
+    """
+    body = DIAGNOSE_PS1.read_text(encoding="utf-8")
+    rel = DIAGNOSE_PS1.relative_to(REPO)
+
+    check(
+        PS1_BOM_BYTES.search(body) is not None,
+        f"{rel} no longer compares the bytes 0xEF 0xBB 0xBF. It is the Windows-native copy of "
+        f"the rule in check-ps1-bom.sh and must test the same three bytes.",
+    )
+    check(
+        "check-ps1-bom.sh" in body,
+        f"{rel} no longer explains why it duplicates check-ps1-bom.sh. Without that note the "
+        f"duplicate reads as an oversight and the next person 'fixes' it by adding a bash call, "
+        f"which breaks the diagnostic on Windows.",
+    )
+    check(
+        PS1_CAP.search(body) is None,
+        f"{rel} caps its *.ps1 enumeration. It is currently the honest half of this pair; "
+        f"capping it would hide the same defect diagnose.sh used to hide.",
+    )
 
 
 def test_fixture_integrity() -> None:
@@ -180,6 +255,8 @@ def main() -> int:
     tests = [
         test_checker_exists,
         test_both_callers_delegate,
+        test_diagnose_sh_delegates,
+        test_diagnose_ps1_stays_native_and_pinned,
         test_fixture_integrity,
         test_negative_control_passes,
         test_repo_is_clean,
@@ -192,8 +269,9 @@ def main() -> int:
         for f in failures:
             print(f"  * {f}")
         return 1
-    print(f"    OK - {len(tests)} checks: one implementation, two delegating callers, "
-          f"controls intact, repo clean")
+    print(f"    OK - {len(tests)} checks: one implementation; lint.yml + ci.sh + diagnose.sh "
+          f"delegate, diagnose.ps1 pinned native; no capped enumerations; controls intact; "
+          f"repo clean")
     return 0
 
 

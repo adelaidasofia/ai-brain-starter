@@ -258,23 +258,48 @@ fi
 
 # ----- 8. .ps1 sanity (if any exist) -----
 section "8. PowerShell files (Windows compat)"
-ps1_files=$(find "$VAULT" "$HOME/.claude/skills/ai-brain-starter" \
-  -name '*.ps1' -not -path '*/.git/*' 2>/dev/null | head -20)
-if [ -z "$ps1_files" ]; then
-  ok "No .ps1 files to check"
+# The BOM rule is NOT reimplemented here. It is one rule with one owner,
+# scripts/check-ps1-bom.sh, which the CI gate and the pre-push gate also call -
+# so a fix lands everywhere at once. This block used to carry its own copy,
+# capped at `head -20`: a vault with more than 20 .ps1 files printed "All .ps1
+# files have UTF-8 BOM" without ever reading the rest, while diagnose.ps1 (no
+# cap) reported the same vault honestly. Same vault, two different answers.
+CHECK_BOM=""
+for c in "$(cd "$(dirname "$0")" && pwd)/check-ps1-bom.sh" \
+         "$HOME/.claude/skills/ai-brain-starter/scripts/check-ps1-bom.sh"; do
+  [ -f "$c" ] && CHECK_BOM="$c" && break
+done
+if [ -n "$CHECK_BOM" ]; then
+  bom_verdict="$(bash "$CHECK_BOM" --porcelain "$VAULT" "$HOME/.claude/skills/ai-brain-starter" 2>/dev/null)"
+  case "$bom_verdict" in
+    NONE:0)
+      ok "No .ps1 files to check" ;;
+    OK:*)
+      ok "All .ps1 files have UTF-8 BOM (${bom_verdict#OK:} scanned)" ;;
+    MISSING_BOM:*:*)
+      bom_rest="${bom_verdict#MISSING_BOM:}"
+      warn "${bom_rest%%:*} of ${bom_rest##*:} .ps1 file(s) missing UTF-8 BOM" \
+        "Windows PowerShell 5.1 will crash on non-ASCII bytes." ;;
+    *)
+      warn "Could not evaluate .ps1 BOM status" "check-ps1-bom.sh returned: ${bom_verdict:-<empty>}" ;;
+  esac
 else
-  bom_fail=0; emdash_fail=0
+  warn "check-ps1-bom.sh not found" "Cannot verify .ps1 files carry a UTF-8 BOM."
+fi
+
+# Em dashes are a separate rule with its own owner (the lint.yml step); this is
+# the user-facing warning half. No cap here either - the same truncation that
+# hid a missing BOM would hide an em dash.
+ps1_files=$(find "$VAULT" "$HOME/.claude/skills/ai-brain-starter" \
+  -name '*.ps1' -not -path '*/.git/*' 2>/dev/null)
+if [ -z "$ps1_files" ]; then
+  : # "no .ps1 files" was already reported by the BOM verdict above
+else
+  emdash_fail=0
   while IFS= read -r f; do
     [ -z "$f" ] && continue
-    head_bytes=$(head -c 3 "$f" 2>/dev/null | od -An -tx1 | tr -d ' \n')
-    [ "$head_bytes" != "efbbbf" ] && bom_fail=$((bom_fail+1))
-    grep -l $'\xe2\x80\x94' "$f" >/dev/null 2>&1 && emdash_fail=$((emdash_fail+1))
+    grep -q $'\xe2\x80\x94' "$f" 2>/dev/null && emdash_fail=$((emdash_fail+1))
   done <<< "$ps1_files"
-  if [ "$bom_fail" -eq 0 ]; then
-    ok "All .ps1 files have UTF-8 BOM"
-  else
-    warn "$bom_fail .ps1 file(s) missing UTF-8 BOM" "Windows PowerShell 5.1 will crash on non-ASCII bytes."
-  fi
   if [ "$emdash_fail" -eq 0 ]; then
     ok "No em dashes in .ps1 files"
   else
