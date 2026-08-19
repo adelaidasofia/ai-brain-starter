@@ -893,6 +893,18 @@ else
   utf8_note="passed"
 fi
 
+# The utf8 baseline's per-tier section headers are the burn-down ledger a human
+# reads to decide whether that backlog is shrinking, and check-utf8-stdout.py
+# cannot catch a stale one: it computes its own counts and skips every '#' line.
+# Four headers across the two tiered baselines were stale at once before this
+# landed. Validated from outside the checker because check-utf8-stdout.py is
+# itself content-pinned by the cloud-safe walker ratchet (test_cloud_safe_file_walkers),
+# whose rule is that any edit obliges a safe_read migration; vault-root's own
+# checker validates its baseline inline, since only the scanner can count reads.
+echo "==> (e1b) baseline burn-down headers: $PY scripts/_baseline_sections.py --check scripts/utf8-stdout-baseline.txt"
+"$PY" scripts/_baseline_sections.py --self-test >/dev/null
+"$PY" scripts/_baseline_sections.py --check scripts/utf8-stdout-baseline.txt
+
 # ---- (e2) Hook block-protocol ----------------------------------------------
 # scripts/check-hook-block-protocol.py fails a hook that is registered with the
 # allow-fallback wrapper (`... || echo '{...permissionDecision:allow}'`) but

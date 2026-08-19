@@ -158,6 +158,22 @@ jobs:
       - name: unstarted-worktree staleness negative controls (the guard must still bite)
         run: python3 hooks/warn-stale-dev-checkout.py --self-test
 
+      # Both SHA-pinned baselines publish a per-tier burn-down count in their
+      # section headers, and every checker skips `#` lines - so a header that no
+      # longer matches its rows breaks nothing and fails nothing. Four were stale
+      # simultaneously before this landed (SEV-4 claiming 42 files over 26 rows).
+      # A backlog nobody can trust the size of is not a ratchet.
+      - name: baseline section-header negative controls (the guard must still bite)
+        run: python3 scripts/_baseline_sections.py --self-test
+
+      # utf8-stdout-baseline.txt is validated from HERE rather than from inside
+      # check-utf8-stdout.py, because that checker is itself content-pinned by
+      # scripts/cloud-safe-walker-baseline.txt - editing it would oblige an
+      # unrelated safe_read migration. vault-root's own checker validates its
+      # baseline inline (it alone can count reads), so it is not repeated here.
+      - name: utf8 baseline burn-down counts match its rows
+        run: python3 scripts/_baseline_sections.py --check scripts/utf8-stdout-baseline.txt
+
       # Self-test first (cheap, and proves the guard still bites), then the tree.
       - name: naive VAULT_ROOT read negative controls (the guard must still bite)
         run: python3 scripts/check-vault-root-reads.py --self-test
