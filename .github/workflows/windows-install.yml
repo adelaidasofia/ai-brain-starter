@@ -117,6 +117,11 @@ jobs:
             Write-Host "::error::bootstrap.ps1 Python discovery suite failed (exit $LASTEXITCODE)"
             exit $LASTEXITCODE
           }
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\tests\integration\test_bootstrap_ps1_slash_commands.ps1"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::bootstrap.ps1 Python discovery suite failed (exit $LASTEXITCODE)"
+            exit $LASTEXITCODE
+          }
           exit 0
 
       # A clean, known Python interpreter. The user-level hook installer is a
@@ -244,6 +249,44 @@ jobs:
       # (7 = the PR-#254-era count; the template currently ships more, and grows)
       # cleanly separates a healthy install from the regression. Also assert MCP
       # registration (.mcp.json parses and the default-profile servers are present).
+      # Slash commands are a SEPARATE activation surface from skills, and until
+      # 2026-08-19 bootstrap.ps1 installed the skills but never the commands --
+      # so every Windows install had the meeting/journal/graphify skills with
+      # none of their slash commands, and nothing errored, because the skills
+      # still answered natural language. Only typing "/" showed the gap.
+      # Asserted on the REAL runner because a parse check cannot see it.
+      - name: assert slash commands installed (bootstrap.ps1 parity with bootstrap.sh)
+        shell: pwsh
+        run: |
+          $fail = @()
+          $dst = Join-Path $env:USERPROFILE ".claude/commands"
+          $src = Join-Path $env:GITHUB_WORKSPACE "commands"
+
+          if (-not (Test-Path -LiteralPath $dst)) {
+            $fail += "commands dir missing at $dst - bootstrap.ps1 did not install slash commands"
+          } else {
+            $want = @(Get-ChildItem -File -Filter *.md -LiteralPath $src).Count
+            $got  = @(Get-ChildItem -File -Filter *.md -LiteralPath $dst).Count
+            Write-Host "slash commands: $got installed at $dst (repo ships $want)"
+            if ($got -lt $want) {
+              $fail += "expected >= $want slash commands, found $got"
+            }
+            # Name one explicitly so a silent rename of the meeting command is
+            # caught too, not just a count that happens to match.
+            $meeting = Join-Path $dst "meeting-todos.md"
+            if (-not (Test-Path -LiteralPath $meeting)) {
+              $fail += "meeting-todos.md not installed - /meeting-todos will not appear in the palette"
+            }
+          }
+
+          if ($fail.Count -gt 0) {
+            Write-Host ""
+            foreach ($f in $fail) { Write-Host "::error::$f" }
+            exit 1
+          }
+          Write-Host "slash-command install OK."
+          exit 0
+
       - name: assert install outcome (settings.json hooks + .mcp.json servers)
         shell: pwsh
         run: |

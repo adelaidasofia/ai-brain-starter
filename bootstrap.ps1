@@ -1143,6 +1143,53 @@ foreach ($sub in @("graphify", "cierre-de-llamada", "meeting-todos", "patterns",
     }
 }
 
+# ─── Slash commands ───────────────────────────────────────────────────────────
+# Install commands/*.md into ~/.claude/commands/.
+#
+# Skill folders alone do NOT register slash commands in Claude Code's palette;
+# plugin-style `commands/<name>.md` files do. bootstrap.sh has done this since
+# the 2026-05-14 install report (/second-brain-mapping installed but absent
+# from the palette) -- bootstrap.ps1 never did, so every Windows install got
+# the skills with NONE of the 16 slash commands. `/meeting-todos`,
+# `/daily-journal`, `/graphify` and the rest simply did not exist there, with
+# no error to notice: the skills still answered natural language, so the gap
+# only showed when someone typed a slash. Bug class ARTIFACT-WITHOUT-ACTIVATION,
+# Windows leg. Mirrors the bootstrap.sh step; keep the two in step.
+# ai-brain:slash-commands:start
+$commandsSrc = "$SkillDir\commands"
+$commandsDst = "$env:USERPROFILE\.claude\commands"
+if (-not (Test-Path -LiteralPath $commandsSrc)) {
+    Warn "commands/ not found at $commandsSrc - slash commands will not appear in the palette"
+} elseif ($DryRun) {
+    Dry "would install slash commands from $commandsSrc to $commandsDst (with backup-before-overwrite)"
+} else {
+    Hdr "Installing slash commands"
+    New-Item -ItemType Directory -Force -Path $commandsDst | Out-Null
+    $cmdNew = 0
+    $cmdUpdated = 0
+    Get-ChildItem -File -Filter *.md -LiteralPath $commandsSrc | ForEach-Object {
+        $dstFile = Join-Path $commandsDst $_.Name
+        if (Test-Path -LiteralPath $dstFile) {
+            if ((Get-FileHash $_.FullName).Hash -ne (Get-FileHash $dstFile).Hash) {
+                Copy-Item -LiteralPath $dstFile -Destination "$dstFile.bak-$stamp"
+                $script:Backups += "$dstFile.bak-$stamp"
+                Copy-Item -Force -LiteralPath $_.FullName -Destination $dstFile
+                $cmdUpdated++
+            }
+        } else {
+            Copy-Item -Force -LiteralPath $_.FullName -Destination $dstFile
+            $cmdNew++
+        }
+    }
+    if ($cmdNew -gt 0 -or $cmdUpdated -gt 0) {
+        Ok "commands: $cmdNew new, $cmdUpdated updated (backups preserved)"
+        $script:Updated += "slash commands ($cmdNew new, $cmdUpdated updated)"
+    } else {
+        Ok "commands: already current"
+    }
+}
+# ai-brain:slash-commands:end
+
 # ─── Humanizer ────────────────────────────────────────────────────────────────
 $humDir = "$env:USERPROFILE\.claude\skills\humanizer"
 if (-not (Test-Path $humDir) -and $DryRun) {
