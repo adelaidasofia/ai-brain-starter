@@ -63,7 +63,7 @@ def load_state() -> dict:
     if not STATE_FILE.is_file():
         return {}
     try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return json.loads(STATE_FILE.read_text(encoding="utf-8", errors="replace"))
     except (json.JSONDecodeError, OSError):
         return {}
 
@@ -105,7 +105,7 @@ def opted_out(cwd: Path) -> bool:
     if not claude_md.is_file():
         return False
     try:
-        text = claude_md.read_text(encoding="utf-8")
+        text = claude_md.read_text(encoding="utf-8", errors="replace")
         if re.search(r"firstWeekCheckin\s*:\s*false", text, re.IGNORECASE):
             return True
     except OSError:
@@ -120,7 +120,7 @@ def used_skills() -> set[str]:
     if not log_file.is_file():
         return skills
     try:
-        with log_file.open("r", encoding="utf-8") as f:
+        with log_file.open("r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:

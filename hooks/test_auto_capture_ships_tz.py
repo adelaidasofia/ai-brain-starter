@@ -163,7 +163,7 @@ def main() -> int:
         # -- 5. CLASS guard: no import-time ZoneInfo() in any hook -----------
         for path in sorted(HOOKS.glob("*.py")):
             try:
-                lines = zoneinfo_calls_at_module_level(path.read_text(encoding="utf-8"))
+                lines = zoneinfo_calls_at_module_level(path.read_text(encoding="utf-8", errors="replace"))
             except SyntaxError:
                 continue  # gate (a) py_compile owns syntax
             check(not lines,

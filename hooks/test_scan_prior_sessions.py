@@ -91,7 +91,7 @@ def test_auto_scrub_redacts_secret_backs_up_preserves_v2_key():
         assert ok, f"_auto_scrub did not scrub: {msg}"
         backups = list(d.glob("sess.jsonl.bak.*-secret-scrub"))
         assert backups, "no backup written before scrub"
-        scrubbed = j.read_text()
+        scrubbed = j.read_text(encoding="utf-8", errors="replace")
         assert "[REDACTED-hex-256bit]" in scrubbed, "real secret not redacted"
         assert f"v2:{HEXV}" in scrubbed, "v2 cache key was corrupted by the scrub"
         assert f"API_KEY={HEXV}" not in scrubbed, "bare secret survived the scrub"

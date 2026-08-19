@@ -39,7 +39,7 @@ def _project_edit(file_path: str, old: str, new: str, replace_all: bool) -> str 
     if not p.exists():
         return None
     try:
-        current = p.read_text()
+        current = p.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
     if old not in current:

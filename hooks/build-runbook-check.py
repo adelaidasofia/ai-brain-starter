@@ -67,7 +67,7 @@ def runbook_read_recently(transcript_path: Path | None, runbook_filename: str) -
     if not transcript_path or not transcript_path.exists():
         return False
     try:
-        with transcript_path.open(encoding="utf-8") as fh:
+        with transcript_path.open(encoding="utf-8", errors="replace") as fh:
             lines = fh.readlines()
     except OSError:
         return False

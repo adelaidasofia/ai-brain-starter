@@ -319,7 +319,7 @@ def _is_detached(git_dir: str) -> bool:
     """Read git-dir/HEAD directly -- no second subprocess. Attached HEAD is
     `ref: refs/heads/<branch>`; anything else is a raw SHA, i.e. detached."""
     try:
-        with open(os.path.join(git_dir, "HEAD"), "r", encoding="utf-8") as f:
+        with open(os.path.join(git_dir, "HEAD"), "r", encoding="utf-8", errors="replace") as f:
             return not f.read().strip().startswith("ref:")
     except OSError:
         return False

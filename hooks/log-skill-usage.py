@@ -55,7 +55,7 @@ def telemetry_enabled(cwd: Path) -> bool:
     claude_md = cwd / "CLAUDE.md"
     if claude_md.is_file():
         try:
-            text = claude_md.read_text(encoding="utf-8")
+            text = claude_md.read_text(encoding="utf-8", errors="replace")
             if re.search(r"cascadeTelemetry\s*:\s*true", text, re.IGNORECASE):
                 return True
         except OSError:

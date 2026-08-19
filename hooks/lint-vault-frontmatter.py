@@ -83,7 +83,7 @@ def project_post_edit_content(tool_name: str, tool_input: dict) -> str | None:
 
     if tool_name == "Edit":
         try:
-            existing = Path(file_path).read_text(encoding="utf-8")
+            existing = Path(file_path).read_text(encoding="utf-8", errors="replace")
         except (OSError, FileNotFoundError):
             existing = ""
         old = tool_input.get("old_string", "")
@@ -94,7 +94,7 @@ def project_post_edit_content(tool_name: str, tool_input: dict) -> str | None:
 
     if tool_name == "MultiEdit":
         try:
-            content = Path(file_path).read_text(encoding="utf-8")
+            content = Path(file_path).read_text(encoding="utf-8", errors="replace")
         except (OSError, FileNotFoundError):
             content = ""
         for edit in tool_input.get("edits", []):

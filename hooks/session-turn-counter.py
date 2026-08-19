@@ -37,7 +37,7 @@ def main() -> int:
 
     if state_path.exists():
         try:
-            state = json.loads(state_path.read_text())
+            state = json.loads(state_path.read_text(encoding="utf-8", errors="replace"))
         except (json.JSONDecodeError, OSError):
             state = {"turns": 0, "session_start": time.time()}
     else:
