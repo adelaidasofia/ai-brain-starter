@@ -20,6 +20,8 @@ These are PROVISIONAL. A semantic label from the model beats an anchor every tim
 this only guarantees the floor is a real word instead of an index.
 """
 
+from __future__ import annotations  # PEP 604 annotations; gate pins Python 3.9
+
 import re
 
 MAX_LABEL_CHARS = 40

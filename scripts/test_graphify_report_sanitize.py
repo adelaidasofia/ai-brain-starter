@@ -11,6 +11,8 @@ placeholder dots named "Community 412".
 Run: python3 scripts/test-graphify-report-sanitize.py
 """
 
+from __future__ import annotations  # PEP 604 annotations; gate pins Python 3.9
+
 import json
 import subprocess
 import sys

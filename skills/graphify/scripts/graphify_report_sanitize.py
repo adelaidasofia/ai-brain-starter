@@ -29,6 +29,8 @@ Usage:
   graphify_report_sanitize.py --vault ~/MyVault     # also exclude graphify-out/ from the index
 """
 
+from __future__ import annotations  # PEP 604 annotations; gate pins Python 3.9
+
 import argparse
 import json
 import re

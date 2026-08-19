@@ -61,6 +61,9 @@
 #                           switched off, so it never fires and nothing says so.
 #                           Same SILENT-NO-OP family as (e)/(e2)/(e3); pure stdlib.
 #   (e5) subprocess decode - scripts/check-utf8-subprocess.py is the READ half of (e).
+#   (e6) py3.9 annotation parity - scripts/check-py39-annotations.py fails `X | None`
+#        without `from __future__ import annotations`. This job pins 3.9, where that
+#        compiles fine and raises TypeError when the annotation is evaluated.
 #                           (e) fails a CLI that PRINTS non-ASCII without a UTF-8
 #                           stdout guard; this fails one that READS a child's output
 #                           with text=True and no encoding=, so the decode uses the
@@ -944,6 +947,18 @@ echo "==> (e5) subprocess decode: $PY scripts/check-utf8-subprocess.py"
 "$PY" scripts/check-utf8-subprocess.py --self-test >/dev/null
 "$PY" scripts/check-utf8-subprocess.py
 
+# The version-parity twin of (e5). scripts/check-py39-annotations.py fails a PEP 604
+# annotation (`X | None`) in a file without `from __future__ import annotations`. THIS
+# job pins Python 3.9, where that syntax is legal to COMPILE and raises TypeError the
+# moment the annotation is EVALUATED -- at def time, on import. So gate (a) py_compiles
+# it clean, every local check on a 3.12+ dev box passes, and the file dies here. Caught
+# exactly that way once; a static check is the only thing that can see it from a newer
+# interpreter, which is what `ci-test` runs locally. Self-test first (it must still
+# bite, INCLUDING staying quiet on plain bitwise `|`), then the fleet.
+echo "==> (e6) py3.9 annotation parity: $PY scripts/check-py39-annotations.py"
+"$PY" scripts/check-py39-annotations.py --self-test >/dev/null
+"$PY" scripts/check-py39-annotations.py
+
 # ---- (f) Python unit tests (scripts/ + hooks/ + tests/) --------------------
 # Every Python unit suite in the repo, run under the SAME interpreter as the rest
 # of the gate. Gate (a) py_compiles them (proves they parse); this proves their
@@ -1037,4 +1052,4 @@ done
 echo "    OK - ${#PY_DIRECT[@]} hooks/+tests/ direct suite(s) passed; dormancy invariant clean"
 
 echo
-echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed] + home-hook deploy [passed] + subprocess decode [passed]."
+echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed] + home-hook deploy [passed] + subprocess decode [passed] + py3.9 annotation parity [passed]."
