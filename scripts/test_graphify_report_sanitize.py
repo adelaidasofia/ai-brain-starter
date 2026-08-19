@@ -226,6 +226,33 @@ def main():
     check("long labels truncated", len(anchor_label(g5, ["a"])) <= 40)
     check("empty community is safe", anchor_label(g5, []) == "unnamed")
 
+    # Collisions among LONG names: appending " (2)" and truncating afterwards cuts the
+    # suffix straight back off, so distinct communities collapse onto one name -- and that
+    # name is a _COMMUNITY_<name>.md filename, so one hub note silently overwrites another.
+    long_a, long_b, long_c = ("2026-06-14T21-34-concurrency-primitive-alpha",
+                              "2026-06-14T21-34-concurrency-primitive-beta",
+                              "2026-06-14T21-34-concurrency-primitive-gamma")
+    g6 = G({"a": (long_a, 9), "b": (long_b, 8), "c": (long_c, 7)})
+    seeded6 = seed_labels(g6, {0: ["a"], 1: ["b"], 2: ["c"]})
+    check("long colliding names stay distinct", len(set(seeded6.values())) == 3, seeded6)
+    check("disambiguated names still bounded",
+          all(len(v) <= 40 for v in seeded6.values()), {k: len(v) for k, v in seeded6.items()})
+
+    # The stand-in class above is not what Step 4 passes. Prove the real seam.
+    try:
+        import networkx as nx
+    except ImportError:
+        print("  SKIP  real networkx seam (networkx not installed)")
+    else:
+        real = nx.Graph()
+        for i, lbl in enumerate(["Money", "2026-05-28", "Fear", "b", "c", "d"]):
+            real.add_node(f"n{i}", label=lbl)
+        real.add_edges_from([("n1", "n3"), ("n1", "n4"), ("n1", "n5"), ("n0", "n3"), ("n0", "n4")])
+        got = seed_labels(real, {0: ["n0", "n1", "n3", "n4", "n5"], 1: ["n2"]})
+        check("real networkx graph labels correctly", got[0] == "Money" and got[1] == "Fear", got)
+        check("real networkx graph yields no placeholders",
+              not any(v.startswith("Community ") for v in got.values()), got)
+
     print()
     if FAILURES:
         print(f"FAILED ({len(FAILURES)}): " + ", ".join(FAILURES))

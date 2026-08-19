@@ -48,9 +48,9 @@ def is_low_signal(label: str) -> bool:
     return bool(_LOW_SIGNAL.match(text)) or text.lower().endswith(_MEDIA_SUFFIX)
 
 
-def _truncate(label: str) -> str:
+def _truncate(label: str, limit: int = MAX_LABEL_CHARS) -> str:
     label = " ".join(label.split())
-    return label if len(label) <= MAX_LABEL_CHARS else label[: MAX_LABEL_CHARS - 1].rstrip() + "…"
+    return label if len(label) <= limit else label[: limit - 1].rstrip() + "…"
 
 
 def anchor_label(G, node_ids: list[str]) -> str:
@@ -68,17 +68,25 @@ def anchor_label(G, node_ids: list[str]) -> str:
 
 
 def seed_labels(G, communities: dict) -> dict:
-    """{cid: provisional name}. Names are unique -- collisions would merge hub notes."""
-    seen: dict[str, int] = {}
+    """{cid: provisional name}, guaranteed unique.
+
+    Uniqueness is not cosmetic: these names become _COMMUNITY_<name>.md in the Obsidian
+    export, so two communities sharing one would silently overwrite each other's hub note.
+    The disambiguating suffix must be reserved BEFORE truncating -- appending it first and
+    truncating after just cuts it off again, which collapsed 9 pairs of long dated slugs
+    back onto identical 40-char names on a real 14,046-node graph.
+    """
+    used: set[str] = set()
     out = {}
     # Largest first so the biggest cluster keeps the clean name on a collision.
     for cid in sorted(communities, key=lambda c: (-len(communities[c]), c)):
-        name = anchor_label(G, communities[cid])
-        if name in seen:
-            seen[name] += 1
-            name = _truncate(f"{name} ({seen[name]})")
-        else:
-            seen[name] = 1
+        base = anchor_label(G, communities[cid])
+        name, n = base, 1
+        while name in used:
+            n += 1
+            suffix = f" ({n})"
+            name = _truncate(base, MAX_LABEL_CHARS - len(suffix)) + suffix
+        used.add(name)
         out[cid] = name
     return {cid: out[cid] for cid in communities}
 
