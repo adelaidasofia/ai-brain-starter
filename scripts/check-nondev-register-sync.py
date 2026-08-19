@@ -102,7 +102,9 @@ def parse_propagation_scopes(drift_check_text: str) -> list:
     for raw in _STARTER_REF.findall(drift_check_text):
         pat = raw.replace('"', "").replace("'", "")
         pat = _SHELL_VAR.sub("*", pat).rstrip("/")
-        if pat and pat not in out:
+        # A pattern that collapsed to bare "*" (e.g. "$STARTER_DIR/$SOMEVAR")
+        # conveys no scope and would make every REACH check vacuously green.
+        if pat and pat != "*" and pat not in out:
             out.append(pat)
     return out
 

@@ -6,7 +6,7 @@ action: warn
 conditions:
   - field: transcript
     operator: regex_match
-    pattern: '(?i)(?:\b(?:should i|shall i|do you want me to|want me to|would you like me to|do you want these|should these)\b[^?\n]{0,140}\b(?:git|commit|commits|committed|push|pushed|merge|merged|branch|branches|stash|rebase|revert|repo|repository|version history)\b[^?\n]{0,140}\?|\b(?:commit and push|which merge strategy|keep or delete the branch|merge or rebase)\b[^?\n]{0,60}\?)'
+    pattern: '(?i)(?:\b(?:should i|shall i|do you want me to|want me to|would you like me to|do you want these|should these)\b[^?\n]{0,120}?\b(?:git|commit|commits|committed|push|pushed|merge|merged|branch|branches|stash|rebase|revert|repo|repository|version history)\b[^?\n]{0,120}?\?|\b(?:commit and push|which merge strategy|keep or delete the branch|merge or rebase)\b[^?\n]{0,60}\?)'
 ---
 
 **A turn ended on a decision the user has no basis to make.** Something in this session asked them to choose between two machinery outcomes — save these files or leave them, push or hold, which merge strategy, keep or delete a branch. They cannot weigh that, so whatever they answer is a guess, and a guess against their own data. Do the safe thing, then say what was done in one plain sentence. Full rule: `⚙️ Meta/rules/session-close.md` → **Plain-language register**.
