@@ -200,20 +200,37 @@ while [ -e "${LOCK_FILE}" ]; do
 done
 
 # --- stage paths ---
+# NOTE: `git add ... | while read` runs the add inside a pipeline, so a FAILING add is
+# silently swallowed (the `while` exits 0) and the script commits anyway. Capture the
+# output, check the real status, then log.
 log "staging: ${PATHS[*]}"
-git add -- "${PATHS[@]}" 2>&1 | while IFS= read -r line; do
-    log "git add: ${line}"
-done
+if ! add_output=$(git add -- "${PATHS[@]}" 2>&1); then
+    [ -n "${add_output}" ] && log "git add: ${add_output}"
+    die "git add failed for: ${PATHS[*]}"
+fi
+[ -n "${add_output}" ] && log "git add: ${add_output}"
 
-# --- check there's actually something to commit ---
-if git diff --cached --quiet; then
-    log "no changes staged — skipping commit"
-    echo "vault-safe-commit: nothing to commit (staged tree matches HEAD)" >&2
+# --- check OUR paths actually have something to commit ---
+# Scoped with `-- "${PATHS[@]}"`. Unscoped, this asks "is ANYTHING staged?" — so with a
+# sibling session's change sitting in the shared index and our own paths unchanged, it
+# answers yes and we commit THEIR work under OUR message.
+if git diff --cached --quiet -- "${PATHS[@]}"; then
+    log "no changes staged for the named paths — skipping commit"
+    echo "vault-safe-commit: nothing to commit (named paths match HEAD)" >&2
     exit 0
 fi
 
-# --- commit ---
-git commit --quiet -m "${MESSAGE}" || die "commit failed"
+# --- commit ONLY the named paths ---
+# `--only` (-o) commits the working-tree contents of the named paths and DISREGARDS the
+# rest of the index, so a sibling session's staged work cannot ride along. Without it,
+# `git commit` takes the ENTIRE index: measured on a live vault, two consecutive calls
+# that each named ONE path produced commits of 1,191 files / 598,702 insertions, sweeping
+# other live sessions' data, hook edits and logs into an unrelated message.
+# This wrapper is the ONLY sanctioned route past the raw-git block guard, so without
+# `--only` that guard provides zero real scoping while looking fully enforced.
+# `--only` needs paths git already knows; the `git add` above guarantees that, including
+# for new files.
+git commit --quiet --only -m "${MESSAGE}" -- "${PATHS[@]}" || die "commit failed"
 COMMIT_HASH=$(git log --oneline -1 | awk '{print $1}')
 log "committed ${COMMIT_HASH}: ${MESSAGE}"
 echo "vault-safe-commit: ${COMMIT_HASH} — ${MESSAGE}"
