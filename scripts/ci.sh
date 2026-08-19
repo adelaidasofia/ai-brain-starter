@@ -359,6 +359,15 @@ INTEGRATION_TESTS=(
   # copy, with a negative control that a first install from a dev tree still
   # wires a runner that exists.
   test_hook_runner_path_stability
+  # vault-safe-commit.sh is the ONLY sanctioned route past the raw-git block
+  # guard, so a bare `git commit -m` there gave that guard zero real scoping
+  # while it looked fully enforced — a sibling session's staged work rode along
+  # under an unrelated message (measured: 1,191 files / 598,702 insertions from
+  # two calls that each named ONE path). Carries a negative control that re-runs
+  # the pre-fix commit line against the same fixture and asserts it DOES sweep,
+  # so a green positive proves the `--only` scoping rather than a scenario that
+  # never reproduces.
+  test_vault_safe_commit_index_scoping
   # In-flight git-operation gate (incident 2026-07-28): proves a fresh install
   # REGISTERS the guard, wires it in the block-preserving `if [ -f ]` form, and
   # that the SHIPPED command refuses a commit into a genuinely stalled rebase
