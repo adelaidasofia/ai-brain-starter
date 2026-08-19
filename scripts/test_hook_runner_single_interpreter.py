@@ -50,6 +50,12 @@ output written by a grandchild that inherited fd 1.
 
 from __future__ import annotations
 
+# `ast` is imported at module level on purpose: check-cloud-safe-file-walkers.py
+# only recognises ast.walk() as an IN-MEMORY traversal when the import is
+# visible to its top-level scan. Imported inside a function, ast.walk() plus the
+# read_text() below reads as a recursive FILESYSTEM walker that reads content
+# without the shared safe_read primitive, and the fleet ratchet fails.
+import ast
 import json
 import os
 import subprocess
@@ -235,8 +241,6 @@ def test_runner_cannot_spawn_an_interpreter() -> None:
     Deliberately blunt: hook_runner.py has no legitimate reason to reference
     any of these names, so a plain source scan cannot false-positive, and a
     scan cannot be evaded by a spelling the AST would have missed."""
-    import ast
-
     src = RUNNER.read_text(encoding="utf-8")
     tree = ast.parse(src)
 
