@@ -545,6 +545,14 @@ from the vault index. Stdlib only — plain `python3`, not the graphify venv.
 
 **Never skip this on a corpus that is also someone's Obsidian vault.**
 
+If the user already has a report full of `Community 0` / `Community 412` names from an
+earlier run, rename it in place — no re-extraction needed:
+
+```bash
+python3 "{SKILL_DIR}/scripts/graphify_report_sanitize.py" graphify-out/GRAPH_REPORT.md \
+  --relabel-from graphify-out/graph.json
+```
+
 If this step prints `ERROR: Graph is empty`, stop and tell the user what happened - do not proceed to labeling or visualization.
 
 Replace INPUT_PATH with the actual path.

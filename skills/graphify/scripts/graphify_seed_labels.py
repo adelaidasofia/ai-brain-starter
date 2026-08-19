@@ -83,10 +83,38 @@ def seed_labels(G, communities: dict) -> dict:
     return {cid: out[cid] for cid in communities}
 
 
-if __name__ == "__main__":
-    import argparse
+class _DegreeGraph:
+    """Minimal networkx stand-in so a graph.json can be labeled without the package."""
+
+    def __init__(self, data):
+        import collections
+
+        self.nodes = {n["id"]: n for n in data["nodes"]}
+        self._deg = collections.Counter()
+        for e in data.get("links", data.get("edges", [])):
+            self._deg[e["source"]] += 1
+            self._deg[e["target"]] += 1
+
+    def degree(self, node):
+        return self._deg[node]
+
+
+def load_graph_json(path):
+    """(graph, {cid: [node_id]}) from a graphify graph.json. No graphify import needed."""
     import collections
     import json
+
+    with open(path, encoding="utf-8") as fh:
+        raw = json.load(fh)
+    communities = collections.defaultdict(list)
+    for node in raw["nodes"]:
+        if node.get("community") is not None:
+            communities[node["community"]].append(node["id"])
+    return _DegreeGraph(raw), dict(communities)
+
+
+if __name__ == "__main__":
+    import argparse
     import sys
 
     # Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
@@ -101,27 +129,9 @@ if __name__ == "__main__":
     ap.add_argument("--top", type=int, default=20)
     args = ap.parse_args()
 
-    with open(args.graph_json, encoding="utf-8") as fh:
-        raw = json.load(fh)
+    G, comms = load_graph_json(args.graph_json)
 
-    class _G:  # minimal stand-in so the CLI needs no networkx
-        def __init__(self, data):
-            self.nodes = {n["id"]: n for n in data["nodes"]}
-            self._deg = collections.Counter()
-            for e in data.get("links", data.get("edges", [])):
-                self._deg[e["source"]] += 1
-                self._deg[e["target"]] += 1
-
-        def degree(self, n):
-            return self._deg[n]
-
-    G = _G(raw)
-    comms = collections.defaultdict(list)
-    for n in raw["nodes"]:
-        if n.get("community") is not None:
-            comms[n["community"]].append(n["id"])
-
-    names = seed_labels(G, dict(comms))
+    names = seed_labels(G, comms)
     ordered = sorted(comms, key=lambda c: -len(comms[c]))
     print(f"{len(ordered)} communities; showing top {args.top}\n")
     for cid in ordered[: args.top]:

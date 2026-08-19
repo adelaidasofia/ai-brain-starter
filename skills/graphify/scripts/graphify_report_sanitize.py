@@ -67,6 +67,32 @@ def parse_communities(text: str) -> list[dict]:
     return out
 
 
+def relabel_placeholders(text: str, graph_json: Path) -> tuple[str, int]:
+    """Replace surviving "Community N" names with anchor names from graph.json.
+
+    Retroactive fix: a report generated before label seeding existed is stuck with bare
+    indices, and re-running the whole pipeline to rename them costs a full extraction.
+    Only PLACEHOLDER names are touched -- a real semantic label is never clobbered.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from graphify_seed_labels import seed_labels, load_graph_json
+
+    G, communities = load_graph_json(graph_json)
+    names = seed_labels(G, communities)
+
+    replaced = 0
+
+    def swap(m):
+        nonlocal replaced
+        cid, label = int(m.group(1)), m.group(2)
+        if label != f"Community {cid}" or cid not in names:
+            return m.group(0)
+        replaced += 1
+        return f'### Community {cid} - "{names[cid]}"'
+
+    return re.sub(r'^### Community (\d+) - "(.*?)"\s*$', swap, text, flags=re.MULTILINE), replaced
+
+
 def find_obsidian_dir(report_path: Path, explicit: str | None) -> Path | None:
     """Where _COMMUNITY_*.md notes live, or None when the export was never generated."""
     candidates = [Path(explicit)] if explicit else [report_path.parent / "obsidian"]
@@ -136,7 +162,10 @@ def ensure_vault_exclusion(vault: Path, folder: str = "graphify-out/") -> str:
         except (json.JSONDecodeError, OSError):
             return f"could not parse {app_file} - left untouched"
     filters = settings.get("userIgnoreFilters") or []
-    if folder in filters:
+    # Obsidian accepts the folder with or without a trailing slash and treats both as
+    # the same prefix. Compare normalized, or a vault that already excludes
+    # "graphify-out" collects a redundant "graphify-out/" on every run.
+    if folder.rstrip("/") in {f.rstrip("/") for f in filters}:
         return f"{folder} already excluded from the Obsidian index"
     settings["userIgnoreFilters"] = filters + [folder]
     app_file.write_text(json.dumps(settings, indent=2), encoding="utf-8")
@@ -161,6 +190,8 @@ def main() -> int:
                     help="vault root for the index exclusion (default: nearest ancestor with .obsidian/)")
     ap.add_argument("--no-index-fix", action="store_true",
                     help="do not touch .obsidian/app.json")
+    ap.add_argument("--relabel-from", default=None, metavar="GRAPH_JSON",
+                    help="rename leftover 'Community N' placeholders using graph.json anchors")
     ap.add_argument("--check", action="store_true", help="verify only; exit 1 if unresolved links remain")
     args = ap.parse_args()
 
@@ -186,6 +217,14 @@ def main() -> int:
         print(f"sanitize: no '{HUB_HEADING}' section in {report_path} - report shape "
               f"unrecognized, nothing rewritten", file=sys.stderr)
         return 0
+
+    if args.relabel_from:
+        graph_json = Path(args.relabel_from)
+        if not graph_json.exists():
+            print(f"sanitize: {graph_json} not found - cannot relabel", file=sys.stderr)
+            return 1
+        text, renamed = relabel_placeholders(text, graph_json)
+        print(f"sanitize: renamed {renamed} placeholder communities from graph anchors")
 
     comms = parse_communities(text)
     if not comms:

@@ -121,6 +121,21 @@ def main():
         cfg2 = json.loads((vault / ".obsidian" / "app.json").read_text(encoding="utf-8"))
         check("exclusion not duplicated on re-run", cfg2["userIgnoreFilters"].count("graphify-out/") == 1, cfg2)
 
+    # Real vaults carry the slashless form; an exact-match check would double it up.
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td) / "MyVault"
+        (vault / ".obsidian").mkdir(parents=True)
+        (vault / ".obsidian" / "app.json").write_text(
+            json.dumps({"userIgnoreFilters": ["graphify-out"]}), encoding="utf-8")
+        out = vault / "graphify-out"
+        out.mkdir()
+        rp = out / "GRAPH_REPORT.md"
+        rp.write_text(make_report(sizes), encoding="utf-8")
+        run(rp)
+        cfg = json.loads((vault / ".obsidian" / "app.json").read_text(encoding="utf-8"))
+        check("slashless existing exclusion is recognized",
+              cfg["userIgnoreFilters"] == ["graphify-out"], cfg)
+
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / "graphify-out"
         out.mkdir()
@@ -128,6 +143,33 @@ def main():
         rp.write_text(make_report(sizes), encoding="utf-8")
         r = run(rp)
         check("non-vault corpus writes no config", "userIgnoreFilters" not in r.stdout, r.stdout)
+
+    print("\n== retroactive relabel (--relabel-from) ==")
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "graphify-out"
+        out.mkdir()
+        rp = out / "GRAPH_REPORT.md"
+        # cid 0 is a placeholder and must be renamed; cid 1 already carries a real
+        # semantic label and must survive untouched.
+        rp.write_text(make_report({0: 6, 1: 5}, {1: "Hand Written Label"}), encoding="utf-8")
+        gj = out / "graph.json"
+        gj.write_text(json.dumps({
+            "nodes": [{"id": f"n{i}", "label": lbl, "community": c} for i, (lbl, c) in enumerate(
+                [("2026-05-28", 0), ("Money", 0), ("a", 0), ("b", 0), ("c", 0), ("d", 0),
+                 ("Fear", 1), ("e", 1), ("f", 1), ("g", 1), ("h", 1)])],
+            "links": [{"source": "n0", "target": "n2"}, {"source": "n0", "target": "n3"},
+                      {"source": "n0", "target": "n4"}, {"source": "n1", "target": "n2"},
+                      {"source": "n1", "target": "n3"}, {"source": "n6", "target": "n7"}],
+        }), encoding="utf-8")
+        r = run(rp, "--relabel-from", gj, "--no-index-fix")
+        text = rp.read_text(encoding="utf-8")
+        check("placeholder renamed from graph anchor", '"Money"' in text, r.stdout)
+        check("date hub not chosen as the name", '"2026-05-28"' not in text, r.stdout)
+        check("existing semantic label untouched", '"Hand Written Label"' in text, r.stdout)
+        check("rename count reported", "renamed 1 placeholder" in r.stdout, r.stdout)
+        check("navigation shows the new name", "- Money (6 notes)" in text, text)
+        r2 = run(rp, "--relabel-from", Path(td) / "missing.json", "--no-index-fix")
+        check("missing graph.json fails loud", r2.returncode == 1 and "cannot relabel" in r2.stderr, r2.stderr)
 
     print("\n== fail loud, never silent no-op ==")
     with tempfile.TemporaryDirectory() as td:
