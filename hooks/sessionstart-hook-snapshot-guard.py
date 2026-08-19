@@ -210,11 +210,13 @@ def _save(identities: set[str]) -> None:
 
 
 def _label(identity: str) -> str:
-    """Display form. ASCII ellipsis on purpose: on Windows this hook's stdout is
-    captured by hook_runner.py through subprocess text=True, which decodes with
-    the LOCALE encoding - so a U+2026 written as UTF-8 comes back as mojibake on
-    a cp1252 console. The one platform this warning most needs to be legible on
-    is the one that would garble it."""
+    """Display form. ASCII ellipsis on purpose: this warning has to stay legible
+    on a cp1252/cp437 Windows console, which cannot render U+2026 whatever the
+    producer does. (It used to be worse: hook_runner.py captured this hook's
+    stdout through subprocess text=True and decoded it with the LOCALE encoding.
+    MYC-3877 removed that child process, so the bytes are now forwarded
+    unchanged - but the console at the end of the pipe has not changed, so the
+    ASCII rule stands.)"""
     bn, _, args = identity.partition("||")
     text = f"{bn} {args}".strip()
     return text if len(text) <= _LABEL_MAX else text[:_LABEL_MAX - 3] + "..."
