@@ -85,18 +85,20 @@ jobs:
           done < <(find . \( -name 'hooks.json' -o -name '*.mcp.json' \) -not -path './.git/*')
           exit $fail
 
+      # The rule lives in scripts/check-ps1-bom.sh, NOT inline here, so this
+      # enforcing gate and the locally-runnable one (scripts/ci.sh, which the
+      # pre-push hook requires) cannot drift. As an inline loop this check was
+      # unreachable locally: a BOM-less .ps1 passed a full green
+      # `bash scripts/ci.sh` and failed only after a push, costing a whole CI
+      # round-trip each time (measured 2026-08-19 on
+      # tests/integration/test_bootstrap_ps1_slash_commands.ps1).
+      # scripts/test_ps1_bom_gate.py fails if either caller stops delegating or
+      # if anyone re-inlines a private copy of the byte comparison.
+      - name: BOM negative controls (the guard must still bite)
+        run: bash scripts/check-ps1-bom.sh --self-test
+
       - name: UTF-8 BOM on .ps1 (Windows PS 5.1 fix)
-        run: |
-          set -e
-          fail=0
-          while IFS= read -r f; do
-            head=$(head -c 3 "$f" | od -An -tx1 | tr -d ' \n')
-            if [ "$head" != "efbbbf" ]; then
-              echo "::error file=$f::missing UTF-8 BOM (Windows PowerShell 5.1 will crash on non-ASCII bytes). Fix: prepend the bytes EF BB BF to the file."
-              fail=1
-            fi
-          done < <(find . -name '*.ps1' -not -path './.git/*')
-          exit $fail
+        run: bash scripts/check-ps1-bom.sh
 
       # Em dashes in bash are stylistic. Em dashes in .ps1 are technical: they were the
       # exact byte that crashed the Windows PowerShell 5.1 parser before the BOM fix.
