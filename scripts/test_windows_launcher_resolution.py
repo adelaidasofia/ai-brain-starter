@@ -456,7 +456,7 @@ def test_hook_identity_ignores_the_launcher(ins) -> None:
     launcher change as a brand-new hook, and every existing Windows install
     would have grown a duplicate of those 9 on its next update."""
     runner = "C:/U/.claude/skills/ai-brain-starter/scripts/hook_runner.py"
-    target = "C:/U/.claude/skills/ai-brain-starter/hooks/pre-compact-context.py"
+    target = "C:/U/.claude/skills/ai-brain-starter/hooks/some-sample-hook.py"
     old = f'py -3 "{runner}" --fallback silent "{target}"'
     new = f'{SHORT_8_3.replace(chr(92), "/")} "{runner}" --fallback silent "{target}"'
     if ins.is_same_command(old, new):
@@ -466,7 +466,7 @@ def test_hook_identity_ignores_the_launcher(ins) -> None:
         bad("launcher change does not create a new hook identity")
 
     # ...but a different TARGET, or different ARGUMENTS, still is not the same.
-    other = new.replace("pre-compact-context.py", "some-other-hook.py")
+    other = new.replace("some-sample-hook.py", "some-other-hook.py")
     if not ins.is_same_command(old, other):
         ok("two different targets are still two different hooks")
     else:
