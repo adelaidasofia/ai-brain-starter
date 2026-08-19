@@ -231,6 +231,7 @@ INTEGRATION_TESTS=(
   test_cloud_sync_offer
   test_worktree_on_vault_guard
   test_machinery_sidecar
+  test_repair_sidecar_note_deletion
   test_relocate_vault
   test_relocate_sweep
   test_relocate_watch

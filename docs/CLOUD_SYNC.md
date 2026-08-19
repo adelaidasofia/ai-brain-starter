@@ -174,6 +174,35 @@ powershell -ExecutionPolicy Bypass -File scripts\relocate-machinery-sidecar.ps1 
 iCloud-only convention OneDrive ignores, so on Windows the sidecar relocation is
 the supported path.)
 
+### If an OLD version of this script already ate notes
+
+An earlier version picked what to move by folder NAME, so `⚙️ Meta/Sessions` —
+which holds notes, not cache — was relocated in vaults that tracked it. The
+folder became a symlink, `git status` reported every note as deleted, the hourly
+auto-snapshot (`git add -A`) committed that, and the multi-machine sync pushed
+it. The current script cannot do this: it tests the git index before it moves
+anything, whatever the folder is called.
+
+`--rollback` puts the folder back but does not touch the history, and it cannot
+reach the other machines that already pulled the deletion. For that:
+
+```bash
+# look only — changes nothing, prints exactly what it found
+bash scripts/repair-sidecar-note-deletion.sh "/path/to/vault"
+# put the notes back (one ordinary commit, scoped to the damaged folder)
+bash scripts/repair-sidecar-note-deletion.sh "/path/to/vault" --repair
+```
+
+It reports a folder only when a commit deleted tracked files under it AND that
+path is a symlink out of the vault (live, or recorded by that same commit) —
+one half alone is just someone deleting notes. Live copies still in the sidecar
+win over the older ones in history; anything else is restored from the commit
+before the deletion; two conflicting copies are reported, never merged. Your
+other machines get the notes back on the next sync.
+
+On Windows, run it from Git Bash (installed with Git for Windows). There is no
+PowerShell twin yet.
+
 Then turn on iCloud Drive (or Desktop & Documents) for that folder. The docs
 sync to every device; the machinery never leaves your Mac. Verify the calm
 yourself: run a `git gc` plus a full session and watch Activity Monitor —

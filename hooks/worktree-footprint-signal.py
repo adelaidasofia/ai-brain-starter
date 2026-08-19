@@ -48,6 +48,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -279,6 +280,97 @@ def _machinery_relocated(vault: Path) -> bool:
                 if mv == vkey:
                     return True
     return False
+
+
+# Folders an OLD version of relocate-machinery-sidecar.sh listed as "cache" and
+# would therefore move even when git tracked notes inside them.
+SIDECAR_NOTE_DIRS = (
+    "⚙️ Meta/Sessions",
+    "⚙️ Meta/Worktree Snapshots",
+    "⚙️ Meta/logs",
+    "⚙️ Meta/graphify-out",
+    "graphify-out",
+)
+
+
+def _tracked_symlink_note_dirs(vault: Path) -> list[str]:
+    """Machinery paths git has recorded as a SYMLINK — the committed-deletion mark.
+
+    Nothing a person does produces this. It is what `git add -A` writes after the
+    old relocation replaced a tracked notes folder with a link, and it is exactly
+    what a SECOND machine pulls, so this fires there too.
+
+    ONE bounded `git ls-files` — an index lookup, not a history walk. The history
+    question ("which commit, how many notes, was it pushed") costs a full
+    `git log` and belongs in the repair script, never in a SessionStart hook.
+    That split is also why this is a doorbell and not a diagnosis: a vault whose
+    link was committed and later dropped from the index is not seen here.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(vault), "ls-files", "-s", "-z", "--", *SIDECAR_NOTE_DIRS],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []          # could not look; the repair script is the honest check
+    if proc.returncode != 0:
+        return []
+    hits: list[str] = []
+    for entry in proc.stdout.split(b"\0"):
+        # `<mode> SP <sha> SP <stage> TAB <path>`; 120000 is git's symlink mode.
+        if not entry.startswith(b"120000 "):
+            continue
+        _, _, raw = entry.partition(b"\t")
+        if raw:
+            # Vault paths are full of non-ASCII; decode explicitly rather than
+            # letting a locale decide, and never let a decode error escape.
+            hits.append(raw.decode("utf-8", "replace"))
+    return hits
+
+
+def sidecar_deletion_alert(main_repo: Path | None) -> list[str]:
+    """One block per vault whose notes an old relocation deleted from history.
+
+    Louder than the cloud-sync offer on purpose: that one prevents a slow machine,
+    this one is a person whose notes are already gone from their history and, if
+    the vault syncs, from their other computers.
+    """
+    lines: list[str] = []
+    for vault in _candidate_vaults(main_repo)[:3]:
+        try:
+            hits = _tracked_symlink_note_dirs(vault)
+        except OSError:
+            continue
+        if not hits:
+            continue
+        repair = f'bash {SKILL_SCRIPTS}/repair-sidecar-note-deletion.sh "{vault}"'
+        where = ", ".join(f"`{h}`" for h in hits[:3])
+        note = ""
+        if _offer_os() == "windows":
+            note = (
+                " Run it in Git Bash (it comes with Git for Windows) — the repair "
+                "does not have a PowerShell twin yet."
+            )
+        lines.append(
+            f"🔴 [notes-deleted] The user's brain `{vault}` carries the mark an OLD "
+            f"version of the machinery cleanup left: git has {where} recorded as a "
+            f"shortcut, not a folder. That means the notes that lived there were "
+            f"removed from their saved history — and if this brain syncs, their "
+            f"other computers have already lost them too. The notes themselves are "
+            f"very likely still on the disk. TELL THEM AND FIX IT. Do not make them "
+            f"read anything or choose between options.\n"
+            f"  Look first — this changes nothing and prints what it found:\n"
+            f"      {repair}\n"
+            f"  Then put the notes back:\n"
+            f"      {repair} --repair\n"
+            f"Say it to them roughly like: \"Some of your notes got removed from your "
+            f"history by an old version of a cleanup step. They're still on your "
+            f"computer and I can put them back. Want me to?\" Don't explain shortcuts "
+            f"or git.{note} Repeats each session until it is fixed."
+        )
+    return lines
 
 
 def _suggest_local_dest(vault: Path) -> Path:
@@ -713,6 +805,11 @@ def main() -> int:
     # onboarding is still caught and the fix is OFFERED, not just documented.
     # (MYC-2360) Replaces the old passive "move it out, see docs" warning.
     lines.extend(cloud_sync_offer(main_repo))
+
+    # Notes an OLD version of the sidecar relocation deleted from history
+    # (MYC-4010). Deliberately BEFORE every performance signal: a slow machine
+    # can wait, missing notes cannot.
+    lines[:0] = sidecar_deletion_alert(main_repo)
 
     # Aggregate bloat-dir footprint (MYC-577). Deliberately NOT gated on
     # main_repo: the dirs that regrew in the melt (.smart-env above all) live in
