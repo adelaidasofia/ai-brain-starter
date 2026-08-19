@@ -86,14 +86,18 @@ def _sections(text: str) -> list[tuple[str, str]]:
 
 
 def check(template_path: Path, session_close_path: Path) -> int:
+    # OSError covers missing/unreadable/permission-denied; UnicodeDecodeError
+    # (a ValueError subclass, NOT an OSError) covers a non-UTF-8 file -- both
+    # mean "cannot check", and both must exit 2 rather than an unhandled
+    # traceback that a caller could misread as something other than failure.
     try:
         template_text = template_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         print(f"CANNOT CHECK: template unreadable: {template_path} ({exc})", file=sys.stderr)
         return 2
     try:
         session_close_text = session_close_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         print(f"CANNOT CHECK: session-close rule unreadable: {session_close_path} ({exc})",
               file=sys.stderr)
         return 2

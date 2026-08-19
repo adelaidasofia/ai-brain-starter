@@ -180,6 +180,24 @@ class NondevRegisterSyncTests(unittest.TestCase):
         rc = CHK.check(t, self.tmp / "does-not-exist.md")
         self.assertEqual(rc, 2)
 
+    # --- fail loud on a non-UTF-8 file, not an unhandled traceback -----------
+    # read_text(encoding="utf-8") raises UnicodeDecodeError, a ValueError
+    # subclass -- NOT an OSError. A bare `except OSError` would let this
+    # propagate as an unhandled exception instead of a clean exit 2.
+    def test_non_utf8_template_exits_2_not_traceback(self):
+        t = self.tmp / "template.md"
+        t.write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
+        s = self._write("session-close.md", GOOD_SESSION_CLOSE)
+        rc = CHK.check(t, s)
+        self.assertEqual(rc, 2)
+
+    def test_non_utf8_session_close_exits_2_not_traceback(self):
+        t = self._write("template.md", GOOD_TEMPLATE)
+        s = self.tmp / "session-close.md"
+        s.write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
+        rc = CHK.check(t, s)
+        self.assertEqual(rc, 2)
+
 
 if __name__ == "__main__":
     for _stream in (sys.stdout, sys.stderr):
