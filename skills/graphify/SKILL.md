@@ -501,8 +501,11 @@ cohesion = score_all(G, communities)
 tokens = {'input': extraction.get('input_tokens', 0), 'output': extraction.get('output_tokens', 0)}
 gods = god_nodes(G)
 surprises = surprising_connections(G, communities)
-labels = {cid: 'Community ' + str(cid) for cid in communities}
-# Placeholder questions - regenerated with real labels in Step 5
+sys.path.insert(0, '{SKILL_DIR}/scripts')
+from graphify_seed_labels import seed_labels
+# Provisional names from each community's highest-degree member ('Money', 'Fear'),
+# never 'Community 412'. Step 5 replaces these with semantic labels.
+labels = seed_labels(G, communities)
 questions = suggest_questions(G, communities, labels)
 
 report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, 'INPUT_PATH', suggested_questions=questions)
@@ -525,13 +528,46 @@ print(f'Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges, {len(co
 "
 ```
 
+Then make the report safe to sit inside a vault:
+
+```bash
+python3 "{SKILL_DIR}/scripts/graphify_report_sanitize.py" graphify-out/GRAPH_REPORT.md
+```
+
+The upstream report links a `[[_COMMUNITY_*]]` hub note per community. Those notes exist
+only in the opt-in Obsidian export of Step 6, so on a default run every one of them is an
+unresolved link — and Obsidian draws each unresolved link as a node. On a real vault that
+is thousands of grey placeholder dots radiating from one file, which is what the user's
+graph view then shows instead of their notes. The sanitizer emits a wikilink only when the
+target note actually exists, lists communities at or above a node floor (default 5, since
+most detected communities are 1–2 node extraction fragments), and excludes `graphify-out/`
+from the vault index. Stdlib only — plain `python3`, not the graphify venv.
+
+**Never skip this on a corpus that is also someone's Obsidian vault.**
+
 If this step prints `ERROR: Graph is empty`, stop and tell the user what happened - do not proceed to labeling or visualization.
 
 Replace INPUT_PATH with the actual path.
 
 ### Step 5 - Label communities
 
-Read `graphify-out/.graphify_analysis.json`. For each community key, look at its node labels and write a 2-5 word plain-language name (e.g. "Attention Mechanism", "Training Pipeline", "Data Loading").
+Read `graphify-out/.graphify_analysis.json`.
+
+**Label the communities that are real topics, not every key.** Community detection on a
+personal corpus produces a long tail of fragments: measured on a 14,046-node vault, 51% of
+communities held a SINGLE node and 96% held 4 or fewer. Naming those is busywork that
+produces junk names, and it is why unlabeled runs end up showing "Community 412".
+
+- Sort communities by node count, descending.
+- Label every community with **>= 5 nodes**, up to a ceiling of **50 communities**. On the
+  measured vault that is 101 communities holding 70% of all nodes — the whole map, at ~4%
+  of the naming work.
+- Leave the rest out of `LABELS_DICT`. They keep the provisional anchor name from Step 4
+  and are omitted from navigation by the sanitizer.
+
+For each community you do label, look at its node labels and write a 2-5 word plain-language
+name (e.g. "Attention Mechanism", "Training Pipeline", "Data Loading"). The Step 4 anchor
+name is a starting hint, not an answer — a semantic label beats it every time.
 
 Then regenerate the report and save the labels for the visualizer:
 
@@ -564,6 +600,16 @@ Path('graphify-out/GRAPH_REPORT.md').write_text(report)
 Path('graphify-out/.graphify_labels.json').write_text(json.dumps({str(k): v for k, v in labels.items()}))
 print('Report updated with community labels')
 "
+
+python3 "{SKILL_DIR}/scripts/graphify_report_sanitize.py" graphify-out/GRAPH_REPORT.md
+```
+
+`generate()` rewrites the whole report, so the sanitizer runs again here — otherwise this
+step puts every ghost link straight back. Verify with `--check`; it exits 1 if any
+unresolved community link survived:
+
+```bash
+python3 "{SKILL_DIR}/scripts/graphify_report_sanitize.py" --check graphify-out/GRAPH_REPORT.md
 ```
 
 Replace `LABELS_DICT` with the actual dict you constructed (e.g. `{0: "Attention Mechanism", 1: "Training Pipeline"}`).
@@ -606,6 +652,14 @@ print('  Graph view   - nodes colored by community (set automatically)')
 print('  graph.canvas - structured layout with communities as groups')
 print('  _COMMUNITY_* - overview notes with cohesion scores and dataview queries')
 "
+```
+
+The hub notes now exist, so the report's navigation links can be live. Re-run the sanitizer
+pointed at the export to turn them back into working wikilinks:
+
+```bash
+python3 "{SKILL_DIR}/scripts/graphify_report_sanitize.py" graphify-out/GRAPH_REPORT.md \
+  --obsidian-dir OBSIDIAN_DIR
 ```
 
 Generate the HTML graph (always, unless `--no-viz`):
