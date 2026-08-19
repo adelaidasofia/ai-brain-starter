@@ -60,13 +60,42 @@ PORCELAIN_CALL = re.compile(r'bash\s+"\$CHECK_BOM"\s+--porcelain\b')
 # diagnose.ps1 is the one intentional duplicate: it must run on a Windows box
 # with no bash. Pin it to the SAME three bytes as the shell implementation, so
 # the rule cannot be changed on one side alone.
-PS1_BOM_BYTES = re.compile(
-    r"0xEF.*?0xBB.*?0xBF", re.S | re.I
-)
+#
+# Deliberately NOT re.DOTALL. With it, `0xEF.*?0xBB.*?0xBF` matched three
+# unrelated occurrences 600 lines apart, so the assertion would survive the real
+# comparison being deleted. The bytes are compared on one line; keep the match
+# on one line.
+PS1_BOM_BYTES = re.compile(r"0xEF.*0xBB.*0xBF", re.I)
+
 # `| head -N` / `-First N` on the enumeration is what silently truncated the
 # scan. Neither user-facing surface may cap again.
-SH_CAP = re.compile(r"-name\s+'\*\.ps1'[^\n]*\|\s*head\b")
-PS1_CAP = re.compile(r"Filter\s+'\*\.ps1'[^\n]*(-First|Select-Object)\b")
+#
+# Scoped to the PowerShell section rather than the whole file, and matched
+# anywhere in it rather than on the enumeration's own line. A line-anchored
+# version missed a cap applied on the FOLLOWING line, and a file-wide version
+# would trip on the legitimate `git remote -v | head -1` elsewhere in
+# diagnose.sh.
+SH_CAP = re.compile(r"\|\s*head\b")
+PS1_CAP = re.compile(r"(-First\b|Select-Object\b)")
+
+# Section 8 is "PowerShell files (Windows compat)" in both reports.
+SH_SECTION = ("# ----- 8.", "# ----- 9.")
+PS1_SECTION = ('Section "8.', "# ----- 9.")
+
+
+def _section(text: str, bounds: tuple[str, str], path: Path) -> str:
+    """Return the named section, or fail loudly rather than scanning an empty string."""
+    start_marker, end_marker = bounds
+    start = text.find(start_marker)
+    end = text.find(end_marker, start + 1) if start != -1 else -1
+    if start == -1 or end == -1:
+        failures.append(
+            f"{path} no longer has a section delimited by {start_marker!r}..{end_marker!r}, "
+            f"so the no-cap check has nothing to scan. An empty scan reads as clean; fix the "
+            f"markers rather than leaving this assertion inert."
+        )
+        return ""
+    return text[start:end]
 
 
 def _executable_lines(text: str) -> str:
@@ -142,9 +171,10 @@ def test_diagnose_sh_delegates() -> None:
         f"{rel} does not warn when check-ps1-bom.sh is missing. A check that could not run "
         f"must say so - reporting nothing reads exactly like reporting clean.",
     )
+    section = _executable_lines(_section(body, SH_SECTION, rel))
     check(
-        SH_CAP.search(code) is None,
-        f"{rel} caps its *.ps1 enumeration with `| head` again. That is the truncation that "
+        SH_CAP.search(section) is None,
+        f"{rel} pipes the PowerShell section through `head` again. That is the truncation that "
         f"made a 25-file vault report 'All .ps1 files have UTF-8 BOM' after reading 20.",
     )
 
@@ -170,10 +200,12 @@ def test_diagnose_ps1_stays_native_and_pinned() -> None:
         f"duplicate reads as an oversight and the next person 'fixes' it by adding a bash call, "
         f"which breaks the diagnostic on Windows.",
     )
+    section = _executable_lines(_section(body, PS1_SECTION, rel))
     check(
-        PS1_CAP.search(body) is None,
-        f"{rel} caps its *.ps1 enumeration. It is currently the honest half of this pair; "
-        f"capping it would hide the same defect diagnose.sh used to hide.",
+        PS1_CAP.search(section) is None,
+        f"{rel} caps its *.ps1 enumeration (-First / Select-Object in the PowerShell section). "
+        f"It is currently the honest half of this pair; capping it would hide the same defect "
+        f"diagnose.sh used to hide.",
     )
 
 
