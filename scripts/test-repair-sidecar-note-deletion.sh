@@ -268,6 +268,60 @@ out="$(PATH="$ROOT/bin:$PATH" bash "$SUT" "$VN" 2>&1)"; rc=$?
 [ "$rc" = "0" ] && pass "'not a repository' is an ANSWER and reads as clean (exit 0)" \
                 || fail "'not a repository' exited $rc, expected 0: $out"
 
+# =============================================================================
+echo "--- 6. the doorbell: the affected user is TOLD, unprompted -----------------"
+# This population is non-technical by definition. A repair nobody is told about
+# repairs nobody, so the SessionStart hook has to name it without being asked.
+HOOK="$(cd "$HERE/.." && pwd)/hooks/worktree-footprint-signal.py"
+HSCRATCH="$ROOT/hookscratch"; mkdir -p "$HSCRATCH/empty-dev"
+
+hook_ctx() {  # $1 = cwd
+  ( cd "$1" && env WORKTREE_FREE_GB=0 WORKTREE_WARN=9999 \
+      ABS_DEV_ROOT="$HSCRATCH/empty-dev" \
+      WORKTREE_FOOTPRINT_CACHE="$HSCRATCH/bloat-cache.json" \
+      WORKTREE_FOOTPRINT_FILE_WARN=999999999 \
+      OBSIDIAN_CONFIG="$ROOT/no-such-obsidian.json" \
+      python3 "$HOOK" </dev/null ) | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except (ValueError, OSError):
+    print(""); sys.exit(0)
+print(d.get("additionalContext", "") if isinstance(d, dict) else "")'
+}
+
+VD="$ROOT/doorbell"; SD="$ROOT/sided"
+make_vault "$VD" 3; : > "$VD/CLAUDE.md"
+gitq "$VD" add CLAUDE.md; gitq "$VD" commit -m claude
+ctx="$(hook_ctx "$VD")"
+case "$ctx" in *"notes-deleted"*) fail "fired on a healthy vault";;
+               *) pass "healthy vault: the alert stays quiet";; esac
+
+old_style_relocate "$VD" "$SESS" "$SD"
+auto_snapshot "$VD"
+ctx="$(hook_ctx "$VD")"
+case "$ctx" in *"notes-deleted"*) pass "damaged vault: the alert fires unprompted";;
+               *) fail "the alert did not fire on a damaged vault: ${ctx:0:160}";; esac
+case "$ctx" in *"repair-sidecar-note-deletion.sh"*) pass "names the repair command";;
+               *) fail "did not name the repair command";; esac
+case "$ctx" in *"--repair"*) pass "names the step that actually puts them back";;
+               *) fail "did not name --repair";; esac
+
+# and it goes quiet once the repair has run — a permanent alarm is wallpaper
+bash "$SUT" "$VD" --sidecar "$SD" --repair >/dev/null 2>&1
+ctx="$(hook_ctx "$VD")"
+case "$ctx" in *"notes-deleted"*) fail "still firing after the repair";;
+               *) pass "goes quiet once the notes are back";; esac
+
+# a correctly relocated CACHE must never ring it
+VDC="$ROOT/doorbell-cache"; SDC="$ROOT/sidedc"
+make_vault "$VDC" 3; : > "$VDC/CLAUDE.md"
+gitq "$VDC" add CLAUDE.md; gitq "$VDC" commit -m claude
+old_style_relocate "$VDC" ".smart-env" "$SDC"
+auto_snapshot "$VDC"
+ctx="$(hook_ctx "$VDC")"
+case "$ctx" in *"notes-deleted"*) fail "rang on an ordinary cache relocation";;
+               *) pass "an ordinary cache relocation does not ring it";; esac
+
 echo
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; exit 0; fi
 echo "$fails FAILING"; exit 1
