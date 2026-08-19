@@ -336,7 +336,8 @@ def test_windows_launcher(ins) -> None:
     real_probe = ins._probe_interpreter
     real_gate = ins._token_parses_in_every_shell
     real_cands = ins._win_bare_token_candidates
-    env_keys = ("ABS_WIN_LAUNCHER", "ABS_WIN_ABS_INTERPRETER")
+    env_keys = ("ABS_WIN_LAUNCHER", "ABS_WIN_ABS_INTERPRETER",
+                "ABS_WIN_UTF8_MODE")
     saved_env = {k: os.environ.get(k) for k in env_keys}
     for k in env_keys:
         os.environ.pop(k, None)
@@ -347,16 +348,59 @@ def test_windows_launcher(ins) -> None:
 
         ins._token_parses_in_every_shell = lambda t: True  # type: ignore[assignment]
         got = ins._windows_launcher()
-        if got == [SHORT_8_3.replace("\\", "/")]:
+        if got == [SHORT_8_3.replace("\\", "/"), "-X", "utf8"]:
             ok("a PROVEN absolute interpreter is what gets written (the `py -3` "
                "launcher process is gone from every hook)")
         else:
             bad("a proven absolute interpreter is written", str(got))
-        if got and len(got) == 1 and " " not in got[0] and got[0].isascii():
-            ok("the written launcher is a single bare space-free ASCII token, "
-               "the shape PORTABILITY.md section 5 requires")
+        if got and " " not in got[0] and got[0].isascii():
+            ok("the written launcher's FIRST token is a bare space-free ASCII "
+               "token, the shape PORTABILITY.md section 5 requires")
         else:
             bad("the written launcher keeps the required token shape", str(got))
+        # UTF-8 Mode moved onto the command line when the hook stopped being a
+        # child process: PYTHONUTF8 in a child env has nothing left to act on,
+        # and without it a hook's open().read() decodes with the console code
+        # page (PR #446). Every added token must be bare ASCII too.
+        if got[1:] == ["-X", "utf8"] and all(
+                t.isascii() and " " not in t for t in got[1:]):
+            ok("the launcher turns on PEP 540 UTF-8 Mode for the interpreter "
+               "the hook itself now runs in, in bare ASCII tokens")
+        else:
+            bad("the launcher enables UTF-8 Mode", str(got))
+
+        # The FULL prefix is what gets proven, not just its first token.
+        seen: list = []
+        ins._token_parses_in_every_shell = lambda t: (  # type: ignore[assignment]
+            seen.append(t), True)[1]
+        ins._windows_launcher()
+        if any(not isinstance(t, str) and list(t)[-2:] == ["-X", "utf8"]
+               for t in seen):
+            ok("the whole prefix goes back through the shell gate before it is "
+               "written (bare flags are proven, not assumed)")
+        else:
+            bad("the whole prefix is re-proven with the utf8 flags", str(seen))
+
+        # Unproven extra tokens -> the prefix WITHOUT them, never a guess.
+        ins._token_parses_in_every_shell = (  # type: ignore[assignment]
+            lambda t: isinstance(t, str))
+        got = ins._windows_launcher()
+        if got == [SHORT_8_3.replace("\\", "/")]:
+            ok("a prefix the shells will not run loses the extra flags and "
+               "keeps the proven token (fail-safe in both directions)")
+        else:
+            bad("an unproven prefix drops back to the proven token", str(got))
+
+        # The opt-out may only turn UTF-8 Mode off.
+        ins._token_parses_in_every_shell = lambda t: True  # type: ignore[assignment]
+        os.environ["ABS_WIN_UTF8_MODE"] = "0"
+        got = ins._windows_launcher()
+        del os.environ["ABS_WIN_UTF8_MODE"]
+        if got == [SHORT_8_3.replace("\\", "/")]:
+            ok("ABS_WIN_UTF8_MODE=0 drops `-X utf8` for anyone who needs the "
+               "interpreter's own locale")
+        else:
+            bad("ABS_WIN_UTF8_MODE=0 drops the utf8 flags", str(got))
 
         # UNPROVEN -> the status quo, never a guess.
         ins._token_parses_in_every_shell = lambda t: False  # type: ignore[assignment]

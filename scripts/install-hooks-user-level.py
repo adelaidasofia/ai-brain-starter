@@ -77,6 +77,14 @@ from pathlib import Path
 # always better than losing the diagnostic.
 _TEXT_UTF8 = {"text": True, "encoding": "utf-8", "errors": "replace"}
 
+# Seconds Claude Code lets a Windows hook entry run before it kills it. Matches
+# the bound hook_runner.py used to get for free from subprocess.run(timeout=45)
+# and now enforces itself (PR #446). Two independent bounds on purpose: the
+# runner's watchdog masks a hung HOOK cleanly, this one still applies when the
+# RUNNER is what wedged. POSIX entries keep their shell form and no timeout key,
+# exactly as before.
+WINDOWS_HOOK_TIMEOUT_SECONDS = 45
+
 
 # Fingerprint substrings — any hook command containing one of these is
 # considered "owned by ai-brain-starter" and may be replaced or removed.
@@ -761,8 +769,14 @@ def _shell_probe_prefixes() -> list[tuple[str, list[str]]]:
     return found
 
 
-def _token_parses_in_every_shell(token: str) -> bool:
+def _token_parses_in_every_shell(token) -> bool:
     """Execute `<token> -V` through every shell on THIS machine. All must run it.
+
+    `token` is the first token, or the WHOLE launcher prefix as a list when it
+    carries more than one (`<abs-python> -X utf8`). The extra tokens are bare
+    ASCII flags, but "bare ASCII flags obviously parse" is exactly the kind of
+    reasoning this gate exists to replace, so a multi-token prefix is proven as
+    a unit rather than inherited from its first token's proof.
 
     WHY THIS EXISTS AND IS NOT A COMMENT. The bare `py` being replaced was
     chosen because it is the one token SHAPE that PowerShell 5.1, PowerShell 7,
@@ -779,10 +793,15 @@ def _token_parses_in_every_shell(token: str) -> bool:
     ambiguous case must lose."""
     import subprocess
 
+    tokens = [token] if isinstance(token, str) else list(token)
+    if not tokens or not all(tokens):
+        return False
+    command = " ".join(tokens)
+
     proved = 0
     for _label, prefix in _shell_probe_prefixes():
         try:
-            probe = subprocess.run([*prefix, f"{token} -V"],
+            probe = subprocess.run([*prefix, f"{command} -V"],
                                    capture_output=True, timeout=20, **_TEXT_UTF8)
         except Exception:  # noqa: BLE001 — an unusable shell proves nothing
             return False
@@ -792,6 +811,36 @@ def _token_parses_in_every_shell(token: str) -> bool:
             return False
         proved += 1
     return proved > 0
+
+
+def _with_utf8_mode(prefix: list[str]) -> list[str]:
+    """Append `-X utf8` (PEP 540) when the FULL prefix still parses everywhere.
+
+    WHY IT MOVED ONTO THE LAUNCHER (MYC-3877 + PR #446). The hook used to run in
+    a CHILD interpreter, so hook_runner.py could hand it PYTHONUTF8=1 through
+    the child's environment. The hook now runs IN the runner's own process, and
+    UTF-8 Mode is fixed at interpreter startup — an env var set after that has
+    nothing left to act on. The only place it can still be turned on is the
+    command line the installer writes.
+
+    What it costs to skip: a hook doing `open(path).read()` decodes with the
+    console code page, and cp1252 has unmapped bytes (0x81/0x8D/0x8F/0x90/0x9D
+    — the gear emoji's 0x8F among them), so the read raises UnicodeDecodeError.
+    That is a ValueError, not an OSError, so it slips past the `except OSError`
+    in two dozen shipped hooks and the guard fails open silently.
+
+    Proven, not assumed: `-X utf8` is two bare ASCII tokens after a first token
+    that already passed the gate, and the whole prefix goes back through
+    _token_parses_in_every_shell() before it is written. Unproven -> the prefix
+    without it, same fail-safe direction as everything else here.
+    ABS_WIN_UTF8_MODE=0 opts out; like ABS_WIN_ABS_INTERPRETER it can only turn
+    the improvement off."""
+    if os.environ.get("ABS_WIN_UTF8_MODE", "1") == "0":
+        return prefix
+    candidate = [*prefix, "-X", "utf8"]
+    if _token_parses_in_every_shell(candidate):
+        return candidate
+    return prefix
 
 
 def _windows_launcher() -> list[str] | None:
@@ -817,10 +866,16 @@ def _windows_launcher() -> list[str] | None:
         _probe_interpreter() requires a real CPython 3 to answer back, where the
         old probe accepted any exit-0.
 
+    `-X utf8` is appended by _with_utf8_mode() once the whole prefix is proven:
+    the hook runs IN the runner's interpreter now, so UTF-8 Mode has to be on at
+    ITS startup — there is no child env left to put PYTHONUTF8 in.
+
     Escape hatches: ABS_WIN_LAUNCHER (space-separated tokens) overrides
-    everything, as before. ABS_WIN_ABS_INTERPRETER=0 keeps the bare launcher for
-    anyone who wants their hooks to follow PATH; it can only turn the
-    optimization off, never gate the working default."""
+    everything verbatim, as before — including UTF-8 Mode, so anyone using it to
+    pin an exact command line still gets exactly what they wrote.
+    ABS_WIN_ABS_INTERPRETER=0 keeps the bare launcher for anyone who wants their
+    hooks to follow PATH, and ABS_WIN_UTF8_MODE=0 drops `-X utf8`; both can only
+    turn an optimization off, never gate the working default."""
     import shutil
 
     env_override = os.environ.get("ABS_WIN_LAUNCHER")
@@ -839,14 +894,16 @@ def _windows_launcher() -> list[str] | None:
         if allow_abs:
             for token in _win_bare_token_candidates(exe):
                 if _token_parses_in_every_shell(token):
-                    return [token]
-        return argv  # proven interpreter, unproven spelling: keep the bare name
+                    return _with_utf8_mode([token])
+        # proven interpreter, unproven spelling: keep the bare name
+        return _with_utf8_mode(argv)
     # ASCII-safed for the same reason the hook paths are: this token is written
     # UNQUOTED, so an accented profile directory in the interpreter path breaks
     # every hook command the moment the shell's code page mangles it.
     exe = _ascii_safe_win_path(sys.executable or "")
     if exe and " " not in exe:
-        return [exe]  # unquoted absolute path parses everywhere iff space-free
+        # unquoted absolute path parses everywhere iff space-free
+        return _with_utf8_mode([exe])
     return None
 
 
@@ -1003,6 +1060,13 @@ def platformize_template_for_windows(template: dict) -> tuple[dict, list[str]]:
         never ran on Windows.
       - fallback flavor: `allow` when the original masked to a PreToolUse
         permissionDecision, else `silent`.
+      - every rewritten entry carries "timeout": WINDOWS_HOOK_TIMEOUT_SECONDS.
+        The POSIX shell forms never needed one; the runner form does, because
+        `subprocess.run(..., timeout=45)` went away with the child process
+        (PR #446). hook_runner.py carries its own watchdog, and this is the
+        second, outer bound: it is the one that still applies if the runner is
+        the thing that wedged. merge_hooks() replaces the whole entry dict, so
+        an existing install picks it up on the next run with no migration.
 
     Returns (rewritten_template, skipped_labels). If no launcher can be
     resolved, returns the template unchanged with a loud warning — failing
@@ -1049,6 +1113,7 @@ def platformize_template_for_windows(template: dict) -> tuple[dict, list[str]]:
                 h["command"] = " ".join(
                     [*launcher, f'"{runner}"', "--fallback", fb, f'"{target}"',
                      *(_win_quote_arg(a) for a in _hook_script_args(cmd))])
+                h["timeout"] = WINDOWS_HOOK_TIMEOUT_SECONDS
                 new_hooks.append(h)
             if new_hooks:
                 g = dict(group)
