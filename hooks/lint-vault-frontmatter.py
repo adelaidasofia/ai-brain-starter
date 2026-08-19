@@ -230,7 +230,8 @@ def main() -> int:
         # validator reads --type explicitly, so we just pass it.
         result = subprocess.run(
             [sys.executable, str(validator), "--file", tmp_path, "--type", type_name, "--strict", "--quiet"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=10,
         )
     except Exception as e:
         log_debug(f"validator subprocess failed: {e}")

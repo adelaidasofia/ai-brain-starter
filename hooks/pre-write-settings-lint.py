@@ -81,6 +81,10 @@ def main() -> int:
          "--strict", "--content", projected, "--label", label],
         capture_output=True,
         text=True,
+        # text=True alone decodes with the LOCALE encoding, so a cp1252
+        # console turns the lint output into a crash instead of a verdict.
+        encoding="utf-8",
+        errors="replace",
     )
     if result.returncode == 2:
         print(

@@ -90,7 +90,8 @@ def derive_install_date() -> datetime | None:
         try:
             result = subprocess.run(
                 ["git", "-C", str(SKILL_DIR), "log", "--reverse", "--format=%aI", "--max-count=1"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
                 date_str = result.stdout.strip().split("\n")[0]
