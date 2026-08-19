@@ -83,6 +83,7 @@ def main():
         check("node counts shown", "(300 notes)" in nav, nav)
         check("omitted tail is disclosed, not silent", "4 further communities" in nav, nav)
         check("detail section untouched", text.count("### Community ") == len(sizes))
+        check("file left POSIX-clean", text.endswith("\n") and not text.endswith("\n\n\n"))
 
         # Idempotency.
         run(rp, "--no-index-fix")
@@ -168,6 +169,13 @@ def main():
         check("existing semantic label untouched", '"Hand Written Label"' in text, r.stdout)
         check("rename count reported", "renamed 1 placeholder" in r.stdout, r.stdout)
         check("navigation shows the new name", "- Money (6 notes)" in text, text)
+        # \s*$ under MULTILINE is greedy across newlines: a heading at EOF loses the
+        # blank line the replacement never puts back.
+        tail = rp.read_text(encoding="utf-8")
+        check("relabel preserves trailing structure", tail.endswith("\n"), repr(tail[-40:]))
+        check("no heading collapsed into the next line",
+              "\n### Community" in tail and '"Money"\n' in tail, repr(tail[-200:]))
+
         r2 = run(rp, "--relabel-from", Path(td) / "missing.json", "--no-index-fix")
         check("missing graph.json fails loud", r2.returncode == 1 and "cannot relabel" in r2.stderr, r2.stderr)
 

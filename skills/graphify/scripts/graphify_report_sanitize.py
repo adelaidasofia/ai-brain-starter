@@ -59,7 +59,7 @@ def parse_communities(text: str) -> list[dict]:
         return out
     # '### Community 7 - "Sales Pipeline"' then later 'Nodes (23): a, b, c'
     pattern = re.compile(
-        r'^### Community (\d+) - "(.*?)"\s*$(?:\n(?!### ).*)*?\nNodes \((\d+)\):',
+        r'^### Community (\d+) - "(.*?)"[ \t]*$(?:\n(?!### ).*)*?\nNodes \((\d+)\):',
         re.MULTILINE,
     )
     for m in pattern.finditer(body[1]):
@@ -90,7 +90,7 @@ def relabel_placeholders(text: str, graph_json: Path) -> tuple[str, int]:
         replaced += 1
         return f'### Community {cid} - "{names[cid]}"'
 
-    return re.sub(r'^### Community (\d+) - "(.*?)"\s*$', swap, text, flags=re.MULTILINE), replaced
+    return re.sub(r'^### Community (\d+) - "(.*?)"[ \t]*$', swap, text, flags=re.MULTILINE), replaced
 
 
 def find_obsidian_dir(report_path: Path, explicit: str | None) -> Path | None:
@@ -233,7 +233,10 @@ def main() -> int:
         return 0
 
     new_lines, stats = build_hub_section(comms, obsidian_dir, args.min_size)
-    report_path.write_text(replace_section(text, HUB_HEADING, new_lines), encoding="utf-8")
+    # Upstream generate() returns "\n".join(lines) with no trailing newline; we are
+    # rewriting the file anyway, so leave POSIX-clean text behind.
+    final = replace_section(text, HUB_HEADING, new_lines)
+    report_path.write_text(final if final.endswith("\n") else final + "\n", encoding="utf-8")
 
     mode = "wikilinks (Obsidian export present)" if stats["linkable"] else "plain text (no export - links would be dead)"
     print(f"sanitize: navigation lists {stats['kept']} communities >= {args.min_size} nodes as {mode}")
