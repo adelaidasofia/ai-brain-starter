@@ -201,6 +201,20 @@ Then ask: **"Run graphify on this corpus? y/N"**
 
 If yes, invoke `/graphify --update`. Read the graphify skill's own SKILL.md first (`{SKILL_DIR}/../graphify/SKILL.md` — sibling skill folder, resolves in both local and served installs). On success, stamp `phase_2_graphify`.
 
+**The graph report must be sanitized before it sits in the vault.** `GRAPH_REPORT.md` ships a
+navigation section linking one `[[_COMMUNITY_*]]` note per detected community, and those notes
+exist only in graphify's opt-in Obsidian export — so by default every link is unresolved and
+Obsidian draws each one as a graph node. Left alone on a real vault that is thousands of grey
+placeholder dots named `Community 412`, radiating from one file, on top of the user's actual
+graph. The graphify skill runs `graphify_report_sanitize.py` at steps 4 and 5; confirm it did:
+
+```bash
+python3 "{SKILL_DIR}/../graphify/scripts/graphify_report_sanitize.py" --check graphify-out/GRAPH_REPORT.md
+```
+
+Exit 1 means ghosts survived — run the same script without `--check` to fix, adding
+`--relabel-from graphify-out/graph.json` if the community names are still bare indices.
+
 **Cost framing (do not misquote):** the token estimate is real, but on a Claude Max/Pro subscription graphify's semantic extraction runs through subagents (no per-token dollar charge) and ~80% of edges come from zero-LLM deterministic passes — so the marginal dollar cost is effectively **$0**. Only quote dollars if the user is on metered API billing. Never let a paid-API figure talk a subscription user out of a rebuild — that inverts the whole point of maximum context.
 
 ### Step 4 — Phase 3: wikilinks
