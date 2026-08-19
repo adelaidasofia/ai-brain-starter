@@ -42,6 +42,31 @@ make_vault() {  # $1 = vault dir
   gitq "$v" commit -m init
 }
 
+# A vault whose "⚙️ Meta/Sessions" notes are COMMITTED — i.e. a real one. The
+# other machinery dirs stay untracked, so one fixture exercises both sides of
+# the rule: tracked content is never moved, untracked caches still are.
+make_vault_tracked() {  # $1 = vault dir
+  local v="$1" i
+  mkdir -p "$v/⚙️ Meta/Sessions" "$v/⚙️ Meta/logs" "$v/.smart-env" "$v/.codegraph" "$v/.claude/worktrees"
+  gitq "$v" init
+  gitq "$v" config user.email "t@t.test"
+  gitq "$v" config user.name  "Test"
+  gitq "$v" config commit.gpgsign false
+  printf 'note\n' > "$v/note.md"
+  for i in 1 2 3; do printf 'session %s\n' "$i" > "$v/⚙️ Meta/Sessions/2026-08-0$i-work.md"; done
+  printf 'idx\n' > "$v/.smart-env/index.bin"
+  printf 'cg\n'  > "$v/.codegraph/graph.bin"
+  printf 'log\n' > "$v/⚙️ Meta/logs/run.log"
+  gitq "$v" add note.md "⚙️ Meta/Sessions"
+  gitq "$v" commit -m init
+}
+
+# How many paths git reports as DELETED. This is the number the user sees, the
+# number auto-snapshot commits, and the number multi-machine sync pushes.
+deleted_in_status() {  # $1 = vault dir
+  git -C "$1" status --porcelain 2>/dev/null | awk '/^.D|^D/{n++} END{print n+0}'
+}
+
 # Count REGULAR machinery files physically inside the vault tree (symlinks not
 # followed). Excludes the `.git` POINTER FILE (a tiny static pointer is allowed).
 machinery_files_in_tree() {  # $1 = vault dir
@@ -190,6 +215,184 @@ make_vault "$VE"
 bash "$HELPER" "$VE" --sidecar "$SIDE" --dry-run --quiet >/dev/null 2>&1
 [ -d "$VE/.git" ] && [ ! -L "$VE/.smart-env" ] && pass "F dry-run changed nothing" \
                                                || fail "F dry-run mutated the vault"
+
+# ---------------------------------------------------------------------------
+# G. TRACKED NOTES ARE NEVER RELOCATED  (the data-loss regression)
+#    "⚙️ Meta/Sessions" is BOTH a CACHE_DIRS name AND, in a real vault, over a
+#    thousand tracked markdown notes. Relocating it turns the directory into an
+#    absolute symlink, `git status` reports every note as DELETED, the hourly
+#    auto-snapshot (`git add -A`) COMMITS that deletion and the multi-machine
+#    sync PUSHES it — while the script prints "your notes did not move".
+#    The rule is the git INDEX, never the name. Negative control: a genuinely
+#    untracked cache still moves, so the rule is not "move nothing".
+# ---------------------------------------------------------------------------
+VH="$ROOT/H"
+make_vault_tracked "$VH"
+gout="$(bash "$HELPER" "$VH" --sidecar "$SIDE" 2>&1)"; rc=$?
+[ "$rc" = 0 ] && pass "G relocate exit 0 on a vault with tracked notes" || fail "G relocate exit=$rc"
+gdel="$(deleted_in_status "$VH")"
+[ "$gdel" = 0 ] && pass "G ZERO deletions in git status after relocation" \
+                || fail "G git status reports $gdel deleted file(s) — tracked notes were moved"
+{ [ -d "$VH/⚙️ Meta/Sessions" ] && [ ! -L "$VH/⚙️ Meta/Sessions" ]; } \
+  && pass "G tracked ⚙️ Meta/Sessions left as a real directory" \
+  || fail "G tracked ⚙️ Meta/Sessions was replaced by a symlink"
+[ -f "$VH/⚙️ Meta/Sessions/2026-08-01-work.md" ] && pass "G the tracked notes are still on disk" \
+                                                  || fail "G tracked notes are gone"
+echo "$gout" | grep -q 'KEPT: git tracks' && pass "G reports WHY the path was kept" \
+                                           || fail "G silent about the skip"
+[ -L "$VH/.smart-env" ] && pass "G neg-control: untracked .smart-env still relocated" \
+                        || fail "G neg-control: untracked cache was NOT relocated (rule too broad)"
+[ -L "$VH/⚙️ Meta/logs" ] && pass "G neg-control: untracked ⚙️ Meta/logs still relocated" \
+                          || fail "G neg-control: untracked emoji-path cache was NOT relocated"
+
+# ---------------------------------------------------------------------------
+# H. INTERRUPT MATRIX: --rollback works from EVERY kill point
+#    The manifest used to be written on the LAST line, so any interrupt left no
+#    record at all and `--rollback` hard-refused (exit 2). A SIGKILL between the
+#    `mv` and the `ln -s` left the directory ABSENT — no dir, no symlink, all the
+#    content stranded in the sidecar, no way back. Now every move is journalled
+#    (append + fsync) BEFORE it happens. BRAIN_SIDECAR_TEST_KILL_AT is the
+#    script's test-only fault-injection seam: SIGKILL right after a named step.
+# ---------------------------------------------------------------------------
+interrupt_case() {  # $1 = kill label, $2 = short id
+  local label="$1" id="$2" v side krc rrc d
+  v="$ROOT/I-$id"; side="$ROOT/I-$id-side"
+  make_vault_tracked "$v"
+  BRAIN_SIDECAR_TEST_KILL_AT="$label" bash "$HELPER" "$v" --sidecar "$side" --quiet >/dev/null 2>&1
+  krc=$?
+  [ "$krc" = 137 ] || fail "H[$id] expected SIGKILL (137) at '$label', got $krc"
+  bash "$HELPER" "$v" --sidecar "$side" --rollback --quiet >/dev/null 2>&1
+  rrc=$?
+  if [ "$rrc" != 0 ]; then
+    fail "H[$id] rollback after kill at '$label' exit=$rrc"
+    return
+  fi
+  d="$(deleted_in_status "$v")"
+  if [ -d "$v/.git" ] && [ ! -L "$v/.git" ] \
+     && [ -d "$v/.smart-env" ] && [ ! -L "$v/.smart-env" ] && [ -f "$v/.smart-env/index.bin" ] \
+     && [ -d "$v/⚙️ Meta/logs" ] && [ ! -L "$v/⚙️ Meta/logs" ] && [ -f "$v/⚙️ Meta/logs/run.log" ] \
+     && [ -f "$v/⚙️ Meta/Sessions/2026-08-01-work.md" ] && [ "$d" = 0 ]; then
+    pass "H[$id] kill at '$label' -> rollback restored everything (0 deletions)"
+  else
+    fail "H[$id] kill at '$label' -> vault NOT fully restored (git-status deletions=$d)"
+  fi
+}
+interrupt_case "post-journal:.git"        gitpre
+interrupt_case "post-git"                 gitpost
+interrupt_case "post-journal:.smart-env"  cachepre
+interrupt_case "post-mv:.smart-env"       cachemid
+interrupt_case "post-link:.smart-env"     cachepost
+interrupt_case "post-mv:⚙️ Meta/logs"      nested
+
+# H2. the kill lands BEFORE any manifest could be written — the write-ahead
+#     journal is the only reason rollback has anything to read.
+VJ="$ROOT/J"; SJ="$ROOT/J-side"
+make_vault_tracked "$VJ"
+BRAIN_SIDECAR_TEST_KILL_AT="post-link:.smart-env" bash "$HELPER" "$VJ" --sidecar "$SJ" --quiet >/dev/null 2>&1
+ls "$SJ/manifests/"*.json >/dev/null 2>&1 \
+  && fail "H2 a manifest exists — the premise (killed before the manifest) is wrong" \
+  || pass "H2 killed before any manifest was written"
+ls "$SJ/manifests/"*.journal.jsonl >/dev/null 2>&1 \
+  && pass "H2 the write-ahead journal survived the kill" \
+  || fail "H2 no journal — rollback would have nothing to read"
+
+# ---------------------------------------------------------------------------
+# I. A FAILED ROLLBACK SAYS SO (and keeps the evidence)
+#    `local rc=0` was never reassigned, a failed restore was only a `warn`, and
+#    `rm -f "$MANIFEST"` ran unconditionally — so a rollback that restored
+#    NOTHING printed "Rollback complete.", exited 0, and deleted the only map
+#    back. Here the sidecar gitdir goes missing (unplugged drive / sync deleted
+#    it): the cache legs restore, the git leg cannot, and that must be loud.
+# ---------------------------------------------------------------------------
+VK="$ROOT/K"; SK="$ROOT/K-side"
+make_vault "$VK"
+bash "$HELPER" "$VK" --sidecar "$SK" --quiet
+rm -rf "$SK/git"
+kout="$(bash "$HELPER" "$VK" --sidecar "$SK" --rollback 2>&1)"; rc=$?
+[ "$rc" != 0 ] && pass "I rollback exits non-zero when a leg fails (rc=$rc)" \
+               || fail "I rollback reported success while restoring nothing"
+echo "$kout" | grep -q 'INCOMPLETE' && pass "I rollback names the failure" \
+                                     || fail "I rollback did not report the failed leg"
+ls "$SK/manifests/"*.jsonl >/dev/null 2>&1 \
+  && pass "I the relocation record was KEPT after a failed rollback" \
+  || fail "I the record was deleted — the only map back is gone"
+[ -f "$VK/.git" ] && pass "I the dangling .git pointer was left for inspection, not silently removed" \
+                  || fail "I the .git pointer was removed without restoring the gitdir"
+
+# ---------------------------------------------------------------------------
+# J. A PROBE THAT CANNOT RUN COUNTS AS LIVE (fail closed)
+#    `git worktree list ... 2>/dev/null | awk` gave the same empty answer for
+#    "no worktrees" and "git refused to look" — so a `dubious ownership` error
+#    (real on restored / migrated / external-drive / network / Windows vaults)
+#    defeated the refusal and separate-git-dir orphaned live worktrees anyway.
+#    The shim below fails ONLY `git worktree list`; everything else is real git.
+# ---------------------------------------------------------------------------
+VL="$ROOT/L"; SL="$ROOT/L-side"
+make_vault "$VL"
+mkdir -p "$ROOT/gitshim"
+REALGIT="$(command -v git)"
+printf '#!/bin/bash\ncase " $* " in *" worktree list "*) echo "fatal: detected dubious ownership in repository at %s" >&2; exit 128;; esac\nexec %s "$@"\n' \
+  "$VL" "$REALGIT" > "$ROOT/gitshim/git"
+chmod +x "$ROOT/gitshim/git"
+lout="$(PATH="$ROOT/gitshim:$PATH" bash "$HELPER" "$VL" --sidecar "$SL" 2>&1)"; rc=$?
+[ "$rc" = 1 ] && pass "J refuses when the live-worktree probe cannot run (exit 1)" \
+              || fail "J expected exit 1, got $rc — an errored probe read as 'nothing live'"
+echo "$lout" | grep -q 'could not run' && pass "J explains that a probe failed" \
+                                        || fail "J did not explain the refusal"
+[ -d "$VL/.git" ] && pass "J the vault was not touched by the refused run" \
+                  || fail "J the vault was modified despite the refusal"
+bash "$HELPER" "$VL" --sidecar "$SL" --quiet >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] && pass "J neg-control: same vault with a working git relocates (exit 0)" \
+              || fail "J neg-control exit=$rc"
+
+# ---------------------------------------------------------------------------
+# K. THE SIDECAR DESTINATION IS CHECKED TOO
+#    $HOME can itself be synced (Windows roaming profile, OneDrive-managed or
+#    network home), so the default ~/.brain-sidecar lands INSIDE a sync root:
+#    .git moves from one synced tree to another, every success check passes,
+#    and the melt is unchanged — now with the notes split off as well.
+# ---------------------------------------------------------------------------
+VM="$ROOT/M"
+make_vault "$VM"
+mout="$(bash "$HELPER" "$VM" --sidecar "$ROOT/OneDrive/brain-sidecar" 2>&1)"; rc=$?
+[ "$rc" = 1 ] && pass "K refuses a sidecar inside a cloud-sync root (exit 1)" \
+              || fail "K expected exit 1, got $rc — machinery would move synced-tree to synced-tree"
+echo "$mout" | grep -q 'refusing: the sidecar destination is inside OneDrive' \
+  && pass "K names the sync service in the refusal" \
+  || fail "K did not name the sync service in a refusal line"
+[ -d "$VM/.git" ] && pass "K vault untouched by the refusal" || fail "K vault modified despite the refusal"
+mout="$(bash "$HELPER" "$VM" --sidecar "$VM/.sidecar" 2>&1)"; rc=$?
+[ "$rc" = 1 ] && pass "K refuses a sidecar INSIDE the vault (exit 1)" || fail "K sidecar-inside-vault exit=$rc"
+bash "$HELPER" "$VM" --sidecar "$ROOT/M-side" --quiet >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] && pass "K neg-control: a local sidecar is accepted (exit 0)" || fail "K neg-control exit=$rc"
+
+# ---------------------------------------------------------------------------
+# L. THE VAULT PATH IS DATA, NEVER CODE
+#    run() used `eval "$@"`, so every path was expanded a SECOND time: a folder
+#    named `Notes $HOME Backup` mis-resolved, and the same eval drove mv, rm -f
+#    and ln -s — so a folder name containing a backtick or $( ) would have
+#    EXECUTED. Now run() takes an argv array and no shell ever sees the path.
+# ---------------------------------------------------------------------------
+VN="$ROOT/Notes \$HOME Backup"
+make_vault_tracked "$VN"
+bash "$HELPER" "$VN" --sidecar "$ROOT/N-side" --quiet >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] && pass "L a vault path containing a literal \$HOME relocates (exit 0)" \
+              || fail "L exit=$rc — the path was expanded twice"
+{ [ -L "$VN/.smart-env" ] && [ -f "$VN/.smart-env/index.bin" ]; } \
+  && pass "L cache relocated and still readable through the symlink" \
+  || fail "L relocation mis-resolved the doubly-expanded path"
+ndel="$(deleted_in_status "$VN")"
+[ "$ndel" = 0 ] && pass "L no deletions in the \$HOME-named vault" || fail "L $ndel deletion(s)"
+
+VP="$ROOT/Notes \$(touch pwned-proof) X"
+make_vault_tracked "$VP"
+( cd "$ROOT" && bash "$HELPER" "$VP" --sidecar "$ROOT/P-side" --quiet >/dev/null 2>&1 )
+[ -e "$ROOT/pwned-proof" ] \
+  && fail "L a folder name EXECUTED — command substitution in the path ran" \
+  || pass "L a folder name containing \$( ) is data, not code"
+[ -L "$VP/.smart-env" ] && pass "L the \$( )-named vault still relocated correctly" \
+                        || fail "L the \$( )-named vault did not relocate"
+
 
 echo
 echo "--- MANUAL (operator-gated, cannot automate in CI) ---"
