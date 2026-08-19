@@ -394,6 +394,26 @@ make_vault_tracked "$VP"
                         || fail "L the \$( )-named vault did not relocate"
 
 
+# ---------------------------------------------------------------------------
+# M. AN UNREADABLE SESSION LOCK COUNTS AS LIVE (the other half of the probe)
+#    `[ "$sess" -gt 0 ] 2>/dev/null` read a NON-NUMERIC count as zero, and the
+#    python probe printed nothing when the lock could not be parsed - so a
+#    truncated / half-written .session-lock.json silently disarmed the refusal
+#    that keeps separate-git-dir from orphaning a live session's worktrees.
+# ---------------------------------------------------------------------------
+VQ="$ROOT/Q"; SQ="$ROOT/Q-side"
+make_vault "$VQ"
+mkdir -p "$VQ/.claude"
+printf '{ this is not json' > "$VQ/.claude/.session-lock.json"
+bash "$HELPER" "$VQ" --sidecar "$SQ" >/dev/null 2>&1; rc=$?
+[ "$rc" = 1 ] && pass "M refuses when the session lock cannot be read (exit 1)" \
+              || fail "M expected exit 1, got $rc - an unparseable lock read as zero sessions"
+[ -d "$VQ/.git" ] && pass "M vault untouched by the refusal" || fail "M vault modified despite the refusal"
+printf '{"sessions": {}}' > "$VQ/.claude/.session-lock.json"
+bash "$HELPER" "$VQ" --sidecar "$SQ" --quiet >/dev/null 2>&1; rc=$?
+[ "$rc" = 0 ] && pass "M neg-control: a readable empty lock relocates (exit 0)" || fail "M neg-control exit=$rc"
+
+
 echo
 echo "--- MANUAL (operator-gated, cannot automate in CI) ---"
 echo "iPhone round-trip: with the vault in iCloud Drive + this relocation applied,"
