@@ -62,8 +62,18 @@ PS1 = REPO / "bootstrap.ps1"
 # rewritten to keep a fixed gap quiet.
 KNOWN_GAPS: dict[str, str] = {
     ".ai-brain-starter-install-gaps.jsonl": (
+        # NOTE: the consumer hook is named WITHOUT its literal filename on
+        # purpose -- do not "helpfully" restore it. This file's name contains
+        # "test", so check-hook-negative-control.py treats it as a test surface
+        # and substring-matches hook names against its whole text. Spelling the
+        # hook's path here makes that guard believe the hook HAS a test surface,
+        # goes stale on its NO_TEST_BASELINE row, and fails CI -- while quietly
+        # asserting coverage this file does not provide. Mentioned is not
+        # tested, the same distinction this guard draws between a path
+        # mentioned in a comment and a path actually written. Tracked as
+        # MYC-4045.
         "MYC-4021 - REAL GAP. bootstrap.sh records every install step that did "
-        "not finish; hooks/first-week-checkin.py READS this file and quietly "
+        "not finish; the first-week check-in hook READS this file and quietly "
         "runs each row's repair command. Windows never writes it, so "
         "`gaps_file.is_file()` is False and partial-install self-repair never "
         "runs there. Delete this row when bootstrap.ps1 writes the same file."
