@@ -359,6 +359,14 @@ INTEGRATION_TESTS=(
   # copy, with a negative control that a first install from a dev tree still
   # wires a runner that exists.
   test_hook_runner_path_stability
+  # sync-vault-scripts.sh labelled its log header with `${DRY_RUN:+ (dry-run)}`,
+  # which tests NON-EMPTY while DRY_RUN is initialised to `0` — so every REAL run
+  # was recorded as "(dry-run)". Behaviour was correct (the write-guards use
+  # `-eq 1`); only the audit trail lied, which is the half that matters when you
+  # are reading the log to find out what overwrote your files. A dry run prints
+  # to stdout and never writes the log, so a "(dry-run)" header IN the log was
+  # unreachable except as a mislabel.
+  test_sync_vault_scripts_dryrun_label
   # vault-safe-commit.sh is the ONLY sanctioned route past the raw-git block
   # guard, so a bare `git commit -m` there gave that guard zero real scoping
   # while it looked fully enforced — a sibling session's staged work rode along
