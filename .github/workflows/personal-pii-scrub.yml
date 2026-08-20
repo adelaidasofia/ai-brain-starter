@@ -11,10 +11,31 @@ name: personal-pii-scrub
 # Claude Code sessions; this workflow catches it for ANY commit path
 # (gh CLI, direct git, contractor co-author, future agent).
 #
-# Patterns kept in lockstep with CLAUDE.md "Personal-data scrub" section.
-# Adding/removing patterns: edit ~/.claude/CLAUDE.md AND this template
-# (in ⚙️ Meta/scripts/gh-harden-repos.sh) in the same commit, then let
-# the daily run propagate.
+# TIER SPLIT (MYC-3943, bug class GUARD-DISCLOSES-THE-SECRET-IT-GUARDS).
+# This file used to carry the full personal-data roster inline, which
+# published the exact private tokens it exists to protect as a curated,
+# machine-readable, semantically labelled list in every managed public
+# repo. The vocabulary is now two tiers:
+#   PUBLIC tier — inline in this file. Only tokens already public by
+#   deliberate choice (the author name that signs these repos and a
+#   published writing title). Discloses nothing; keeps fork PRs and
+#   unarmed installs measurably gated.
+#   PRIVATE tier — the repo Actions secret PII_PRIVATE_PATTERNS, one
+#   POSIX extended regex per line, injected at run time and masked
+#   line-by-line in Actions logs. The plaintext roster lives ONLY in the
+#   private generator vault and each managed repo secret store, never in
+#   any public artifact.
+# Adding/removing patterns: edit the private roster next to the generator
+# (in ⚙️ Meta/scripts/gh-harden-repos.sh) AND, for public-tier tokens,
+# this template, in the same commit, then let the harden run propagate.
+# The harden run must sync the SECRET to a repo BEFORE shipping this file
+# there: on a managed repo this gate fails closed when the secret is
+# missing, because a gate that shrugs off a broken secret sync is green
+# and vacuous exactly where it broke (auto-managed-gate-self-dos).
+# Hashing the roster instead was REJECTED: personal-name tokens have a
+# tiny preimage space, so a public salted-hash denylist is one dictionary
+# pass away from plaintext (operating rule: a hashed identifier is
+# pseudonymous only while nothing else emits its preimage).
 
 on:
   pull_request:
@@ -51,6 +72,21 @@ permissions:
 jobs:
   scrub:
     runs-on: ubuntu-latest
+    env:
+      # The private-tier roster (one POSIX extended regex per line). Absent
+      # by GitHub design on fork PR and dependabot runs; required on
+      # trusted runs of managed repos (fail closed — see each step).
+      PII_PRIVATE_PATTERNS: ${{ secrets.PII_PRIVATE_PATTERNS }}
+      # true exactly when GitHub withholds Actions secrets from this run:
+      # a PR whose head repo is not this repo, or a dependabot actor
+      # (dependabot runs read a separate secret store).
+      PII_UNTRUSTED_RUN: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.actor == 'dependabot[bot]') }}
+      # Owners whose repos the harden script manages: there, a trusted run
+      # with no secret is a broken secret sync and fails closed. Any other
+      # owner (a fork of the substrate, a fresh client install) runs the
+      # public tier with a notice saying how to arm the private tier.
+      # Generator-maintained: a client install carries its own owner here.
+      PII_MANAGED_OWNERS: mycelium-hq adelaidasofia
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
@@ -58,31 +94,66 @@ jobs:
       - name: Personal-name + vault-path scrub (source files)
         run: |
           set -e
-          # Word-boundary patterns (auto-injected from a single source; this
-          # array and the archive-step array below are filled from the same
-          # list, so they cannot drift). NOT case-insensitive: 'wOnder'
-          # contains 'Onde' but \bOnde\b skips it (CLAUDE.md false-positive trap).
-          PATTERNS=(
+          # PUBLIC tier, inline (auto-injected from a single source; this
+          # array and the archive-step copy below are filled from the same
+          # list, so they cannot drift). ONLY tokens that are already public
+          # by deliberate choice may appear here. NOT case-insensitive: a
+          # capitalised name pattern must keep skipping unrelated lowercase
+          # words that merely contain it (the CLAUDE.md false-positive trap;
+          # widen only the first letter, never the whole pattern).
+          PUBLIC_PATTERNS=(
             '\b[Aa]delaida\b'
             '\b[Dd]iaz-[Rr]oa\b'
-            '\bSergio\b'
-            '\b[Ss]neider\b'
-            '\b[Aa]lfonso\b'
-            '\b[Pp]anorama\b'
-            '\bDiana\b'
-            '\bPaola\b'
-            '\b[Bb]everly\b'
-            '\b[Nn]atalia\b'
-            '\b[Ss]ilvia\b'
-            '\bAccenture\b'
-            '\bCentre415\b'
-            '\bvinitos\b'
-            '/Users/adelaidadiaz-roa/'
-            'AdelaidaNotes'
-            'adelaida@'
-            'tech@onde'
             'After the Shock'
           )
+          # PRIVATE tier, from the PII_PRIVATE_PATTERNS repo secret. The
+          # roster of private-person, client and infra tokens NEVER appears
+          # inline: a plaintext denylist in a public artifact publishes the
+          # exact tokens it exists to protect (MYC-3943). Runs that cannot
+          # read the secret are CLASSIFIED, never guessed at — see each
+          # branch below.
+          PRIVATE_PATTERNS=()
+          if [ -n "${PII_PRIVATE_PATTERNS:-}" ]; then
+            while IFS= read -r pii_line; do
+              pii_line="${pii_line%$'\r'}"
+              # Trim edge whitespace: a stray padded or blank line must not
+              # become a match-anything pattern that turns the fleet red.
+              pii_line="${pii_line#"${pii_line%%[![:space:]]*}"}"
+              pii_line="${pii_line%"${pii_line##*[![:space:]]}"}"
+              if [ -n "$pii_line" ]; then
+                PRIVATE_PATTERNS+=("$pii_line")
+              fi
+            done <<< "$PII_PRIVATE_PATTERNS"
+            if [ "${#PRIVATE_PATTERNS[@]}" -lt 1 ]; then
+              echo "::error::PII_PRIVATE_PATTERNS is set but parsed to zero patterns. A gate with an empty private tier is green and vacuous. Refusing to run."
+              exit 1
+            fi
+          elif [ "$PII_UNTRUSTED_RUN" = "true" ]; then
+            # Fork PRs and dependabot cannot read Actions secrets by GitHub
+            # design. Reduced scope here is DOCUMENTED, not silent: the full
+            # vocabulary still gates push and merge_group, which read the
+            # secret. Recorded MYC-3943 trade: post-merge detection on fork
+            # PRs beats a standing roster disclosure in every managed repo.
+            echo "::notice::Fork and dependabot runs cannot read Actions secrets, so the private-tier roster is unavailable here. Scanning the public tier only; the full vocabulary runs on push and merge_group."
+          elif [ -z "${PII_MANAGED_OWNERS:-}" ]; then
+            # This env line ships inside this file, so on a real run it can
+            # only be empty when the template misrendered. Guessing between
+            # managed and unmanaged here would turn a broken secret sync
+            # into a green vacuous gate on the managed fleet. Fail closed.
+            echo "::error::PII_MANAGED_OWNERS rendered EMPTY, so this run cannot classify the repo as managed or unmanaged. Failing closed rather than guessing."
+            exit 1
+          elif [[ " $PII_MANAGED_OWNERS " == *" $GITHUB_REPOSITORY_OWNER "* ]]; then
+            # A managed repo on a trusted event with no secret is a broken
+            # secret sync, and a gate that shrugs that off would be green
+            # and vacuous exactly where the sync broke. Fail closed.
+            echo "::error::Repo secret PII_PRIVATE_PATTERNS is not set on a managed repo. The private roster never ships inline (MYC-3943), so without the secret this gate cannot see the tokens it exists to catch. Arm it with: gh secret set PII_PRIVATE_PATTERNS --repo $GITHUB_REPOSITORY (one POSIX extended regex per line, from the private generator vault roster)."
+            exit 1
+          else
+            # A fork of the substrate or a fresh client install: no roster
+            # is not an error, it is an unarmed install. Say how to arm it.
+            echo "::notice::PII_PRIVATE_PATTERNS is not set, so only the public-tier patterns run. To arm the install-specific private tier, set that repo secret to your own roster, one POSIX extended regex per line."
+          fi
+          PATTERNS=( "${PUBLIC_PATTERNS[@]}" "${PRIVATE_PATTERNS[@]}" )
           # ONE scan implementation, called with the patterns to scan for. The
           # positive control below runs THIS function, so it exercises the real
           # engine, the real pathspecs and the real invocation shape rather than
@@ -150,7 +221,7 @@ jobs:
           # uses, rather than injected as a second array, so there is no parallel
           # list that can drift from the one being tested. Both ends of each
           # bracket class are planted, which is what keeps the lowercase widening
-          # (\bSneider\b became \b[Ss]neider\b) proven rather than assumed.
+          # (\bSomename\b became \b[Ss]omename\b) proven rather than assumed.
           # Bug class: SILENT-FALSE-CLEAN-FROM-INCOMPLETE-VOCABULARY.
           # NOTE: written with if/else, never a case statement. This heredoc sits
           # inside a $( ) command substitution, and bash counts parens there
@@ -203,30 +274,48 @@ jobs:
         # the next regression).
         run: |
           set -e
-          # Same single-source pattern list as the source-files step above
-          # (both arrays are injected from one placeholder, so they cannot
-          # drift).
-          PATTERNS=(
+          # Same two-tier vocabulary as the source-files step above: the
+          # inline PUBLIC tier is injected from one placeholder in both steps
+          # (so they cannot drift), and the PRIVATE tier is read from the
+          # same PII_PRIVATE_PATTERNS secret, with the same run
+          # classification (see the source step for the full reasoning).
+          PUBLIC_PATTERNS=(
             '\b[Aa]delaida\b'
             '\b[Dd]iaz-[Rr]oa\b'
-            '\bSergio\b'
-            '\b[Ss]neider\b'
-            '\b[Aa]lfonso\b'
-            '\b[Pp]anorama\b'
-            '\bDiana\b'
-            '\bPaola\b'
-            '\b[Bb]everly\b'
-            '\b[Nn]atalia\b'
-            '\b[Ss]ilvia\b'
-            '\bAccenture\b'
-            '\bCentre415\b'
-            '\bvinitos\b'
-            '/Users/adelaidadiaz-roa/'
-            'AdelaidaNotes'
-            'adelaida@'
-            'tech@onde'
             'After the Shock'
           )
+          PRIVATE_PATTERNS=()
+          if [ -n "${PII_PRIVATE_PATTERNS:-}" ]; then
+            while IFS= read -r pii_line; do
+              pii_line="${pii_line%$'\r'}"
+              # Trim edge whitespace: a stray padded or blank line must not
+              # become a match-anything pattern that turns the fleet red.
+              pii_line="${pii_line#"${pii_line%%[![:space:]]*}"}"
+              pii_line="${pii_line%"${pii_line##*[![:space:]]}"}"
+              if [ -n "$pii_line" ]; then
+                PRIVATE_PATTERNS+=("$pii_line")
+              fi
+            done <<< "$PII_PRIVATE_PATTERNS"
+            if [ "${#PRIVATE_PATTERNS[@]}" -lt 1 ]; then
+              echo "::error::PII_PRIVATE_PATTERNS is set but parsed to zero patterns. A gate with an empty private tier is green and vacuous. Refusing to run."
+              exit 1
+            fi
+          elif [ "$PII_UNTRUSTED_RUN" = "true" ]; then
+            echo "::notice::Fork and dependabot runs cannot read Actions secrets, so the private-tier roster is unavailable here. Scanning the public tier only; the full vocabulary runs on push and merge_group."
+          elif [ -z "${PII_MANAGED_OWNERS:-}" ]; then
+            # This env line ships inside this file, so on a real run it can
+            # only be empty when the template misrendered. Guessing between
+            # managed and unmanaged here would turn a broken secret sync
+            # into a green vacuous gate on the managed fleet. Fail closed.
+            echo "::error::PII_MANAGED_OWNERS rendered EMPTY, so this run cannot classify the repo as managed or unmanaged. Failing closed rather than guessing."
+            exit 1
+          elif [[ " $PII_MANAGED_OWNERS " == *" $GITHUB_REPOSITORY_OWNER "* ]]; then
+            echo "::error::Repo secret PII_PRIVATE_PATTERNS is not set on a managed repo. The private roster never ships inline (MYC-3943), so without the secret this gate cannot see the tokens it exists to catch. Arm it with: gh secret set PII_PRIVATE_PATTERNS --repo $GITHUB_REPOSITORY (one POSIX extended regex per line, from the private generator vault roster)."
+            exit 1
+          else
+            echo "::notice::PII_PRIVATE_PATTERNS is not set, so only the public-tier patterns run. To arm the install-specific private tier, set that repo secret to your own roster, one POSIX extended regex per line."
+          fi
+          PATTERNS=( "${PUBLIC_PATTERNS[@]}" "${PRIVATE_PATTERNS[@]}" )
           # Same exclusions as the source-file step (LICENSE/COPYING/
           # NOTICE legitimately attribute the author; README/CHANGELOG/
           # *.md are docs; vendored deps + lock files don't count).
@@ -341,34 +430,51 @@ jobs:
         # PII-GATE-MARKDOWN-BLIND-SPOT fix (2026-06-06). The source-file step
         # above excludes *.md + docs/, so private third-party names + vault
         # paths leaked into published markdown were NEVER scanned. This step
-        # scans *.md for a NARROWER token set (private third-party names +
-        # vault paths only). It deliberately does NOT scan for the author's
-        # own name (legitimate attribution in README/LICENSE/CHANGELOG) or
-        # published feature/brand tokens (Onde/Colombia/High-Rise). Conventional
-        # attribution files (README/LICENSE/CONTRIBUTING/AUTHORS/...) are
-        # excluded; CHANGELOG + docs/ ARE scanned — that's where leaks hid.
-        # MD_PATTERNS is injected from the SAME pii_markdown_scan_patterns the
-        # dry-run uses (single source; the regression test asserts lockstep).
+        # scans *.md for a NARROWER token set: the PRIVATE tier only
+        # (private third-party names + vault paths). It deliberately does
+        # NOT scan the public tier — the author name is legitimate
+        # attribution in prose (README/LICENSE/CHANGELOG) and published
+        # feature/brand tokens are published. Conventional attribution
+        # files (README/LICENSE/CONTRIBUTING/AUTHORS/...) are excluded;
+        # CHANGELOG + docs/ ARE scanned — that is where leaks hid.
+        # MD_PATTERNS reads the SAME PII_PRIVATE_PATTERNS secret the source
+        # and archive steps read (single source; the tiers cannot drift).
         run: |
           set -e
-          MD_PATTERNS=(
-            '\bSergio\b'
-            '\b[Ss]neider\b'
-            '\b[Aa]lfonso\b'
-            '\b[Pp]anorama\b'
-            '\bDiana\b'
-            '\bPaola\b'
-            '\b[Bb]everly\b'
-            '\b[Nn]atalia\b'
-            '\b[Ss]ilvia\b'
-            '\bAccenture\b'
-            '\bCentre415\b'
-            '\bvinitos\b'
-            '/Users/adelaidadiaz-roa/'
-            'AdelaidaNotes'
-            'adelaida@'
-            'tech@onde'
-          )
+          # PRIVATE tier only, from the PII_PRIVATE_PATTERNS repo secret
+          # (see the source step for the full classification reasoning).
+          # This tier has NO inline patterns at all, so a run that cannot
+          # read the secret has nothing to scan — it says so loudly and
+          # exits by classification, never silently.
+          MD_PATTERNS=()
+          if [ -n "${PII_PRIVATE_PATTERNS:-}" ]; then
+            while IFS= read -r pii_line; do
+              pii_line="${pii_line%$'\r'}"
+              # Trim edge whitespace: a stray padded or blank line must not
+              # become a match-anything pattern that turns the fleet red.
+              pii_line="${pii_line#"${pii_line%%[![:space:]]*}"}"
+              pii_line="${pii_line%"${pii_line##*[![:space:]]}"}"
+              if [ -n "$pii_line" ]; then
+                MD_PATTERNS+=("$pii_line")
+              fi
+            done <<< "$PII_PRIVATE_PATTERNS"
+          elif [ "$PII_UNTRUSTED_RUN" = "true" ]; then
+            echo "::notice::The markdown tier scans private-tier tokens only, and fork or dependabot runs cannot read Actions secrets. Skipping this tier here; it runs in full on push and merge_group."
+            exit 0
+          elif [ -z "${PII_MANAGED_OWNERS:-}" ]; then
+            # This env line ships inside this file, so on a real run it can
+            # only be empty when the template misrendered. Guessing between
+            # managed and unmanaged here would turn a broken secret sync
+            # into a green vacuous gate on the managed fleet. Fail closed.
+            echo "::error::PII_MANAGED_OWNERS rendered EMPTY, so this run cannot classify the repo as managed or unmanaged. Failing closed rather than guessing."
+            exit 1
+          elif [[ " $PII_MANAGED_OWNERS " == *" $GITHUB_REPOSITORY_OWNER "* ]]; then
+            echo "::error::Repo secret PII_PRIVATE_PATTERNS is not set on a managed repo, so the markdown tier has no vocabulary. Failing closed rather than passing vacuous. Arm it with: gh secret set PII_PRIVATE_PATTERNS --repo $GITHUB_REPOSITORY (one POSIX extended regex per line, from the private generator vault roster)."
+            exit 1
+          else
+            echo "::notice::PII_PRIVATE_PATTERNS is not set and the markdown tier scans only private-tier tokens. Skipping this tier; set that repo secret to arm it."
+            exit 0
+          fi
           # ONE scan implementation, shared by the positive control and the real
           # scan below (see the source-files step for why the control matters).
           # This tier has its OWN pathspec set, so it needs its OWN control: a

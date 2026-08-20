@@ -9,6 +9,20 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-19: the privacy checker no longer publishes the private word list it checks for
+
+**Who this affects:** anyone who publishes repos with this starter installed, and anyone who forked one of ours.
+
+Every public repo managed by this project runs a check on each change: does this change accidentally include a private name, a client, a home folder path, an email? Useful check. One problem, found in an audit: the list of private words it looked for was written out, in plain text, inside the checker itself — which is a public file. A privacy guard that carries a neatly labelled list of everything it protects is not a guard, it is a directory.
+
+Now the private part of that list lives in a sealed repo setting (a GitHub Actions secret named `PII_PRIVATE_PATTERNS`) that only the repo's own checks can read. The public file keeps only words that were already public on purpose. Nothing about what the check catches changes when the secret is in place — same words, same matching, and the check still proves on every run that each word on the list can actually be caught.
+
+Three situations to know about:
+
+- **A managed repo missing its secret fails the check loudly** instead of quietly checking nothing. That is deliberate: a silently disarmed guard looks exactly like a clean repo.
+- **Changes proposed from a fork** cannot read secrets (GitHub's rule, a good one), so they get checked against the public words only, with a visible note saying so. The full check runs the moment the change lands.
+- **Your own install:** if you copied this repo and never set the secret, the check now tells you how to add your own private list instead of checking ours. One command, shown in the check's output.
+
 ## 2026-08-18: everything felt slower on Windows, and now it is about twice as fast
 
 **Who this affects:** Windows users, most of all anyone on a work laptop with antivirus running. Mac and Linux are unaffected.
