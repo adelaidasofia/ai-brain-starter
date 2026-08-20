@@ -244,6 +244,20 @@ with tempfile.TemporaryDirectory() as td:
     subprocess.run(["git", "init", "-q", str(bare)], check=True)
     print("G4", "PASS" if not fired(bare) else "FAIL", "home repo with no credentials present stays silent")
 
+    # ALREADY COMMITTED is a different, worse state than merely exposed: the
+    # bytes are in git objects, and the remedy is key ROTATION, not a .gitignore.
+    # Telling a leaked user "nothing has leaked" is the dangerous half to get
+    # wrong, so the two messages are pinned apart.
+    leak = td / "leaked"; leak.mkdir(); key(leak)
+    subprocess.run(["git", "init", "-q", str(leak)], check=True)
+    for c in (["config", "user.email", "t@t.test"], ["config", "user.name", "T"],
+              ["add", "-f", ".ssh/id_ed25519"], ["commit", "-qm", "oops"]):
+        subprocess.run(["git", "-C", str(leak)] + c, check=True, capture_output=True)
+    os.environ["HOME"] = str(leak)
+    msg = (m.home_is_a_repo_alert() or [""])[0]
+    ok = "ALREADY COMMITTED" in msg and "ROTATED" in msg
+    print("G6", "PASS" if ok else "FAIL", "an already-committed key says ROTATE, not 'at risk'")
+
     os.environ["HOME_REPO_ALERT_BYPASS"] = "1"
     print("G5", "PASS" if not fired(hit) else "FAIL", "bypass silences a genuine hit")
     del os.environ["HOME_REPO_ALERT_BYPASS"]

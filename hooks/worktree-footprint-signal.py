@@ -400,25 +400,60 @@ def home_is_a_repo_alert() -> list[str]:
     except (OSError, subprocess.SubprocessError):
         return []
     exposed = [r for r in present if r not in ignored]
-    if not exposed:
+
+    # ALREADY TRACKED is a different, worse state than merely exposed: the bytes
+    # are in git objects, objects outlive every later delete, and the remedy is
+    # key ROTATION rather than a .gitignore. Reporting only "at risk" to someone
+    # whose key already leaked is the more dangerous half of this alert to get
+    # wrong, so it is measured, not assumed.
+    tracked: list[str] = []
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(home), "ls-files", "-z", "--"] + list(HOME_CREDENTIAL_PATHS),
+            capture_output=True, text=True, encoding="utf-8", timeout=5,
+        )
+        if proc.returncode == 0:
+            tracked = [x for x in proc.stdout.split("\0") if x]
+    except (OSError, subprocess.SubprocessError):
+        tracked = []                       # unknown, not "none" — the wording below says so
+
+    if not exposed and not tracked:
         return []                          # a dotfiles repo that ignores its secrets
 
     kind = "a pointer file into a sidecar" if gitpath.is_file() else "a real .git directory"
+    head = (f"🔴 [home-is-a-repo] The user's HOME directory `{home}` is a git "
+            f"working tree ({kind}). ")
+
+    if tracked:
+        names = ", ".join(f"`~/{t}`" for t in tracked[:4])
+        extra = f" (+{len(tracked) - 4} more)" if len(tracked) > 4 else ""
+        return [
+            head +
+            f"ALREADY COMMITTED into git history: {names}{extra}. Those bytes are "
+            f"in git objects now, and objects survive deleting the file, amending "
+            f"the commit, and removing the repo's remote. Say this plainly and "
+            f"without softening it: the safe assumption is that these credentials "
+            f"are compromised and should be ROTATED at their providers — a new SSH "
+            f"key, new AWS keys, a reissued GitHub token — before anything else. "
+            f"Cleaning history is secondary and does not un-leak them. Then stop "
+            f"$HOME being a repo: `mv ~/.git ~/.git.disabled-$(date +%Y%m%d)` "
+            f"(move, do not delete — it may hold commits worth keeping)."
+        ]
+
     shown = ", ".join(f"`~/{r}`" for r in exposed[:4])
     more = f" (+{len(exposed) - 4} more)" if len(exposed) > 4 else ""
     return [
-        f"🔴 [home-is-a-repo] The user's HOME directory `{home}` is a git working "
-        f"tree ({kind}), and these are inside it and NOT ignored: {shown}{more}. "
-        f"Nothing has been committed yet by this alert's reckoning, but one "
-        f"`git add -A` writes those secrets into git objects permanently, and a "
-        f"later `git remote add` would publish them. This is almost never "
-        f"intentional — a vault-relocation helper aimed at a home directory "
-        f"produces exactly this. Tell the user plainly, then: back up the pointer "
-        f"rather than deleting it (`mv ~/.git ~/.git.disabled-$(date +%Y%m%d)`), "
-        f"which stops $HOME being a repo without destroying anything, and check "
-        f"`git --git-dir=<that path> log` for commits worth keeping. If they DID "
-        f"mean to keep a dotfiles repo here, the real fix is a .gitignore covering "
-        f"those paths; `HOME_REPO_ALERT_BYPASS=1` silences this."
+        head +
+        f"These are inside it and NOT ignored: {shown}{more}. Nothing is committed "
+        f"yet, so nothing has leaked — but one `git add -A` writes those secrets "
+        f"into git objects permanently, and a later `git remote add` would publish "
+        f"them. This is almost never intentional; a vault-relocation helper aimed "
+        f"at a home directory produces exactly this. Tell the user plainly, then "
+        f"back up the pointer rather than deleting it "
+        f"(`mv ~/.git ~/.git.disabled-$(date +%Y%m%d)`), which stops $HOME being a "
+        f"repo without destroying anything. If they DID mean to keep a dotfiles "
+        f"repo here, the real fix is a .gitignore covering those paths; "
+        f"`HOME_REPO_ALERT_BYPASS=1` silences this."
     ]
 
 
