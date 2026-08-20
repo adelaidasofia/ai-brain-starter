@@ -40,6 +40,11 @@ from pathlib import Path
 HUB_HEADING = "## Community Hubs (Navigation)"
 DETAIL_HEADING = "## Communities"
 DEFAULT_MIN_SIZE = 5
+# A floor alone is only correct for a MATURE graph. On a fresh vault every community is
+# small, so a bare floor hides all of them and leaves an empty navigation section that
+# calls the user's whole vault "extraction fragments" -- worst on a brand-new install,
+# which is the corpus this skill sees most. Always show the largest few regardless.
+MIN_SHOWN = 10
 
 # Mirrors graphify.report._safe_community_name / export.safe_name. Kept local so a
 # sanitize run never needs the package importable.
@@ -105,8 +110,15 @@ def find_obsidian_dir(report_path: Path, explicit: str | None) -> Path | None:
 
 
 def build_hub_section(comms: list[dict], obsidian_dir: Path | None, min_size: int) -> tuple[list[str], dict]:
-    kept = sorted((c for c in comms if c["size"] >= min_size), key=lambda c: -c["size"])
-    dropped = [c for c in comms if c["size"] < min_size]
+    by_size = sorted(comms, key=lambda c: (-c["size"], c["cid"]))
+    kept = [c for c in by_size if c["size"] >= min_size]
+    if len(kept) < MIN_SHOWN:
+        # Top up with the largest of what the floor excluded, so a small vault still gets
+        # a usable map instead of an empty list.
+        kept = by_size[: min(MIN_SHOWN, len(by_size))]
+    topped_up = bool(kept) and any(c["size"] < min_size for c in kept)
+    kept_cids = {c["cid"] for c in kept}
+    dropped = [c for c in by_size if c["cid"] not in kept_cids]
     unnamed = [c for c in kept if re.fullmatch(rf"Community {c['cid']}", c["label"])]
 
     lines = [HUB_HEADING, ""]
@@ -123,14 +135,18 @@ def build_hub_section(comms: list[dict], obsidian_dir: Path | None, min_size: in
 
     if dropped:
         covered = sum(c["size"] for c in dropped)
-        lines += [
-            "",
-            f"_{len(dropped):,} further communities under {min_size} nodes "
-            f"({covered:,} nodes total) are omitted here. Clusters that small are "
-            f"extraction fragments, not topics._",
-        ]
+        n, nodes = f"{len(dropped):,}", f"{covered:,}"
+        plural = "community" if len(dropped) == 1 else "communities"
+        if topped_up:
+            # Ranked cut, not a size cut -- there is no honest threshold to quote here.
+            reason = f"the {len(kept)} largest are listed above"
+        else:
+            reason = (f"everything under {min_size} nodes. Clusters that small are usually "
+                      f"extraction fragments rather than topics")
+        lines += ["", f"_{n} smaller {plural} ({nodes} node{'' if covered == 1 else 's'}) "
+                      f"omitted — {reason}._"]
     stats = {"kept": len(kept), "dropped": len(dropped), "unnamed": len(unnamed),
-             "linkable": obsidian_dir is not None}
+             "linkable": obsidian_dir is not None, "topped_up": topped_up}
     return lines, stats
 
 
@@ -241,9 +257,12 @@ def main() -> int:
     report_path.write_text(final if final.endswith("\n") else final + "\n", encoding="utf-8")
 
     mode = "wikilinks (Obsidian export present)" if stats["linkable"] else "plain text (no export - links would be dead)"
-    print(f"sanitize: navigation lists {stats['kept']} communities >= {args.min_size} nodes as {mode}")
+    rule = (f"the {stats['kept']} largest (none reach the {args.min_size}-node floor; small corpus)"
+            if stats["topped_up"] else f"{stats['kept']} communities >= {args.min_size} nodes")
+    print(f"sanitize: navigation lists {rule} as {mode}")
     if stats["dropped"]:
-        print(f"          {stats['dropped']:,} micro-communities omitted from navigation")
+        noun = "community" if stats["dropped"] == 1 else "communities"
+        print(f"          {stats['dropped']:,} smaller {noun} omitted from navigation")
     if stats["unnamed"]:
         print(f"          {stats['unnamed']} listed communities still have placeholder names "
               f"(\"Community N\") - label them in Step 5")

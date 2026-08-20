@@ -78,12 +78,14 @@ def main():
               [l for l in text.splitlines() if "[[" in l][:2])
         check("--check passes after sanitize", run("--check", rp).returncode == 0)
 
-        # Floor: 4 communities are >=5 nodes; 4 are below.
+        # 8 communities, fewer than the display minimum, so all 8 stay listed. The FLOOR
+        # itself is exercised in the corpus-spectrum block below, on a fixture big enough
+        # for it to bite; asserting it here would only re-encode a fixture's shape.
         nav = text.split("## Community Hubs (Navigation)")[1].split("\n## ")[0]
-        check("floor keeps only >=5-node communities", nav.count("\n- ") == 4, nav)
+        check("small fixture lists every community", nav.count("\n- ") == len(sizes), nav)
         check("largest community listed first", nav.index("Community 0") < nav.index("Community 3"), nav)
         check("node counts shown", "(300 notes)" in nav, nav)
-        check("omitted tail is disclosed, not silent", "4 further communities" in nav, nav)
+        check("nothing omitted, so no tail line", "omitted" not in nav, nav)
         check("detail section untouched", text.count("### Community ") == len(sizes))
         check("file left POSIX-clean", text.endswith("\n") and not text.endswith("\n\n\n"))
 
@@ -146,6 +148,38 @@ def main():
         rp.write_text(make_report(sizes), encoding="utf-8")
         r = run(rp)
         check("non-vault corpus writes no config", "userIgnoreFilters" not in r.stdout, r.stdout)
+
+    # A floor tuned on a 14,046-node vault is wrong for the corpus this skill sees MOST:
+    # a brand-new install. These fixtures span the input population, not one archetype.
+    print("\n== corpus size spectrum (a floor alone hides a new vault entirely) ==")
+
+    def nav_of(sizes, extra=()):
+        with tempfile.TemporaryDirectory() as td:
+            rp = Path(td) / "GRAPH_REPORT.md"
+            rp.write_text(make_report(sizes), encoding="utf-8")
+            res = run(rp, "--no-index-fix", *extra)
+            text = rp.read_text(encoding="utf-8")
+            return text.split("## Community Hubs (Navigation)")[1].split("\n## ")[0], res.stdout
+
+    # New student: ~40 notes, nothing near the 5-node floor.
+    nav, out = nav_of({0: 4, 1: 4, 2: 3, 3: 3, 4: 3, 5: 2, 6: 2, 7: 2, 8: 2, 9: 1, 10: 1})
+    check("new vault gets a NON-empty navigation", nav.count("\n- ") > 0, nav)
+    check("new vault shows the 10 largest", nav.count("\n- ") == 10, nav)
+    check("no false '>= N nodes' claim when topped up", ">= 5 nodes" not in out, out)
+    check("ranked cut says so instead of quoting a threshold", "largest are listed above" in nav, nav)
+    check("singular grammar when one is omitted", "1 smaller community (1 node)" in nav, nav)
+
+    # Tiny vault: fewer communities than the display minimum -> show them all, omit nothing.
+    nav, _ = nav_of({0: 3, 1: 2, 2: 1})
+    check("tiny vault lists every community", nav.count("\n- ") == 3, nav)
+    check("tiny vault has no omitted-tail line", "omitted" not in nav, nav)
+
+    # Mature vault: the floor must still do its job, not be softened by the top-up.
+    big = {i: (300 if i == 0 else 40 if i < 12 else 1) for i in range(200)}
+    nav, out = nav_of(big)
+    check("mature vault still cuts by the floor", nav.count("\n- ") == 12, nav.count("\n- "))
+    check("mature vault quotes the real threshold", ">= 5 nodes" in out, out)
+    check("mature vault discloses the omitted tail", "188 smaller communities" in nav, nav)
 
     print("\n== retroactive relabel (--relabel-from) ==")
     with tempfile.TemporaryDirectory() as td:
