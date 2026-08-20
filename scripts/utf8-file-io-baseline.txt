@@ -23,7 +23,7 @@
 #
 # <sha256-of-normalized-content> <tag> <repo-relative-path>
 
-# ---- SEV-A-write  (40 file(s)) ----
+# ---- SEV-A-write  (39 file(s)) ----
 b87ac14c241be51fb2427ac9a86ab8de4a5b161549f2ee0d445b6e9ca4f65550 SEV-A-write hooks/_lib/session_echo.test.py
 62adfe6bbcfecc12d8e6bbad292ab40215e9f15c8812ec91f53dfe42156e7886 SEV-A-write hooks/_lib/standing_report.test.py
 987aca2ae82229a42d29a8c89fed690e9de7e6fad4182dea564bc92557a81922 SEV-A-write hooks/auto-capture-public-ships.py
