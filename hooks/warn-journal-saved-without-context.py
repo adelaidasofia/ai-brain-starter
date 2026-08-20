@@ -73,25 +73,57 @@ def _norm(text):
 
 
 def _vault_root(text):
-    """Absolute dir before the '<optional emoji >Journals/<Month YYYY>/' segment.
+    r"""Absolute dir before the '<optional emoji >Journals/<Month YYYY>/' segment.
     Anchored on the absolute path (starts at a real '/', or a `C:/` drive root),
     so a leading shell prefix like `cat > '/vault/.../x.md'` is NOT captured into
     the root (that was the 2026-07-07 Bash-path fail-open bug). Quotes bound the
     segment on the Bash path.
 
     The drive-letter alternative is guarded by `(?<![A-Za-z])` so a URL like
-    `http://host/Journals/May 2026/` cannot have its `p:` read as a drive."""
+    `http://host/Journals/May 2026/` cannot have its `p:` read as a drive.
+
+    The optional group before 'Journals/' exists ONLY to skip a folder-name emoji
+    prefix ('📓 '), so it must reject quotes, whitespace and shell metacharacters.
+    With the older `[^/\n]*\s` it also matched ACROSS a command boundary: in
+    `cd "/x/Brain" && cat > "📓 Journals/Aug 2026/e.md"` (relative save path) it
+    swallowed `Brain" && cat > "📓 ` and resolved the root to `/x` — a directory
+    holding no marker, so EVERY journal save was blocked regardless of whether the
+    preflight had run. Codified 2026-08-18 after that false block. With the
+    tightened class a relative save path finds no absolute root and fails OPEN per
+    this module's contract, while absolute paths (the form SKILL.md mandates)
+    resolve exactly as before — the guard keeps its teeth where they count."""
     m = re.search(
-        r"((?:(?<![A-Za-z])[A-Za-z]:)?/[^\n\"']*?)/(?:[^/\n]*\s)?"
+        r"((?:(?<![A-Za-z])[A-Za-z]:)?/[^\n\"']*?)/(?:[^/\n\"'>&|;\s]*\s)?"
         r"Journals/[A-Z][a-zA-Z]+\s+\d{4}/",
         text)
     return m.group(1) if m else None
 
 
 def _marker_exists(vault, date_iso):
+    """True when a preflight run covered date_iso.
+
+    The preflight auto-spans since the last entry and names its marker after the
+    day it RAN, not the day being journaled. Backfills (journaling Friday on
+    Monday) therefore have no `<entry-date>.json` even though the run's
+    since->until window covered the entry. Accept either: the exact-name marker,
+    or any marker whose window contains date_iso."""
     for meta in ("⚙️ Meta", "Meta"):
-        if os.path.exists(os.path.join(vault, meta, ".journal-context", f"{date_iso}.json")):
+        d = os.path.join(vault, meta, ".journal-context")
+        if os.path.exists(os.path.join(d, f"{date_iso}.json")):
             return True
+        if not os.path.isdir(d):
+            continue
+        for f in os.listdir(d):
+            if not f.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(d, f), encoding="utf-8") as fh:
+                    m = json.load(fh)
+                since, until = m.get("since"), m.get("until")
+                if since and until and since <= date_iso <= until:
+                    return True
+            except Exception:
+                continue  # unreadable marker -> ignore, don't open a hole
     return False
 
 
