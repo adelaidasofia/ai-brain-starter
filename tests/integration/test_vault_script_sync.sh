@@ -8,8 +8,24 @@
 #
 # Assertions:
 #   1. The VAULT_SCRIPTS manifest is IMPORT-CLOSED — no manifest .py imports a
-#      sibling scripts/*.py module that isn't also in the manifest (else it
-#      would crash at runtime in the vault).
+#      local module that will not exist next to it in the vault (else it would
+#      crash at runtime there).
+#
+#      SCOPE NOTE: this check used to resolve a dependency ONLY as
+#      `scripts/<mod>.py` — a FILE, in ONE directory. Both halves were blind
+#      spots, and build-journal-index.py fell through the gap on both:
+#        (a) it imports `_lib.safe_read`, and `_lib` is a PACKAGE DIRECTORY, not
+#            a .py file, so `os.path.isfile(scripts/_lib.py)` was False and the
+#            check skipped it entirely;
+#        (b) `_lib` does not live in scripts/ at all — the script reaches it by
+#            sys.path.insert-ing ../hooks, a directory this check never looked in.
+#      Net effect: the gate reported "manifest import-closed" while the synced
+#      vault copy died at import with `ModuleNotFoundError: No module named
+#      '_lib'`, so /weekly and /monthly rebuilt no journal index at all and the
+#      stale journal-index.json sat there looking fine. A guard's resolution
+#      rule IS its blind spot: resolve a dep the way PYTHON does (file OR
+#      package, across every directory the script puts on sys.path), or the
+#      gate is green by construction.
 #   2. A fresh sync populates <meta>/scripts/ with the core scripts.
 #   3. A re-run is idempotent (0 created / 0 updated).
 #   4. A locally-edited vault script is backed up to .bak before overwrite, then
@@ -49,15 +65,75 @@ for l in lines[start + 1:]:
 assert names, "manifest is empty"
 py = [n for n in names if n.endswith(".py")]
 mod_names = {n[:-3] for n in py}
+
+# The _lib PACKAGE deps, synced separately because the manifest above is a flat
+# list of scripts/ filenames and cannot express a package. Presence of a module
+# here means <meta>/scripts/_lib/<mod>.py exists in a synced vault.
+lib_start = next((i for i, l in enumerate(lines) if "VAULT_LIB_MODULES=(" in l), None)
+lib_mods = []
+if lib_start is not None:
+    for l in lines[lib_start + 1:]:
+        if l.strip() == ")":
+            break
+        m = re.search(r'"([^"]+)"', l)
+        if m:
+            lib_mods.append(m.group(1))
+SYNCED_PACKAGES = {"_lib"} if lib_mods else set()
+
+# Directories a manifest script may pull onto sys.path. scripts/ is the sibling
+# dir; hooks/ is reached via `sys.path.insert(..., parent.parent / "hooks")`.
+# A dep found in ANY of these exists in the REPO but is not necessarily synced —
+# only manifest entries are, and only scripts/ files can BE manifest entries.
+SEARCH_DIRS = ("scripts", "hooks")
+
+
+def resolve_local(mod):
+    """Where does `mod` live in this repo? Resolve like Python: file OR package.
+
+    Returns (kind, reldir) or None. `kind` is "module" (mod.py) or "package"
+    (mod/__init__.py) — a package is the case the old isfile() check missed.
+    """
+    for d in SEARCH_DIRS:
+        if os.path.isfile(os.path.join(repo, d, mod + ".py")):
+            return ("module", d)
+        if os.path.isfile(os.path.join(repo, d, mod, "__init__.py")):
+            return ("package", d)
+    return None
+
+
 missing = []
 for n in py:
     p = os.path.join(repo, "scripts", n)
     if not os.path.isfile(p):
         continue  # source-absent on this checkout (e.g. pre-merge) — skip
     try:
-        tree = ast.parse(open(p, encoding="utf-8").read())
+        src = open(p, encoding="utf-8").read()
+        tree = ast.parse(src)
     except SyntaxError:
         continue
+    # An import inside a try/except ImportError is a DELIBERATE optional dep with
+    # a fallback — that is the sanctioned way to stay import-closed while still
+    # using a shared primitive in the repo. Collect those and exempt them.
+    guarded = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        handles_import_error = any(
+            (h.type is None)
+            or (isinstance(h.type, ast.Name) and h.type.id in ("ImportError", "Exception"))
+            or (isinstance(h.type, ast.Tuple)
+                and any(isinstance(e, ast.Name) and e.id in ("ImportError", "Exception")
+                        for e in h.type.elts))
+            for h in node.handlers
+        )
+        if not handles_import_error:
+            continue
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Import):
+                guarded.update(a.name.split(".")[0] for a in sub.names)
+            elif isinstance(sub, ast.ImportFrom) and sub.level == 0 and sub.module:
+                guarded.add(sub.module.split(".")[0])
+
     for node in ast.walk(tree):
         mods = []
         if isinstance(node, ast.Import):
@@ -65,9 +141,31 @@ for n in py:
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             mods = [node.module.split(".")[0]]
         for mod in mods:
-            sib = os.path.join(repo, "scripts", mod + ".py")
-            if os.path.isfile(sib) and mod not in mod_names:
-                missing.append(f"{n} imports sibling '{mod}' (scripts/{mod}.py) not in manifest")
+            if mod in guarded or mod in mod_names:
+                continue
+            found = resolve_local(mod)
+            if not found:
+                continue  # stdlib or third-party — not our problem
+            kind, where = found
+            loc = f"{where}/{mod}.py" if kind == "module" else f"{where}/{mod}/"
+            if where == "scripts":
+                missing.append(
+                    f"{n} imports local {kind} '{mod}' ({loc}) not in manifest — "
+                    f"add it to VAULT_SCRIPTS")
+            elif mod in SYNCED_PACKAGES:
+                continue  # mirrored into <meta>/scripts/_lib/ by VAULT_LIB_MODULES
+            else:
+                # Not in scripts/, so it cannot be a VAULT_SCRIPTS entry (that
+                # manifest is flat filenames). Do NOT suggest a try/except fallback
+                # with a hand-rolled reader: check-cloud-safe-file-walkers.py
+                # refuses to trust a locally-defined safe_read_text ("bogus
+                # safe_read module is not trusted"), so that "fix" trades an
+                # import crash for an unaudited read path. Mirror the real module.
+                missing.append(
+                    f"{n} imports local {kind} '{mod}' from {loc}, which is NOT synced "
+                    f"to the vault, so the synced copy dies at import. Add it to "
+                    f"VAULT_LIB_MODULES in sync-vault-scripts.sh (it must be "
+                    f"stdlib-only), which mirrors it to <meta>/scripts/{mod}/.")
 if missing:
     print("IMPORT-CLOSURE FAIL:")
     for x in missing:

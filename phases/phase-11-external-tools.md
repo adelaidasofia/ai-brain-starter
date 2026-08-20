@@ -23,17 +23,50 @@ Then install it directly (don't ask "want to install it?" — they already said 
 1. Clone: `git clone https://github.com/adelaidasofia/google-workspace-mcp ~/.claude/google-workspace-mcp`
 2. Install deps: `cd ~/.claude/google-workspace-mcp && pip install -r requirements.txt`
 3. Walk them through `SETUP.md` for the OAuth consent screen. This is the one slow part — GCP console UI, creating an OAuth client, downloading `client_secret.json`, dropping it in the repo folder. Stay with them through every screen; this is where non-tech users give up. Use the Visual Reassurance Protocol throughout.
-4. Register in `~/.claude.json` mcpServers block:
+4. Register in `~/.claude.json` mcpServers block. **Ask which OS they are on first** — both
+   values below differ by platform, and neither `~` nor `$HOME` is expanded inside a JSON
+   `args` array, so the path must be absolute and literal:
+
+   **macOS / Linux:**
    ```json
    "google-workspace": {
      "command": "python3",
      "args": ["/Users/<user>/.claude/google-workspace-mcp/server.py"]
    }
    ```
-5. Authorize each account: `python3 -c "from accounts import add_account; add_account()"` — browser opens, they grant consent, refresh token lands in macOS Keychain. Ask them upfront which accounts (work + personal + any others) and run this once per account.
+
+   **Windows:**
+   ```json
+   "google-workspace": {
+     "command": "py",
+     "args": ["-3", "C:\\Users\\<user>\\.claude\\google-workspace-mcp\\server.py"]
+   }
+   ```
+   Two Windows-specific traps, both silent:
+   - **`command` must be `py`, not `python3`.** Windows ships a 121-byte
+     `WindowsApps\python3.exe` that is a Store *redirector*, not an interpreter. If the
+     user's real Python is not ahead of it on PATH, `python3` opens the Microsoft Store
+     and the MCP simply never starts — with no error that names Python.
+   - **Backslashes must be doubled in JSON** (`\\`), or `\U`/`\t` in the path are read as
+     escape sequences and the config fails to parse.
+
+5. Authorize each account — browser opens, they grant consent, the refresh token is stored.
+   Ask them upfront which accounts (work + personal + any others) and run this once per account.
+   - macOS / Linux: `python3 -c "from accounts import add_account; add_account()"`
+   - Windows: `py -3 -c "from accounts import add_account; add_account()"`
 6. Verify: restart Claude Code, check Settings → MCP, confirm `google-workspace` is listed with 61 tools across Gmail/Calendar/Drive/Docs/Sheets.
 
-**Non-mac users:** the MCP stores tokens in macOS Keychain on Mac. On Windows/Linux, tokens fall back to an encrypted file (the `keyring` library picks the right backend). Flag this if they're not on macOS so they know tokens aren't in Keychain-level security.
+**Where the token actually lands, by platform.** The MCP uses the `keyring` library, which
+picks a backend per OS — say which one applies to *their* machine rather than describing the
+Mac case and calling everything else a fallback:
+- **macOS** — the login Keychain.
+- **Windows** — Windows Credential Manager (`Control Panel → Credential Manager → Windows
+  Credentials`), which is the OS-level credential store, not a loose file. That is the
+  Windows peer of the Keychain, so do not tell a Windows user their tokens are less
+  protected than a Mac user's.
+- **Linux** — the Secret Service backend (GNOME Keyring / KWallet). On a headless box with
+  no Secret Service running, `keyring` falls back to an encrypted file — that is the only
+  case where the "encrypted file" caveat is true, so only raise it there.
 
 **If they use Outlook / Microsoft 365 instead:** "Go to Settings → Connectors and connect Microsoft 365. Once connected, I can search your email, draft replies with full context, check your schedule, and create events."
 
