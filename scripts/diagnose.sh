@@ -203,6 +203,31 @@ else
   warn "graph-context-hook.sh not in ⚙️ Meta/scripts/" "Phase 5 installs it."
 fi
 
+# Sync-clobber check: a synced script whose sibling dependency did not come along
+# (it is silently running a fallback stub), or a local patch the sync overwrote.
+# Measured incident: the commit wrapper fell to a fail-closed stub and EVERY vault
+# commit refused for ~19h, while the session-end hook fell to "defer" and silently
+# skipped every snapshot. Neither surfaced anywhere until a detector existed.
+# Resolved from this script's own location: diagnose.sh defines no repo variable,
+# and a `[ -f "$UNSET/..." ]` guard would make this check a silent no-op — the
+# exact failure class it exists to catch.
+_ABS_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)"
+CLOBBER="$_ABS_REPO/scripts/check-clobbered-vault-scripts.py"
+if [ -f "$CLOBBER" ] && command -v python3 >/dev/null 2>&1; then
+  CLOBBER_OUT=$(python3 "$CLOBBER" --vault "$VAULT" --repo "$_ABS_REPO" 2>&1)
+  if [ $? -eq 0 ]; then
+    ok "vault scripts: no broken sibling deps, none reverted by a sync"
+  else
+    # Report each finding on its own line so the remedy is actionable, not a blob.
+    printf '%s\n' "$CLOBBER_OUT" | grep -E '^\s+(BROKEN-DEP|REVERTED)' | while IFS= read -r l; do
+      warn "$(printf '%s' "$l" | sed 's/^[[:space:]]*//')"
+    done
+    warn "vault scripts need attention" "Full detail: python3 '$CLOBBER' --vault '$VAULT'"
+  fi
+else
+  warn "sync-clobber check did not run" "Missing $CLOBBER or python3 — this check is INACTIVE, not passing."
+fi
+
 # ----- 5. Journal index -----
 section "5. Insights pipeline"
 INDEX="$META/journal-index.json"

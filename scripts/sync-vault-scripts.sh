@@ -90,6 +90,14 @@ done
 VAULT_SCRIPTS=(
   "_meta_resolver.py"          # shared meta-folder resolver (deterministic keystone)
   "_project_key.py"            # shared project-key resolver (dep of check-rule-conflicts.py)
+  "_session_close_guard.sh"    # shared git-dir/index-lock resolver — sourced by BOTH
+                               # vault-safe-commit.sh and session-end-hook.sh. Omitting
+                               # it shipped the consumers without their dependency: the
+                               # commit wrapper fell to a fail-closed stub and EVERY vault
+                               # commit refused (it is the only route past the raw-git
+                               # block guard), while session-end-hook fell to "defer" and
+                               # silently no-opped every session-end snapshot. Section 1b
+                               # of test_vault_script_sync.sh now fails on this class.
   "aggregate-sessions.py"      # session-close: Last Session.md index
   "aggregate-decisions.py"     # session-close: Decision Log index
   "session-close-runner.sh"    # session-close: deterministic aggregation runner (#173)
