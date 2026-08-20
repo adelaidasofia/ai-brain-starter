@@ -124,6 +124,27 @@ jobs:
           }
           exit 0
 
+      # Prove the premise the .ps1 BOM rule rests on, on the platform it
+      # protects. Every other gate enforces "must start with EF BB BF" and takes
+      # the REASON on trust. The parse step in lint.yml runs on ubuntu under
+      # pwsh 7, which defaults to UTF-8 and so is green by construction for this
+      # exact class - it cannot express the failure it is nearest to.
+      # This asserts the whole chain under 5.1: a BOM-less .ps1 carrying the
+      # three character classes the 2026-04-22 outage named (em dash,
+      # box-drawing, gear) fails to parse; the same bytes with a BOM parse
+      # clean; and pwsh 7 parses the BOM-less one without complaint.
+      # Seconds, on this job's already-paid runner - no second windows floor.
+      - name: .ps1 BOM premise (Windows PowerShell 5.1 vs pwsh 7)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\tests\integration\test_ps1_bom_crash_windows.ps1"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::.ps1 BOM premise suite failed (exit $LASTEXITCODE)"
+            exit $LASTEXITCODE
+          }
+          exit 0
+
       # A clean, known Python interpreter. The user-level hook installer is a
       # Python script, so SOME python must be present for the hook-install
       # assertion to mean anything; Bug 2 is a path-ENCODING bug, independent of
