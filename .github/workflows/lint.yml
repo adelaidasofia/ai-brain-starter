@@ -226,6 +226,33 @@ jobs:
       - name: no shipped hook lacks a test surface
         run: python3 scripts/check-hook-negative-control.py
 
+      # The check above asks whether a hook is wired AT ALL. This asks whether it
+      # is wired on BOTH PLATFORMS - a question nothing in this repo used to ask.
+      #
+      # hooks.json is POSIX shell. On native Windows the installer rewrites every
+      # command through hook_runner.py, and anything it cannot rewrite - anything
+      # that runs `bash` - is DROPPED. Four hooks are dropped today and three of
+      # them (write-hook.sh, session-end-hook.sh, graph-context-hook.sh) have NO
+      # Windows equivalent, so meeting-todos extraction, the session-close
+      # finalizer and graph-context routing are POSIX-only features. Every existing
+      # check stayed green through that: the installer exits 0 because it installed
+      # what it could, --verify verifies what is WIRED (not what went missing), and
+      # CI asserts the install SUCCEEDS. A Windows job and a macOS job could differ
+      # by three whole features and both pass.
+      #
+      # The gate diffs the two legs by running the installer's OWN pipeline twice
+      # (never a private copy of the drop rule, which would agree today and drift
+      # silently), and fails on any difference not carrying a written reason in
+      # scripts/hook-parity-allowlist.json. The allowlist is the deliverable: it
+      # turns a silent drop into a reviewed decision, and a stale entry fails too,
+      # so it cannot rot into excuses for problems already fixed.
+      # Self-test first (cheap, and proves the gate bites a synthetic mismatch).
+      - name: hook-parity negative controls (a silent platform drop must go RED)
+        run: python3 scripts/check-hook-parity.py --self-test
+
+      - name: every hook is wired on both POSIX and Windows, or reviewed as not
+        run: python3 scripts/check-hook-parity.py
+
       # The READ half of the UTF-8 console guard below. That one fails a CLI that
       # PRINTS non-ASCII without reconfiguring stdout; this fails one that READS a
       # child's output with text=True and no encoding=, so the decode uses the

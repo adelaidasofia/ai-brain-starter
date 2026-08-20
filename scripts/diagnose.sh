@@ -571,7 +571,17 @@ else
   ssverdict="$(python3 "$AUDIT_SS" --settings "$SS_SETTINGS" --porcelain 2>/dev/null)"
   case "$ssverdict" in
     OK:*)
-      ok "Effective SessionStart fleet is bounded (${ssverdict#OK:} clean/declared/unresolved)" ;;
+      ok "Effective SessionStart fleet is bounded (${ssverdict#OK:} clean/declared/unevaluated)" ;;
+    PARTIAL:*)
+      # MYC-3879. The auditor resolves each wired command to a file and reads it;
+      # anything it cannot resolve is SKIPPED. This branch used to be folded into
+      # OK:, so a real machine printed "6 resolved - 6 clean, 0 unguarded; 19
+      # unresolved" and diagnose showed a green line. Nineteen SessionStart
+      # commands unread is not a bounded fleet - it is an unmeasured one, and a
+      # freeze-class hook sitting in any of them was structurally invisible.
+      _rest="${ssverdict#PARTIAL:}"; _skipped="${_rest##*:}"
+      warn "$_skipped SessionStart command(s) could not be evaluated for boundedness" \
+        "The auditor never opened them, so nothing is known about their work shape - this is NOT a clean bill of health. Run: python3 \"$AUDIT_SS\" --settings \"$SS_SETTINGS\" to see each skipped command and why (unresolvable command string, script not on disk, or unreadable source). Common cause on Windows: hook commands are wired in the 'py -3 \"<runner>\" --fallback silent \"<hook>\"' form, whose backslash paths the resolver does not match." ;;
     UNGUARDED:*)
       _rest="${ssverdict#UNGUARDED:}"; _n="${_rest%%:*}"; _hooks="${_rest#*:}"
       bad "$_n SessionStart hook(s) do an unguarded corpus walk: $_hooks" \
