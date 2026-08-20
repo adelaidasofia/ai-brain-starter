@@ -173,6 +173,40 @@ else
 fi
 
 echo
+echo "--- F. the repair path actually repairs ---"
+# rollback_git used to ignore the recorded mode and always `mv` the sidecar
+# gitdir back to $VAULT/.git. For a fresh-init that is not an undo: it
+# MATERIALISES a real .git directory in a place that never had a repo. Anyone
+# hit by MYC-4028 who ran the documented repair would have ended up with $HOME
+# still a git repo, with the objects now inside their home instead of the
+# sidecar. Strictly worse than the pointer file they started with.
+FRESH="$TMP/freshvault"
+mkdir -p "$FRESH"; printf 'note\n' > "$FRESH/note.md"   # vault evidence, no .git
+run_sandboxed "$FAKEHOME" bash "$SIDECAR_SH" "$FRESH" --sidecar "$TMP/side_f" >/dev/null 2>&1
+if [ -f "$FRESH/.git" ] && [ ! -d "$FRESH/.git" ]; then
+  pass "F1 fresh-init produced a .git pointer"
+else
+  fail "F1 fresh-init did not produce a .git pointer — fixture is wrong, F2/F3 prove nothing"
+fi
+if grep -q '"mode": "fresh-init"' "$TMP"/side_f/manifests/*.json 2>/dev/null; then
+  pass "F2 the record says fresh-init"
+else
+  fail "F2 the record does not say fresh-init — rollback cannot tell the modes apart"
+fi
+run_sandboxed "$FAKEHOME" bash "$SIDECAR_SH" "$FRESH" --sidecar "$TMP/side_f" --rollback >/dev/null 2>&1
+if [ -e "$FRESH/.git" ]; then
+  fail "F3 after rollback .git still exists — the vault is STILL a git repo"
+else
+  pass "F3 after rollback the vault is no longer a git repo"
+fi
+# ...and the undo must not be a delete. Commits may have been made in that repo.
+if [ -d "$TMP/side_f/git" ] && [ -n "$(ls -A "$TMP/side_f/git" 2>/dev/null)" ]; then
+  pass "F4 the created repo was KEPT in the sidecar, not deleted"
+else
+  fail "F4 rollback DELETED the created repo — any commits made in it are gone"
+fi
+
+echo
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS — check-vault-target"
   exit 0

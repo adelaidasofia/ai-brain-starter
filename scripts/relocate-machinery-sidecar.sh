@@ -496,7 +496,37 @@ guard_vault_target() {
 # ROLLBACK
 # =============================================================================
 rollback_git() {  # $1 = sidecar gitdir; 0 restored / 3 nothing to do / 1 failed
-  local target="$1" ptr="$VAULT/.git"
+  local target="$1" mode="${2:-separated}" ptr="$VAULT/.git"
+  # A fresh-init CREATED a repo that never existed. Reversing that means REMOVE,
+  # not restore: the `mv "$target" "$ptr"` below would materialise .git as a real
+  # directory and leave the vault a git repo — which, when the target was $HOME,
+  # is the exact damage being repaired (MYC-4028). The recorded mode is the only
+  # thing that distinguishes the two, and this function used to ignore it.
+  if [ "$mode" = "fresh-init" ]; then
+    if [ -d "$ptr" ] && [ ! -L "$ptr" ]; then
+      err "  · .git is a real directory, not the pointer file this tool created."
+      err "    that is not the state this rollback recorded — leaving it untouched."
+      err "    inspect it yourself: $ptr"
+      return 1
+    fi
+    if [ -e "$ptr" ] || [ -L "$ptr" ]; then
+      run rm -f "$ptr" || { err "  · could not remove the pointer $ptr"; return 1; }
+      say "  · removed the .git pointer this tool created — $VAULT is no longer a git repo"
+    elif [ ! -d "$target" ]; then
+      say "  · no .git pointer and no sidecar gitdir — nothing to undo"
+      return 3
+    else
+      say "  · no .git pointer to remove"
+    fi
+    # NOTHING is deleted. Commits may have been made in the repo since it was
+    # created, so the gitdir stays put and the user is told exactly where. A
+    # silent delete here would be the same class of bug as the one being fixed.
+    if [ -d "$target" ]; then
+      say "  · the repository it created is KEPT at: $target"
+      say "    nothing was deleted. Remove that directory yourself once you are sure."
+    fi
+    return 0
+  fi
   if [ -d "$ptr" ] && [ ! -L "$ptr" ]; then
     if [ -d "$target" ]; then
       err "  · .git NOT restored: BOTH $ptr (a real dir) and $target exist."
@@ -566,7 +596,7 @@ do_rollback() {
     [ -n "$typ" ] || continue
     r=0
     case "$typ" in
-      git)             rollback_git "$target" || r=$?;;
+      git)             rollback_git "$target" "$mode" || r=$?;;
       cache|worktrees) rollback_dir "$rel" "$target" "$mode" || r=$?;;
       *)               warn "  · unknown record type '$typ' for '$rel' — skipped"; r=1;;
     esac
