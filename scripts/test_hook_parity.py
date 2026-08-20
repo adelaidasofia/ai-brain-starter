@@ -127,7 +127,10 @@ def main() -> int:
     # posix_only is derived from a SET DIFFERENCE of the two legs; the skip list
     # comes from platformize_template_for_windows itself. They must name the
     # same hooks, or one of the two readings is wrong.
-    dropped = {h for _e, h in [tuple(p) for p in (data.get("posix_only") or [])]}
+    # JSON pairs are [event, hook, args]: arguments joined the comparison key so
+    # a dropped ARGUMENT variant is a difference too. Index rather than unpack,
+    # so this reading survives the key gaining another dimension later.
+    dropped = {p[1] for p in (data.get("posix_only") or [])}
     reported = {s for s in (data.get("installer_reported_skips") or [])}
     unaccounted = [h for h in dropped if not any(h in s for s in reported)]
     if dropped and not unaccounted:
@@ -232,7 +235,10 @@ def main() -> int:
                                encoding="utf-8")
         rc, data2 = run_json(["--hooks-json", str(synth),
                               "--allowlist", str(empty_allow)])
-        posix_only = {tuple(p) for p in (data2.get("posix_only") or [])}
+        # (event, hook) only: this case is a WHOLE hook vanishing, not an
+        # argument variant. Pairs now carry args as a third element - a JSON
+        # list, so a raw tuple(p) would be unhashable as well as too specific.
+        posix_only = {(p[0], p[1]) for p in (data2.get("posix_only") or [])}
         if rc == 1 and ("Stop", "brand-new.sh") in posix_only:
             ok("a newly added bash hook is reported as dropped on Windows")
         else:

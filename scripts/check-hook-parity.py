@@ -23,8 +23,22 @@ so out loud until this file existed.
 
 WHAT THIS DOES. Runs the installer's OWN pipeline twice over hooks.json - once
 as POSIX, once forced to the Windows leg - and diffs the resulting (event, hook
-basename) sets. Any difference not present in scripts/hook-parity-allowlist.json
-FAILS. Every allowlist entry must carry a non-empty reason.
+basename, arguments) sets. Any difference not present in
+scripts/hook-parity-allowlist.json FAILS. Every allowlist entry must carry a
+non-empty reason.
+
+WHY ARGUMENTS ARE PART OF THE IDENTITY. A hook is not a script; it is a script
+plus what it is invoked with. hooks.json wires lint-claude-settings.py TWICE on
+SessionStart - once plain, once `--test` for the self-test that asserts its
+guards still bite - and until #504 the Windows rewrite discarded everything after
+the script path, so both became the same argument-less command and the
+installer's dedup collapsed the pair. The linter ran; its negative control
+silently did not, on every Windows install, for as long as the rewrite existed.
+Keyed on (event, basename) alone that is invisible: a SET puts both entries on
+one element, so both legs agree and this gate reports parity whether the --test
+registration survived or not. With arguments in the key the POSIX leg has two
+elements and the Windows leg one, and the difference is named for what it is - a
+registration present on one platform and absent on the other.
 
 Why the installer's own functions and not a reimplementation: a private copy of
 the drop rule would agree with the installer on the day it was written and
@@ -118,28 +132,54 @@ def _load_installer():
             f"{INSTALLER.name} no longer exports: {', '.join(missing)}. This gate "
             "compares the installer's REAL behaviour, so it cannot run against a "
             "renamed pipeline - re-point it rather than deleting it.")
+    # Deliberately not in REQUIRED_ATTRS: this one is NEWER than the gate's other
+    # needs, so a base predating it deserves a message that says so rather than
+    # the misleading "no longer exports".
+    if not hasattr(mod, "_hook_script_args"):
+        raise Unevaluated(
+            f"{INSTALLER.name} does not export _hook_script_args (added in #504). "
+            "This gate compares hook ARGUMENTS, not just script names, so it "
+            "cannot run against a base that predates it - rebase onto main.")
     return mod
 
 
-def _pairs(template: dict, drop_basenames: set[str]) -> set[tuple[str, str]]:
-    """{(event, hook basename)} wired by this template.
+def _pairs(template: dict, drop_basenames: set[str],
+           hook_args) -> set[tuple[str, str, tuple[str, ...]]]:
+    """{(event, hook basename, arguments)} wired by this template.
 
     Per EVENT, not a flat basename set: the same hook wired on SessionStart on
     one platform and on Stop on the other is a real behavioural difference, and
-    a flat set would call it parity."""
-    out: set[tuple[str, str]] = set()
+    a flat set would call it parity.
+
+    With ARGUMENTS, not the basename alone: one script wired twice on one event
+    under different arguments is two registrations, and a basename-keyed set
+    collapses them onto a single element that both legs then always agree on
+    (see WHY ARGUMENTS ARE PART OF THE IDENTITY above).
+
+    `hook_args` is the installer's OWN extractor, passed in for the same reason
+    the rest of this gate imports rather than reimplements: a private copy of the
+    argument rule would agree on the day it was written and drift silently after.
+
+    Arguments belong to the COMMAND, so every basename a command names carries
+    that command's arguments. A fallback chain naming one basename twice still
+    collapses to one element, exactly as before."""
+    out: set[tuple[str, str, tuple[str, ...]]] = set()
     for event, blocks in (template.get("hooks") or {}).items():
         for block in blocks or []:
             for hook in (block.get("hooks") or []):
-                for match in _SCRIPT_RE.findall(hook.get("command", "") or ""):
+                command = hook.get("command", "") or ""
+                args = tuple(hook_args(command))
+                for match in _SCRIPT_RE.findall(command):
                     basename = os.path.basename(match)
                     if basename in drop_basenames:
                         continue
-                    out.add((event, basename))
+                    out.add((event, basename, args))
     return out
 
 
-def wired_sets(mod, hooks_json: Path) -> tuple[set[tuple[str, str]], set[tuple[str, str]], list[str]]:
+def wired_sets(mod, hooks_json: Path) -> tuple[
+        set[tuple[str, str, tuple[str, ...]]],
+        set[tuple[str, str, tuple[str, ...]]], list[str]]:
     """(posix_pairs, windows_pairs, installer-reported skips).
 
     Runs the installer's real pipeline in both directions. `_is_windows` is
@@ -170,8 +210,8 @@ def wired_sets(mod, hooks_json: Path) -> tuple[set[tuple[str, str]], set[tuple[s
         template = mod.substitute_python_interpreter(template)
         if force_windows:
             template, skipped = mod.platformize_template_for_windows(template)
-            return _pairs(template, launcher_only), list(skipped)
-        return _pairs(template, set()), []
+            return _pairs(template, launcher_only, mod._hook_script_args), list(skipped)
+        return _pairs(template, set(), mod._hook_script_args), []
 
     try:
         posix, _ = leg(False)
@@ -224,7 +264,7 @@ def load_allowlist(path: Path) -> tuple[dict[tuple[str, str], str], dict[tuple[s
     return section("posix_only"), section("windows_only")
 
 
-def compare(posix: set[tuple[str, str]], windows: set[tuple[str, str]],
+def compare(posix: set[tuple], windows: set[tuple],
             allow_posix: dict[tuple[str, str], str],
             allow_windows: dict[tuple[str, str], str]) -> dict:
     """Pure verdict. Separated from the installer plumbing so --self-test can
@@ -233,24 +273,33 @@ def compare(posix: set[tuple[str, str]], windows: set[tuple[str, str]],
     windows_only = windows - posix
 
     unreviewed, reasonless, stale = [], [], []
+    # Allowlist keys stay (event, hook): ONE reviewed decision covers every
+    # argument variant of that hook on that event. So adding arguments to the
+    # comparison invalidates not a single committed allowlist entry - the
+    # reviewed-asymmetry file keeps its exact meaning, and only the DIFF gets
+    # sharper. (`pair[:2]` also lets --self-test keep driving compare() with
+    # plain (event, hook) fixtures, which is why those controls still read the
+    # same below.)
     for pair in sorted(posix_only):
-        if pair not in allow_posix:
+        if pair[:2] not in allow_posix:
             unreviewed.append(("posix_only", pair))
-        elif not allow_posix[pair]:
+        elif not allow_posix[pair[:2]]:
             reasonless.append(("posix_only", pair))
     for pair in sorted(windows_only):
-        if pair not in allow_windows:
+        if pair[:2] not in allow_windows:
             unreviewed.append(("windows_only", pair))
-        elif not allow_windows[pair]:
+        elif not allow_windows[pair[:2]]:
             reasonless.append(("windows_only", pair))
     # A stale entry is a fixed drop whose excuse survived. Left alone, the
     # allowlist decays into a list nobody re-reads, which is how a reviewed
     # decision quietly becomes an unreviewed one again.
+    posix_only_keys = {p[:2] for p in posix_only}
+    windows_only_keys = {p[:2] for p in windows_only}
     for pair in sorted(allow_posix):
-        if pair not in posix_only:
+        if pair not in posix_only_keys:
             stale.append(("posix_only", pair))
     for pair in sorted(allow_windows):
-        if pair not in windows_only:
+        if pair not in windows_only_keys:
             stale.append(("windows_only", pair))
 
     return {
@@ -304,6 +353,39 @@ def _selftest_compare_cases() -> list[str]:
 
     check("stale allowlist entry (the drop was fixed, the excuse stayed)",
           compare(base, set(base), {("PreToolUse", "b.py"): "obsolete"}, {}), False)
+
+    # ---- arguments are part of the identity (the #504 class) ----------------
+    # One script, one event, wired twice under DIFFERENT arguments - the shape
+    # hooks.json actually ships for lint-claude-settings.py. The Windows leg
+    # keeps only the argument-less registration, which is precisely what the
+    # pre-#504 rewrite produced.
+    two_variants = {("SessionStart", "lint.py", ()),
+                    ("SessionStart", "lint.py", ("--test",))}
+    collapsed = {("SessionStart", "lint.py", ())}
+
+    # PREMISE, asserted rather than asserted-in-a-comment: with arguments
+    # stripped these two fixtures are the SAME set. So the old (event, basename)
+    # key could not have caught this, and the control below is not a duplicate
+    # of the drop controls above. If this ever stops holding, the fixture has
+    # drifted into testing something easier than the bug it stands for.
+    if {q[:2] for q in two_variants} != {q[:2] for q in collapsed}:
+        fails.append("arg-collapse fixture is distinguishable WITHOUT arguments; "
+                     "it no longer exercises the #504 class")
+
+    check("same script+event, one ARGUMENT variant dropped on Windows",
+          compare(two_variants, collapsed, {}, {}), False)
+    check("both argument variants survive on both platforms",
+          compare(two_variants, set(two_variants), {}, {}), True)
+    check("an argument variant dropped, allowlisted by (event, hook)",
+          compare(two_variants, collapsed,
+                  {("SessionStart", "lint.py"): "no Windows port for the self-test"},
+                  {}), True)
+    check("an argument variant dropped, allowlisted with an EMPTY reason",
+          compare(two_variants, collapsed, {("SessionStart", "lint.py"): ""}, {}), False)
+    # A Windows-only ARGUMENT is a difference in the other direction: the same
+    # script gaining a flag no POSIX install passes is not parity either.
+    check("Windows-only argument variant, NOT allowlisted",
+          compare(collapsed, two_variants, {}, {}), False)
     return fails
 
 
@@ -327,11 +409,12 @@ def _selftest_endtoend(mod) -> list[str]:
         except Unevaluated as e:
             return [f"end-to-end fixture could not be evaluated: {e}"]
         result = compare(posix, windows, {}, {})
-        if ("Stop", "synthetic-drop.sh") not in result["posix_only"]:
+        if ("Stop", "synthetic-drop.sh", ()) not in result["posix_only"]:
             fails.append("end-to-end: a bash-only Stop hook was NOT reported as "
                          f"dropped on Windows (posix_only={result['posix_only']}). "
                          "The gate would not see a real drop either.")
-        if ("Stop", "survivor.py") not in posix or ("Stop", "survivor.py") not in windows:
+        if (("Stop", "survivor.py", ()) not in posix
+                or ("Stop", "survivor.py", ()) not in windows):
             fails.append("end-to-end: the .py hook that SHOULD survive both legs "
                          f"did not (posix={sorted(posix)}, windows={sorted(windows)}). "
                          "A gate that drops everything would pass this file vacuously.")
@@ -354,50 +437,65 @@ def cmd_selftest() -> int:
             print("  - " + f)
         return 1
     print("SELF-TEST PASS: the gate bites an unreviewed drop, a Windows-only extra, "
-          "a reasonless allowlist entry, a wrong-event entry, a per-event move and a "
-          "stale entry; and it still detects a real bash-hook drop end-to-end.")
+          "a reasonless allowlist entry, a wrong-event entry, a per-event move, a "
+          "stale entry, and a dropped ARGUMENT variant of a script that survives "
+          "under its other arguments; and it still detects a real bash-hook drop "
+          "end-to-end.")
     return 0
 
 
+def _fmt(pair) -> str:
+    """'SessionStart: lint-claude-settings.py --test'. The arguments are part of
+    the identity, so they have to be part of what a failure NAMES - otherwise the
+    report says one hook differs and shows two lines that look identical."""
+    args = pair[2] if len(pair) > 2 else ()
+    return f"{pair[0]}: {pair[1]}" + (" " + " ".join(args) if args else "")
+
+
+def _jpair(pair) -> list:
+    """(event, hook, args) as JSON. Tolerates a 2-tuple allowlist key."""
+    return [pair[0], pair[1], list(pair[2]) if len(pair) > 2 else []]
+
+
 def _print_report(result: dict, allow_posix: dict, allow_windows: dict) -> None:
-    print(f"POSIX wires {result['posix_hooks']} (event, hook) pair(s); "
-          f"Windows wires {result['windows_hooks']}.")
+    print(f"POSIX wires {result['posix_hooks']} (event, hook, args) "
+          f"registration(s); Windows wires {result['windows_hooks']}.")
     if result["posix_only"]:
         print("\nDropped on Windows (wired on POSIX only):")
-        for event, hook in result["posix_only"]:
-            reason = allow_posix.get((event, hook))
+        for pair in result["posix_only"]:
+            reason = allow_posix.get(pair[:2])
             tag = "reviewed" if reason else "UNREVIEWED"
-            print(f"  [{tag}] {event}: {hook}")
+            print(f"  [{tag}] {_fmt(pair)}")
             if reason:
                 print(f"            {reason}")
     if result["windows_only"]:
         print("\nWired on Windows only:")
-        for event, hook in result["windows_only"]:
-            reason = allow_windows.get((event, hook))
+        for pair in result["windows_only"]:
+            reason = allow_windows.get(pair[:2])
             tag = "reviewed" if reason else "UNREVIEWED"
-            print(f"  [{tag}] {event}: {hook}")
+            print(f"  [{tag}] {_fmt(pair)}")
             if reason:
                 print(f"            {reason}")
 
     if result["unreviewed"]:
         print(f"\nFAIL: {len(result['unreviewed'])} platform difference(s) are not in "
               f"{ALLOWLIST.name}:")
-        for side, (event, hook) in result["unreviewed"]:
-            print(f"  {side}  {event}: {hook}")
+        for side, pair in result["unreviewed"]:
+            print(f"  {side}  {_fmt(pair)}")
         print("\nA hook wired on one platform and not the other is a FEATURE that\n"
               "only some users have. Either wire it on both, or add it to\n"
               f"{ALLOWLIST.name} with a reason and the consequence the users on\n"
               "the losing platform will live with. The allowlist is the review.")
     if result["reasonless"]:
         print(f"\nFAIL: {len(result['reasonless'])} allowlist entry/entries carry no reason:")
-        for side, (event, hook) in result["reasonless"]:
-            print(f"  {side}  {event}: {hook}")
+        for side, pair in result["reasonless"]:
+            print(f"  {side}  {_fmt(pair)}")
         print("A bare entry records that someone noticed, not that anyone decided.")
     if result["stale"]:
         print(f"\nFAIL: {len(result['stale'])} allowlist entry/entries no longer "
               f"describe a real difference:")
-        for side, (event, hook) in result["stale"]:
-            print(f"  {side}  {event}: {hook}")
+        for side, pair in result["stale"]:
+            print(f"  {side}  {_fmt(pair)}")
         print("The platforms now agree here. Delete the entry - a list of excuses\n"
               "for problems that were fixed is how the next real drop hides.")
     if result["ok"]:
@@ -436,11 +534,11 @@ def main() -> int:
             "verdict": "PASS" if result["ok"] else "FAIL",
             "posix_hooks": result["posix_hooks"],
             "windows_hooks": result["windows_hooks"],
-            "posix_only": [list(p) for p in result["posix_only"]],
-            "windows_only": [list(p) for p in result["windows_only"]],
-            "unreviewed": [[s, e, h] for s, (e, h) in result["unreviewed"]],
-            "reasonless": [[s, e, h] for s, (e, h) in result["reasonless"]],
-            "stale": [[s, e, h] for s, (e, h) in result["stale"]],
+            "posix_only": [_jpair(p) for p in result["posix_only"]],
+            "windows_only": [_jpair(p) for p in result["windows_only"]],
+            "unreviewed": [[s] + _jpair(p) for s, p in result["unreviewed"]],
+            "reasonless": [[s] + _jpair(p) for s, p in result["reasonless"]],
+            "stale": [[s] + _jpair(p) for s, p in result["stale"]],
             "installer_reported_skips": skipped,
         }, indent=2))
         return 0 if result["ok"] else 1
