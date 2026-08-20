@@ -226,6 +226,7 @@ INTEGRATION_TESTS=(
   test_bootstrap_ps1_slash_commands
   test_preflight_git_and_it_request
   test_remediate_runaway_procs
+  test_surface_unniced_launchagents
   test_scan_prior_single_instance
   test_scan_prior_failclosed_scrub
   test_sessionstart_freeze_class_excluded
