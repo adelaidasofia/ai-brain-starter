@@ -174,6 +174,71 @@ if missing:
 print(f"PASS: manifest import-closed ({len(py)} py scripts checked, {len(names)} total)")
 PY
 
+# --- 1b. manifest SOURCE-closure (shell) ----------------------------------
+# Section 1 walks Python ASTs and reports "N py scripts checked". Shell scripts
+# were never scanned, so a manifest .sh could `source` a sibling that the sync
+# does not carry — and did.
+#
+# Measured incident: `vault-safe-commit.sh` and `session-end-hook.sh` are both in
+# the manifest and both source `_session_close_guard.sh`, which is NOT. The sync
+# copied the consumers without the dependency. `vault-safe-commit.sh` falls back
+# to a fail-closed stub, so EVERY vault commit refused — and it is the only route
+# past the raw-git block guard, so committing stopped entirely. `session-end-hook.sh`
+# falls back to "defer", so every session-end snapshot silently no-opped.
+#
+# Both the direct form (`. "$SCRIPT_DIR/x.sh"`) and the indirect one
+# (`GUARD="$SCRIPT_DIR/x.sh"` … `. "$GUARD"`) must be caught: the indirect form is
+# the one that shipped the outage.
+python3 - "$REPO_ROOT" "$SYNC" <<'PY'
+import os, re, sys
+repo, sync = sys.argv[1], sys.argv[2]
+lines = open(sync, encoding="utf-8").read().splitlines()
+start = next((i for i, l in enumerate(lines) if "VAULT_SCRIPTS=(" in l), None)
+assert start is not None, "VAULT_SCRIPTS array not found"
+names = []
+for l in lines[start + 1:]:
+    if l.strip() == ")":
+        break
+    m = re.match(r'\s*"([^"]+)"', l)
+    if m:
+        names.append(m.group(1))
+
+DIRECT = re.compile(
+    r'^\s*(?:\.|source)\s+"?\$\{?(?:SCRIPT_DIR|SCRIPTS|SCRIPT_ROOT|HERE)\}?/([A-Za-z0-9_.-]+\.sh)"?',
+    re.M)
+ASSIGN = re.compile(
+    r'^\s*[A-Za-z_][A-Za-z0-9_]*=\s*"?\$\{?(?:SCRIPT_DIR|SCRIPTS|SCRIPT_ROOT|HERE)\}?/([A-Za-z0-9_.-]+\.sh)"?',
+    re.M)
+
+sh = [n for n in names if n.endswith(".sh")]
+missing, checked = [], 0
+for n in sh:
+    p = os.path.join(repo, "scripts", n)
+    if not os.path.exists(p):
+        continue  # source-absent on this checkout (e.g. pre-merge) — skip
+    checked += 1
+    text = open(p, encoding="utf-8", errors="replace").read()
+    for dep in sorted(set(DIRECT.findall(text)) | set(ASSIGN.findall(text))):
+        if dep in names:
+            continue
+        where = os.path.join(repo, "scripts", dep)
+        if not os.path.exists(where):
+            missing.append(
+                f"{n} sources sibling '{dep}', which is not in the manifest AND "
+                f"does not exist in scripts/ — dangling reference.")
+        else:
+            missing.append(
+                f"{n} sources sibling '{dep}' from scripts/{dep}, which is NOT in "
+                f"VAULT_SCRIPTS, so the synced vault copy falls back to its stub. "
+                f"Add '{dep}' to the manifest.")
+if missing:
+    print("SOURCE-CLOSURE FAIL:")
+    for x in missing:
+        print("  -", x)
+    sys.exit(1)
+print(f"PASS: manifest source-closed ({checked} sh scripts checked, {len(names)} total)")
+PY
+
 # --- 2. fresh sync populates <meta>/scripts/ ------------------------------
 VAULT="$TMP/vault"; mkdir -p "$VAULT/⚙️ Meta"
 bash "$SYNC" --vault "$VAULT" --quiet >/dev/null

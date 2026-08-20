@@ -376,6 +376,13 @@ INTEGRATION_TESTS=(
   # to stdout and never writes the log, so a "(dry-run)" header IN the log was
   # unreachable except as a mislabel.
   test_sync_vault_scripts_dryrun_label
+  # At-rest leg of the sync-clobber class. test_vault_script_sync.sh section 1b
+  # PREVENTS a manifest gap; this detects vaults already damaged, plus the case
+  # closure cannot see — a committed local patch silently overwritten by the sync
+  # (file present, deps resolve, simply the wrong version). Every assertion is a
+  # negative control, including the indirect `VAR="$SCRIPT_DIR/x.sh"` form that
+  # shipped the real outage and that the first draft of the detector was blind to.
+  test_clobbered_vault_scripts
   # vault-safe-commit.sh is the ONLY sanctioned route past the raw-git block
   # guard, so a bare `git commit -m` there gave that guard zero real scoping
   # while it looked fully enforced — a sibling session's staged work rode along
