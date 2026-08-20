@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 #
-# scripts/check-ps1-bom.sh - every *.ps1 must begin with a UTF-8 BOM (EF BB BF).
+# scripts/check-ps1-encoding.sh - *.ps1 byte hygiene for Windows PowerShell 5.1.
+#
+# TWO rules, one scanner:
+#
+#   BOM      every *.ps1 must BEGIN with a UTF-8 BOM (EF BB BF).
+#   EM DASH  no *.ps1 may CONTAIN U+2014 (E2 80 94).
+#
+# They are one scanner and not two scripts because they run over the same
+# enumeration, and the enumeration is where the bugs have actually been: a
+# `head -20` cap in one copy silently hid a real defect (#559). A second script
+# would mean a second enumeration to cap, mis-glob or point at the wrong tree -
+# deduplicating the rule while duplicating the scanner is a half fix.
 #
 # Why this is correctness, not style. Windows PowerShell 5.1 - the version that
 # ships with every Windows 10/11 box, and the one bootstrap.ps1 actually runs
@@ -9,9 +20,16 @@
 # non-ASCII byte decodes wrong and the parser dies on a file that is valid UTF-8
 # everywhere else. The BOM is how 5.1 is told the encoding.
 #
+# The em-dash rule is the same failure from the other side. U+2014 is the
+# character most likely to be introduced by an editor or a paste, and it was the
+# exact byte sequence that crashed the 5.1 parser before the BOM fix. With a BOM
+# present it parses fine, so this rule is defense in depth: keeping every .ps1
+# ASCII-clean makes losing a BOM recoverable rather than a crash.
+#
 # ONE implementation, THREE callers, so the rule cannot drift between them:
 #
 #   1. .github/workflows/lint.yml - the ENFORCING gate. A red here blocks merge.
+#      Both rules lived there as inline loops, each with its own `find`.
 #   2. scripts/ci.sh              - the locally-runnable pre-push gate, for fast
 #      feedback. Before this script existed the rule lived ONLY as an inline
 #      loop in lint.yml, so a BOM-less .ps1 passed a full green local
@@ -31,16 +49,16 @@
 # bash at all, and no .ps1 in this repo shells out to bash. This repo's idiom
 # for sh/ps1 parity is a shared data source plus a test that reads both (see
 # sync-vault-scripts.ps1), not a cross-language call - so the .ps1 keeps its own
-# byte check and scripts/test_ps1_bom_gate.py pins the two to the same bytes.
+# byte check and scripts/test_ps1_encoding_gate.py pins the two to the same bytes.
 #
-# The drift invariant is pinned by scripts/test_ps1_bom_gate.py: it fails if any
+# The drift invariant is pinned by scripts/test_ps1_encoding_gate.py: it fails if any
 # caller stops delegating here, if anyone re-inlines a private copy of the byte
 # comparison, or if either surface starts capping its enumeration again.
 #
 # Usage:
-#   bash scripts/check-ps1-bom.sh                    # scan this repo (gate)
-#   bash scripts/check-ps1-bom.sh --self-test        # negative control
-#   bash scripts/check-ps1-bom.sh --porcelain DIR... # report on arbitrary trees
+#   bash scripts/check-ps1-encoding.sh                    # scan this repo (gate, both rules)
+#   bash scripts/check-ps1-encoding.sh --self-test        # negative control
+#   bash scripts/check-ps1-encoding.sh --porcelain DIR... # report on arbitrary trees
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -49,6 +67,12 @@ REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 # The message a failure prints. Kept as one constant because it is the only
 # thing a contributor sees, and because lint.yml used to own the wording.
 BOM_HINT='missing UTF-8 BOM (Windows PowerShell 5.1 will crash on non-ASCII bytes). Fix: prepend the bytes EF BB BF to the file.'
+EMDASH_HINT='contains em dash. Replace with ASCII hyphen or comma. Em dashes break Windows PowerShell 5.1 parsing if the BOM is ever lost.'
+
+# U+2014 as bytes, built with printf rather than a literal, so this checker stays
+# ASCII-clean itself. A checker that contains the character it bans would be
+# flagged by its own rule if it were ever a .ps1, and is confusing regardless.
+EMDASH="$(printf '\xe2\x80\x94')"
 
 # Set by scan(); read by its caller. scan() must therefore never be invoked in a
 # command substitution (that forks a subshell and the count is lost) - redirect
@@ -91,6 +115,15 @@ scan() {
       echo "::error file=$rel::$BOM_HINT"
       fail=1
     fi
+    # Both rules on the SAME file in the SAME pass. A file can violate both, and
+    # both are reported: fixing the BOM does not fix an em dash.
+    if grep -q "$EMDASH" "$abs" 2>/dev/null; then
+      echo "::error file=$rel::$EMDASH_HINT"
+      # Line numbers, because unlike the BOM this is a property of a POSITION in
+      # the file and "somewhere in this file" is not an actionable report.
+      grep -n "$EMDASH" "$abs" | head -5 | sed 's|^|  |'
+      fail=1
+    fi
   done < <(_ps1_files "$repo")
   return "$fail"
 }
@@ -125,31 +158,28 @@ _ps1_files_find() {
   find "$@" -name '*.ps1' -not -path '*/.git/*' -print0 2>/dev/null
 }
 
-# Emit ONE machine-readable line. Contract, matching check-cloud-sync.py's
-# --porcelain style so diagnose.sh can `case` on it:
+# Emit ONE machine-readable line of key=value fields:
 #
-#   NONE:0                       - no *.ps1 anywhere under the given roots
-#   OK:<scanned>                 - every file scanned carries the BOM
-#   MISSING_BOM:<missing>:<scanned>
+#   scanned=<n> missing_bom=<m> emdash=<k>
 #
-# Exit is 0 for all three: this is a REPORT, not a gate. A caller that cannot
-# parse the line must warn ("could not evaluate"), never assume clean.
+# key=value rather than the verdict token check-cloud-sync.py uses, because
+# there are two independent rules now and a caller needs both counts to print
+# two verdicts. `scanned` always travels with them: a scanner states how much of
+# its input it read, so "0 missing" can be told apart from "read nothing".
+#
+# Exit is 0 whenever the scan ran: this is a REPORT, not a gate. A caller that
+# cannot parse the line must warn ("could not evaluate"), never assume clean.
 _report() {
-  local abs head3 scanned=0 missing=0
+  local abs head3 scanned=0 missing=0 emdash=0
   while IFS= read -r -d '' abs; do
     [ -f "$abs" ] || continue
     scanned=$((scanned + 1))
     head3="$(head -c 3 "$abs" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
     [ "$head3" != "efbbbf" ] && missing=$((missing + 1))
+    grep -q "$EMDASH" "$abs" 2>/dev/null && emdash=$((emdash + 1))
   done < <(_ps1_files_find "$@")
 
-  if [ "$scanned" -eq 0 ]; then
-    echo "NONE:0"
-  elif [ "$missing" -eq 0 ]; then
-    echo "OK:$scanned"
-  else
-    echo "MISSING_BOM:$missing:$scanned"
-  fi
+  echo "scanned=$scanned missing_bom=$missing emdash=$emdash"
   return 0
 }
 
@@ -162,12 +192,13 @@ _report() {
 # transition on that same tree, which is what separates a working check from one
 # that is merely always-red.
 _self_test() {
-  local fixtures="$REPO_ROOT/tests/fixtures/ps1-bom"
+  local fixtures="$REPO_ROOT/tests/fixtures/ps1-encoding"
   local no_bom="$fixtures/no-bom.ps1.txt"
   local with_bom="$fixtures/with-bom.ps1.txt"
+  local em_dash="$fixtures/emdash.ps1.txt"
   local failures=0 tmp empty out f expect quiet
 
-  for f in "$no_bom" "$with_bom"; do
+  for f in "$no_bom" "$with_bom" "$em_dash"; do
     if [ ! -f "$f" ]; then
       echo "self-test FAILED: missing fixture $f" >&2
       return 1
@@ -186,6 +217,18 @@ _self_test() {
     return 1
   fi
 
+  # The em-dash control must CARRY a BOM and CONTAIN exactly the banned bytes.
+  # With no BOM it would be red for the wrong reason; with no em dash it would
+  # be a second positive control wearing a negative control's name.
+  if [ "$(head -c 3 "$em_dash" | od -An -tx1 | tr -d ' \n')" != "efbbbf" ]; then
+    echo "self-test FAILED: $em_dash has no BOM. It isolates the EM DASH, so it must be BOM-clean." >&2
+    return 1
+  fi
+  if ! grep -q "$EMDASH" "$em_dash"; then
+    echo "self-test FAILED: $em_dash contains no em dash. It is the NEGATIVE control for that rule." >&2
+    return 1
+  fi
+
   tmp="$(mktemp -d)"
   # shellcheck disable=SC2064  # expand $tmp now: the trap must survive the local
   trap "rm -rf '$tmp'" RETURN
@@ -196,6 +239,8 @@ _self_test() {
   cp "$no_bom" "$tmp/tracked-bad.ps1"      # committed, no BOM   -> must fail
   git -C "$tmp" add .gitignore good.ps1 tracked-bad.ps1
   cp "$no_bom" "$tmp/untracked-bad.ps1"    # not committed yet   -> must fail
+  cp "$em_dash" "$tmp/emdash-bad.ps1"      # BOM ok, em dash     -> must fail
+  git -C "$tmp" add emdash-bad.ps1
   mkdir -p "$tmp/ignored"
   cp "$no_bom" "$tmp/ignored/vendored.ps1" # gitignored          -> must be skipped
 
@@ -205,7 +250,7 @@ _self_test() {
   #     and the ignored one must not, and the count must prove the ignored file
   #     was excluded rather than silently unreadable.
   if scan "$tmp" > "$out" 2>&1; then
-    echo "self-test FAILED: scan returned 0 on a tree with two BOM-less .ps1 files." >&2
+    echo "self-test FAILED: scan returned 0 on a tree with two BOM-less and one em-dashed .ps1." >&2
     failures=$((failures + 1))
   fi
   for expect in tracked-bad.ps1 untracked-bad.ps1; do
@@ -214,14 +259,24 @@ _self_test() {
       failures=$((failures + 1))
     fi
   done
+  # The em-dash file carries a BOM, so it can only be flagged by the em-dash
+  # rule. If the two rules were ever collapsed into one, this is what notices.
+  if ! grep -q "file=emdash-bad.ps1::.*em dash" "$out"; then
+    echo "self-test FAILED: emdash-bad.ps1 contains U+2014 and was not flagged for it." >&2
+    failures=$((failures + 1))
+  fi
+  if grep -q "file=emdash-bad.ps1::missing UTF-8 BOM" "$out"; then
+    echo "self-test FAILED: emdash-bad.ps1 was flagged for a missing BOM; it has one." >&2
+    failures=$((failures + 1))
+  fi
   for quiet in good.ps1 vendored.ps1; do
     if grep -q "file=.*$quiet::" "$out"; then
       echo "self-test FAILED: $quiet was flagged and should not have been." >&2
       failures=$((failures + 1))
     fi
   done
-  if [ "$SCANNED" -ne 3 ]; then
-    echo "self-test FAILED: scanned $SCANNED file(s), expected 3 (good + tracked-bad + untracked-bad; the gitignored one is excluded)." >&2
+  if [ "$SCANNED" -ne 4 ]; then
+    echo "self-test FAILED: scanned $SCANNED file(s), expected 4 (good + tracked-bad + untracked-bad + emdash-bad; the gitignored one is excluded)." >&2
     failures=$((failures + 1))
   fi
 
@@ -230,10 +285,23 @@ _self_test() {
   for f in "$tmp/tracked-bad.ps1" "$tmp/untracked-bad.ps1"; do
     printf '\357\273\277' | cat - "$f" > "$f.fixed" && mv "$f.fixed" "$f"
   done
+  # Still red, and specifically for the OTHER rule. Fixing every BOM must not
+  # silence an em dash - if it does, one rule is shadowing the other.
+  if scan "$tmp" > "$out" 2>&1; then
+    echo "self-test FAILED: scan went green with an em-dashed .ps1 still present." >&2
+    failures=$((failures + 1))
+  elif ! grep -q "file=emdash-bad.ps1::.*em dash" "$out"; then
+    echo "self-test FAILED: after the BOMs were fixed the em dash was no longer reported." >&2
+    failures=$((failures + 1))
+  fi
+
+  # Now fix the em dash too. Only now may the tree be green.
+  sed "s/$EMDASH/-/g" "$tmp/emdash-bad.ps1" > "$tmp/emdash-bad.fixed" \
+    && mv "$tmp/emdash-bad.fixed" "$tmp/emdash-bad.ps1"
   if scan "$tmp" > "$out" 2>&1; then
     :
   else
-    echo "self-test FAILED: scan still red after prepending a BOM to every offender:" >&2
+    echo "self-test FAILED: scan still red after fixing every BOM and every em dash:" >&2
     sed 's|^|  |' "$out" >&2
     failures=$((failures + 1))
   fi
@@ -257,19 +325,26 @@ _self_test() {
   local vault="$tmp/vault-not-a-repo"
   mkdir -p "$vault"
   cp "$with_bom" "$vault/ok.ps1"
-  if [ "$(_report "$vault")" != "OK:1" ]; then
-    echo "self-test FAILED: porcelain on a non-repo dir with one good file returned '$(_report "$vault")', expected OK:1." >&2
+  if [ "$(_report "$vault")" != "scanned=1 missing_bom=0 emdash=0" ]; then
+    echo "self-test FAILED: porcelain on a non-repo dir with one clean file returned '$(_report "$vault")'." >&2
     failures=$((failures + 1))
   fi
   cp "$no_bom" "$vault/bad.ps1"
-  if [ "$(_report "$vault")" != "MISSING_BOM:1:2" ]; then
-    echo "self-test FAILED: porcelain did not report 1 missing of 2 (got '$(_report "$vault")')." >&2
+  if [ "$(_report "$vault")" != "scanned=2 missing_bom=1 emdash=0" ]; then
+    echo "self-test FAILED: porcelain did not report 1 missing BOM of 2 (got '$(_report "$vault")')." >&2
+    failures=$((failures + 1))
+  fi
+  # The two counts must move INDEPENDENTLY. Adding an em-dashed file must raise
+  # emdash without touching missing_bom, or the caller's two verdicts are one.
+  cp "$em_dash" "$vault/em.ps1"
+  if [ "$(_report "$vault")" != "scanned=3 missing_bom=1 emdash=1" ]; then
+    echo "self-test FAILED: porcelain did not count the em dash separately (got '$(_report "$vault")')." >&2
     failures=$((failures + 1))
   fi
   rm -rf "$vault"
   mkdir -p "$vault"
-  if [ "$(_report "$vault")" != "NONE:0" ]; then
-    echo "self-test FAILED: porcelain on an empty dir returned '$(_report "$vault")', expected NONE:0." >&2
+  if [ "$(_report "$vault")" != "scanned=0 missing_bom=0 emdash=0" ]; then
+    echo "self-test FAILED: porcelain on an empty dir returned '$(_report "$vault")'." >&2
     failures=$((failures + 1))
   fi
 
@@ -284,8 +359,9 @@ _self_test() {
     cp "$with_bom" "$big/f$n.ps1"
   done
   cp "$no_bom" "$big/needle.ps1"
-  if [ "$(_report "$big")" != "MISSING_BOM:1:26" ]; then
-    echo "self-test FAILED: porcelain missed the one BOM-less file among 26 (got '$(_report "$big")', expected MISSING_BOM:1:26). A cap on the enumeration is back." >&2
+  cp "$em_dash" "$big/needle2.ps1"
+  if [ "$(_report "$big")" != "scanned=27 missing_bom=1 emdash=1" ]; then
+    echo "self-test FAILED: porcelain missed a needle among 27 files (got '$(_report "$big")', expected scanned=27 missing_bom=1 emdash=1). A cap on the enumeration is back." >&2
     failures=$((failures + 1))
   fi
 
@@ -293,7 +369,7 @@ _self_test() {
     echo "self-test FAILED ($failures)" >&2
     return 1
   fi
-  echo "    self-test OK - flags BOM-less .ps1 (tracked and not-yet-committed), stays quiet on BOM'd and gitignored files, goes green once fixed, refuses to pass on an empty enumeration, and reports honestly on a non-repo vault of 26 files with no cap"
+  echo "    self-test OK - both rules: flags BOM-less .ps1 (tracked and not-yet-committed) and em-dashed .ps1 independently, stays quiet on clean and gitignored files, goes green only once BOTH are fixed, refuses to pass on an empty enumeration, and counts honestly on a non-repo vault of 27 files with no cap"
   return 0
 }
 
@@ -305,7 +381,7 @@ main() {
   if [ "${1:-}" = "--porcelain" ]; then
     shift
     if [ "$#" -eq 0 ]; then
-      echo "usage: check-ps1-bom.sh --porcelain DIR [DIR...]" >&2
+      echo "usage: check-ps1-encoding.sh --porcelain DIR [DIR...]" >&2
       return 2
     fi
     # Drop roots that do not exist so `find` cannot fail the whole report over
@@ -321,9 +397,9 @@ main() {
     _report "${roots[@]}"
     return $?
   fi
-  echo "==> UTF-8 BOM on *.ps1: $REPO_ROOT"
+  echo "==> .ps1 encoding (UTF-8 BOM + no em dash): $REPO_ROOT"
   if _scan_repo "$REPO_ROOT"; then
-    echo "    OK - $SCANNED .ps1 file(s), all starting with EF BB BF"
+    echo "    OK - $SCANNED .ps1 file(s): all start with EF BB BF, none contain an em dash"
     return 0
   fi
   return 1

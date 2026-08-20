@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Pin the .ps1 UTF-8 BOM rule to ONE implementation, and keep its control honest.
+Pin the .ps1 encoding rules (UTF-8 BOM required, em dash banned) to ONE implementation, and keep its control honest.
 
 The rule: every *.ps1 must start with EF BB BF, because Windows PowerShell 5.1
 reads a BOM-less file as the console ANSI code page rather than UTF-8 and dies on
@@ -13,7 +13,7 @@ the pre-push hook requires -- and failed only after a push, costing a whole CI
 round-trip per occurrence (measured 2026-08-19 on
 tests/integration/test_bootstrap_ps1_slash_commands.ps1).
 
-The fix was to extract scripts/check-ps1-bom.sh and have both callers run it.
+The fix was to extract scripts/check-ps1-encoding.sh and have both callers run it.
 This suite defends the two ways that fix silently rots:
 
   1. A caller stops delegating (someone re-inlines the byte comparison into
@@ -33,29 +33,41 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-CHECKER = REPO / "scripts" / "check-ps1-bom.sh"
+CHECKER = REPO / "scripts" / "check-ps1-encoding.sh"
 LINT_YML = REPO / ".github" / "workflows" / "lint.yml"
 CI_SH = REPO / "scripts" / "ci.sh"
 DIAGNOSE_SH = REPO / "scripts" / "diagnose.sh"
 DIAGNOSE_PS1 = REPO / "scripts" / "diagnose.ps1"
-FIXTURES = REPO / "tests" / "fixtures" / "ps1-bom"
+FIXTURES = REPO / "tests" / "fixtures" / "ps1-encoding"
 
 BOM = b"\xef\xbb\xbf"
-# The byte comparison, as it reads in shell. If this string appears in a CALLER
+EM_DASH = "\u2014"
+# The byte comparisons, as they read in shell. If either appears in a CALLER
 # rather than in the checker, that caller has grown its own private copy.
+#
 INLINE_MARKER = "efbbbf"
+
+# The em-dash rule needs a narrower marker than "efbbbf" does. A literal em dash
+# is ordinary punctuation: it appears in comments AND in user-facing message
+# strings all over these files (a `bad "..."` hint with one in it), so
+# its mere presence says nothing. What identifies a re-inlined copy is an em
+# dash being SEARCHED FOR - the old loops were `grep -q $'\\xe2\\x80\\x94' "$f"`.
+# So match the search, in either the escaped or the pasted form.
+INLINE_EMDASH_SEARCH = re.compile(
+    r"(?:grep|Select-String)[^\n]*(?:\\\\xe2\\\\x80\\\\x94|" + EM_DASH + r")"
+)
 
 # Both callers must actually INVOKE the script. Matching the bare path is not
 # enough: every caller also NAMES the path in a comment, so a substring test
 # stays green when the real invocation is deleted (measured while mutation
 # testing this suite - two of seven mutations walked straight through it).
 # So match the command, and strip comment lines before looking.
-SCAN_CALL = re.compile(r"(?:^|\s)bash\s+scripts/check-ps1-bom\.sh\s*$", re.M)
-SELFTEST_CALL = re.compile(r"(?:^|\s)bash\s+scripts/check-ps1-bom\.sh\s+--self-test\b")
+SCAN_CALL = re.compile(r"(?:^|\s)bash\s+scripts/check-ps1-encoding\.sh\s*$", re.M)
+SELFTEST_CALL = re.compile(r"(?:^|\s)bash\s+scripts/check-ps1-encoding\.sh\s+--self-test\b")
 # diagnose.sh resolves the script through a candidate list rather than a fixed
 # repo-relative path (it also runs from an installed vault), so it is matched on
 # the porcelain invocation instead.
-PORCELAIN_CALL = re.compile(r'bash\s+"\$CHECK_BOM"\s+--porcelain\b')
+PORCELAIN_CALL = re.compile(r'bash\s+"\$CHECK_ENC"\s+--porcelain\b')
 
 # diagnose.ps1 is the one intentional duplicate: it must run on a Windows box
 # with no bash. Pin it to the SAME three bytes as the shell implementation, so
@@ -66,6 +78,9 @@ PORCELAIN_CALL = re.compile(r'bash\s+"\$CHECK_BOM"\s+--porcelain\b')
 # comparison being deleted. The bytes are compared on one line; keep the match
 # on one line.
 PS1_BOM_BYTES = re.compile(r"0xEF.*0xBB.*0xBF", re.I)
+# The em-dash half of the same pin. PowerShell spells it as a char code rather
+# than bytes, so this is the value, not the UTF-8 encoding.
+PS1_EMDASH_BYTES = re.compile(r"0x2014", re.I)
 
 # `| head -N` / `-First N` on the enumeration is what silently truncated the
 # scan. Neither user-facing surface may cap again.
@@ -123,7 +138,7 @@ def test_both_callers_delegate() -> None:
 
         check(
             SCAN_CALL.search(code) is not None,
-            f"{rel} no longer RUNS `bash scripts/check-ps1-bom.sh`. The BOM rule must have "
+            f"{rel} no longer RUNS `bash scripts/check-ps1-encoding.sh`. The BOM rule must have "
             f"exactly one implementation and both callers must invoke it; a caller that stops "
             f"delegating is how the two copies drifted in the first place. (Naming the path in "
             f"a comment does not count.)",
@@ -134,7 +149,7 @@ def test_both_callers_delegate() -> None:
         # trusting a guard that may have gone inert.
         check(
             SELFTEST_CALL.search(code) is not None,
-            f"{rel} runs the BOM scan without running `check-ps1-bom.sh --self-test` first. "
+            f"{rel} runs the BOM scan without running `check-ps1-encoding.sh --self-test` first. "
             f"An unproven guard reads exactly like a clean repo.",
         )
 
@@ -143,8 +158,14 @@ def test_both_callers_delegate() -> None:
         check(
             INLINE_MARKER not in body,
             f"{rel} contains the raw byte comparison '{INLINE_MARKER}'. That is a re-inlined "
-            f"copy of the BOM rule. Call scripts/check-ps1-bom.sh instead - two copies drift, "
+            f"copy of the BOM rule. Call scripts/check-ps1-encoding.sh instead - two copies drift, "
             f"and the local one is the half that goes stale silently.",
+        )
+        check(
+            INLINE_EMDASH_SEARCH.search(code) is None,
+            f"{rel} searches for an em dash itself. That is a re-inlined copy of the em-dash "
+            f"rule; it lived here as its own `find` loop until both rules moved into "
+            f"scripts/check-ps1-encoding.sh.",
         )
 
 
@@ -156,19 +177,24 @@ def test_diagnose_sh_delegates() -> None:
 
     check(
         PORCELAIN_CALL.search(code) is not None,
-        f"{rel} no longer calls check-ps1-bom.sh --porcelain. It carried its own copy of the "
+        f"{rel} no longer calls check-ps1-encoding.sh --porcelain. It carried its own copy of the "
         f"BOM rule once and the two answers diverged; the shared script is the only owner.",
     )
     check(
         INLINE_MARKER not in body,
         f"{rel} contains the raw byte comparison '{INLINE_MARKER}' again. That is a re-inlined "
-        f"copy of the BOM rule - delegate to check-ps1-bom.sh --porcelain instead.",
+        f"copy of the BOM rule - delegate to check-ps1-encoding.sh --porcelain instead.",
+    )
+    check(
+        INLINE_EMDASH_SEARCH.search(code) is None,
+        f"{rel} searches for an em dash itself again. Both rules delegate through --porcelain "
+        f"now; a private copy here is how the BOM half drifted.",
     )
     # The absent-helper path must WARN, never fall through to a silent pass. A
     # health report that cannot run a check has three states, not two.
     check(
-        "check-ps1-bom.sh not found" in body,
-        f"{rel} does not warn when check-ps1-bom.sh is missing. A check that could not run "
+        "check-ps1-encoding.sh not found" in body,
+        f"{rel} does not warn when check-ps1-encoding.sh is missing. A check that could not run "
         f"must say so - reporting nothing reads exactly like reporting clean.",
     )
     section = _executable_lines(_section(body, SH_SECTION, rel))
@@ -192,11 +218,16 @@ def test_diagnose_ps1_stays_native_and_pinned() -> None:
     check(
         PS1_BOM_BYTES.search(body) is not None,
         f"{rel} no longer compares the bytes 0xEF 0xBB 0xBF. It is the Windows-native copy of "
-        f"the rule in check-ps1-bom.sh and must test the same three bytes.",
+        f"the rule in check-ps1-encoding.sh and must test the same three bytes.",
     )
     check(
-        "check-ps1-bom.sh" in body,
-        f"{rel} no longer explains why it duplicates check-ps1-bom.sh. Without that note the "
+        PS1_EMDASH_BYTES.search(body) is not None,
+        f"{rel} no longer tests for 0x2014. It carries the Windows-native copy of BOTH rules; "
+        f"dropping the em-dash half leaves Windows users with a check the other platforms have.",
+    )
+    check(
+        "check-ps1-encoding.sh" in body,
+        f"{rel} no longer explains why it duplicates check-ps1-encoding.sh. Without that note the "
         f"duplicate reads as an oversight and the next person 'fixes' it by adding a bash call, "
         f"which breaks the diagnostic on Windows.",
     )
@@ -229,6 +260,30 @@ def test_fixture_integrity() -> None:
         f"{with_bom.relative_to(REPO)} does not start with a BOM. It is the POSITIVE control "
         f"and exists to prove the check is not simply always-red.",
     )
+    em_dash = FIXTURES / "emdash.ps1.txt"
+    check(em_dash.is_file(), f"missing em-dash control {em_dash.relative_to(REPO)}")
+    if em_dash.is_file():
+        em_bytes = em_dash.read_bytes()
+        check(
+            em_bytes.startswith(BOM),
+            f"{em_dash.relative_to(REPO)} has no BOM. It is the control for the EM DASH rule, "
+            f"so it must be BOM-clean or it goes red for the wrong reason.",
+        )
+        em_text = em_bytes.decode("utf-8")
+        check(
+            em_text.count(EM_DASH) == 1,
+            f"{em_dash.relative_to(REPO)} must contain exactly one U+2014 (found "
+            f"{em_text.count(EM_DASH)}). With none it is a second positive control wearing a "
+            f"negative control's name.",
+        )
+        # One character apart from the clean baseline, so a red on this and a
+        # green on with-bom isolates the em dash as the cause.
+        check(
+            em_text.replace(EM_DASH, "-") == with_bom.read_bytes().decode("utf-8"),
+            f"{em_dash.relative_to(REPO)} differs from with-bom.ps1.txt by more than the em "
+            f"dash, so the red/green difference no longer isolates U+2014.",
+        )
+
     # Same bytes apart from the BOM, so the red/green difference between them is
     # the BOM and nothing else.
     check(
@@ -240,7 +295,7 @@ def test_fixture_integrity() -> None:
     # A fixture named *.ps1 would be scanned by the very gate it is a fixture
     # for (and by the em-dash and pwsh-parse steps), so the negative control
     # would red the repo forever. The .ps1.txt suffix is load-bearing.
-    stray = sorted(p.relative_to(REPO).as_posix() for p in FIXTURES.glob("*.ps1"))
+    stray = sorted(q.relative_to(REPO).as_posix() for q in FIXTURES.glob("*.ps1"))
     check(
         not stray,
         f"fixture(s) named *.ps1 in {FIXTURES.relative_to(REPO)}: {stray}. Use the .ps1.txt "
@@ -261,7 +316,7 @@ def test_negative_control_passes() -> None:
     )
     check(
         proc.returncode == 0,
-        f"check-ps1-bom.sh --self-test failed (exit {proc.returncode}):\n"
+        f"check-ps1-encoding.sh --self-test failed (exit {proc.returncode}):\n"
         f"{(proc.stdout + proc.stderr).strip()}",
     )
 
@@ -297,11 +352,11 @@ def main() -> int:
         t()
 
     if failures:
-        print(f"FAILED - {len(failures)} problem(s) with the .ps1 BOM gate:")
+        print(f"FAILED - {len(failures)} problem(s) with the .ps1 encoding gate:")
         for f in failures:
             print(f"  * {f}")
         return 1
-    print(f"    OK - {len(tests)} checks: one implementation; lint.yml + ci.sh + diagnose.sh "
+    print(f"    OK - {len(tests)} checks: BOTH rules, one scanner; lint.yml + ci.sh + diagnose.sh "
           f"delegate, diagnose.ps1 pinned native; no capped enumerations; controls intact; "
           f"repo clean")
     return 0

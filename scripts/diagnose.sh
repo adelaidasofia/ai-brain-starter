@@ -258,53 +258,51 @@ fi
 
 # ----- 8. .ps1 sanity (if any exist) -----
 section "8. PowerShell files (Windows compat)"
-# The BOM rule is NOT reimplemented here. It is one rule with one owner,
-# scripts/check-ps1-bom.sh, which the CI gate and the pre-push gate also call -
-# so a fix lands everywhere at once. This block used to carry its own copy,
-# capped at `head -20`: a vault with more than 20 .ps1 files printed "All .ps1
-# files have UTF-8 BOM" without ever reading the rest, while diagnose.ps1 (no
-# cap) reported the same vault honestly. Same vault, two different answers.
-CHECK_BOM=""
-for c in "$(cd "$(dirname "$0")" && pwd)/check-ps1-bom.sh" \
-         "$HOME/.claude/skills/ai-brain-starter/scripts/check-ps1-bom.sh"; do
-  [ -f "$c" ] && CHECK_BOM="$c" && break
+# NEITHER .ps1 byte rule is reimplemented here. Both have one owner,
+# scripts/check-ps1-encoding.sh, which the CI gate and the pre-push gate also
+# call - so a fix lands everywhere at once. This block used to carry its own
+# copy of both, sharing one enumeration capped at `head -20`: a vault with more
+# than 20 .ps1 files printed "All .ps1 files have UTF-8 BOM" without ever
+# reading the rest, while diagnose.ps1 (no cap) reported the same vault
+# honestly. Same vault, two different answers.
+CHECK_ENC=""
+for c in "$(cd "$(dirname "$0")" && pwd)/check-ps1-encoding.sh" \
+         "$HOME/.claude/skills/ai-brain-starter/scripts/check-ps1-encoding.sh"; do
+  [ -f "$c" ] && CHECK_ENC="$c" && break
 done
-if [ -n "$CHECK_BOM" ]; then
-  bom_verdict="$(bash "$CHECK_BOM" --porcelain "$VAULT" "$HOME/.claude/skills/ai-brain-starter" 2>/dev/null)"
-  case "$bom_verdict" in
-    NONE:0)
-      ok "No .ps1 files to check" ;;
-    OK:*)
-      ok "All .ps1 files have UTF-8 BOM (${bom_verdict#OK:} scanned)" ;;
-    MISSING_BOM:*:*)
-      bom_rest="${bom_verdict#MISSING_BOM:}"
-      warn "${bom_rest%%:*} of ${bom_rest##*:} .ps1 file(s) missing UTF-8 BOM" \
-        "Windows PowerShell 5.1 will crash on non-ASCII bytes." ;;
-    *)
-      warn "Could not evaluate .ps1 BOM status" "check-ps1-bom.sh returned: ${bom_verdict:-<empty>}" ;;
-  esac
-else
-  warn "check-ps1-bom.sh not found" "Cannot verify .ps1 files carry a UTF-8 BOM."
-fi
-
-# Em dashes are a separate rule with its own owner (the lint.yml step); this is
-# the user-facing warning half. No cap here either - the same truncation that
-# hid a missing BOM would hide an em dash.
-ps1_files=$(find "$VAULT" "$HOME/.claude/skills/ai-brain-starter" \
-  -name '*.ps1' -not -path '*/.git/*' 2>/dev/null)
-if [ -z "$ps1_files" ]; then
-  : # "no .ps1 files" was already reported by the BOM verdict above
-else
-  emdash_fail=0
-  while IFS= read -r f; do
-    [ -z "$f" ] && continue
-    grep -q $'\xe2\x80\x94' "$f" 2>/dev/null && emdash_fail=$((emdash_fail+1))
-  done <<< "$ps1_files"
-  if [ "$emdash_fail" -eq 0 ]; then
-    ok "No em dashes in .ps1 files"
+if [ -n "$CHECK_ENC" ]; then
+  enc_verdict="$(bash "$CHECK_ENC" --porcelain "$VAULT" "$HOME/.claude/skills/ai-brain-starter" 2>/dev/null)"
+  # Contract: `scanned=<n> missing_bom=<m> emdash=<k>`. Parsed field by field so
+  # a malformed line leaves the counts empty and falls through to the warn below
+  # rather than being read as zeros, which would print a clean bill of health.
+  enc_scanned=""; enc_bom=""; enc_em=""
+  for kv in $enc_verdict; do
+    case "$kv" in
+      scanned=*)     enc_scanned="${kv#scanned=}" ;;
+      missing_bom=*) enc_bom="${kv#missing_bom=}" ;;
+      emdash=*)      enc_em="${kv#emdash=}" ;;
+    esac
+  done
+  if [ -z "$enc_scanned" ] || [ -z "$enc_bom" ] || [ -z "$enc_em" ]; then
+    warn "Could not evaluate .ps1 encoding" "check-ps1-encoding.sh returned: ${enc_verdict:-<empty>}"
+  elif [ "$enc_scanned" -eq 0 ]; then
+    ok "No .ps1 files to check"
   else
-    warn "$emdash_fail .ps1 file(s) contain em dashes" "Replace with ASCII hyphens (defense-in-depth)."
+    if [ "$enc_bom" -eq 0 ]; then
+      ok "All .ps1 files have UTF-8 BOM ($enc_scanned scanned)"
+    else
+      warn "$enc_bom of $enc_scanned .ps1 file(s) missing UTF-8 BOM" \
+        "Windows PowerShell 5.1 will crash on non-ASCII bytes."
+    fi
+    if [ "$enc_em" -eq 0 ]; then
+      ok "No em dashes in .ps1 files ($enc_scanned scanned)"
+    else
+      warn "$enc_em of $enc_scanned .ps1 file(s) contain em dashes" \
+        "Replace with ASCII hyphens (defense-in-depth)."
+    fi
   fi
+else
+  warn "check-ps1-encoding.sh not found" "Cannot verify .ps1 BOM or em-dash status."
 fi
 
 # ----- 9. MCP config -----
