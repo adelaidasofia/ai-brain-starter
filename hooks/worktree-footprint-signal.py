@@ -220,7 +220,25 @@ def _candidate_vaults(main_repo: Path | None) -> list[Path]:
         if key not in seen:
             seen.add(key)
             out.append(c)
-    return out
+    return [c for c in out if not _is_home_or_above(c)]
+
+
+def _is_home_or_above(p: Path) -> bool:
+    """$HOME, a filesystem root, or an ancestor of $HOME is never a vault.
+
+    _is_brain_vault() accepts any directory merely holding a `.codegraph` or
+    `.smart-env` folder, and any tool can drop one of those into $HOME — at
+    which point this signal printed `relocate-machinery-sidecar.sh "$HOME"` as
+    a remedy, and that helper used to build a git repo over the whole home
+    directory (MYC-4028). The helper now refuses on its own; this stops the
+    offer being made at all, so the user never sees the wrong command.
+    """
+    try:
+        target = p.resolve()
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):
+        return False
+    return target == home or target == target.parent or target in home.parents
 
 
 def _is_brain_vault(vault: Path) -> bool:
