@@ -92,11 +92,23 @@ DEST_RE_PS = re.compile(r'\.claude[/\\]([A-Za-z0-9_.-]+)')
 
 
 def destinations(path: Path, pattern: re.Pattern[str]) -> set[str]:
+    """Destination tokens this installer WRITES.
+
+    Comment lines are dropped first. Both installers discuss paths in prose --
+    bootstrap.sh's header explains .bootstrap.log three lines above the
+    assignment that creates it. Counting a comment as coverage is the
+    dangerous direction: a `# we deliberately skip .bootstrap.log on Windows`
+    note in bootstrap.ps1 would make this guard report the gap as CLOSED while
+    nothing writes the file. Mentioning a path is not writing it.
+    """
     if not path.is_file():
         print(f"FAIL: {path} not found - this guard cannot run", file=sys.stderr)
         raise SystemExit(1)
-    text = path.read_text(encoding="utf-8", errors="replace")
-    return {m for m in pattern.findall(text)} - IGNORE
+    lines = [
+        ln for ln in path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if not ln.lstrip().startswith("#")
+    ]
+    return {m for m in pattern.findall("\n".join(lines))} - IGNORE
 
 
 def main() -> int:
