@@ -536,7 +536,11 @@ def _walk_lock():
     path = _bloat_cache_path().with_name(_bloat_cache_path().name + ".lock")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fh = open(path, "w")
+        # encoding is irrelevant to flock (nothing is ever written through
+        # this handle) but the gate is right to demand it unconditionally:
+        # an implicit locale codec is a Windows cp1252 corruption waiting for
+        # the day someone does write here.
+        fh = open(path, "w", encoding="utf-8")
     except OSError:
         return _NO_FCNTL
     try:
