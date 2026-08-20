@@ -20,11 +20,21 @@
 # non-ASCII byte decodes wrong and the parser dies on a file that is valid UTF-8
 # everywhere else. The BOM is how 5.1 is told the encoding.
 #
-# The em-dash rule is the same failure from the other side. U+2014 is the
-# character most likely to be introduced by an editor or a paste, and it was the
-# exact byte sequence that crashed the 5.1 parser before the BOM fix. With a BOM
-# present it parses fine, so this rule is defense in depth: keeping every .ps1
-# ASCII-clean makes losing a BOM recoverable rather than a crash.
+# The em-dash rule is the same failure from the other side. U+2014 was the exact
+# byte sequence that crashed the 5.1 parser before the BOM fix, and it is the
+# non-ASCII character most likely to arrive by accident - an editor's autocorrect
+# or a paste from a doc - in a file where a plain hyphen was meant.
+#
+# Be precise about what this buys, because it is easy to overstate. If the BOM is
+# present, non-ASCII parses fine and this rule is style. If the BOM is ever lost,
+# ANY non-ASCII byte breaks the file, and U+2014 is not special among them. So
+# this is NOT an ASCII-cleanliness guarantee: 4 of the 14 *.ps1 files here carry
+# deliberate non-ASCII (box-drawing rules in section headers, a middle dot in the
+# log prefix, the enye in "Espanol", a gear and an arrow) and are intentionally
+# untouched. What the rule actually does is close the one hole that opens by
+# accident rather than by choice. Widening it to all non-ASCII behind a pinned
+# baseline - the pattern utf8-stdout-baseline.txt already uses here - is tracked
+# separately (MYC-4040); it is a real decision about those four files, not a bug fix.
 #
 # ONE implementation, THREE callers, so the rule cannot drift between them:
 #
