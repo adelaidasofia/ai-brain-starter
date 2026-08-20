@@ -206,6 +206,56 @@ else
   fail "F4 rollback DELETED the created repo — any commits made in it are gone"
 fi
 
+echo "--- G. detector: a machine ALREADY in this state ---"
+# The guard stops NEW damage. It says nothing about machines already holding a
+# repo over $HOME — and that population cannot be enumerated, so the detector is
+# the only way they ever find out. Fires on HARM (exposed credentials), not on
+# shape, so a deliberate dotfiles repo with a sane .gitignore stays silent.
+G_OUT="$(HOOK_PY="$ROOT/hooks/worktree-footprint-signal.py" python3 - <<'PYEOF'
+import importlib.util, os, subprocess, sys, tempfile
+from pathlib import Path
+p = Path(os.environ["HOOK_PY"]); sys.path.insert(0, str(p.parent))
+spec = importlib.util.spec_from_file_location("wfs", p)
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+def fired(home):
+    os.environ["HOME"] = str(home)
+    return bool(m.home_is_a_repo_alert())
+
+def key(d):
+    (d / ".ssh").mkdir(parents=True, exist_ok=True)
+    (d / ".ssh/id_ed25519").write_text("k")
+
+with tempfile.TemporaryDirectory() as td:
+    td = Path(td)
+    h = td / "healthy"; h.mkdir(); key(h)
+    print("G1", "PASS" if not fired(h) else "FAIL", "healthy home stays silent")
+
+    hit = td / "hit"; hit.mkdir(); key(hit)
+    subprocess.run(["git", "init", "-q", str(hit)], check=True)
+    print("G2", "PASS" if fired(hit) else "FAIL", "exposed credentials in a home repo FIRE")
+
+    dot = td / "dotfiles"; dot.mkdir(); key(dot)
+    subprocess.run(["git", "init", "-q", str(dot)], check=True)
+    (dot / ".gitignore").write_text(".ssh/\n.aws/\n.netrc\n")
+    print("G3", "PASS" if not fired(dot) else "FAIL", "dotfiles repo that ignores its secrets stays silent")
+
+    bare = td / "bare"; bare.mkdir()
+    subprocess.run(["git", "init", "-q", str(bare)], check=True)
+    print("G4", "PASS" if not fired(bare) else "FAIL", "home repo with no credentials present stays silent")
+
+    os.environ["HOME_REPO_ALERT_BYPASS"] = "1"
+    print("G5", "PASS" if not fired(hit) else "FAIL", "bypass silences a genuine hit")
+    del os.environ["HOME_REPO_ALERT_BYPASS"]
+PYEOF
+)"
+while IFS= read -r line; do
+  case "$line" in
+    *" PASS "*) pass "${line#* PASS }" ;;
+    *" FAIL "*) fail "${line#* FAIL }" ;;
+  esac
+done <<< "$G_OUT"
+
 echo
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS — check-vault-target"

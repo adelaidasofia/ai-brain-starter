@@ -348,6 +348,80 @@ def _tracked_symlink_note_dirs(vault: Path) -> list[str]:
     return hits
 
 
+# Credential material that must never sit inside a git working tree. Same list
+# the substrate's check-vault-target.py refuses on, kept in step with it.
+HOME_CREDENTIAL_PATHS = (
+    ".ssh/id_ed25519", ".ssh/id_rsa", ".ssh/id_ecdsa",
+    ".aws/credentials", ".netrc", ".zsh_secrets",
+    ".config/gh/hosts.yml", ".docker/config.json", ".kube/config",
+)
+
+
+def home_is_a_repo_alert() -> list[str]:
+    """$HOME itself is a git working tree, with credentials exposed inside it.
+
+    The loudest block this hook emits, because the damage is silent, permanent
+    and one keystroke away: `git add -A` writes an SSH private key and a GitHub
+    token into git objects, and objects survive every later delete. A relocate
+    helper aimed at a home directory produces exactly this state (MYC-4028).
+
+    Fires on HARM, not on shape. A deliberate dotfiles repo whose .gitignore
+    already covers its secrets is silent — the alert is about exposed
+    credentials, not about $HOME having a .git. That also keeps it honest for
+    the population it exists to catch: someone who did NOT choose this has no
+    .gitignore at all, so every credential reads as exposed.
+
+    Costs nothing on a healthy machine: one stat, and it returns before the
+    subprocess unless $HOME/.git actually exists.
+    """
+    if os.environ.get("HOME_REPO_ALERT_BYPASS") == "1":
+        return []
+    try:
+        home = Path.home()
+        gitpath = home / ".git"
+        if not gitpath.exists():
+            return []                      # the overwhelmingly common case
+        present = [r for r in HOME_CREDENTIAL_PATHS if (home / r).exists()]
+        if not present:
+            return []
+    except (OSError, RuntimeError):
+        return []
+
+    # Which of them git would actually pick up. check-ignore exits 1 when NOTHING
+    # matched, so a non-zero code is not an error here — only a timeout or a
+    # missing git is, and either way an unreadable answer must not invent one.
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(home), "check-ignore", "--stdin"],
+            input="\n".join(present), capture_output=True, text=True,
+            encoding="utf-8", timeout=5,
+        )
+        ignored = {ln.strip() for ln in proc.stdout.splitlines() if ln.strip()}
+    except (OSError, subprocess.SubprocessError):
+        return []
+    exposed = [r for r in present if r not in ignored]
+    if not exposed:
+        return []                          # a dotfiles repo that ignores its secrets
+
+    kind = "a pointer file into a sidecar" if gitpath.is_file() else "a real .git directory"
+    shown = ", ".join(f"`~/{r}`" for r in exposed[:4])
+    more = f" (+{len(exposed) - 4} more)" if len(exposed) > 4 else ""
+    return [
+        f"🔴 [home-is-a-repo] The user's HOME directory `{home}` is a git working "
+        f"tree ({kind}), and these are inside it and NOT ignored: {shown}{more}. "
+        f"Nothing has been committed yet by this alert's reckoning, but one "
+        f"`git add -A` writes those secrets into git objects permanently, and a "
+        f"later `git remote add` would publish them. This is almost never "
+        f"intentional — a vault-relocation helper aimed at a home directory "
+        f"produces exactly this. Tell the user plainly, then: back up the pointer "
+        f"rather than deleting it (`mv ~/.git ~/.git.disabled-$(date +%Y%m%d)`), "
+        f"which stops $HOME being a repo without destroying anything, and check "
+        f"`git --git-dir=<that path> log` for commits worth keeping. If they DID "
+        f"mean to keep a dotfiles repo here, the real fix is a .gitignore covering "
+        f"those paths; `HOME_REPO_ALERT_BYPASS=1` silences this."
+    ]
+
+
 def sidecar_deletion_alert(main_repo: Path | None) -> list[str]:
     """One block per vault whose notes an old relocation deleted from history.
 
@@ -848,6 +922,10 @@ def main() -> int:
             continue
         if sig:
             lines.append(sig)
+
+    # Ahead of every other block: nothing else this hook reports matters as much
+    # as live credentials sitting inside a git working tree.
+    lines.extend(home_is_a_repo_alert())
 
     # Leftover session worktrees under the dev root (MYC-587). Independent of
     # main_repo: these are code-repo siblings, not vault scratch worktrees.
