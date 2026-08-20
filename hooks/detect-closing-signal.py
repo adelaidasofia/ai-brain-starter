@@ -1137,6 +1137,25 @@ def main() -> int:
         # uniquely identify Claude Code feedback re-injection. Same session
         # spawned 6 spurious stubs (T14-16, T14-20, T14-23, T14-25, T14-27,
         # T14-30) before the broader filter shipped.
+        # Expanded 2026-08-19: background-task notifications are the same bug
+        # class. When a subagent spawned with run_in_background finishes,
+        # Claude Code injects its full report as the next "user message",
+        # wrapped in a [SYSTEM NOTIFICATION - NOT USER INPUT] block. The
+        # agent's own prose then gets scanned for close signals.
+        #
+        # Observed: a session that dispatched ten Spanish-language subagents
+        # to process meeting recordings fired this hook THREE times off the
+        # agents' own reports — the Spanish pack's `\bya (está|estuvo|fue)\b`
+        # matched ordinary phrases like "ya está" and "ya fue" inside those
+        # summaries. Each false fire pre-built an empty session stub (T14-41,
+        # T16-10) that would have polluted the Last Session aggregator with
+        # blank entries, and asked the model to say goodbye while five agents
+        # were still running.
+        #
+        # The wrapper text is emitted by the harness and is stable, so
+        # matching it is safe. The notification body can be tens of KB of
+        # agent output, but the markers are always in the header, well inside
+        # the 2KB prefix scan.
         prefix = prompt[:2000]
         feedback_markers = (
             "Stop hook feedback:",
@@ -1145,9 +1164,14 @@ def main() -> int:
             "verify-session-close-cascade",
             "verify-discoverability-on-close",
             "verify-cascade",
+            # Background-task notifications (subagents, scheduled tasks)
+            "[SYSTEM NOTIFICATION - NOT USER INPUT]",
+            "<task-notification>",
+            "NOT a message from the user",
+            "automated background-task event",
         )
         if any(m in prefix for m in feedback_markers):
-            log_debug("Stop-hook-feedback prompt, skipping close detection")
+            log_debug("Hook-feedback or task-notification prompt, skipping close detection")
             emit_passthrough()
             return 0
 
