@@ -922,16 +922,29 @@ fi
 # itself content-pinned by the cloud-safe walker ratchet (test_cloud_safe_file_walkers),
 # whose rule is that any edit obliges a safe_read migration; vault-root's own
 # checker validates its baseline inline, since only the scanner can count reads.
-echo "==> (e1b) baseline burn-down headers: $PY scripts/_baseline_sections.py --check scripts/utf8-stdout-baseline.txt"
-"$PY" scripts/_baseline_sections.py --self-test >/dev/null
-"$PY" scripts/_baseline_sections.py --check scripts/utf8-stdout-baseline.txt
-# Same ledger discipline for gate (e8)'s baseline. Worth stating why it is a
-# SEPARATE line rather than an oversight if it were missing: --check passes a
-# baseline that has NO section headers at all (rows outside any counted section
-# are not objected to), so a flat ledger is vacuously green here. That is why
-# utf8-file-io-baseline.txt is written with counted SEV-A/SEV-B sections instead
-# of a flat list -- an unsectioned baseline would be "checked" and prove nothing.
-"$PY" scripts/_baseline_sections.py --check scripts/utf8-file-io-baseline.txt
+echo "==> (e1b) baseline burn-down headers: $PY scripts/_baseline_sections.py --check-all scripts"
+# Quiet on success: two of its negative controls deliberately PRINT an error
+# (empty-glob, planted drift), and a gate that emits "ERROR ... checked
+# NOTHING" on every green run teaches people to skim past error lines.
+# On failure, re-run verbosely so the reason is visible.
+"$PY" scripts/_baseline_sections.py --self-test >/dev/null 2>&1 || {
+  "$PY" scripts/_baseline_sections.py --self-test
+  exit 1
+}
+# One sweep, not one line per baseline. The two explicit --check lines this
+# replaces are exactly the defect: utf8-file-io-baseline.txt needed a SECOND
+# hand-added line, and the third baseline would have needed a third. --check-all
+# globs them, so a new baseline is covered the day it lands.
+#
+# Carrying forward the note from that wiring, because it is still true and is
+# WHY the sweep reports flat files rather than silently passing them: a baseline
+# with NO section headers has no counted ledger, so there is nothing to compare
+# and checking it proves nothing. utf8-file-io-baseline.txt is deliberately
+# written with counted SEV-A/SEV-B sections instead of a flat list for that
+# reason. --check-all prints "flat ... (no tiers, no ledger to go stale)" for the
+# genuinely flat ones, so a baseline that SHOULD be sectioned and is not is
+# visible in the gate output instead of being indistinguishable from a pass.
+"$PY" scripts/_baseline_sections.py --check-all scripts
 
 # ---- (e2) Hook block-protocol ----------------------------------------------
 # scripts/check-hook-block-protocol.py fails a hook that is registered with the

@@ -69,6 +69,11 @@ Usage:
     _baseline_sections.py --check PATH [--reads] # validate one baseline file
                                                  #   --reads = the (N file(s),
                                                  #   M read(s)) two-number format
+    _baseline_sections.py --check-all [DIR]      # every *baseline*.txt in DIR
+                                                 #   (default: this directory).
+                                                 #   Format auto-detected per
+                                                 #   file; flat ones exempt;
+                                                 #   finding NONE exits 2.
 
 Exit: 0 clean, 1 stale header, 2 usage/IO error.
 """
@@ -264,6 +269,28 @@ _CLEAN_WITH_READS = (
     "{b} SEV-B scripts/two.py\n"
 ).format(a=_SHA_A, b=_SHA_B)
 
+def _empty_dir():
+    """A real directory with no baselines in it - the wrong-path shape."""
+    import tempfile
+    return tempfile.mkdtemp(prefix="bl-none-")
+
+
+def _planted_drift_dir():
+    """A baseline this module was never explicitly wired to, carrying drift.
+
+    This is the case the per-file wiring could not cover: a NEW baseline that
+    nobody remembered to add to ci.sh. Discovery by glob is what makes it fail.
+    """
+    import tempfile
+    d = tempfile.mkdtemp(prefix="bl-planted-")
+    body = (
+        "# ---- SEV-NEW  (7 file(s)) ----\n"
+        "{a} SEV-NEW hooks/one.py\n"
+    ).format(a=_SHA_A)
+    Path(d, "brand-new-baseline.txt").write_text(body, encoding="utf-8")
+    return d
+
+
 _CASES = (
     # (name, callable -> errors, expect_error)
     (
@@ -350,6 +377,16 @@ _CASES = (
         True,
     ),
     (
+        "the SWEEP fails loud when its glob matches nothing (never a silent pass)",
+        lambda: [] if check_all(_empty_dir()) == 2 else ["expected exit 2"],
+        False,
+    ),
+    (
+        "the SWEEP catches a drifted baseline it was never explicitly wired to",
+        lambda: [] if check_all(_planted_drift_dir()) == 1 else ["expected exit 1"],
+        False,
+    ),
+    (
         "prose naming a historical count is not a header and never fires",
         lambda: check_row_counts(
             "# Counts at the time of pinning: 21 SEV-1, 42 SEV-4, 78 total.\n"
@@ -378,8 +415,12 @@ def self_test():
     return 0
 
 
-def check_baseline_file(path, declares_reads=False):
-    """Validate one baseline file's FILE counts. 0 clean, 1 stale, 2 IO error."""
+def check_baseline_file(path, declares_reads=False, quiet=False):
+    """Validate one baseline file's FILE counts. 0 clean, 1 stale, 2 IO error.
+
+    `quiet` suppresses only the success line -- check_all() prints its own
+    per-file summary. Failures are never quiet.
+    """
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
@@ -396,14 +437,84 @@ def check_baseline_file(path, declares_reads=False):
         print("  counts and skip every '#' line, so nothing else can catch this.")
         print("  Correct the header to the real count -- do not delete the count.")
         return 1
-    print("baseline section headers: OK ({})".format(path))
+    if not quiet:
+        print("baseline section headers: OK ({})".format(path))
     return 0
+
+
+# Any baseline this repo grows, without anyone remembering to wire it up. The
+# ORIGINAL bug was a hand-maintained count next to machine-checkable data; a
+# hand-maintained LIST of which baselines to check is the same bug one level up,
+# and it fails the same silent way -- the new file just never gets looked at.
+_BASELINE_GLOB = "*baseline*.txt"
+
+
+def _declares_reads(text):
+    """True if ANY header in this file publishes a read count.
+
+    Per-file, not a global switch: the two tiered baselines use different
+    formats, and a future one picks its own. Detecting it here keeps the
+    symmetry check meaningful WITHIN a file (all its headers must agree)
+    without forcing every baseline into one shape.
+    """
+    for sec in parse_sections(text)[0]:
+        if sec.declared_reads is not None:
+            return True
+    return False
+
+
+def check_all(directory):
+    """Validate every baseline in `directory`. 0 clean, 1 drift, 2 nothing found.
+
+    Finding NOTHING is an ERROR, not a pass. A glob that quietly matches zero
+    files reports success while checking nothing, which is precisely the
+    silent-no-op this module exists to prevent -- and it is how a wrong path or
+    a renamed directory would turn this whole gate into decoration.
+    """
+    d = Path(directory)
+    paths = sorted(d.glob(_BASELINE_GLOB))
+    if not paths:
+        print(
+            "ERROR: no {} found under {} -- this gate checked NOTHING. Fix the "
+            "path rather than reading this as a pass.".format(_BASELINE_GLOB, d),
+            file=sys.stderr,
+        )
+        return 2
+
+    worst = 0
+    tiered = flat = 0
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            print("ERROR: cannot read {}: {}".format(path, exc), file=sys.stderr)
+            worst = max(worst, 2)
+            continue
+        sections, _ = parse_sections(text)
+        if not sections:
+            flat += 1
+            print("  flat   {} (no tiers, no ledger to go stale)".format(path.name))
+            continue
+        tiered += 1
+        rc = check_baseline_file(path, declares_reads=_declares_reads(text), quiet=True)
+        worst = max(worst, rc)
+        if rc == 0:
+            print("  tiered {} ({} tier(s)) OK".format(path.name, len(sections)))
+    print(
+        "baseline headers: {} tiered checked, {} flat exempt, {} file(s) total"
+        .format(tiered, flat, len(paths))
+    )
+    return worst
 
 
 def main(argv):
     args = list(argv)
     if "--self-test" in args:
         return self_test()
+    if "--check-all" in args:
+        rest = [a for a in args if a != "--check-all"]
+        directory = rest[0] if rest else str(Path(__file__).resolve().parent)
+        return check_all(directory)
     if "--check" in args:
         declares_reads = "--reads" in args
         rest = [a for a in args if a not in ("--check", "--reads")]
@@ -413,7 +524,8 @@ def main(argv):
         return check_baseline_file(rest[0], declares_reads=declares_reads)
     print(
         "usage: _baseline_sections.py --self-test\n"
-        "       _baseline_sections.py --check PATH [--reads]",
+        "       _baseline_sections.py --check PATH [--reads]\n"
+        "       _baseline_sections.py --check-all [DIR]",
         file=sys.stderr,
     )
     return 2

@@ -168,13 +168,17 @@ jobs:
       - name: baseline section-header negative controls (the guard must still bite)
         run: python3 scripts/_baseline_sections.py --self-test
 
-      # utf8-stdout-baseline.txt is validated from HERE rather than from inside
-      # check-utf8-stdout.py, because that checker is itself content-pinned by
-      # scripts/cloud-safe-walker-baseline.txt - editing it would oblige an
-      # unrelated safe_read migration. vault-root's own checker validates its
-      # baseline inline (it alone can count reads), so it is not repeated here.
-      - name: utf8 baseline burn-down counts match its rows
-        run: python3 scripts/_baseline_sections.py --check scripts/utf8-stdout-baseline.txt
+      # Every tiered baseline, DISCOVERED BY GLOB rather than named here. Naming
+      # them would be the original bug one level up: a hand-maintained list of
+      # what to check goes stale exactly as silently as a hand-maintained count,
+      # and a baseline added later would simply never be looked at. Flat
+      # baselines have no ledger and are skipped; matching NOTHING is an error,
+      # never a pass. (utf8's checker cannot host this itself - it is content-
+      # pinned by the cloud-safe walker ratchet, where any edit obliges a
+      # safe_read migration. vault-root's checker also validates its own
+      # baseline inline, since only the scanner can count reads.)
+      - name: baseline burn-down counts match their rows (all tiered baselines)
+        run: python3 scripts/_baseline_sections.py --check-all scripts
 
       # Self-test first (cheap, and proves the guard still bites), then the tree.
       - name: naive VAULT_ROOT read negative controls (the guard must still bite)
