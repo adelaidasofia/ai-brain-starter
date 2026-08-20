@@ -66,6 +66,20 @@ assert names, "manifest is empty"
 py = [n for n in names if n.endswith(".py")]
 mod_names = {n[:-3] for n in py}
 
+# The _lib PACKAGE deps, synced separately because the manifest above is a flat
+# list of scripts/ filenames and cannot express a package. Presence of a module
+# here means <meta>/scripts/_lib/<mod>.py exists in a synced vault.
+lib_start = next((i for i, l in enumerate(lines) if "VAULT_LIB_MODULES=(" in l), None)
+lib_mods = []
+if lib_start is not None:
+    for l in lines[lib_start + 1:]:
+        if l.strip() == ")":
+            break
+        m = re.search(r'"([^"]+)"', l)
+        if m:
+            lib_mods.append(m.group(1))
+SYNCED_PACKAGES = {"_lib"} if lib_mods else set()
+
 # Directories a manifest script may pull onto sys.path. scripts/ is the sibling
 # dir; hooks/ is reached via `sys.path.insert(..., parent.parent / "hooks")`.
 # A dep found in ANY of these exists in the REPO but is not necessarily synced —
@@ -138,15 +152,20 @@ for n in py:
                 missing.append(
                     f"{n} imports local {kind} '{mod}' ({loc}) not in manifest — "
                     f"add it to VAULT_SCRIPTS")
+            elif mod in SYNCED_PACKAGES:
+                continue  # mirrored into <meta>/scripts/_lib/ by VAULT_LIB_MODULES
             else:
-                # Not in scripts/, so it CANNOT be added to the manifest (which is
-                # a flat list of scripts/ filenames). The only import-closed fix is
-                # a guarded import with a stdlib fallback.
+                # Not in scripts/, so it cannot be a VAULT_SCRIPTS entry (that
+                # manifest is flat filenames). Do NOT suggest a try/except fallback
+                # with a hand-rolled reader: check-cloud-safe-file-walkers.py
+                # refuses to trust a locally-defined safe_read_text ("bogus
+                # safe_read module is not trusted"), so that "fix" trades an
+                # import crash for an unaudited read path. Mirror the real module.
                 missing.append(
                     f"{n} imports local {kind} '{mod}' from {loc}, which is NOT synced "
-                    f"to the vault and cannot be added to VAULT_SCRIPTS (manifest holds "
-                    f"scripts/ filenames only). Wrap it in try/except ImportError with a "
-                    f"stdlib fallback, or the vault copy dies at import.")
+                    f"to the vault, so the synced copy dies at import. Add it to "
+                    f"VAULT_LIB_MODULES in sync-vault-scripts.sh (it must be "
+                    f"stdlib-only), which mirrors it to <meta>/scripts/{mod}/.")
 if missing:
     print("IMPORT-CLOSURE FAIL:")
     for x in missing:

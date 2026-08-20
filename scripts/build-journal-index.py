@@ -38,7 +38,6 @@ the insights movement report can read within-entry transitions (elevators).
 import argparse
 import json
 import os
-import stat
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -47,62 +46,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 from _meta_resolver import find_meta_dir  # noqa: E402
 
-# `_lib` is a PACKAGE that lives at hooks/_lib/ in the repo checkout. This script
-# is ALSO synced into a live vault at <meta>/scripts/ (see the VAULT_SCRIPTS
-# manifest in scripts/sync-vault-scripts.sh), and there ../hooks does not exist —
-# so the import below resolved to nothing and the vault copy died at import with
-# `ModuleNotFoundError: No module named '_lib'`. insights/SKILL.md invokes the
-# VAULT copy, so /weekly and /monthly rebuilt no index at all and the stale
-# (usually empty) journal-index.json just sat there looking fine.
+# `_lib` is a PACKAGE at hooks/_lib/ in the repo checkout, and this script is ALSO
+# synced into a live vault at <meta>/scripts/ (VAULT_SCRIPTS in
+# scripts/sync-vault-scripts.sh). ../hooks does not exist there, so this import
+# used to die with `ModuleNotFoundError: No module named '_lib'`. insights/SKILL.md
+# invokes the VAULT copy, so /weekly and /monthly rebuilt no index at all and the
+# stale (usually empty) journal-index.json just sat there looking fine.
 #
-# The manifest's own contract is "stdlib-only, OR its local-module dependencies
-# are listed here too", and a package dir under hooks/ cannot be expressed in a
-# flat list of scripts/ filenames — so this file is made genuinely import-closed
-# instead: use the shared primitive when it is importable, else fall back to a
-# stdlib reader keeping the properties that matter here (regular files only,
-# size cap, binary skip, never raises on a bad decode). The fallback drops only
-# the thread-based timeout, which has no stdlib analogue.
-try:
-    from _lib.safe_read import safe_read_text  # noqa: E402
-except ImportError:  # synced vault copy — no hooks/_lib/ alongside it
-    class _FallbackRead:
-        """Stand-in for _lib.safe_read.SafeTextRead — same .ok/.status/.text."""
-
-        def __init__(self, status, text=None):
-            self.status = status
-            self.text = text
-
-        @property
-        def ok(self):
-            return self.status == "ok" and self.text is not None
-
-    def safe_read_text(path, timeout=None, max_bytes=1_000_000,
-                       encoding="utf-8", errors="strict", skip_binary=True):
-        # `timeout` is accepted and ignored so the call site stays identical.
-        # Status strings match _lib.safe_read's taxonomy exactly, so the
-        # "skipped N unreadable file(s)" note reads identically either way.
-        try:
-            st = os.lstat(path)
-        except FileNotFoundError:
-            return _FallbackRead("missing")
-        except OSError:
-            return _FallbackRead("unreadable")
-        # Regular files only: refuses symlinks, FIFOs, devices, directories.
-        if not stat.S_ISREG(st.st_mode):
-            return _FallbackRead("not-regular")
-        if st.st_size > max_bytes:
-            return _FallbackRead("too-large")
-        try:
-            with open(path, "rb") as fh:
-                data = fh.read(max_bytes)
-        except OSError:
-            return _FallbackRead("unreadable")
-        if skip_binary and b"\x00" in data[:4096]:
-            return _FallbackRead("binary")
-        try:
-            return _FallbackRead("ok", data.decode(encoding, errors))
-        except (LookupError, UnicodeDecodeError):
-            return _FallbackRead("decode-error")
+# Fixed by SYNCING THE REAL PRIMITIVE, not by degrading to a local one: the sync
+# now mirrors hooks/_lib/{__init__,safe_read}.py into <meta>/scripts/_lib/, which
+# the first sys.path entry above resolves. Deliberately NOT a try/except fallback
+# with a hand-rolled reader -- scripts/check-cloud-safe-file-walkers.py refuses to
+# trust a locally-defined safe_read_text (its own negative control is "bogus
+# safe_read module is not trusted"), and it is right to: a recursive walker must
+# reach the ONE audited primitive, or the guarantee is only as good as the copy.
+# safe_read.py is stdlib-only, so mirroring it costs the vault nothing.
+from _lib.safe_read import safe_read_text  # noqa: E402
 
 # Read bounds for the shared safe_read primitive. Journal frontmatter sits in
 # the first lines; safe_read hands back the whole (size-capped) file. 1 MB is

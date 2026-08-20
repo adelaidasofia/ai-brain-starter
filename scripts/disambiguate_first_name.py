@@ -41,6 +41,17 @@ import re
 import sys
 from pathlib import Path
 
+HOOKS_DIR = Path(__file__).resolve().parent.parent / "hooks"
+sys.path.insert(0, str(HOOKS_DIR))
+
+from _lib.safe_read import safe_read_text  # noqa: E402
+
+# Per-file read timeout (s) for the shared bounded reader. This walks the WHOLE
+# vault with rglob, which on a cloud-synced folder can hit placeholder files that
+# block forever on open(); the shared primitive is the audited way to bound that.
+READ_TIMEOUT = 5.0
+MAX_NOTE_BYTES = 1_000_000
+
 EXCLUDE_DIRS = ("/_Archive/", "/⚙️ Meta/", "/.git/", "/.smart-env/", "/worktrees/", "/.floor-audit/")
 
 EXISTING_LINK_RE = re.compile(r'\[\[[^\]]+\]\]')
@@ -172,24 +183,31 @@ def disambiguate(
             continue
         if md in self_files:
             continue
-        try:
-            # encoding="utf-8" on BOTH sides. Obsidian vaults are UTF-8; without this,
-            # read_text()/write_text() use the LOCALE encoding — cp1252 on a stock
-            # Windows box — and this routine matches names in the text and writes the
-            # result back over the user's own note. Measured on cp1252, both outcomes
-            # are silent:
-            #   - accents, em dashes, emoji and CJK DECODE WITHOUT ERROR into mojibake
-            #     ("Andrés" -> "AndrÃ©s"), so the name regex runs against text that is
-            #     not what the file says. It under-matches, reports files_modified=0,
-            #     and looks exactly like "no names to disambiguate here".
-            #   - curly quotes (byte 0x9d) and the gear emoji ⚙️ (byte 0x8f) are
-            #     UNDEFINED in cp1252, so the read RAISES and the bare `except
-            #     Exception` below skips the note entirely — same clean-looking run.
-            # (The read->write round-trip itself is byte-preserving under cp1252, so
-            # nothing looks damaged afterwards. The damage is in what was matched.)
-            text = md.read_text(encoding="utf-8")
-        except Exception:
+        # Bounded, symlink-refusing read via the shared primitive, with the
+        # encoding PINNED. Both halves matter and they fix different bugs:
+        #
+        # encoding="utf-8": Obsidian vaults are UTF-8, and a bare read_text() uses
+        # the LOCALE encoding — cp1252 on a stock Windows box. Measured there, both
+        # outcomes are silent. Accents, em dashes, emoji and CJK DECODE WITHOUT
+        # ERROR into mojibake ("Andrés" -> "AndrÃ©s"), so the name regex below runs
+        # against text that is not what the file says: it under-matches and reports
+        # files_modified=0, indistinguishable from "no names to disambiguate here".
+        # Curly quotes (0x9D) and the gear emoji ⚙️ (0x8F) are UNDEFINED in cp1252,
+        # so those reads RAISE and the note is skipped just as quietly. (The
+        # read->write round-trip is byte-preserving under cp1252, so nothing looks
+        # damaged afterwards — the damage is in what got matched.)
+        #
+        # safe_read_text rather than open(): this rglobs the WHOLE vault, and a
+        # cloud-sync placeholder can block forever on a naive read. errors="strict"
+        # is deliberate — a note that is genuinely not UTF-8 is surfaced as a
+        # skipped file, never silently rewritten from a mis-decode.
+        result = safe_read_text(
+            md, timeout=READ_TIMEOUT, max_bytes=MAX_NOTE_BYTES,
+            encoding="utf-8", errors="strict",
+        )
+        if not result.ok:
             continue
+        text = result.text
 
         matches = list(first_re.finditer(text))
         if not matches:
