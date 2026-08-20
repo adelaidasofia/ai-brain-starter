@@ -925,6 +925,13 @@ fi
 echo "==> (e1b) baseline burn-down headers: $PY scripts/_baseline_sections.py --check scripts/utf8-stdout-baseline.txt"
 "$PY" scripts/_baseline_sections.py --self-test >/dev/null
 "$PY" scripts/_baseline_sections.py --check scripts/utf8-stdout-baseline.txt
+# Same ledger discipline for gate (e8)'s baseline. Worth stating why it is a
+# SEPARATE line rather than an oversight if it were missing: --check passes a
+# baseline that has NO section headers at all (rows outside any counted section
+# are not objected to), so a flat ledger is vacuously green here. That is why
+# utf8-file-io-baseline.txt is written with counted SEV-A/SEV-B sections instead
+# of a flat list -- an unsectioned baseline would be "checked" and prove nothing.
+"$PY" scripts/_baseline_sections.py --check scripts/utf8-file-io-baseline.txt
 
 # ---- (e2) Hook block-protocol ----------------------------------------------
 # scripts/check-hook-block-protocol.py fails a hook that is registered with the
@@ -1019,6 +1026,24 @@ echo "==> (e6) py3.9 annotation parity: $PY scripts/check-py39-annotations.py"
 echo "==> (e7) ps1 UTF-8 BOM: bash scripts/check-ps1-bom.sh"
 bash scripts/check-ps1-bom.sh --self-test >/dev/null
 bash scripts/check-ps1-bom.sh
+
+# ---- (e8) Locale-encoded FILE I/O ------------------------------------------
+# The third edge of the cp1252 class, and the one (e) and (e5) left open: what a
+# script WRITES TO and READS FROM A FILE. open(p,"w") / write_text() / read_text()
+# in text mode with no encoding= use the LOCALE encoding, so identical source
+# produces UTF-8 artifacts on macOS and cp1252 artifacts on Windows. Shipped
+# live: this is how build-journal-index.py wrote journal-index.json as cp1252
+# while printing "Indexed N entries" and exiting 0, leaving every UTF-8 consumer
+# (/weekly, /monthly, diagnose, insight-fact-check) to die on
+# `UnicodeDecodeError: ... byte 0xed`. The READ half misbehaves more quietly
+# still: it usually does not raise at all, it decodes into mojibake and silently
+# mis-matches. PYTHONUTF8=1 masks the whole class locally, so a maintainer
+# cannot reproduce a user's report -- hence a gate rather than review. Self-test
+# first (proves the detector still bites in BOTH directions), then the fleet
+# against the content-pinned baseline. Pure stdlib, always runs here.
+echo "==> (e8) file I/O encoding: $PY scripts/check-utf8-file-io.py"
+"$PY" scripts/check-utf8-file-io.py --self-test >/dev/null
+"$PY" scripts/check-utf8-file-io.py
 
 # ---- (f) Python unit tests (scripts/ + hooks/ + tests/) --------------------
 # Every Python unit suite in the repo, run under the SAME interpreter as the rest

@@ -38,6 +38,7 @@ the insights movement report can read within-entry transitions (elevators).
 import argparse
 import json
 import os
+import stat
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -45,7 +46,63 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 from _meta_resolver import find_meta_dir  # noqa: E402
-from _lib.safe_read import safe_read_text  # noqa: E402
+
+# `_lib` is a PACKAGE that lives at hooks/_lib/ in the repo checkout. This script
+# is ALSO synced into a live vault at <meta>/scripts/ (see the VAULT_SCRIPTS
+# manifest in scripts/sync-vault-scripts.sh), and there ../hooks does not exist —
+# so the import below resolved to nothing and the vault copy died at import with
+# `ModuleNotFoundError: No module named '_lib'`. insights/SKILL.md invokes the
+# VAULT copy, so /weekly and /monthly rebuilt no index at all and the stale
+# (usually empty) journal-index.json just sat there looking fine.
+#
+# The manifest's own contract is "stdlib-only, OR its local-module dependencies
+# are listed here too", and a package dir under hooks/ cannot be expressed in a
+# flat list of scripts/ filenames — so this file is made genuinely import-closed
+# instead: use the shared primitive when it is importable, else fall back to a
+# stdlib reader keeping the properties that matter here (regular files only,
+# size cap, binary skip, never raises on a bad decode). The fallback drops only
+# the thread-based timeout, which has no stdlib analogue.
+try:
+    from _lib.safe_read import safe_read_text  # noqa: E402
+except ImportError:  # synced vault copy — no hooks/_lib/ alongside it
+    class _FallbackRead:
+        """Stand-in for _lib.safe_read.SafeTextRead — same .ok/.status/.text."""
+
+        def __init__(self, status, text=None):
+            self.status = status
+            self.text = text
+
+        @property
+        def ok(self):
+            return self.status == "ok" and self.text is not None
+
+    def safe_read_text(path, timeout=None, max_bytes=1_000_000,
+                       encoding="utf-8", errors="strict", skip_binary=True):
+        # `timeout` is accepted and ignored so the call site stays identical.
+        # Status strings match _lib.safe_read's taxonomy exactly, so the
+        # "skipped N unreadable file(s)" note reads identically either way.
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
+            return _FallbackRead("missing")
+        except OSError:
+            return _FallbackRead("unreadable")
+        # Regular files only: refuses symlinks, FIFOs, devices, directories.
+        if not stat.S_ISREG(st.st_mode):
+            return _FallbackRead("not-regular")
+        if st.st_size > max_bytes:
+            return _FallbackRead("too-large")
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read(max_bytes)
+        except OSError:
+            return _FallbackRead("unreadable")
+        if skip_binary and b"\x00" in data[:4096]:
+            return _FallbackRead("binary")
+        try:
+            return _FallbackRead("ok", data.decode(encoding, errors))
+        except (LookupError, UnicodeDecodeError):
+            return _FallbackRead("decode-error")
 
 # Read bounds for the shared safe_read primitive. Journal frontmatter sits in
 # the first lines; safe_read hands back the whole (size-capped) file. 1 MB is
@@ -217,7 +274,16 @@ def main():
         "last_updated": datetime.now().strftime("%Y-%m-%dT%H:%M"),
         "entries": entries,
     }
-    with open(output_path, "w") as f:
+    # encoding="utf-8" is LOAD-BEARING, not decoration. Text mode without it uses
+    # locale.getpreferredencoding(), which is cp1252 on a stock Windows box. Paired
+    # with ensure_ascii=False below, a single accented title ("Reunión", "día") is
+    # then written as cp1252 bytes into a file every consumer opens as UTF-8 —
+    # /weekly, /monthly, diagnose, insight-fact-check — which die on
+    # `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xed`. The write itself
+    # raises nothing, so the corruption is silent at the point it is created.
+    # Not reproducible on a box with PYTHONUTF8=1 set, which is exactly why this
+    # survived: it is invisible to the maintainer and fatal to a fresh install.
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
 
     print(f"Indexed {len(entries)} entries → {output_path}")

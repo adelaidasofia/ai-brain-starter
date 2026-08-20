@@ -173,7 +173,21 @@ def disambiguate(
         if md in self_files:
             continue
         try:
-            text = md.read_text()
+            # encoding="utf-8" on BOTH sides. Obsidian vaults are UTF-8; without this,
+            # read_text()/write_text() use the LOCALE encoding — cp1252 on a stock
+            # Windows box — and this routine matches names in the text and writes the
+            # result back over the user's own note. Measured on cp1252, both outcomes
+            # are silent:
+            #   - accents, em dashes, emoji and CJK DECODE WITHOUT ERROR into mojibake
+            #     ("Andrés" -> "AndrÃ©s"), so the name regex runs against text that is
+            #     not what the file says. It under-matches, reports files_modified=0,
+            #     and looks exactly like "no names to disambiguate here".
+            #   - curly quotes (byte 0x9d) and the gear emoji ⚙️ (byte 0x8f) are
+            #     UNDEFINED in cp1252, so the read RAISES and the bare `except
+            #     Exception` below skips the note entirely — same clean-looking run.
+            # (The read->write round-trip itself is byte-preserving under cp1252, so
+            # nothing looks damaged afterwards. The damage is in what was matched.)
+            text = md.read_text(encoding="utf-8")
         except Exception:
             continue
 
@@ -237,7 +251,8 @@ def disambiguate(
             new_text = new_text[:start] + rep + new_text[end:]
 
         if not dry_run:
-            md.write_text(new_text)
+            # See the read_text note above — this is the write half of the round-trip.
+            md.write_text(new_text, encoding="utf-8")
         stats["files_modified"] += 1
         for _, _, rep in replacements:
             # Alias form has '|' before display, canonical form does not.

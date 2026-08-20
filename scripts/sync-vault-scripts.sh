@@ -269,7 +269,16 @@ done
 # --- Summary (to stdout + a discoverable vault-side log) ----------------------
 LOG_FILE="$DEST_DIR/.vault-script-sync.log"
 summary() {
-  echo "=== sync-vault-scripts.sh @ $STAMP${DRY_RUN:+ (dry-run)} ==="
+  # NOT ${DRY_RUN:+...}: that expands when the var is merely SET AND NON-EMPTY,
+  # and the default is the STRING "0" — non-empty — so this banner said
+  # "(dry-run)" on every REAL run too, including the one that had just rewritten
+  # files and left .bak copies behind. A sync that mutates a vault while
+  # announcing itself as a dry run is the worst direction for this to fail: the
+  # operator reads "(dry-run)", believes nothing happened, and re-runs or walks
+  # away. Every other DRY_RUN site in this file tests `-eq 1`; match them.
+  local dry_label=""
+  [ "$DRY_RUN" -eq 1 ] && dry_label=" (dry-run)"
+  echo "=== sync-vault-scripts.sh @ $STAMP$dry_label ==="
   echo "vault: $VAULT"
   echo "meta:  $META"
   echo "Created:   ${#CREATED[@]}";   for f in "${CREATED[@]:-}"; do [ -n "$f" ] && echo "  + $f"; done
