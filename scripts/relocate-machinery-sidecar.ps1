@@ -482,6 +482,72 @@ function Test-SidecarLocation {
 }
 
 # =============================================================================
+# VAULT TARGET GUARD - what the user pointed at
+# =============================================================================
+# The bash twin's header carries the full story (MYC-4028). Short version: the
+# only validation used to be "is a directory", so aiming this at the profile
+# folder fresh-init'd a git repo over it, with .ssh / .aws / AppData inside the
+# working tree. -Rollback deliberately does NOT run this, so a machine already
+# in that state can still undo it.
+#
+# FAIL-CLOSED, unlike the cloud-sync probe: a missing or unreadable answer here
+# is the only thing between a mistyped path and a permanent credential leak.
+function Test-VaultTarget {
+  $cvt = Join-Path $ScriptDir "check-vault-target.py"
+  if (-not (Test-Path -LiteralPath $cvt)) {
+    Err "refusing: cannot validate the vault target - $cvt is missing."
+    Err "  that check is what stops this tool from building a git repo over your profile folder."
+    Err "  Re-run the installer to restore it, then try again."
+    return $false
+  }
+  # --for-init tightens the rule when there is no repo yet: creating one is the
+  # irreversible half. An existing .git means the user already chose this.
+  $pyArgs = @($cvt, "--porcelain")
+  if (-not (Test-Path -LiteralPath (Join-Path $VaultAbs ".git"))) { $pyArgs += "--for-init" }
+  $pyArgs += $VaultAbs
+  $out = ""
+  try {
+    $py = Get-PyExe
+    $out = "$(& $py @pyArgs 2>$null)".Trim()
+  } catch { $out = "" }
+
+  if ($out -eq 'OK_VAULT') { return $true }
+
+  if ($out -like 'REFUSE_HOME*') {
+    $what = $out -replace '^REFUSE_HOME:?\s*', ''
+    Err "refusing: $VaultAbs is $what."
+    Err "  This tool creates or relocates a GIT REPOSITORY at the path you give it."
+    Err "  Doing that here puts your SSH keys, cloud credentials and AppData inside a git"
+    Err "  working tree - one ``git add -A`` from being written into history permanently."
+    Err "  Point it at your vault instead, e.g. C:\Brain or C:\vaults\<name>."
+    Err "  There is NO -Force for this one, by design."
+    return $false
+  }
+  if ($out -like 'REFUSE_CREDENTIALS*') {
+    $what = $out -replace '^REFUSE_CREDENTIALS:?\s*', ''
+    if ($Force) { Warn "vault target holds credential material ($what) - proceeding under -Force"; return $true }
+    Err "refusing: $VaultAbs holds credential material at its top level ($what)."
+    Err "  That looks like a profile folder, not a vault. Turning it into a git repository"
+    Err "  would place those files inside a working tree."
+    Err "  Point the tool at your vault, or pass -Force if you are certain."
+    return $false
+  }
+  if ($out -like 'REFUSE_NOT_A_VAULT*') {
+    $what = $out -replace '^REFUSE_NOT_A_VAULT:?\s*', ''
+    if ($Force) { Warn "vault target shows no vault evidence ($what) - proceeding under -Force"; return $true }
+    Err "refusing: $VaultAbs has no git repo AND nothing that says it is a vault."
+    Err "  ($what)"
+    Err "  This tool would CREATE a repository here. If that is really what you want,"
+    Err "  run ``git init`` there yourself first, then re-run this tool."
+    Err "  Override only if you are certain: -Force"
+    return $false
+  }
+  Err "refusing: could not validate the vault target (check-vault-target.py said: '$out')."
+  Err "  A check that cannot answer is not a pass. Fix the install, then re-run."
+  return $false
+}
+
+# =============================================================================
 # RELOCATE one cache/worktree dir (relocate + link)
 # =============================================================================
 function Move-CacheDir { param([string]$Rel, [string]$Dst, [string]$RType)
@@ -701,6 +767,11 @@ $Manifest = Join-Path (Join-Path $Sidecar "manifests") "$Slug.json"
 $Journal  = Join-Path (Join-Path $Sidecar "manifests") "$Slug.journal.jsonl"
 
 if ($Rollback) { $rbrc = @(Invoke-Rollback)[-1]; exit ([int]$rbrc) }
+
+# WHAT the user pointed at, before anything is created or moved. Runs ahead of
+# every other gate and every mutation, and after the -Rollback branch above so
+# a machine already damaged this way can still undo it.
+if (-not (@(Test-VaultTarget)[-1])) { exit 1 }
 
 # informational cloud detect for the VAULT (the whole point is the cloud is ALLOWED)
 $cloud = ""

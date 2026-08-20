@@ -366,6 +366,36 @@ $NewAbs = "$(Get-AbsPath $New)".Trim()
 if ($OldAbs -eq $NewAbs) { Die "source and target are the same path" }
 if (Test-Path -LiteralPath $NewAbs) { Die "target '$NewAbs' already exists (will not overwrite)" }
 
+# HARD gate, above the soft ones: WHAT is being moved. This script moves the
+# source and leaves a link behind. Aimed at the profile folder it relocates the
+# user's entire home - every dotfile, key and credential - and replaces it with
+# a link. The only validation used to be "exists, is a directory, is not a
+# link" (MYC-4028). FAIL-CLOSED: a check that cannot answer is not a pass.
+$cvt = Join-Path $ScriptDir "check-vault-target.py"
+if (-not (Test-Path -LiteralPath $cvt)) {
+  Die "cannot validate the source path - $cvt is missing. Re-run the installer to restore it."
+}
+$cvtOut = ""
+try { $cvtOut = "$(& (Get-PyExe) $cvt --porcelain $OldAbs 2>$null)".Trim() } catch { $cvtOut = "" }
+if ($cvtOut -like 'REFUSE_HOME*') {
+  Die "source '$OldAbs' is $($cvtOut -replace '^REFUSE_HOME:?\s*','').
+  This script MOVES that path and leaves a link in its place. Doing it here
+  relocates your entire profile folder - dotfiles, SSH keys, credentials.
+  Point it at your vault instead, e.g. C:\Brain or C:\vaults\<name>.
+  There is NO -Force for this one, by design."
+} elseif ($cvtOut -like 'REFUSE_CREDENTIALS*') {
+  $what = $cvtOut -replace '^REFUSE_CREDENTIALS:?\s*', ''
+  if ($Force) {
+    Write-Host "relocate-vault: WARN - source holds credential material ($what) - proceeding under -Force" -ForegroundColor Yellow
+  } else {
+    Die "source '$OldAbs' holds credential material at its top level ($what).
+  That looks like a profile folder, not a vault. Pass -Force if you are certain."
+  }
+} elseif ($cvtOut -ne 'OK_VAULT') {
+  Die "could not validate the source path (check-vault-target.py said: '$cvtOut').
+  A check that cannot answer is not a pass. Fix the install, then re-run."
+}
+
 # Soft gates - skippable with -Force.
 if (-not $Force) {
   if (Test-ObsidianRunning) {

@@ -251,6 +251,11 @@ INTEGRATION_TESTS=(
   test_worktree_on_vault_guard
   test_machinery_sidecar
   test_repair_sidecar_note_deletion
+  # Refuses $HOME / a filesystem root as a relocate target, in the helpers AND
+  # the checker they share. Carries the two adversarial cases: --force must not
+  # open the home refusal, and --rollback must stay ungated so an already
+  # damaged machine can still be repaired (MYC-4028).
+  test_check_vault_target
   test_relocate_vault
   test_relocate_sweep
   test_relocate_watch

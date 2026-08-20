@@ -220,7 +220,25 @@ def _candidate_vaults(main_repo: Path | None) -> list[Path]:
         if key not in seen:
             seen.add(key)
             out.append(c)
-    return out
+    return [c for c in out if not _is_home_or_above(c)]
+
+
+def _is_home_or_above(p: Path) -> bool:
+    """$HOME, a filesystem root, or an ancestor of $HOME is never a vault.
+
+    _is_brain_vault() accepts any directory merely holding a `.codegraph` or
+    `.smart-env` folder, and any tool can drop one of those into $HOME — at
+    which point this signal printed `relocate-machinery-sidecar.sh "$HOME"` as
+    a remedy, and that helper used to build a git repo over the whole home
+    directory (MYC-4028). The helper now refuses on its own; this stops the
+    offer being made at all, so the user never sees the wrong command.
+    """
+    try:
+        target = p.resolve()
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):
+        return False
+    return target == home or target == target.parent or target in home.parents
 
 
 def _is_brain_vault(vault: Path) -> bool:
@@ -328,6 +346,115 @@ def _tracked_symlink_note_dirs(vault: Path) -> list[str]:
             # letting a locale decide, and never let a decode error escape.
             hits.append(raw.decode("utf-8", "replace"))
     return hits
+
+
+# Credential material that must never sit inside a git working tree. Same list
+# the substrate's check-vault-target.py refuses on, kept in step with it.
+HOME_CREDENTIAL_PATHS = (
+    ".ssh/id_ed25519", ".ssh/id_rsa", ".ssh/id_ecdsa",
+    ".aws/credentials", ".netrc", ".zsh_secrets",
+    ".config/gh/hosts.yml", ".docker/config.json", ".kube/config",
+)
+
+
+def home_is_a_repo_alert() -> list[str]:
+    """$HOME itself is a git working tree, with credentials exposed inside it.
+
+    The loudest block this hook emits, because the damage is silent, permanent
+    and one keystroke away: `git add -A` writes an SSH private key and a GitHub
+    token into git objects, and objects survive every later delete. A relocate
+    helper aimed at a home directory produces exactly this state (MYC-4028).
+
+    Fires on HARM, not on shape. A deliberate dotfiles repo whose .gitignore
+    already covers its secrets is silent — the alert is about exposed
+    credentials, not about $HOME having a .git. That also keeps it honest for
+    the population it exists to catch: someone who did NOT choose this has no
+    .gitignore at all, so every credential reads as exposed.
+
+    Costs nothing on a healthy machine: one stat, and it returns before the
+    subprocess unless $HOME/.git actually exists.
+    """
+    if os.environ.get("HOME_REPO_ALERT_BYPASS") == "1":
+        return []
+    try:
+        home = Path.home()
+        gitpath = home / ".git"
+        if not gitpath.exists():
+            return []                      # the overwhelmingly common case
+        present = [r for r in HOME_CREDENTIAL_PATHS if (home / r).exists()]
+        if not present:
+            return []
+    except (OSError, RuntimeError):
+        return []
+
+    # Which of them git would actually pick up. check-ignore exits 1 when NOTHING
+    # matched, so a non-zero code is not an error here — only a timeout or a
+    # missing git is, and either way an unreadable answer must not invent one.
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(home), "check-ignore", "--stdin"],
+            input="\n".join(present), capture_output=True, text=True,
+            encoding="utf-8", timeout=5,
+        )
+        ignored = {ln.strip() for ln in proc.stdout.splitlines() if ln.strip()}
+    except (OSError, subprocess.SubprocessError):
+        return []
+    exposed = [r for r in present if r not in ignored]
+
+    # ALREADY TRACKED is a different, worse state than merely exposed: the bytes
+    # are in git objects, objects outlive every later delete, and the remedy is
+    # key ROTATION rather than a .gitignore. Reporting only "at risk" to someone
+    # whose key already leaked is the more dangerous half of this alert to get
+    # wrong, so it is measured, not assumed.
+    tracked: list[str] = []
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(home), "ls-files", "-z", "--"] + list(HOME_CREDENTIAL_PATHS),
+            capture_output=True, text=True, encoding="utf-8", timeout=5,
+        )
+        if proc.returncode == 0:
+            tracked = [x for x in proc.stdout.split("\0") if x]
+    except (OSError, subprocess.SubprocessError):
+        tracked = []                       # unknown, not "none" — the wording below says so
+
+    if not exposed and not tracked:
+        return []                          # a dotfiles repo that ignores its secrets
+
+    kind = "a pointer file into a sidecar" if gitpath.is_file() else "a real .git directory"
+    head = (f"🔴 [home-is-a-repo] The user's HOME directory `{home}` is a git "
+            f"working tree ({kind}). ")
+
+    if tracked:
+        names = ", ".join(f"`~/{t}`" for t in tracked[:4])
+        extra = f" (+{len(tracked) - 4} more)" if len(tracked) > 4 else ""
+        return [
+            head +
+            f"ALREADY COMMITTED into git history: {names}{extra}. Those bytes are "
+            f"in git objects now, and objects survive deleting the file, amending "
+            f"the commit, and removing the repo's remote. Say this plainly and "
+            f"without softening it: the safe assumption is that these credentials "
+            f"are compromised and should be ROTATED at their providers — a new SSH "
+            f"key, new AWS keys, a reissued GitHub token — before anything else. "
+            f"Cleaning history is secondary and does not un-leak them. Then stop "
+            f"$HOME being a repo: `mv ~/.git ~/.git.disabled-$(date +%Y%m%d)` "
+            f"(move, do not delete — it may hold commits worth keeping)."
+        ]
+
+    shown = ", ".join(f"`~/{r}`" for r in exposed[:4])
+    more = f" (+{len(exposed) - 4} more)" if len(exposed) > 4 else ""
+    return [
+        head +
+        f"These are inside it and NOT ignored: {shown}{more}. Nothing is committed "
+        f"yet, so nothing has leaked — but one `git add -A` writes those secrets "
+        f"into git objects permanently, and a later `git remote add` would publish "
+        f"them. This is almost never intentional; a vault-relocation helper aimed "
+        f"at a home directory produces exactly this. Tell the user plainly, then "
+        f"back up the pointer rather than deleting it "
+        f"(`mv ~/.git ~/.git.disabled-$(date +%Y%m%d)`), which stops $HOME being a "
+        f"repo without destroying anything. If they DID mean to keep a dotfiles "
+        f"repo here, the real fix is a .gitignore covering those paths; "
+        f"`HOME_REPO_ALERT_BYPASS=1` silences this."
+    ]
 
 
 def sidecar_deletion_alert(main_repo: Path | None) -> list[str]:
@@ -518,7 +645,11 @@ def _walk_lock():
     path = _bloat_cache_path().with_name(_bloat_cache_path().name + ".lock")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fh = open(path, "w")
+        # encoding is irrelevant to flock (nothing is ever written through
+        # this handle) but the gate is right to demand it unconditionally:
+        # an implicit locale codec is a Windows cp1252 corruption waiting for
+        # the day someone does write here.
+        fh = open(path, "w", encoding="utf-8")
     except OSError:
         return _NO_FCNTL
     try:
@@ -826,6 +957,10 @@ def main() -> int:
             continue
         if sig:
             lines.append(sig)
+
+    # Ahead of every other block: nothing else this hook reports matters as much
+    # as live credentials sitting inside a git working tree.
+    lines.extend(home_is_a_repo_alert())
 
     # Leftover session worktrees under the dev root (MYC-587). Independent of
     # main_repo: these are code-repo siblings, not vault scratch worktrees.

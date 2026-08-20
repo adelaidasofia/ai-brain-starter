@@ -430,11 +430,103 @@ guard_sidecar_location() {
   esac
 }
 
+# The path the user named is where a REPOSITORY gets created or relocated. The
+# only validation used to be "non-empty" + "is a directory", so pointing this at
+# $HOME fresh-init'd a repo over the whole home directory, with ~/.ssh, ~/.aws
+# and ~/.config/gh sitting untracked inside the working tree and one `git add -A`
+# from being written into git objects permanently (MYC-4028, observed on a real
+# machine). --rollback deliberately does NOT run this: a machine already in that
+# state must still be able to undo it.
+#
+# FAIL-CLOSED. Unlike the cloud-sync probe, a missing or unreadable answer here
+# is not a cosmetic gap — it is the only thing standing between a mistyped path
+# and a permanent credential leak.
+guard_vault_target() {
+  local cvt="$_sa/check-vault-target.py" out rc=0 initflag=""
+  # --for-init tightens the rule when there is no repo yet: creating one is the
+  # irreversible half. An existing .git means the user already chose this.
+  [ -e "$VAULT/.git" ] || initflag="--for-init"
+  if [ ! -f "$cvt" ]; then
+    err "refusing: cannot validate the vault target — $cvt is missing."
+    err "  that check is what stops this tool from building a git repo over your home directory."
+    err "  Re-run the installer to restore it, then try again."
+    return 1
+  fi
+  out="$("$PYBIN" "$cvt" --porcelain $initflag "$VAULT" 2>/dev/null)" || rc=$?
+  case "$out" in
+    OK_VAULT) return 0;;
+    REFUSE_HOME:*)
+      err "refusing: $VAULT is ${out#REFUSE_HOME:}."
+      err "  This tool creates or relocates a GIT REPOSITORY at the path you give it."
+      err "  Doing that here puts ~/.ssh, ~/.aws, ~/.netrc and ~/.config/gh inside a git"
+      err "  working tree — one \`git add -A\` from being written into history permanently."
+      err "  Point it at your vault instead, e.g.  ~/Brain  or  ~/vaults/<name>."
+      err "  There is NO --force for this one, by design."
+      return 1;;
+    REFUSE_CREDENTIALS:*)
+      if [ "$FORCE" = 1 ]; then
+        warn "vault target holds credential material (${out#REFUSE_CREDENTIALS:}) — proceeding under --force"
+        return 0
+      fi
+      err "refusing: $VAULT holds credential material at its top level (${out#REFUSE_CREDENTIALS:})."
+      err "  That looks like a home directory, not a vault. Turning it into a git repository"
+      err "  would place those files inside a working tree."
+      err "  Point the tool at your vault, or pass --force if you are certain."
+      return 1;;
+    REFUSE_NOT_A_VAULT:*)
+      if [ "$FORCE" = 1 ]; then
+        warn "vault target shows no vault evidence (${out#REFUSE_NOT_A_VAULT:}) — proceeding under --force"
+        return 0
+      fi
+      err "refusing: $VAULT has no git repo AND nothing that says it is a vault."
+      err "  (${out#REFUSE_NOT_A_VAULT:})"
+      err "  This tool would CREATE a repository here. If that is really what you want,"
+      err "  run \`git init\` there yourself first, then re-run this tool."
+      err "  Override only if you are certain: --force"
+      return 1;;
+    *)
+      err "refusing: could not validate the vault target."
+      err "  $(basename "$cvt") exited $rc and said: ${out:-<nothing>}"
+      err "  A check that cannot answer is not a pass. Fix the install, then re-run."
+      return 1;;
+  esac
+}
+
 # =============================================================================
 # ROLLBACK
 # =============================================================================
 rollback_git() {  # $1 = sidecar gitdir; 0 restored / 3 nothing to do / 1 failed
-  local target="$1" ptr="$VAULT/.git"
+  local target="$1" mode="${2:-separated}" ptr="$VAULT/.git"
+  # A fresh-init CREATED a repo that never existed. Reversing that means REMOVE,
+  # not restore: the `mv "$target" "$ptr"` below would materialise .git as a real
+  # directory and leave the vault a git repo — which, when the target was $HOME,
+  # is the exact damage being repaired (MYC-4028). The recorded mode is the only
+  # thing that distinguishes the two, and this function used to ignore it.
+  if [ "$mode" = "fresh-init" ]; then
+    if [ -d "$ptr" ] && [ ! -L "$ptr" ]; then
+      err "  · .git is a real directory, not the pointer file this tool created."
+      err "    that is not the state this rollback recorded — leaving it untouched."
+      err "    inspect it yourself: $ptr"
+      return 1
+    fi
+    if [ -e "$ptr" ] || [ -L "$ptr" ]; then
+      run rm -f "$ptr" || { err "  · could not remove the pointer $ptr"; return 1; }
+      say "  · removed the .git pointer this tool created — $VAULT is no longer a git repo"
+    elif [ ! -d "$target" ]; then
+      say "  · no .git pointer and no sidecar gitdir — nothing to undo"
+      return 3
+    else
+      say "  · no .git pointer to remove"
+    fi
+    # NOTHING is deleted. Commits may have been made in the repo since it was
+    # created, so the gitdir stays put and the user is told exactly where. A
+    # silent delete here would be the same class of bug as the one being fixed.
+    if [ -d "$target" ]; then
+      say "  · the repository it created is KEPT at: $target"
+      say "    nothing was deleted. Remove that directory yourself once you are sure."
+    fi
+    return 0
+  fi
   if [ -d "$ptr" ] && [ ! -L "$ptr" ]; then
     if [ -d "$target" ]; then
       err "  · .git NOT restored: BOTH $ptr (a real dir) and $target exist."
@@ -504,7 +596,7 @@ do_rollback() {
     [ -n "$typ" ] || continue
     r=0
     case "$typ" in
-      git)             rollback_git "$target" || r=$?;;
+      git)             rollback_git "$target" "$mode" || r=$?;;
       cache|worktrees) rollback_dir "$rel" "$target" "$mode" || r=$?;;
       *)               warn "  · unknown record type '$typ' for '$rel' — skipped"; r=1;;
     esac
@@ -626,6 +718,11 @@ if [ "$ROLLBACK" = 1 ]; then
   do_rollback || _rc=$?
   exit "$_rc"
 fi
+
+# WHAT the user pointed at, before anything is created or moved. Runs ahead of
+# every other gate and every mutation, and after the --rollback branch above so
+# a machine already damaged this way can still undo it.
+guard_vault_target || exit 1
 
 # detection is informational for the VAULT — the whole point is iCloud is ALLOWED
 CLOUD=""

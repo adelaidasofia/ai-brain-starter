@@ -399,6 +399,37 @@ NEW_ABS="$(abspath "$NEW")"
 [ "$OLD_ABS" != "$NEW_ABS" ] || die "source and target are the same path"
 if [ -e "$NEW_ABS" ]; then die "target '$NEW_ABS' already exists (will not overwrite)"; fi
 
+# HARD gate, above the soft ones: WHAT is being moved. This script `mv`s the
+# source and leaves a symlink behind. Aimed at $HOME that relocates the user's
+# entire home directory — every dotfile, key and credential — and replaces it
+# with a link. The only validation used to be "exists, is a directory, is not a
+# symlink" (MYC-4028, the sibling defect in relocate-machinery-sidecar.sh).
+# FAIL-CLOSED: a check that cannot answer is not a pass.
+_cvt="$SCRIPT_DIR/check-vault-target.py"
+[ -f "$_cvt" ] || die "cannot validate the source path — $_cvt is missing. Re-run the installer to restore it."
+_cvt_rc=0
+_cvt_out="$(python3 "$_cvt" --porcelain "$OLD_ABS" 2>/dev/null)" || _cvt_rc=$?
+case "$_cvt_out" in
+  OK_VAULT) : ;;
+  REFUSE_HOME:*)
+    die "source '$OLD_ABS' is ${_cvt_out#REFUSE_HOME:}.
+  This script MOVES that path and leaves a symlink in its place. Doing it here
+  relocates your entire home directory — dotfiles, SSH keys, credentials.
+  Point it at your vault instead, e.g.  ~/Brain  or  ~/vaults/<name>.
+  There is NO --force for this one, by design." ;;
+  REFUSE_CREDENTIALS:*)
+    if [ "$FORCE" = 1 ]; then
+      printf 'relocate-vault: WARN — source holds credential material (%s) — proceeding under --force\n' \
+        "${_cvt_out#REFUSE_CREDENTIALS:}" >&2
+    else
+      die "source '$OLD_ABS' holds credential material at its top level (${_cvt_out#REFUSE_CREDENTIALS:}).
+  That looks like a home directory, not a vault. Pass --force if you are certain."
+    fi ;;
+  *)
+    die "could not validate the source path (check-vault-target.py exited $_cvt_rc and said: ${_cvt_out:-<nothing>}).
+  A check that cannot answer is not a pass. Fix the install, then re-run." ;;
+esac
+
 # Soft gates — skippable with --force.
 BACKUP_TOKEN=""
 if [ "$FORCE" != 1 ]; then
