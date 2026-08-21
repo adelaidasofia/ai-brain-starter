@@ -305,7 +305,9 @@ def cluster_mentions(counts: Counter[str]) -> dict[str, str]:
     below for why that drops no match. Union-find yields the same partition
     whatever order the pairs arrive in, and the canonical is chosen from a
     cluster's members rather than its root, so the result is unchanged. On a
-    31k-key vault the all-pairs form measured 2.8 CPU-hours; this one, 7 min.
+    31,185-key vault the all-pairs form had burned 5.1 CPU-hours WITHOUT
+    finishing when it was killed; this one completes in 30.7 CPU-minutes
+    (`user` time, 2026-08-21, 35,806 aliases over 20,957 canonicals).
     """
     by_norm: dict[str, list[str]] = defaultdict(list)
     for mention in counts:
