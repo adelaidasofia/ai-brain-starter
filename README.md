@@ -160,7 +160,7 @@ Bootstrap touches your `~/.claude/` directory and registers third-party content.
 
 **MCP servers wired in `~/.claude/.mcp.json`:** `granola` (meeting transcription), `chatprd` (PRD drafting). Existing MCPs you wired yourself are preserved.
 
-**System tools (skipped if already present):** Homebrew, Python 3.10+, Node, npm, pipx, gh, fastmcp, graphify (via pipx), skill-seekers (via pipx), Obsidian.
+**System tools (skipped if already present):** git, Homebrew, Python 3.10+, Node, npm, pipx, gh, fastmcp, graphify (via pipx), skill-seekers (via pipx), Obsidian. On Windows with no administrator rights, git and Node are unpacked into your own user folder rather than machine-wide.
 
 **Settings + backups:** every edit to `~/.claude/settings.json` and `~/.claude/.mcp.json` writes a `.bak-YYYY-MM-DD-HHMM` backup first. Existing custom marketplaces, plugins, hooks, env vars, and permissions are preserved (`setdefault` semantics, never overwrites).
 
