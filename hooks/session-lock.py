@@ -1210,7 +1210,11 @@ def _pretooluse(payload):
     if not os.path.exists(marker):
         try:
             os.makedirs(CACHE_DIR, exist_ok=True)
-            open(marker, "w").close()
+            # `encoding=` on a file that receives ZERO bytes looks pointless and is
+            # not: text mode with no encoding resolves the LOCALE codec at open
+            # time, so the categorical rule holds even for an empty sentinel.
+            # check-utf8-file-io.py is right to refuse the judgement call.
+            open(marker, "w", encoding="utf-8").close()
         except OSError:
             pass
         sys.stderr.write(
