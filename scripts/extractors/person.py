@@ -31,7 +31,23 @@ PUBLIC_FIGURE_RELATIONSHIP_HINTS = {
     "teacher", "public intellectual", "academic",
 }
 
-JOURNALS_ROOT = os.path.join(VAULT, "📓 Journals")
+# Journals folder: override with JOURNALS_FOLDER env var, else auto-detect.
+# Same pattern as CRM_ROOT in _base.py. This used to be a bare
+# os.path.join(VAULT, "📓 Journals"): any vault that names the folder in another
+# language (e.g. "📓 Diarios") made the glob below match nothing, so EVERY person
+# got person_journal_mention_count: 0 — silently, with no error. That empties the
+# people sections of the insight engine (lucky-charm, drag people, contacts going
+# cold) no matter how many journals exist. Found 2026-08-20.
+JOURNALS_ROOT = os.environ.get("JOURNALS_FOLDER")
+if not JOURNALS_ROOT:
+    for _candidate in ("📓 Journals", "📓 Diarios", "Journals", "Diarios",
+                       "📔 Journal", "Journal", "Daily"):
+        _p = os.path.join(VAULT, _candidate)
+        if os.path.isdir(_p):
+            JOURNALS_ROOT = _p
+            break
+    if not JOURNALS_ROOT:
+        JOURNALS_ROOT = os.path.join(VAULT, "📓 Journals")
 
 # Per-run cache: person_name → [(journal_iso, floor_num), ...]
 _JOURNAL_INDEX = None
@@ -66,6 +82,13 @@ def _build_journal_index():
         floor_num = fm.get("floor_num")
         if not date_iso:
             continue
+        # Normalize to str. PyYAML parses an unquoted `date_iso: 2026-08-12` into
+        # a datetime.date but leaves a quoted one as str, so a vault with both
+        # styles yields a mixed list and `max()` in extract() dies with
+        # "'>' not supported between instances of 'str' and 'datetime.date'".
+        # ISO-8601 sorts identically as text, so string form is safe to compare.
+        if not isinstance(date_iso, str):
+            date_iso = date_iso.isoformat()
 
         body = content[end + 4:]
         # Find every wikilink in the body, Title-Cased

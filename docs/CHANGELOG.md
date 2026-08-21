@@ -9,6 +9,22 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-20: people insights worked only if your journals folder was named in English
+
+**Who this affects:** anyone whose vault is not in English — and anyone who renamed their journals folder.
+
+The insight engine has a handful of sections built on one question: which people show up in your journals, and how were you feeling when they did. Lucky-charm people, drag people, high-priority contacts going cold. If your journals folder was named anything other than `📓 Journals`, all of those sections came back empty.
+
+The reason was one line. The person extractor looked for journals in a folder path written out in English, so a vault with `📓 Diarios` — or `Journals` with no emoji, or anything else — pointed the scan at a folder that did not exist. It found nothing, wrote `person_journal_mention_count: 0` onto every contact, and reported no error. Nothing in the output said "I could not find your journals." It looked exactly like a vault too thin to have insights yet, which is the worst way for a bug to fail: it blames your data.
+
+The folder is now found the same way the CRM folder already was — check a list of common names, or set `JOURNALS_FOLDER` if yours is unusual. English vaults behave exactly as before.
+
+A second bug was hiding behind the first, and could only surface once journals were being found at all: if some entries wrote their date in quotes and others did not, the two came back as different Python types and the extractor crashed comparing them. Both styles are handled now.
+
+**What to do:** re-run the extraction over your contacts so the counts recompute — `/second-brain-mapping` picks it up, but the counts are a derived field, so pass `--force --type person` if you want them refreshed without waiting for other changes.
+
+---
+
 ## 2026-08-19: the privacy checker no longer publishes the private word list it checks for
 
 **Who this affects:** anyone who publishes repos with this starter installed, and anyone who forked one of ours.
