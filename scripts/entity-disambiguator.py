@@ -442,6 +442,14 @@ def main() -> int:
     parser.add_argument(
         "--vault-root",
         type=Path,
+        # vault-root-ok: CLI default for an explicit --vault-root flag on a repo-side
+        # tool that rebuilds the alias index of ANY vault by path. This script ships in
+        # the skill/repo scripts dir and never lives inside a vault, so a
+        # location-derived _resolve_vault_root() would resolve to the repo rather than
+        # to the vault being indexed. Every real caller passes --vault-root explicitly
+        # (the nightly cron does), so the env value is only the bare-invocation
+        # fallback and the caller always wins. Same shape and same reasoning as
+        # scripts/vault-schema-validator.py.
         default=Path(os.environ.get("VAULT_ROOT", Path.cwd())),
         help="Vault root containing the Meta folder.",
     )
