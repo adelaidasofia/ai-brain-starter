@@ -28,8 +28,9 @@ Legs:
       the operation owner's call)
   15. Honors a `cd` earlier in the command -- BOTH directions, because the
       missing `cd` produced a false block AND a false allow
-  16. Operators inside QUOTES are not segment boundaries -- a phantom `cd` cut
-      out of a quoted string once opened a hole the cwd-blind hook did not have
+  16. Text that only LOOKS like a command sequence -- a quoted operator, a
+      heredoc body, a comment tail -- is not one. A phantom `cd` cut out of
+      any of the three opened a hole the cwd-blind hook did not have.
   17. The bypass leaves an audit record naming what it SUPPRESSED, and a bypass
       that suppressed nothing leaves none
 
@@ -625,6 +626,55 @@ def main():
     else:
         bad("16c. over-bailed on a quoted operator",
             "false block returned for: " + ", ".join(over_bailed))
+
+    # 16d. The same class one layer out: a heredoc BODY is data, but it arrives
+    # in the same string and its lines look exactly like segments. The `&&`
+    # variant is the dangerous one -- a plain body line gets the ambiguous `\n`
+    # separator and unions the candidates (which happens to stay safe), while
+    # `&&` PINS the phantom and drops the real cwd. Measured 2026-08-23: the
+    # cwd-blind hook returned 2 on this and the cd-tracking one returned 0.
+    heredoc = ("cat <<EOF > note.txt\n"
+               "cd %s && echo hi\n"
+               "EOF\n"
+               "git commit -m x" % clean)
+    rc, _, _ = run_hook(heredoc, cwd=stalled)
+    if rc == 2:
+        ok("16d. A `cd` inside a heredoc BODY is not followed")
+    else:
+        bad("16d. phantom cd via heredoc body",
+            "rc=%s -- the tracker moved cwd off a line the shell only wrote to a "
+            "file, and skipped the check on a stalled repo" % rc)
+
+    # 16e. ...and `<<` inside a quoted message is still just text.
+    rc, _, _ = run_hook('cd %s && git commit -m "see doc << here"' % clean, cwd=stalled)
+    if rc == 0:
+        ok("16e. A quoted `<<` is not a heredoc and does not abandon tracking")
+    else:
+        bad("16e. over-bailed on a quoted `<<`", "rc=%s" % rc)
+
+    # 16f. Third instance of the class, and the sneakiest: `shlex` DISCARDS a
+    # comment tail by default, so a phantom `cd` parked after a `#` was invisible
+    # to the shape check while still reaching the segment splitter.
+    commented = ("git status # note ; cd %s && echo hi\n"
+                 "git commit -m x" % clean)
+    rc, _, _ = run_hook(commented, cwd=stalled)
+    if rc == 2:
+        ok("16f. A `cd` inside a COMMENT tail is not followed")
+    else:
+        bad("16f. phantom cd via comment tail",
+            "rc=%s -- tracker moved cwd off text the shell never runs" % rc)
+
+    # 16g. The matching over-bail guard. An issue number and a redirect are both
+    # ordinary; bailing on either would bring the false block back.
+    ordinary = [
+        ('cd %s && git commit -m "issue #42 fixed"' % clean, "#42 in the message"),
+        ('cd %s && git commit -m x > /dev/null' % clean, "redirect"),
+    ]
+    tripped = [why for cmd, why in ordinary if run_hook(cmd, cwd=stalled)[0] != 0]
+    if not tripped:
+        ok("16g. A quoted `#` and a redirect do not abandon cd tracking")
+    else:
+        bad("16g. over-bailed", "false block returned for: " + ", ".join(tripped))
 
     # ----------------------------------------------------------------- leg 17
     # MYC-3779 predicate 4: the bypass stays self-serviceable (a guard that can

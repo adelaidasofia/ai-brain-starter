@@ -96,6 +96,16 @@ WHICH REPOSITORY (added 2026-08-22, after this hook blocked the wrong repo)
       the push against /a and could ALLOW a mutation into a stalled repo. The
       detection is quote-aware: `git commit -m "fix (bug)"` must not trip it,
       or the false block comes straight back for parenthesised messages.
+    - an unquoted `#` comment. Everything after it is text the shell never
+      runs, so a `cd` sitting there is inert -- but it still looks like a
+      segment. Measured 2026-08-23, same shape as the two below.
+    - an unquoted heredoc (`<<`, `<<<`). A heredoc BODY is data, not commands,
+      but it arrives in the same string and its lines look exactly like
+      segments. Measured 2026-08-23: `cat <<EOF > f` / `cd /clean && echo hi` /
+      `EOF` / `git commit` moved the tracked cwd to /clean off a line the shell
+      only ever wrote to a FILE, and the commit into the stalled session cwd
+      was ALLOWED where the cwd-blind hook blocked it. Same class as the quoted
+      operator above, and the same call `_lib/gh_merge.py` makes.
     - a `cd` whose destination is not a literal path -- `cd $VAR`,
       `cd "$(...)"`, a glob, `cd -`, `popd`, a Windows drive-relative path, or
       more than one operand.
@@ -357,14 +367,40 @@ def _segments(command: str):
     return segs, seps
 
 
-def _has_subshell(command: str) -> bool:
-    """True iff `command` contains an UNQUOTED `(` or `)` grouping token.
+# THE PROPERTY, not a list of syntax we happened to think of: a construct
+# belongs here iff it can make a computed segment boundary FAKE, or make a `cd`
+# we parsed INERT. Enumerated against that test, the shell's command-list
+# grammar yields exactly three, and each one was measured producing a
+# false ALLOW on this hook before it was added:
+#   ( )    subshell     -- scopes its own `cd`; it does not escape the group
+#   << <<< heredoc      -- the BODY is data whose lines look like commands
+#   #      comment      -- the tail is text the shell never runs
+# Deliberately NOT here, having been checked against the same property:
+#   > >> < 2>  redirects  -- create no boundary and leave no `cd` inert
+#   &          background -- `cd /a & git ...` leaves the `cd` with >1 operand,
+#                            so it is already unresolvable and takes the
+#                            session-cwd fallback
+#   $( ) ` `   substitution -- cannot move the CALLER's cwd, and tokenizes as
+#                            one word rather than a bare paren
+# Quoting is not on this list because it is not a bail: `_segments` handles it
+# correctly, which is the whole point of it being quote-aware.
+UNREADABLE_SHAPE_TOKENS = {"(", ")", "<<", "<<<", "#"}
+
+
+def _unreadable_shape(command: str) -> bool:
+    """True iff `command` has an UNQUOTED construct that invalidates cwd tracking.
 
     Quote-aware by construction: tokenized with `shlex` in punctuation mode, a
-    paren inside a quoted word stays inside that word (`git commit -m
-    "fix (bug)"` -> [..., 'fix (bug)']) while a real subshell becomes its own
-    token (`(cd /a && git commit)` -> ['(', ...,  ')']). A naive substring test
-    would confuse the two and re-break every parenthesised commit message.
+    paren or `<<` inside a quoted word stays inside that word (`git commit -m
+    "fix (bug)"` -> [..., 'fix (bug)']) while a real subshell or heredoc becomes
+    its own token (`(cd /a && git commit)` -> ['(', ..., ')']; `cat <<EOF` ->
+    ['cat', '<<', 'EOF']). A naive substring test would confuse the two and
+    re-break every commit message containing a paren, a `<<`, or an issue
+    number like "#42".
+
+    `commenters` is cleared so an unquoted `#` survives as its own token. Left
+    at the default, `shlex` silently DISCARDS the comment tail -- and a comment
+    tail is precisely where a phantom `cd` hides from this check.
 
     Command substitution deliberately does NOT count: `$(...)` tokenizes as a
     single word, and a substitution cannot move the caller's cwd anyway.
@@ -376,7 +412,8 @@ def _has_subshell(command: str) -> bool:
     try:
         lex = shlex.shlex(command, posix=True, punctuation_chars=True)
         lex.whitespace_split = True
-        return any(tok in ("(", ")") for tok in lex)
+        lex.commenters = ""   # see docstring: the default HIDES comment tails
+        return any(tok in UNREADABLE_SHAPE_TOKENS for tok in lex)
     except (ValueError, AttributeError):
         return True
 
@@ -453,7 +490,7 @@ def _cwd_candidates_by_segment(command: str, session_cwd: str):
     """
     segments, separators = _segments(command)
 
-    if _has_subshell(command):
+    if _unreadable_shape(command):
         return [[session_cwd] for _ in segments]
 
     out = []
