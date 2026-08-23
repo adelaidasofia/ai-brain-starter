@@ -159,12 +159,26 @@ def _frontmatter(text: str) -> str:
 def _declares_session_root_explicitly(candidate: Path) -> bool:
     """True iff `candidate` carries the prose-independent opt-in marker.
 
-    Unlike the heading path this does NOT require a Meta dir. An explicit
-    declaration is an instruction, not a hint: honoring it and then failing
-    loudly about the missing Meta dir (see detect-closing-signal's
-    unscaffolded-vault notice) tells the operator exactly what to fix. Falling
-    back to some other vault because the folder is half-built is the silent
-    cross-vault write this whole resolver exists to prevent.
+    Marker OR frontmatter key. The caller pairs this with the same Meta-dir
+    requirement the heading path carries — see _declares_own_session_close_cascade.
+
+    Why the marker does NOT get to skip the Meta check (reversed 2026-08-22;
+    it originally did): `.session-close-root` is a DOTFILE, and dotfiles
+    propagate by accident in ways a prose heading never does — committed to a
+    repo and cloned, swept up by `cp -r`, baked into a scaffold or template,
+    invisible in `ls`. A stray marker that captures a folder as a vault root
+    sends the operator's session artifacts INTO that folder — for a cloned
+    client repo, that means private notes landing in someone else's tree,
+    potentially committed and pushed.
+
+    Requiring a Meta dir makes a stray marker INERT until a human also creates
+    somewhere to write, which is a far higher bar to clear by accident. The
+    earlier argument for skipping it was that honoring the declaration and then
+    failing loudly beats a silent fallback — but that premise was wrong: the
+    fallback is not silent either. The offsite warning added alongside the
+    unscaffolded-vault notice already announces when resolution lands outside
+    the working folder. Both paths are loud, so loudness cannot break the tie;
+    accidental-capture risk does.
     """
     if (candidate / _SESSION_ROOT_SENTINEL).is_file():
         return True
@@ -182,10 +196,15 @@ def _declares_own_session_close_cascade(candidate: Path) -> bool:
     """True iff `candidate` is a self-contained vault for session-close purposes.
 
     Precedence (MYC-2457):
-      1. The explicit marker wins outright — see _declares_session_root_explicitly.
-      2. Otherwise the zero-config heading path, which needs BOTH signals:
-         a CLAUDE.md whose heading declares its OWN close cascade (en/es/pt,
-         case-insensitive), AND an existing Meta folder to write into.
+      Both paths require an existing Meta folder to write into. They differ
+      only in how the folder DECLARES itself:
+      1. The explicit marker — a `.session-close-root` file or a
+         `sessionCloseRoot: true` frontmatter key. Prose-independent, so it
+         survives translation and rewording. See
+         _declares_session_root_explicitly for why it does not get to skip
+         the Meta requirement.
+      2. The zero-config heading path — a CLAUDE.md whose heading declares its
+         OWN close cascade (en/es/pt, case-insensitive).
     Either heading signal alone is too weak: a CLAUDE.md can mention sessions
     without owning a cascade for this purpose (a default vault's own CLAUDE.md
     may use a different heading — e.g. "Session Protocol" — precisely so it
@@ -193,7 +212,7 @@ def _declares_own_session_close_cascade(candidate: Path) -> bool:
     folder can exist without any CLAUDE.md ever declaring it canonical.
     """
     if _declares_session_root_explicitly(candidate):
-        return True
+        return _has_meta_dir(candidate)
     claude_md = candidate / "CLAUDE.md"
     if not claude_md.is_file():
         return False

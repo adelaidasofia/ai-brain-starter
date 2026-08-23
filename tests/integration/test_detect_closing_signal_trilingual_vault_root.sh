@@ -30,6 +30,19 @@
 #      every default vault would start false-winning the walk-up.
 #   8. NEGATIVE CONTROL — a Spanish heading about something else
 #      ("## Cierre de trimestre") must NOT declare a root.
+#   9. A marker with NO Meta dir does NOT declare a root — it falls back.
+#  10. Same for the frontmatter key with no Meta dir.
+#
+# 9-10 pin the 2026-08-22 reversal: the marker originally skipped the Meta
+# requirement the heading path carries, on the reasoning that an explicit
+# declaration should be honored immediately and then fail loudly about the
+# missing dir. That premise did not hold — the fallback is not silent either
+# (the offsite warning announces it), so loudness could not break the tie.
+# Accidental-capture risk did: `.session-close-root` is a DOTFILE and dotfiles
+# propagate by accident, so a stray one would capture a folder and write the
+# operator's session notes into it — inside a cloned client repo, that is
+# private content landing in someone else's tree. Requiring Meta makes a stray
+# marker inert until a human creates somewhere to write.
 #
 # Controls 6-8 carry the weight: widening a regex is easy, and a widened regex
 # that matches everything would pass 1-5 while silently breaking the fallback
@@ -62,6 +75,17 @@ fails=0
 mkvault() {
   local d="$TMP/$1"
   mkdir -p "$d/⚙️ Meta"
+  [ -n "$2" ] && printf '%s\n' "$2" > "$d/CLAUDE.md"
+  [ "${3:-no}" = "yes" ] && : > "$d/.session-close-root"
+  echo "$d"
+}
+
+# Same, but with NO Meta dir — a folder that declares itself and has nowhere
+# to write. Reachable in production: a `.session-close-root` committed to a
+# repo and cloned, swept up by `cp -r`, or baked into a scaffold.
+mkvault_no_meta() {
+  local d="$TMP/$1"
+  mkdir -p "$d"
   [ -n "$2" ] && printf '%s\n' "$2" > "$d/CLAUDE.md"
   [ "${3:-no}" = "yes" ] && : > "$d/.session-close-root"
   echo "$d"
@@ -140,8 +164,16 @@ expect "es unrelated heading falls back" "$(mkvault esother '# Bóveda
 
 reporte financiero')"                  default
 
+# 9-10. A declared-but-unwritable folder must NOT capture the cascade.
+expect "marker with NO Meta dir falls back" "$(mkvault_no_meta straymarker '' yes)" default
+expect "frontmatter key with NO Meta dir falls back" "$(mkvault_no_meta strayfm '---
+sessionCloseRoot: true
+---
+
+# Whatever')" default
+
 if [ "$fails" -gt 0 ]; then
   echo "FAILED: $fails assertion(s)" >&2
   exit 1
 fi
-echo "PASS: vault-root detection is trilingual (en/es/pt) + declarative, fallback preserved"
+echo "PASS: vault-root detection is trilingual (en/es/pt) + declarative, Meta required on both paths, fallback preserved"
