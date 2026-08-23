@@ -31,11 +31,12 @@ while `.git` was mid-rebase. You had to already suspect the problem to ask the
 question that revealed it. That is what this hook asks, every time, for free.
 
 WHAT IT CHECKS
-  Resolves the git-dir the command would actually act on (honoring `-C <path>`
-  and `--git-dir`, and handling a `.git` FILE that points elsewhere -- the
-  incident repo keeps its working tree in one place and its git-dir in a
-  separate mirror directory, so a naive `<cwd>/.git` guess finds nothing).
-  Then looks for:
+  Resolves the git-dir the command would actually act on (honoring `-C <path>`,
+  `--git-dir`, an inline `GIT_DIR=`, AND a `cd` earlier in the same command --
+  see WHICH REPOSITORY below -- and handling a `.git` FILE that points
+  elsewhere: the incident repo keeps its working tree in one place and its
+  git-dir in a separate mirror directory, so a naive `<cwd>/.git` guess finds
+  nothing). Then looks for:
       rebase-merge/     paused interactive / merge-backend rebase
       rebase-apply/     paused am-backend rebase, or a stopped `git am`
       MERGE_HEAD        merge stopped at conflicts
@@ -47,6 +48,59 @@ WHAT IT CHECKS
   In a linked worktree this deliberately uses `--git-dir`, not
   `--git-common-dir`: in-flight operation state is per-worktree, so the
   per-worktree git-dir is the correct place to look.
+
+WHICH REPOSITORY (added 2026-08-22, after this hook blocked the wrong repo)
+  The hook read `-C`, `--git-dir` and `GIT_DIR`, but not the shell's own `cd`.
+  So for the single most common shape an agent emits --
+
+      cd /other/repo && git commit -m ...
+
+  -- the `cd` segment was parsed, found not to be a git call, and discarded;
+  the `git commit` segment then resolved against the SESSION cwd. That is the
+  wrong repository, and it failed in BOTH directions:
+
+    FALSE BLOCK  session cwd mid-rebase, `cd`-target clean -> refused a commit
+                 to a repo that had nothing in flight, citing an unrelated
+                 repo's rebase. Measured 2026-08-22. This is the direction that
+                 does the lasting damage, because the only way past it is the
+                 bypass var, so it teaches everyone to set
+                 GIT_INFLIGHT_OP_BYPASS=1 reflexively -- and then the guard is
+                 gone for the case it exists to catch.
+    FALSE ALLOW  session cwd clean, `cd`-target mid-rebase -> the commit was
+                 PERMITTED straight into a paused rebase. Measured the same
+                 day. This is the 2026-07-28 incident walking through the front
+                 door of the guard written to stop it.
+
+  So the cwd is now tracked across shell segments. Rules, and why each one:
+    `cd X && git ...`   -> X. `&&` runs the right side only if `cd` SUCCEEDED,
+                           so X is not a guess.
+    `cd X ; git ...`    -> X *and* the previous cwd. `;` runs the right side
+                           whether or not `cd` worked, so the repo is genuinely
+                           ambiguous; both are checked and either one being
+                           mid-operation blocks. Conservative on purpose -- the
+                           ambiguous case must not be the one that loses work.
+    `cd X || git ...`   -> previous cwd. The right side runs only if `cd`
+                           FAILED, so the cwd did not move.
+    `cd X | git ...`    -> previous cwd. A pipeline component is a subshell;
+                           its `cd` does not escape.
+  Bare `cd` resolves to $HOME. `cd -` does NOT: tracking $OLDPWD across the
+  ambiguous separators is more machinery than that shape is worth, and a wrong
+  OLDPWD is a wrong repository, so it takes the fallback below.
+
+  TRACKING IS ABANDONED (falling back to the session cwd -- i.e. exactly what
+  this hook did before any of this existed, so the fallback cannot regress it)
+  the moment the shell stops being readable:
+    - an unquoted `( ... )` subshell anywhere in the command. A subshell scopes
+      its `cd` to the group, so in `(cd /a && git commit) && git push` the push
+      is back at the ORIGINAL cwd. A tracker that missed the `)` would judge
+      the push against /a and could ALLOW a mutation into a stalled repo. The
+      detection is quote-aware: `git commit -m "fix (bug)"` must not trip it,
+      or the false block comes straight back for parenthesised messages.
+    - a `cd` whose destination is not a literal path -- `cd $VAR`,
+      `cd "$(...)"`, a glob, `cd -`, `popd`, a Windows drive-relative path, or
+      more than one operand.
+  Command substitution is NOT a subshell for this purpose: `$(cd /x)` cannot
+  move the caller's cwd, and it tokenizes as one word, not a bare paren.
 
 DETACHED HEAD gets its own, softer path (a warning, not a block) with its own
 message. Committing to a plain detached HEAD is survivable -- you can recover a
@@ -87,9 +141,9 @@ forward-slash paths ARE covered, which is what Git Bash / WSL / PATH
 invocations actually look like.
 
 The parser reads leading env assignments, transparent wrappers (`env`/`sudo`/
-...), `-C`, `--git-dir`, `GIT_DIR` and `GIT_WORK_TREE`, which is the shape real
-sessions and agents emit. The incidents this exists for were plain `git commit`
-calls.
+...), `-C`, `--git-dir`, `GIT_DIR`, `GIT_WORK_TREE` and a preceding `cd`, which
+is the shape real sessions and agents emit. The incidents this exists for were
+plain `git commit` calls, reached either directly or through a `cd`.
 
 Fails OPEN on any error (missing git, unreadable dir, timeout). A correctness
 guard that hard-fails would block every git command in the repo on a transient
@@ -113,6 +167,12 @@ BYPASS_VAR = "GIT_INFLIGHT_OP_BYPASS"
 # Split a command into sequential segments on shell separators so each piece is
 # evaluated independently (mirrors session-lock.py / check-cd-outside-worktree.py).
 SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||[;\n|]")
+# Same pattern, capturing, so the separator BETWEEN two segments is available:
+# `cd X && git ...` and `cd X || git ...` put the git call in different
+# directories, and only the separator says which. `re.split` with one capture
+# group returns [seg, sep, seg, sep, ...], so `[0::2]` is exactly what
+# SEGMENT_SPLIT_RE.split() yields and the indices line up 1:1.
+SEGMENT_SPLIT_CAPTURE_RE = re.compile(r"(&&|\|\||[;\n|])")
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 # Transparent wrappers to skip before identifying `git`
@@ -163,6 +223,34 @@ IN_FLIGHT_MARKERS = [
     ("sequencer", "multi-commit cherry-pick/revert sequence, mid-run", "cherry-pick"),
 ]
 
+# Shell builtins that move the working directory. `pushd` moves it too; `popd`
+# moves it back to a stack this hook never saw, so it is unresolvable by
+# construction and is listed to force the fallback rather than be mistaken for
+# a non-cd command.
+CD_BUILTINS = {"cd", "pushd"}
+UNRESOLVABLE_CD_BUILTINS = {"popd"}
+CD_FLAGS = {"-L", "-P", "-e", "-@"}
+
+# A destination containing any of these is not a literal path: the shell would
+# expand it and this hook would resolve the pre-expansion text to the wrong
+# directory. `$`/backtick are substitution, the rest are globs.
+UNRESOLVABLE_PATH_CHARS = ("$", "`", "*", "?", "[")
+
+# A Windows drive-relative destination. Found by the pre-push doubt-pass, not by
+# a failing test. `shlex` eats the backslashes in `cd C:\repo` (it is a POSIX
+# tokenizer and a backslash is an escape), leaving `C:repo` -- which `isabs`
+# rejects on BOTH platforms, so it got joined onto the base, produced a
+# directory that does not exist, failed the isdir check and made the hook SKIP
+# the git call entirely. Skipping is the false-allow direction. Treat any
+# `X:`-prefixed destination that is not already absolute as unresolvable so it
+# takes the documented session-cwd fallback instead.
+WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+
+# Sentinel: the segment is not a `cd` at all (distinct from a `cd` we could not
+# resolve, which must abandon tracking -- collapsing the two would silently
+# turn every unreadable `cd` into "cwd unchanged", the false-allow direction).
+NOT_A_CD = object()
+
 GIT_TIMEOUT_SEC = 5
 
 
@@ -184,6 +272,136 @@ def _inline_bypass(command: str, var: str) -> bool:
     return False
 
 
+def _has_subshell(command: str) -> bool:
+    """True iff `command` contains an UNQUOTED `(` or `)` grouping token.
+
+    Quote-aware by construction: tokenized with `shlex` in punctuation mode, a
+    paren inside a quoted word stays inside that word (`git commit -m
+    "fix (bug)"` -> [..., 'fix (bug)']) while a real subshell becomes its own
+    token (`(cd /a && git commit)` -> ['(', ...,  ')']). A naive substring test
+    would confuse the two and re-break every parenthesised commit message.
+
+    Command substitution deliberately does NOT count: `$(...)` tokenizes as a
+    single word, and a substitution cannot move the caller's cwd anyway.
+
+    Fails toward True (abandon tracking, resolve from the session cwd) on any
+    tokenizer error -- an unbalanced quote means the shape is unreadable, and
+    an unreadable shape must not drive a repository decision.
+    """
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        return any(tok in ("(", ")") for tok in lex)
+    except (ValueError, AttributeError):
+        return True
+
+
+def _cd_targets(segment: str, bases):
+    """Where a `cd` segment would land, relative to each of `bases`.
+
+    Returns NOT_A_CD when the segment is not a cd, None when it is a cd whose
+    destination cannot be resolved literally, else a list of absolute paths
+    (one per base, since a RELATIVE `cd` means something different from each).
+    """
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
+        tokens = segment.split()
+
+    i = 0
+    while i < len(tokens) and (
+        ENV_ASSIGN_RE.match(tokens[i]) or tokens[i] in WRAPPER_PREFIXES
+    ):
+        i += 1
+    if i >= len(tokens):
+        return NOT_A_CD
+    builtin = tokens[i]
+    if builtin in UNRESOLVABLE_CD_BUILTINS:
+        return None
+    if builtin not in CD_BUILTINS:
+        return NOT_A_CD
+
+    rest = []
+    seen_ddash = False
+    for tok in tokens[i + 1:]:
+        if not seen_ddash and tok == "--":
+            seen_ddash = True
+            continue
+        if not seen_ddash and not rest and tok in CD_FLAGS:
+            continue
+        rest.append(tok)
+
+    if not rest:
+        # Bare `cd` is $HOME; bare `pushd` swaps the top of a stack we cannot see.
+        if builtin == "pushd":
+            return None
+        home = os.path.expanduser("~")
+        return [os.path.normpath(home)] if home and home != "~" else None
+    if len(rest) > 1:
+        return None
+
+    dest = rest[0]
+    if dest == "-":
+        # $OLDPWD. Deliberately NOT resolved: tracking it correctly across the
+        # ambiguous separators is more machinery than the shape is worth, and a
+        # wrong OLDPWD is a wrong repository. Falls back to the session cwd.
+        return None
+    if any(c in dest for c in UNRESOLVABLE_PATH_CHARS):
+        return None
+
+    dest = os.path.expanduser(dest)
+    if os.path.isabs(dest):
+        return [os.path.normpath(dest)]
+    if WINDOWS_DRIVE_RE.match(dest) or "\\" in dest:
+        return None  # drive-relative / backslashed: not resolvable here
+    return [os.path.normpath(os.path.join(b, dest)) for b in bases]
+
+
+def _cwd_candidates_by_segment(command: str, session_cwd: str):
+    """Per shell segment, the working directories a command there could run in.
+
+    Aligned index-for-index with `SEGMENT_SPLIT_RE.split(command)`, which is
+    what `_git_invocations` walks. Usually a single directory; more than one
+    only for the genuinely ambiguous `cd X ; git ...`, where the caller checks
+    every candidate and blocks if ANY is mid-operation.
+    """
+    parts = SEGMENT_SPLIT_CAPTURE_RE.split(command)
+    segments = parts[0::2]
+    separators = parts[1::2]  # separators[i] is the one FOLLOWING segments[i]
+
+    if _has_subshell(command):
+        return [[session_cwd] for _ in segments]
+
+    out = []
+    current = [session_cwd]
+    tracking = True
+    for idx, seg in enumerate(segments):
+        out.append(list(current))
+        if not tracking:
+            continue
+
+        targets = _cd_targets(seg, current)
+        if targets is NOT_A_CD:
+            continue
+        if targets is None:
+            # An unreadable `cd`: stop guessing and fall back to the session cwd
+            # for the rest of the command -- byte-for-byte the behavior this
+            # hook had before cwd tracking existed, so it cannot regress it.
+            tracking = False
+            current = [session_cwd]
+            continue
+
+        sep = separators[idx] if idx < len(separators) else None
+        prev = current
+        if sep == "&&":
+            current = targets                      # cd must have succeeded
+        elif sep in (";", "\n"):
+            current = targets + [p for p in prev if p not in targets]
+        else:
+            current = prev                         # `||` / `|`: cd did not apply
+    return out
+
+
 def _is_git_exe(token: str) -> bool:
     """True iff `token` invokes git, on every platform this ships to.
 
@@ -200,10 +418,14 @@ def _is_git_exe(token: str) -> bool:
 
 
 def _git_invocations(command: str):
-    """Yield (subcommand, args, workdir_override, gitdir_override) for each git
-    call in `command`. Skips leading env assignments and transparent wrappers so
-    `FOO=1 sudo git commit` is still seen as a commit."""
-    for seg in SEGMENT_SPLIT_RE.split(command):
+    """Yield (segment_index, subcommand, args, workdir_override, gitdir_override)
+    for each git call in `command`. Skips leading env assignments and transparent
+    wrappers so `FOO=1 sudo git commit` is still seen as a commit.
+
+    The segment index is what lets the caller look up the working directory a
+    preceding `cd` put this call in; it indexes the same split, so it stays
+    correct even when earlier segments are skipped."""
+    for seg_index, seg in enumerate(SEGMENT_SPLIT_RE.split(command)):
         seg = seg.strip()
         if not seg:
             continue
@@ -267,7 +489,7 @@ def _git_invocations(command: str):
 
         if i >= len(tokens):
             continue
-        yield tokens[i], tokens[i + 1:], workdir_override, gitdir_override
+        yield seg_index, tokens[i], tokens[i + 1:], workdir_override, gitdir_override
 
 
 def _is_resolution(subcmd: str, args) -> bool:
@@ -326,17 +548,36 @@ def _is_detached(git_dir: str) -> bool:
 
 
 def _block_message(subcmd: str, marker: str, desc: str, owner: str,
-                   git_dir: str, workdir: str) -> str:
+                   git_dir: str, workdir: str, moved: bool = False,
+                   ambiguous: bool = False, session_cwd: str = "") -> str:
     resolution = (
         "  git bisect reset\n" if owner == "bisect"
         else "  git %s --abort      # or --continue -- see above, it is a real choice\n" % owner
     )
+    # Say HOW this directory was arrived at whenever it is not the session cwd.
+    # Without it the block reads as though it were about the session's own repo,
+    # which is exactly the confusion that made the old wrong-repo block look
+    # like a bug in the guard rather than a real finding about another repo.
+    provenance = ""
+    if moved:
+        provenance += (
+            f"  reached via : a `cd` earlier in this same command\n"
+            f"  session cwd : {session_cwd or '(unknown)'}  <- NOT the repo above\n"
+        )
+    if ambiguous:
+        provenance += (
+            "  ambiguity   : `;` runs the next command whether or not the `cd` "
+            "succeeded, so every candidate directory was checked and this one "
+            "is mid-operation. Use `&&` to pin it.\n"
+        )
     return (
         f"BLOCKED: `git {subcmd}` would mutate a repository that has an "
         f"operation already IN FLIGHT.\n\n"
         f"  working dir : {workdir}\n"
         f"  git-dir     : {git_dir}\n"
-        f"  in flight   : {marker}  ({desc})\n\n"
+        f"  in flight   : {marker}  ({desc})\n"
+        + provenance +
+        "\n"
         "HEAD is almost certainly detached onto that operation's temporary base. "
         "A commit here does NOT land on the branch you think it does -- it lands "
         "on the in-flight state, and the next `--abort` moves the branch out from "
@@ -416,36 +657,54 @@ def main() -> int:
         return 0
 
     session_cwd = payload.get("cwd") or os.getcwd()
+    seg_cwds = _cwd_candidates_by_segment(command, session_cwd)
     warnings = []
+    warned_git_dirs = set()
 
-    for subcmd, args, workdir_override, gitdir_override in _git_invocations(command):
+    for seg_index, subcmd, args, workdir_override, gitdir_override in _git_invocations(command):
         if subcmd not in MUTATING_SUBCOMMANDS:
             continue
         if _is_resolution(subcmd, args):
             continue  # ending the operation is exactly what should stay possible
 
-        workdir = session_cwd
-        if workdir_override:
-            workdir = os.path.normpath(
-                os.path.join(session_cwd, os.path.expanduser(workdir_override))
-            )
-        if not os.path.isdir(workdir):
-            continue
+        bases = seg_cwds[seg_index] if seg_index < len(seg_cwds) else [session_cwd]
+        moved = bases != [session_cwd]
+        ambiguous = len(bases) > 1
+        seen_git_dirs = set()
 
-        git_dir = _resolve_git_dir(workdir, gitdir_override)
-        if not git_dir or not os.path.isdir(git_dir):
-            continue  # not a git repo (or unreadable) -> fail open
+        for base in bases:
+            workdir = base
+            if workdir_override:
+                # An ABSOLUTE `-C` outranks the base outright -- os.path.join
+                # already discards the left side for an absolute right side, so
+                # every base collapses to the same target and the dedupe below
+                # keeps this to one resolution.
+                workdir = os.path.normpath(
+                    os.path.join(base, os.path.expanduser(workdir_override))
+                )
+            if not os.path.isdir(workdir):
+                continue
 
-        found = _in_flight(git_dir)
-        if found:
-            marker, desc, owner = found
-            sys.stderr.write(
-                _block_message(subcmd, marker, desc, owner, git_dir, workdir)
-            )
-            return 2
+            git_dir = _resolve_git_dir(workdir, gitdir_override)
+            if not git_dir or not os.path.isdir(git_dir):
+                continue  # not a git repo (or unreadable) -> fail open
+            if git_dir in seen_git_dirs:
+                continue  # several candidate dirs, one underlying repository
+            seen_git_dirs.add(git_dir)
 
-        if _is_detached(git_dir):
-            warnings.append(_detached_warning(subcmd, git_dir, workdir))
+            found = _in_flight(git_dir)
+            if found:
+                marker, desc, owner = found
+                sys.stderr.write(_block_message(
+                    subcmd, marker, desc, owner, git_dir, workdir,
+                    moved=moved, ambiguous=ambiguous, session_cwd=session_cwd,
+                ))
+                return 2
+
+            # One warning per repository, not per candidate path that reaches it.
+            if _is_detached(git_dir) and git_dir not in warned_git_dirs:
+                warned_git_dirs.add(git_dir)
+                warnings.append(_detached_warning(subcmd, git_dir, workdir))
 
     if warnings:
         print(json.dumps({

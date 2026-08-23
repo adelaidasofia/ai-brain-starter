@@ -26,6 +26,8 @@ Legs:
   12. Ignores non-git commands and non-Bash tools
   13. Refusal message carries the required safety text (no rm -rf, --abort is
       the operation owner's call)
+  15. Honors a `cd` earlier in the command -- BOTH directions, because the
+      missing `cd` produced a false block AND a false allow
 
 Stdlib only. Exit 0 = all pass.
 """
@@ -452,6 +454,129 @@ def main():
             bad("14b. mid-sequence hint", "wrong verb: %r" % serr[-200:])
     else:
         bad("14. setup", "could not produce a mid-run sequencer state")
+
+
+    # ----------------------------------------------------------------- leg 15
+    # `cd <dir> && git ...` -- the single most common shape an agent emits, and
+    # until 2026-08-22 the one the hook could not see. The `cd` segment parsed
+    # as "not a git call" and was discarded, so the git segment resolved against
+    # the SESSION cwd: the wrong repository, wrong in both directions. Both are
+    # asserted here, and 15b is the negative control -- it FAILS on the
+    # pre-fix hook, which is the only reason to trust 15a's pass.
+    rc, _, err = run_hook("cd %s && git commit -m x" % clean, cwd=stalled)
+    if rc == 0:
+        ok("15a. `cd CLEAN && git commit` from a stalled cwd is ALLOWED")
+    else:
+        bad("15a. cd false block",
+            "rc=%s -- blocked on a repo the command never touches, which is what "
+            "trains reflexive GIT_INFLIGHT_OP_BYPASS=1 :: %r" % (rc, err[:200]))
+
+    rc, _, err = run_hook("cd %s && git commit -m x" % stalled, cwd=clean)
+    if rc == 2:
+        ok("15b. `cd STALLED && git commit` from a clean cwd BLOCKS (was a false allow)")
+    else:
+        bad("15b. cd false allow",
+            "rc=%s -- a commit into a PAUSED REBASE was permitted; this is the "
+            "2026-07-28 incident walking through the guard" % rc)
+
+    if "reached via" in err and "session cwd" in err:
+        ok("15c. The refusal says the repo was reached via a `cd`, not the session cwd")
+    else:
+        bad("15c. cd provenance", "message would read as being about the session repo")
+
+    # Separator semantics. `&&` pins the cd; the others do not, and guessing
+    # wrong in the permissive direction is how work gets lost.
+    rc_semi_s, _, _ = run_hook("cd %s ; git commit -m x" % stalled, cwd=clean)
+    rc_semi_c, _, _ = run_hook("cd %s ; git commit -m x" % clean, cwd=stalled)
+    if rc_semi_s == 2 and rc_semi_c == 2:
+        ok("15d. `;` is ambiguous (cd may have failed) -> both candidates checked, blocks")
+    else:
+        bad("15d. `;` handling",
+            "into-stalled rc=%s, out-of-stalled rc=%s (expected 2 and 2)"
+            % (rc_semi_s, rc_semi_c))
+
+    rc_or_s, _, _ = run_hook("cd %s || git commit -m x" % stalled, cwd=clean)
+    rc_or_c, _, _ = run_hook("cd %s || git commit -m x" % clean, cwd=stalled)
+    if rc_or_s == 0 and rc_or_c == 2:
+        ok("15e. `||` runs the git only if the cd FAILED -> cwd did not move")
+    else:
+        bad("15e. `||` handling",
+            "into-stalled rc=%s (want 0), out-of-stalled rc=%s (want 2)"
+            % (rc_or_s, rc_or_c))
+
+    # A RELATIVE cd resolves against the directory we are actually in.
+    rc, _, _ = run_hook("cd ../stalled && git commit -m x", cwd=clean)
+    if rc == 2:
+        ok("15f. A relative `cd ../stalled` resolves against the current cwd")
+    else:
+        bad("15f. relative cd", "rc=%s -- relative destination not resolved" % rc)
+
+    # Chained cds: only the last one is where git runs.
+    rc, _, _ = run_hook("cd %s && cd %s && git commit -m x" % (clean, stalled), cwd=clean)
+    if rc == 2:
+        ok("15g. The LAST cd in a chain is the one that counts")
+    else:
+        bad("15g. chained cd", "rc=%s" % rc)
+
+    # An explicit `-C` outranks the cd, exactly as git itself resolves it.
+    rc_a, _, _ = run_hook("cd %s && git -C %s commit -m x" % (clean, stalled), cwd=clean)
+    rc_b, _, _ = run_hook("cd %s && git -C %s commit -m x" % (stalled, clean), cwd=stalled)
+    if rc_a == 2 and rc_b == 0:
+        ok("15h. `-C` outranks the cd in both directions")
+    else:
+        bad("15h. -C vs cd", "cd-clean/-C-stalled rc=%s (want 2), inverse rc=%s (want 0)"
+            % (rc_a, rc_b))
+
+    # THE REGRESSION THAT WOULD SILENTLY UNDO ALL OF THE ABOVE. Subshell
+    # detection has to be quote-aware: a parenthesised commit MESSAGE is not a
+    # subshell, and if it trips the bail-out then the false block of 15a comes
+    # straight back for every commit whose message happens to contain a paren.
+    rc, _, _ = run_hook('cd %s && git commit -m "fix (bug)"' % clean, cwd=stalled)
+    if rc == 0:
+        ok("15i. A paren inside a quoted commit message is not a subshell")
+    else:
+        bad("15i. quoted paren", "rc=%s -- cd tracking abandoned on a quoted paren" % rc)
+
+    # A cd we cannot resolve must fall back to the session cwd -- the behavior
+    # this hook had before tracking existed -- and NOT be read as "cwd unchanged
+    # and therefore fine". Conservative on an unreadable shape.
+    rc, _, _ = run_hook("cd $TARGET && git commit -m x", cwd=stalled)
+    if rc == 2:
+        ok("15j. An unresolvable `cd $VAR` falls back to the session cwd, still blocks")
+    else:
+        bad("15j. unresolvable cd", "rc=%s -- guard went quiet on an unreadable cd" % rc)
+
+    # A subshell scopes its cd, so tracking is abandoned for the whole command
+    # and the session cwd decides. Pinned so the documented fallback stays the
+    # DOCUMENTED one rather than drifting into an accidental allow.
+    rc, _, _ = run_hook("(cd %s && git commit -m x) && git commit -m y" % clean, cwd=stalled)
+    if rc == 2:
+        ok("15k. A subshell abandons cd tracking and falls back to the session cwd")
+    else:
+        bad("15k. subshell fallback", "rc=%s -- subshell scoping not handled" % rc)
+
+    # 15l/15m. Both found by the pre-push doubt-pass on the cd-tracking diff
+    # itself, not by a failing test -- same provenance as 9c.
+    #
+    # 15l: `shlex` is a POSIX tokenizer, so it eats the backslashes in
+    # `cd C:\repo` and hands back `C:repo`. That is not absolute on EITHER
+    # platform, so it got joined onto the base, produced a path that does not
+    # exist, failed the isdir check, and made the hook SKIP the git call --
+    # silently converting a block into an allow on Windows.
+    rc, _, _ = run_hook("cd C:\\somewhere && git commit -m x", cwd=stalled)
+    if rc == 2:
+        ok("15l. A Windows drive-relative `cd` falls back, it does not skip the check")
+    else:
+        bad("15l. windows drive cd",
+            "rc=%s -- an unresolvable destination made the guard skip the commit" % rc)
+
+    # 15m: `cd -` is deliberately NOT resolved. Pinned so that a later attempt
+    # to "improve" it has to face the test: a wrong OLDPWD is a wrong repository.
+    rc, _, _ = run_hook("cd - && git commit -m x", cwd=stalled)
+    if rc == 2:
+        ok("15m. `cd -` is unresolved and falls back to the session cwd")
+    else:
+        bad("15m. cd -", "rc=%s -- OLDPWD was guessed instead of falling back" % rc)
 
     subprocess.run(["rm", "-rf", tmp], capture_output=True)
 
