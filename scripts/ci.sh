@@ -336,6 +336,22 @@ INTEGRATION_TESTS=(
   # every test ran against the vault the env var already named, which makes
   # "resolve from the env" and "resolve from the target" indistinguishable.
   test_hook_vault_root_per_target
+  # That same hook's launchd pass read `launchctl list`'s exit-status column
+  # only, which reads 0 for BOTH a healthy job and one that has never run at
+  # all -- a hollow job was indistinguishable from a clean one and stayed
+  # silently unflagged. Proves the blind spot on a frozen, independent
+  # reimplementation of the old rule (not a git-history diff, which would stop
+  # meaning anything once this fix lands on main), then proves the shipped fix
+  # (a second `launchctl print` probe, only for the ambiguous status==0 case)
+  # closes it -- with regression + false-positive + probe-failure controls.
+  test_launchd_hollow_job_detection
+  # The three shipped launchd plist templates carried no PATH, so a client
+  # script that shells out to a brew-installed tool failed with "not found"
+  # under launchd while working fine in every interactive shell. Validates the
+  # added EnvironmentVariables/PATH key with two independent parsers (plutil
+  # -lint where available, portable plistlib everywhere else) against both the
+  # raw template and a simulated real installer render.
+  test_launchd_template_path_env
   # The rm -rf rule in that same hook, which MYC-3529 left alone: its regex
   # spelled the vault root `$HOME/vault` -- a SHELL string in a PYTHON regex,
   # where `$` is an end-of-line anchor, so the branch was dead and the vault

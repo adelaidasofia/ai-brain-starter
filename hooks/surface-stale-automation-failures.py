@@ -182,16 +182,77 @@ def user_launchd_labels() -> set[str]:
         return set()
 
 
+def _launchd_print_liveness(label: str, uid: int, timeout: float = 3.0) -> tuple[int, str] | None:
+    """Probe `launchctl print gui/<uid>/<label>` for the job's run count.
+
+    Disambiguates the case `launchd_failures()` cannot resolve from
+    `launchctl list` alone: last-exit-status 0 means both "ran and exited
+    clean" and "has never run at all" (see that function's docstring).
+    `launchctl print`'s `runs` field tells the two apart — 0 means the job
+    has never executed since it was loaded.
+
+    Returns `(runs, last_exit_text)` on a clean parse. Returns None on ANY
+    failure — binary missing, non-zero return, timeout, or output that does
+    not contain a parseable `runs = N` line — so the caller can degrade to
+    the pre-probe reading (silence) instead of raising. This hook runs at
+    every session start and must never crash or hang on a probe that a given
+    macOS version, sandbox, or permission set does not support.
+
+    `launchctl print` is slower per-label than the one-shot `list` table, so
+    callers should only reach this for labels already narrowed down to
+    "mine, loaded, ambiguous" — see MAX_LAUNCHD_PRINT_PROBES.
+    """
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", f"gui/{uid}/{label}"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=timeout, check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    runs_match = re.search(r"^\s*runs\s*=\s*(\d+)\s*$", result.stdout, re.MULTILINE)
+    if not runs_match:
+        return None
+    exit_match = re.search(r"^\s*last exit code\s*=\s*(.+?)\s*$", result.stdout, re.MULTILINE)
+    last_exit = exit_match.group(1) if exit_match else ""
+    return int(runs_match.group(1)), last_exit
+
+
 def launchd_failures() -> list[str]:
-    """Flag the user's own launchd jobs whose last run exited non-zero.
+    """Flag the user's own launchd jobs that are failing OR that are HOLLOW.
 
     `launchctl list` column 2 is the last exit status: 0 = clean, a positive
-    int = non-zero exit, a negative int = killed by signal, '-' = never run.
-    This auto-covers every job — including ones not in RUNNERS, the gap that
-    let a health-check and a reconcile job fail unnoticed.
+    int = non-zero exit, a negative int = killed by signal, '-' in the PID
+    column = not currently running (irrelevant to this check). Measured
+    2026-08-20: a job launchd has REGISTERED but has NEVER EXECUTED also
+    reads 0 in this column — byte-identical to a genuinely healthy job. That
+    blind spot let a dead job sit unnoticed for days with real downstream
+    damage — this function used to treat status 0 as simply "clean", which
+    is exactly the misread.
 
-    Restricted to labels the user installed (see user_launchd_labels), so the
-    machine's Apple and third-party agents stay out of the report.
+    So status 0 is now AMBIGUOUS, not clean, and is disambiguated by a
+    second, slower probe: `_launchd_print_liveness()`, whose `runs` field is
+    0 only when the job has truly never run. That is reported as a DISTINCT
+    "hollow" finding, because the remedy differs — a hollow job needs
+    `bootout` + `bootstrap` (reload it), a failing job needs its error log
+    read. A non-zero status is unambiguous already (you cannot have a real
+    exit code without having executed) and is flagged directly, exactly as
+    before, with no extra probe.
+
+    The print probe is bounded three ways so this stays fast at every
+    session start: (1) only reached for labels the cheap `list` pass already
+    narrowed to "mine, loaded, status==0"; (2) capped at
+    MAX_LAUNCHD_PRINT_PROBES total calls per run; (3) each call carries its
+    own short timeout. Any failure of the probe itself — `launchctl print`
+    unavailable, non-zero exit, timeout, unparseable output, no UID — silently
+    degrades that label to the pre-probe reading (not flagged), never raises.
+
+    This auto-covers every job — including ones not in RUNNERS, the gap that
+    let a health-check and a reconcile job fail unnoticed. Restricted to
+    labels the user installed (see user_launchd_labels), so the machine's
+    Apple and third-party agents stay out of the report.
     """
     try:
         result = subprocess.run(
@@ -204,7 +265,12 @@ def launchd_failures() -> list[str]:
     mine = user_launchd_labels()
     if not mine:
         return []
+    try:
+        uid = os.getuid()  # type: ignore[attr-defined]
+    except AttributeError:
+        uid = None  # no os.getuid on Windows — the print probe degrades below
     out: list[str] = []
+    probes_used = 0
     for line in result.stdout.splitlines():
         parts = line.split("\t")
         if len(parts) != 3:
@@ -217,11 +283,32 @@ def launchd_failures() -> list[str]:
         try:
             code = int(status)
         except ValueError:
-            continue  # '-' — job has never run this boot
+            continue  # not a documented `launchctl list` status column value
         if code != 0:
             out.append(
                 f"  - {label}: last run exited {code} (launchctl status) — "
                 f"check the job's log / plist"
+            )
+            continue
+        # code == 0 is ambiguous (see docstring above) — disambiguate via the
+        # slower print probe, bounded so a large fleet can't slow down every
+        # session start.
+        if uid is None or probes_used >= MAX_LAUNCHD_PRINT_PROBES:
+            continue
+        probes_used += 1
+        liveness = _launchd_print_liveness(label, uid)
+        if liveness is None:
+            continue  # probe unavailable/erroring — degrade to pre-probe silence
+        runs, last_exit = liveness
+        if runs == 0:
+            plist_path = HOME / "Library" / "LaunchAgents" / f"{label}.plist"
+            exit_note = f", last exit code {last_exit}" if last_exit else ""
+            out.append(
+                f"  - {label}: loaded but has NEVER RUN (runs=0{exit_note}, "
+                f"launchctl print) — a hollow job, not a healthy one; "
+                f"`launchctl list` alone cannot tell the two apart. Reload it: "
+                f"launchctl bootout gui/{uid}/{label}; "
+                f"launchctl bootstrap gui/{uid} {plist_path}"
             )
     return out
 
@@ -272,6 +359,11 @@ def receipts_reconcile_findings(vault: Path | None) -> list[str]:
 # (`com.<whoever>.team-broadcast-daily`). These jobs have a dedicated finder
 # below that gives better recovery guidance than the generic launchd pass.
 BESPOKE_LAUNCHD_SUFFIXES = (".team-broadcast-daily",)
+
+# `launchctl print` is slow enough per-label that an unbounded fleet could slow
+# down every session start. This caps total probes per run regardless of how
+# many "mine, loaded, status==0" candidates exist.
+MAX_LAUNCHD_PRINT_PROBES = 25
 
 
 def team_broadcast_findings(log_path: Path | None = None) -> list[str]:
