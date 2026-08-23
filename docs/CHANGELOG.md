@@ -108,6 +108,16 @@ If your session start mentions "background helpers not active", this is what it 
 
 ---
 
+## 2026-08-10: a missing team-broadcast install looked exactly like a healthy one
+
+**Who this affects:** anyone using the team-broadcast skill (Slack session-close recaps) across more than one machine.
+
+**The silent-failure watchdog (`surface-stale-automation-failures.py`) couldn't tell "never installed" from "installed and fine."** It works by scanning a log file for recent failures — no recent failures, no warning. But a machine that never had `auto-send.py` installed also has no log file, for the same reason: nothing ever ran there. Both cases produced exactly zero signal, on every session, forever. That's a stricter silence than an outright failure would have been — a broken install eventually leaves an error in the log; a missing install leaves nothing to ever go wrong. The watchdog now checks installation directly (the script's presence, then whether the daily launchd job is registered) before it ever looks at the log, and says so specifically instead of staying quiet. The launchd job is matched by its name ending, so it is found whatever reverse-DNS namespace you installed it under.
+
+**If you never set up team-broadcast, you will not hear about this at all.** This starter does not install that skill, so a missing one is the normal state for most people, and a warning about a component you never asked for is just noise that teaches you to ignore the rest. The check only speaks up when there is evidence you did set it up here and it since broke: a scheduled job that refers to it, a log from a previous run, or a half-present skill folder.
+
+**Also:** this file's non-ASCII console output (the warning emoji, some em dashes) was carried over from before the UTF-8 console-crash lint was widened to cover `hooks/`. It's provably safe — the only print is `json.dumps(...)`, which escapes non-ASCII before it reaches stdout — so it's now marked `# utf8-stdout-ok` and dropped from the legacy pin list instead of staying silently grandfathered in.
+
 ## 2026-08-05: on Mac and Linux, "daily backup scheduled" now means it really is
 
 **Who this affects:** anyone on macOS or Linux who set up the daily vault backup.

@@ -20,6 +20,14 @@ Codified 2026-05-14 as the meta-fix for the stranded-files class.
 
 from __future__ import annotations
 
+# utf8-stdout-ok: the only console write in this module is
+# `print(json.dumps({"systemMessage": msg}))`, and json.dumps defaults to
+# ensure_ascii=True, so the warning emoji and em dashes in `msg` are escaped to
+# \uXXXX before they reach stdout -- there is no cp1252 console crash to guard
+# against here. Replaces this file's SEV-4-json-encoded row in
+# scripts/utf8-stdout-baseline.txt, per that file's rule: rows are DELETED,
+# never re-pinned to stay quiet.
+
 import datetime
 import json
 import os
@@ -364,6 +372,105 @@ BESPOKE_LAUNCHD_SUFFIXES = (".team-broadcast-daily",)
 # down every session start. This caps total probes per run regardless of how
 # many "mine, loaded, status==0" candidates exist.
 MAX_LAUNCHD_PRINT_PROBES = 25
+TEAM_BROADCAST_SCRIPT = (
+    HOME / ".claude" / "skills" / "team-broadcast" / "scripts" / "auto-send.py"
+)
+
+
+def registered_bespoke_label() -> tuple[bool, str | None]:
+    """The operator's OWN daily-broadcast launchd label, if launchd has it loaded.
+
+    Resolved BY SUFFIX off `launchctl list`, never by a literal namespace. The
+    label is `com.<operator>.team-broadcast-daily` and the `<operator>` half is
+    chosen by whoever installed it, so a hardcoded reverse-DNS prefix would
+    query a label that exists on exactly one machine — reporting "not
+    registered" to every other operator who HAS installed it, and reporting it
+    forever. That is the same dead-for-everyone-else failure
+    user_launchd_labels() above exists to avoid, and this file ships in a
+    public repo that other people install.
+
+    Returns (queried, label). `queried` is False when launchd could not be
+    asked at all (no `launchctl` — Linux, Windows), which is evidence of
+    nothing and must not produce a finding.
+    """
+    try:
+        result = subprocess.run(
+            ["launchctl", "list"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=10, check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return (False, None)
+    if result.returncode != 0:
+        return (False, None)
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        _pid, _status, label = parts
+        if any(label.endswith(suffix) for suffix in BESPOKE_LAUNCHD_SUFFIXES):
+            return (True, label)
+    return (True, None)
+
+
+def team_broadcast_opted_in(label: str | None) -> bool:
+    """Did this operator ever ask for a daily broadcast at all?
+
+    This substrate does NOT install team-broadcast: no phase, no bootstrap
+    step, and no skill in this repo ships it. "auto-send.py is missing" is
+    therefore the NORMAL, correct state for nearly everyone who installs
+    this, and reporting it as a fault would nag every one of them, on every
+    session, forever, about a component they never asked for and cannot get
+    from here. A watchdog that cries on a healthy default install is how
+    operators learn to ignore the watchdog.
+
+    So fire only on evidence the operator opted IN and the install then
+    broke: a registered daily job, a log from a run that already happened,
+    or a half-present skill directory. No evidence at all -> silence.
+    """
+    if label:
+        return True  # a daily job is registered, so the script should be here
+    if (HOME / ".claude" / "logs" / "team-broadcast-daily.log").exists():
+        return True  # it has run on this machine before
+    return TEAM_BROADCAST_SCRIPT.parent.parent.exists()  # partial install
+
+
+def team_broadcast_install_gap() -> str | None:
+    """Distinguish 'never installed here' from 'installed and quiet'.
+
+    team_broadcast_findings() below returns [] both when the daily broadcast
+    is healthy and quiet AND when it was never installed at all — a missing
+    log file reads the same either way. That gap is how a machine can go
+    through every session-close cascade silently skipping the mandatory
+    broadcast (a vault CLAUDE.md's Session End step) with nothing ever
+    flagging it: there's no failure to log because there's nothing to fail.
+    Check installation directly instead of inferring it from log absence.
+    auto-send.py is the shared dependency of both the live session-close
+    broadcast and this daily cron, so its absence is the more serious of the
+    two findings; the launchd lookup above is resolved once and reused by
+    both branches.
+    """
+    queried, label = registered_bespoke_label()
+    if not TEAM_BROADCAST_SCRIPT.exists():
+        if not team_broadcast_opted_in(label):
+            return None  # never set up here, and this substrate never installs it
+        return (
+            "  - team-broadcast: set up on this machine but NOT INSTALLED — "
+            f"{TEAM_BROADCAST_SCRIPT} does not exist. Session-close broadcasts "
+            "(invoked live by Claude at session close) and the daily-summary "
+            "cron are both unreachable from here. Reinstall the "
+            "team-broadcast skill to restore them."
+        )
+    if not queried:
+        return None  # can't check launchd here; don't false-positive on that alone
+    if label is None:
+        return (
+            "  - team-broadcast-daily: script is installed but no "
+            "*.team-broadcast-daily launchd job is registered — the daily "
+            "summary cron will never fire. (Session-close broadcasts, "
+            "triggered live by Claude rather than this cron, are unaffected.)"
+        )
+    return None
 
 
 def team_broadcast_findings(log_path: Path | None = None) -> list[str]:
@@ -381,6 +488,10 @@ def team_broadcast_findings(log_path: Path | None = None) -> list[str]:
     so a recovered failure self-clears instead of nagging for 72h. Also flags
     the cron going stale (no run in 48h).
     """
+    install_gap = team_broadcast_install_gap()
+    if install_gap:
+        return [install_gap]
+
     if log_path is None:
         log_path = HOME / ".claude" / "logs" / "team-broadcast-daily.log"
     if not log_path.exists():

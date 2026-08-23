@@ -437,6 +437,7 @@ INTEGRATION_TESTS=(
   # — silently, on a whole platform. Two layers must hold (the path gate AND the
   # vault-root resolve); fixing only the first looks right and still fails open.
   test_journal_guard_windows_paths
+  test_team_broadcast_install_gap
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new
