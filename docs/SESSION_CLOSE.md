@@ -89,7 +89,9 @@ Session-adjacent headings like `## Session Protocol` deliberately do **not** cou
 - an empty `.session-close-root` file in the folder, or
 - `sessionCloseRoot: true` in the frontmatter of its `CLAUDE.md`.
 
-The marker wins over the heading, and unlike the heading it does not require a `Meta` directory — an explicit declaration is an instruction, so the cascade honors it and then tells you plainly if there is nowhere to write yet.
+Either marker replaces the heading, but **both routes still require a `Meta` (or `⚙️ Meta`) directory** — a folder has to have somewhere to write before it can claim your session artifacts.
+
+That requirement is deliberate. `.session-close-root` is a dotfile, and dotfiles travel by accident in ways a heading never does: committed to a repo and cloned, swept up by `cp -r`, baked into a template, invisible in `ls`. If a stray marker could claim a folder on its own, your session notes would land inside it — inside a cloned client repo, that means your private notes in someone else's tree. Requiring a `Meta` directory keeps a stray marker inert until a person deliberately creates one.
 
 To make an existing folder own its cascade:
 
