@@ -151,6 +151,32 @@ hiccup; the failure mode it prevents is rare, and the cost of a false block on
 every commit is not worth trading for it.
 
 Bypass: `GIT_INFLIGHT_OP_BYPASS=1` (env or inline prefix). Document why.
+
+BYPASS POLICY (decided 2026-08-23, MYC-3779 predicate 4). The bypass stays
+self-serviceable, and every use of it is now LOUD.
+
+  Why self-serviceable stays. The guard refuses to judge `--abort` vs
+  `--continue` on purpose; that call belongs to whoever owns the operation. A
+  bypass only a second party can grant would, in the one case that matters --
+  an abandoned operation whose owner is gone -- leave the repo with no exit at
+  all. The hook already declines to trap a repo (it never blocks the resolution
+  verbs) and this is the same principle one level up.
+
+  Why that was not enough before. MYC-3779 measured three subagents in one
+  session independently setting this var. Each had verified its own worktree was
+  clean and each was factually right; the guard was evaluating a DIFFERENT repo
+  and was unfalsifiable from where they stood. The honest reading is that the
+  scoping bug manufactured those bypasses -- which is why the fix is the
+  cwd tracking above, not a harder-to-reach escape hatch. Making a correct
+  guard harder to bypass would have punished the agents for the guard's error.
+
+  What changed anyway. A bypass that leaves no trace is a comment, not a
+  control. The bypass is now evaluated AFTER the repository check rather than
+  before it, so the log records what it actually SUPPRESSED -- repo, marker,
+  subcommand -- instead of merely that someone had the variable exported. A
+  bypass that suppresses nothing writes nothing. Blocks are recorded too, so a
+  guard that has gone quiet is distinguishable from one that never fires
+  (a dead guard and a healthy one otherwise emit the same signal).
 """
 
 from __future__ import annotations
@@ -163,16 +189,19 @@ import subprocess
 import sys
 
 BYPASS_VAR = "GIT_INFLIGHT_OP_BYPASS"
+HOOK_NAME = "block-git-mutation-mid-operation"
+
+# Fire telemetry (MYC-285). Fail-open: a missing _lib must never break a
+# fail-open guard, and a telemetry error must never turn an allow into a block.
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_lib"))
+    from guard_telemetry import log_fire
+except Exception:  # pragma: no cover - telemetry is never load-bearing
+    def log_fire(*_a, **_k):
+        return
 
 # Split a command into sequential segments on shell separators so each piece is
 # evaluated independently (mirrors session-lock.py / check-cd-outside-worktree.py).
-SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||[;\n|]")
-# Same pattern, capturing, so the separator BETWEEN two segments is available:
-# `cd X && git ...` and `cd X || git ...` put the git call in different
-# directories, and only the separator says which. `re.split` with one capture
-# group returns [seg, sep, seg, sep, ...], so `[0::2]` is exactly what
-# SEGMENT_SPLIT_RE.split() yields and the indices line up 1:1.
-SEGMENT_SPLIT_CAPTURE_RE = re.compile(r"(&&|\|\||[;\n|])")
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 # Transparent wrappers to skip before identifying `git`
@@ -257,7 +286,7 @@ GIT_TIMEOUT_SEC = 5
 def _inline_bypass(command: str, var: str) -> bool:
     """True iff `<var>=1` leads any shell segment of `command`. A quoted token
     is not a leading assignment (`echo 'X=1'` -> no)."""
-    for seg in SEGMENT_SPLIT_RE.split(command):
+    for seg in _segments(command)[0]:
         try:
             tokens = shlex.split(seg)
         except ValueError:
@@ -270,6 +299,62 @@ def _inline_bypass(command: str, var: str) -> bool:
                 if k == var and v == "1":
                     return True
     return False
+
+
+def _segments(command: str):
+    """Split `command` into sequential shell segments plus the separator between
+    each pair, ignoring operators that sit INSIDE quotes.
+
+    Returns (segments, separators); separators[i] is the one FOLLOWING
+    segments[i], because `cd X && git ...` and `cd X || git ...` put the git
+    call in different directories and only the separator says which.
+
+    QUOTE AWARENESS IS LOAD-BEARING HERE, not tidiness. This started as a plain
+    `re.split` on the operators, and with cwd tracking on top of it,
+
+        echo "a ; cd /elsewhere" && git commit
+
+    split into a phantom `cd /elsewhere` segment cut out of text the shell never
+    executes. The tracker followed the phantom, the git call was judged against
+    a directory that does not exist, the isdir check skipped it, and a commit
+    into a PAUSED REBASE was ALLOWED. Measured 2026-08-23 during the pre-merge
+    doubt-pass: on that exact command the older, cwd-blind hook returned 2 and
+    the cwd-tracking one returned 0. The tracker did not merely fail to help --
+    it opened a hole the naive version did not have.
+
+    A quote-aware walk is also what `_lib/gh_merge.py` settled on for the same
+    class (MYC-357: `echo '... && gh pr merge 1'` minted a real marker off a
+    quoted string). Same bug, same shape, same fix.
+
+    Segments keep their quotes, so each one is independently balanced and
+    `shlex.split` succeeds on it. `&` is deliberately NOT a split point: leaving
+    `cd /a & git commit` as one segment makes the `cd` unparseable, which takes
+    the safe session-cwd fallback rather than a guess about backgrounding.
+    """
+    segs, seps, cur = [], [], []
+    i, n, quote = 0, len(command), None
+    while i < n:
+        c = command[i]
+        if quote:                        # inside quotes: copy through to the close
+            cur.append(c)
+            if c == "\\" and quote == '"' and i + 1 < n and command[i + 1] in '"\\$`':
+                cur.append(command[i + 1]); i += 2; continue
+            if c == quote:
+                quote = None
+            i += 1
+            continue
+        if c in ("'", '"'):
+            quote = c; cur.append(c); i += 1; continue
+        if c == "\\" and i + 1 < n:      # escaped operator outside quotes -> literal
+            cur.append(c); cur.append(command[i + 1]); i += 2; continue
+        two = command[i:i + 2]
+        if two in ("&&", "||"):
+            segs.append("".join(cur)); seps.append(two); cur = []; i += 2; continue
+        if c in (";", "\n", "|"):
+            segs.append("".join(cur)); seps.append(c); cur = []; i += 1; continue
+        cur.append(c); i += 1
+    segs.append("".join(cur))
+    return segs, seps
 
 
 def _has_subshell(command: str) -> bool:
@@ -360,14 +445,13 @@ def _cd_targets(segment: str, bases):
 def _cwd_candidates_by_segment(command: str, session_cwd: str):
     """Per shell segment, the working directories a command there could run in.
 
-    Aligned index-for-index with `SEGMENT_SPLIT_RE.split(command)`, which is
-    what `_git_invocations` walks. Usually a single directory; more than one
-    only for the genuinely ambiguous `cd X ; git ...`, where the caller checks
-    every candidate and blocks if ANY is mid-operation.
+    Aligned index-for-index with `_segments(command)[0]`, which is what
+    `_git_invocations` walks -- the same function, so the indices cannot drift.
+    Usually a single directory; more than one only for the genuinely ambiguous
+    `cd X ; git ...`, where the caller checks every candidate and blocks if ANY
+    is mid-operation.
     """
-    parts = SEGMENT_SPLIT_CAPTURE_RE.split(command)
-    segments = parts[0::2]
-    separators = parts[1::2]  # separators[i] is the one FOLLOWING segments[i]
+    segments, separators = _segments(command)
 
     if _has_subshell(command):
         return [[session_cwd] for _ in segments]
@@ -425,7 +509,7 @@ def _git_invocations(command: str):
     The segment index is what lets the caller look up the working directory a
     preceding `cd` put this call in; it indexes the same split, so it stays
     correct even when earlier segments are skipped."""
-    for seg_index, seg in enumerate(SEGMENT_SPLIT_RE.split(command)):
+    for seg_index, seg in enumerate(_segments(command)[0]):
         seg = seg.strip()
         if not seg:
             continue
@@ -631,8 +715,11 @@ def _detached_warning(subcmd: str, git_dir: str, workdir: str) -> str:
 
 
 def main() -> int:
-    if os.environ.get(BYPASS_VAR) == "1":
-        return 0
+    # NOTE: the bypass is resolved here but APPLIED at the block site, so the
+    # audit record can name what it suppressed. Returning early here would make
+    # every bypass indistinguishable from every other -- including the ones that
+    # suppressed nothing at all.
+    bypass_env = os.environ.get(BYPASS_VAR) == "1"
 
     try:
         payload = json.loads(sys.stdin.read() or "{}")
@@ -653,8 +740,7 @@ def main() -> int:
     if "git" not in command.lower():
         return 0
 
-    if _inline_bypass(command, BYPASS_VAR):
-        return 0
+    bypassed = bypass_env or _inline_bypass(command, BYPASS_VAR)
 
     session_cwd = payload.get("cwd") or os.getcwd()
     seg_cwds = _cwd_candidates_by_segment(command, session_cwd)
@@ -695,6 +781,16 @@ def main() -> int:
             found = _in_flight(git_dir)
             if found:
                 marker, desc, owner = found
+                if bypassed:
+                    # Honored -- and now on the record, with the thing it let
+                    # through. This is the ONLY place a bypass is logged: one
+                    # that suppressed nothing is not worth a line.
+                    log_fire(HOOK_NAME, status="bypassed", subcmd=subcmd,
+                             marker=marker, workdir=workdir, git_dir=git_dir,
+                             via="env" if bypass_env else "inline")
+                    return 0
+                log_fire(HOOK_NAME, status="blocked", subcmd=subcmd,
+                         marker=marker, workdir=workdir, git_dir=git_dir)
                 sys.stderr.write(_block_message(
                     subcmd, marker, desc, owner, git_dir, workdir,
                     moved=moved, ambiguous=ambiguous, session_cwd=session_cwd,
@@ -706,7 +802,8 @@ def main() -> int:
                 warned_git_dirs.add(git_dir)
                 warnings.append(_detached_warning(subcmd, git_dir, workdir))
 
-    if warnings:
+    if warnings and not bypassed:
+        log_fire(HOOK_NAME, status="warned", detail="detached-head")
         print(json.dumps({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",

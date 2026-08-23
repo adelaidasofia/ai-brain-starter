@@ -28,6 +28,10 @@ Legs:
       the operation owner's call)
   15. Honors a `cd` earlier in the command -- BOTH directions, because the
       missing `cd` produced a false block AND a false allow
+  16. Operators inside QUOTES are not segment boundaries -- a phantom `cd` cut
+      out of a quoted string once opened a hole the cwd-blind hook did not have
+  17. The bypass leaves an audit record naming what it SUPPRESSED, and a bypass
+      that suppressed nothing leaves none
 
 Stdlib only. Exit 0 = all pass.
 """
@@ -45,6 +49,10 @@ HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 PASS = 0
 FAIL = 0
+
+# Telemetry sink for this run. Pointed at a scratch file so the suite never
+# appends to ~/.claude/guard-fires.jsonl, and so leg 17 reads only its own rows.
+TELEMETRY_LOG = os.path.join(tempfile.gettempdir(), "inflight-guard-telemetry.jsonl")
 
 
 def ok(msg):
@@ -81,6 +89,7 @@ def run_hook(command, cwd, env=None, tool_name="Bash"):
     })
     e = dict(os.environ)
     e.pop("GIT_INFLIGHT_OP_BYPASS", None)
+    e["GUARD_FIRES_LOG"] = TELEMETRY_LOG
     if env:
         e.update(env)
     p = subprocess.run([sys.executable, HOOK], input=payload,
@@ -578,6 +587,93 @@ def main():
     else:
         bad("15m. cd -", "rc=%s -- OLDPWD was guessed instead of falling back" % rc)
 
+
+    # ----------------------------------------------------------------- leg 16
+    # Quoted operators are not shell operators. This is the regression that the
+    # cwd tracking INTRODUCED and the pre-merge doubt-pass caught: with a plain
+    # regex split, `echo "a ; cd /elsewhere" && git commit` yielded a phantom
+    # `cd /elsewhere` segment carved out of text the shell never runs. The
+    # tracker followed it, the git call was judged against a directory that does
+    # not exist, the isdir check skipped the invocation, and a commit into a
+    # PAUSED REBASE was ALLOWED -- on the very command the older, cwd-blind hook
+    # correctly blocked. 16a/16b are the negative controls for that hole.
+    rc, _, _ = run_hook('echo "a ; cd %s" && git commit -m x' % clean, cwd=stalled)
+    if rc == 2:
+        ok("16a. A `cd` hidden inside quotes is not followed (semicolon form)")
+    else:
+        bad("16a. phantom cd via quoted `;`",
+            "rc=%s -- the tracker followed text the shell never executes and "
+            "skipped the check on a stalled repo" % rc)
+
+    rc, _, _ = run_hook('echo "a && cd %s" && git commit -m x' % clean, cwd=stalled)
+    if rc == 2:
+        ok("16b. A `cd` hidden inside quotes is not followed (&& form)")
+    else:
+        bad("16b. phantom cd via quoted `&&`", "rc=%s" % rc)
+
+    # The other half: quote awareness must not become an excuse to give up. A
+    # commit MESSAGE containing an operator is ordinary, and bailing on it would
+    # bring back the false block this whole change exists to remove.
+    noisy = [
+        ('cd %s && git commit -m "a && b"' % clean, "&& in the message"),
+        ('cd %s && git commit -m "fix: a; also b"' % clean, "; in the message"),
+        ('cd %s && git commit -m "a | b"' % clean, "pipe in the message"),
+    ]
+    over_bailed = [why for cmd, why in noisy if run_hook(cmd, cwd=stalled)[0] != 0]
+    if not over_bailed:
+        ok("16c. An operator inside a commit MESSAGE does not abandon cd tracking")
+    else:
+        bad("16c. over-bailed on a quoted operator",
+            "false block returned for: " + ", ".join(over_bailed))
+
+    # ----------------------------------------------------------------- leg 17
+    # MYC-3779 predicate 4: the bypass stays self-serviceable (a guard that can
+    # trap a repo with no exit is worse), but it is no longer silent. A bypass
+    # that leaves no trace is a comment, not a control -- and this leg is the
+    # control for the control: shipping the telemetry without proving it writes
+    # would be the same unfalsifiable-guard mistake one level up.
+    def _telemetry():
+        try:
+            with open(TELEMETRY_LOG, encoding="utf-8") as fh:
+                return [json.loads(ln) for ln in fh if ln.strip()]
+        except OSError:
+            return []
+
+    for _p in (TELEMETRY_LOG,):
+        try:
+            os.remove(_p)
+        except OSError:
+            pass
+
+    rc, _, _ = run_hook("git commit -m x", cwd=stalled,
+                        env={"GIT_INFLIGHT_OP_BYPASS": "1"})
+    rows = [r for r in _telemetry() if r.get("status") == "bypassed"]
+    if rc == 0 and rows and rows[-1].get("marker") and rows[-1].get("workdir") == stalled:
+        ok("17a. A bypass that suppressed a real block is recorded, with the repo it let through")
+    else:
+        bad("17a. bypass audit trail",
+            "rc=%s rows=%s -- the bypass left no usable trace" % (rc, rows[-1:]))
+
+    rc, _, _ = run_hook("git commit -m x", cwd=stalled)
+    rows = [r for r in _telemetry() if r.get("status") == "blocked"]
+    if rc == 2 and rows:
+        ok("17b. A real block is recorded too (a dead guard and a quiet one differ)")
+    else:
+        bad("17b. block telemetry", "rc=%s rows=%s" % (rc, rows))
+
+    before = len(_telemetry())
+    run_hook("git commit -m x", cwd=clean, env={"GIT_INFLIGHT_OP_BYPASS": "1"})
+    if len(_telemetry()) == before:
+        ok("17c. A bypass that suppressed NOTHING writes nothing (no trail noise)")
+    else:
+        bad("17c. bypass noise",
+            "a bypass over a clean repo emitted a record; the log stops meaning "
+            "\'something was suppressed\'")
+
+    try:
+        os.remove(TELEMETRY_LOG)
+    except OSError:
+        pass
     subprocess.run(["rm", "-rf", tmp], capture_output=True)
 
     print("\n%d passed, %d failed" % (PASS, FAIL))
