@@ -470,6 +470,35 @@ def team_broadcast_install_gap() -> str | None:
             "summary cron will never fire. (Session-close broadcasts, "
             "triggered live by Claude rather than this cron, are unaffected.)"
         )
+    # Registered is NOT the same as running. `launchctl list` reports status 0
+    # both for a job that ran and exited clean and for one that has never
+    # executed at all, and launchd_failures() SKIPS this label by suffix
+    # precisely because this finder owns it — so silence here means silence
+    # everywhere. A hollow daily broadcast is the exact shape this finder
+    # exists to catch: the job is present, nothing looks wrong, and the
+    # summary has never once been sent.
+    #
+    # Bounded by construction: registered_bespoke_label() returns at most one
+    # label, so this adds at most ONE `launchctl print` per run, well inside
+    # the budget MAX_LAUNCHD_PRINT_PROBES exists to protect.
+    try:
+        uid = os.getuid()  # type: ignore[attr-defined]
+    except AttributeError:
+        return None  # no os.getuid (Windows) — cannot probe; stay silent
+    liveness = _launchd_print_liveness(label, uid)
+    if liveness is None:
+        return None  # probe unavailable/erroring — degrade to pre-probe silence
+    runs, last_exit = liveness
+    if runs == 0:
+        plist_path = HOME / "Library" / "LaunchAgents" / f"{label}.plist"
+        exit_note = f", last exit code {last_exit}" if last_exit else ""
+        return (
+            f"  - {label}: registered but has NEVER RUN (runs=0{exit_note}, "
+            "launchctl print) — a hollow job, so the daily summary has never "
+            "been sent from this machine and nothing else reports it. Reload "
+            f"it: launchctl bootout gui/{uid}/{label}; "
+            f"launchctl bootstrap gui/{uid} {plist_path}"
+        )
     return None
 
 

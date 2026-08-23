@@ -29,6 +29,9 @@
 #   3. NEG-CONTROL: script present, job registered under one namespace -> SILENT.
 #   4. ANY-OPERATOR: same, under a completely different namespace -> SILENT.
 #      Case 3 alone would still pass if the suffix match were secretly a literal.
+#   4b. HOLLOW: registered but runs=0 -> FIRES. `launchctl list` shows status 0
+#      for a job that never ran, identical to a healthy one, and the generic
+#      launchd pass skips this label by suffix — so only this finder can see it.
 #   5. END-TO-END: the finding reaches the real SessionStart entrypoint
 #      (main()'s systemMessage), not just the helper function in isolation.
 #
@@ -68,12 +71,15 @@ opt_in_but_broken() {  # <home> -- skill dir present, auto-send.py MISSING
   mkdir -p "$1/.claude/skills/team-broadcast"
 }
 
-# fake_launchctl HOME REGISTERED_LABEL_OR_EMPTY -- puts a fake `launchctl` ahead
-# of the real one on PATH. The hook calls bare `launchctl list` and parses the
-# tab-separated PID/Status/Label table, so the stub prints that table: a header
-# plus one row for REGISTERED, or a header alone when nothing is registered.
+# fake_launchctl HOME REGISTERED_LABEL_OR_EMPTY [RUNS] -- puts a fake `launchctl`
+# ahead of the real one on PATH. Answers the two calls this hook makes:
+#   `launchctl list`                  -> the tab-separated PID/Status/Label table
+#   `launchctl print gui/<uid>/<lbl>` -> the `runs = N` liveness field
+# RUNS defaults to 7 (a job that has actually executed). Pass 0 to model a
+# HOLLOW job: registered, status 0, never once run — indistinguishable from
+# healthy in the `list` table alone, which is the whole reason for the probe.
 fake_launchctl() {
-  local home="$1" registered="$2" bin="$1/fakebin" row=""
+  local home="$1" registered="$2" runs="${3:-7}" bin="$1/fakebin" row=""
   mkdir -p "$bin"
   [ -n "$registered" ] && row="printf -- '-\t0\t%s\n' '$registered'"
   cat > "$bin/launchctl" <<EOF
@@ -82,6 +88,17 @@ if [ "\$1" = "list" ] && [ -z "\${2:-}" ]; then
   printf 'PID\tStatus\tLabel\n'
   $row
   exit 0
+fi
+if [ "\$1" = "print" ]; then
+  if [ -n "$registered" ]; then
+    case "\${2:-}" in
+      *"$registered")
+        printf '\tstate = waiting\n\truns = $runs\n\tlast exit code = 0\n'
+        exit 0
+        ;;
+    esac
+  fi
+  exit 1
 fi
 exit 0
 EOF
@@ -141,6 +158,18 @@ install_broadcast_script "$H4"
 fake_launchctl "$H4" "io.someone-else.team-broadcast-daily"
 run_hook "$H4"
 assert_silent "the suffix match is not secretly a literal: another operator's label also counts as installed"
+
+echo "=== 4b. HOLLOW: registered but runs=0 -> FIRES ==="
+# The case launchd_failures() cannot report: it skips this label by suffix
+# because THIS finder owns it. If the finder reads "registered" as healthy,
+# a daily broadcast that has never once fired is invisible everywhere.
+H4B="$(newhome)"
+install_broadcast_script "$H4B"
+fake_launchctl "$H4B" "com.example.team-broadcast-daily" 0
+run_hook "$H4B"
+assert_fires "fires when the job is registered but has never run"
+assert_has   "names the hollow state" "NEVER RUN"
+assert_has   "gives the reload remedy" "launchctl bootout"
 
 echo "=== 5. END-TO-END: reaches main()'s systemMessage, not just the helper ==="
 H5="$(newhome)"

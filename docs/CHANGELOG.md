@@ -116,6 +116,8 @@ If your session start mentions "background helpers not active", this is what it 
 
 **If you never set up team-broadcast, you will not hear about this at all.** This starter does not install that skill, so a missing one is the normal state for most people, and a warning about a component you never asked for is just noise that teaches you to ignore the rest. The check only speaks up when there is evidence you did set it up here and it since broke: a scheduled job that refers to it, a log from a previous run, or a half-present skill folder.
 
+**And a scheduled job that exists but has never actually run now gets caught too.** macOS reports the same status for a job that ran and finished cleanly as for one that was registered and never fired, so "the schedule is there" was being read as "it is working". The daily summary is the one job where that distinction is the entire point: the failure people actually hit is a broadcast that has never been sent. It now says so and gives you the two commands that reload it.
+
 **Also:** this file's non-ASCII console output (the warning emoji, some em dashes) was carried over from before the UTF-8 console-crash lint was widened to cover `hooks/`. It's provably safe — the only print is `json.dumps(...)`, which escapes non-ASCII before it reaches stdout — so it's now marked `# utf8-stdout-ok` and dropped from the legacy pin list instead of staying silently grandfathered in.
 
 ## 2026-08-05: on Mac and Linux, "daily backup scheduled" now means it really is
