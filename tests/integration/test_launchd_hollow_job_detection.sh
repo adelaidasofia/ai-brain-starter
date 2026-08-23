@@ -186,8 +186,12 @@ fi
 # Assertions 2-5: END-TO-END against the real (post-fix) hook.
 # --------------------------------------------------------------------------
 run_hook() {  # <stdin-json> -> sets RC, writes $OUT / $ERR
-  printf '%s' "$1" | env -u VAULT_ROOT -u SURFACE_STALE_AUTOMATION_BYPASS -u CLAUDE_CWD \
-    HOME="$FIXTURE" USERPROFILE="$(_sandbox_native_path "$FIXTURE")" HOMEDRIVE="" HOMEPATH="" \
+  # Routed through run_sandboxed (tests/integration/lib/sandbox_home.sh) rather
+  # than a hand-rolled HOME=/USERPROFILE= pair: that helper is what
+  # test_home_sandbox_hermeticity.sh recognizes as "paired by construction",
+  # and it is also just less duplication for the same guarantee.
+  printf '%s' "$1" | run_sandboxed "$FIXTURE" \
+    env -u VAULT_ROOT -u SURFACE_STALE_AUTOMATION_BYPASS -u CLAUDE_CWD \
     PATH="$STUB:$PATH" \
     python3 "$HOOK" >"$OUT" 2>"$ERR"
   RC=$?
