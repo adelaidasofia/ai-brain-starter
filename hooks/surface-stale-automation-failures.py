@@ -140,7 +140,7 @@ def fail_count_in_window(
         return 0
 
     try:
-        text = log_path.read_text(errors="replace")
+        text = log_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return 0
 
@@ -343,7 +343,7 @@ def receipts_reconcile_findings(vault: Path | None) -> list[str]:
             f"({newest.name}) — the daily reconcile job may have stopped"
         )
     try:
-        text = newest.read_text(errors="replace")
+        text = newest.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return out
     m = re.search(r"^hard_violations:\s*(\d+)", text, re.MULTILINE)
@@ -386,7 +386,7 @@ def team_broadcast_findings(log_path: Path | None = None) -> list[str]:
     if not log_path.exists():
         return []
     try:
-        text = log_path.read_text(errors="replace")
+        text = log_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
 
