@@ -26,7 +26,7 @@ Journal entries are in: `[VAULT_PATH]/Journals/`
 ### Step 0: Load the journal index
 Read `[VAULT_PATH]/⚙️ Meta/journal-index.json` (or `[VAULT_PATH]/Meta/journal-index.json` on vaults without an emoji-prefixed Meta — the same folder `build-journal-index.py` writes to). Structure: `{"total": N, "last_updated": "YYYY-MM-DD", "entries": [{file, date, floor, floor_level}, ...]}`. Access entries via `idx["entries"]`, then filter by `entry["date"]`.
 
-If the index doesn't exist or is more than 7 days old, rebuild it first:
+If the index doesn't exist or is more than 7 days old, rebuild it first. **Note this check measures age, not completeness** — a freshly built index can still be missing entries written after it. The daily-journal skill rebuilds the index every time it writes an entry, which is what keeps this guard honest; if entries are missing here, that step is the first thing to check:
 ```bash
 /usr/bin/python3 "[VAULT_PATH]/Meta/scripts/build-journal-index.py"
 ```
