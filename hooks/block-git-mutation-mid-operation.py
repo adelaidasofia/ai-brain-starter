@@ -31,11 +31,12 @@ while `.git` was mid-rebase. You had to already suspect the problem to ask the
 question that revealed it. That is what this hook asks, every time, for free.
 
 WHAT IT CHECKS
-  Resolves the git-dir the command would actually act on (honoring `-C <path>`
-  and `--git-dir`, and handling a `.git` FILE that points elsewhere -- the
-  incident repo keeps its working tree in one place and its git-dir in a
-  separate mirror directory, so a naive `<cwd>/.git` guess finds nothing).
-  Then looks for:
+  Resolves the git-dir the command would actually act on (honoring `-C <path>`,
+  `--git-dir`, an inline `GIT_DIR=`, AND a `cd` earlier in the same command --
+  see WHICH REPOSITORY below -- and handling a `.git` FILE that points
+  elsewhere: the incident repo keeps its working tree in one place and its
+  git-dir in a separate mirror directory, so a naive `<cwd>/.git` guess finds
+  nothing). Then looks for:
       rebase-merge/     paused interactive / merge-backend rebase
       rebase-apply/     paused am-backend rebase, or a stopped `git am`
       MERGE_HEAD        merge stopped at conflicts
@@ -47,6 +48,69 @@ WHAT IT CHECKS
   In a linked worktree this deliberately uses `--git-dir`, not
   `--git-common-dir`: in-flight operation state is per-worktree, so the
   per-worktree git-dir is the correct place to look.
+
+WHICH REPOSITORY (added 2026-08-22, after this hook blocked the wrong repo)
+  The hook read `-C`, `--git-dir` and `GIT_DIR`, but not the shell's own `cd`.
+  So for the single most common shape an agent emits --
+
+      cd /other/repo && git commit -m ...
+
+  -- the `cd` segment was parsed, found not to be a git call, and discarded;
+  the `git commit` segment then resolved against the SESSION cwd. That is the
+  wrong repository, and it failed in BOTH directions:
+
+    FALSE BLOCK  session cwd mid-rebase, `cd`-target clean -> refused a commit
+                 to a repo that had nothing in flight, citing an unrelated
+                 repo's rebase. Measured 2026-08-22. This is the direction that
+                 does the lasting damage, because the only way past it is the
+                 bypass var, so it teaches everyone to set
+                 GIT_INFLIGHT_OP_BYPASS=1 reflexively -- and then the guard is
+                 gone for the case it exists to catch.
+    FALSE ALLOW  session cwd clean, `cd`-target mid-rebase -> the commit was
+                 PERMITTED straight into a paused rebase. Measured the same
+                 day. This is the 2026-07-28 incident walking through the front
+                 door of the guard written to stop it.
+
+  So the cwd is now tracked across shell segments. Rules, and why each one:
+    `cd X && git ...`   -> X. `&&` runs the right side only if `cd` SUCCEEDED,
+                           so X is not a guess.
+    `cd X ; git ...`    -> X *and* the previous cwd. `;` runs the right side
+                           whether or not `cd` worked, so the repo is genuinely
+                           ambiguous; both are checked and either one being
+                           mid-operation blocks. Conservative on purpose -- the
+                           ambiguous case must not be the one that loses work.
+    `cd X || git ...`   -> previous cwd. The right side runs only if `cd`
+                           FAILED, so the cwd did not move.
+    `cd X | git ...`    -> previous cwd. A pipeline component is a subshell;
+                           its `cd` does not escape.
+  Bare `cd` resolves to $HOME. `cd -` does NOT: tracking $OLDPWD across the
+  ambiguous separators is more machinery than that shape is worth, and a wrong
+  OLDPWD is a wrong repository, so it takes the fallback below.
+
+  TRACKING IS ABANDONED (falling back to the session cwd -- i.e. exactly what
+  this hook did before any of this existed, so the fallback cannot regress it)
+  the moment the shell stops being readable:
+    - an unquoted `( ... )` subshell anywhere in the command. A subshell scopes
+      its `cd` to the group, so in `(cd /a && git commit) && git push` the push
+      is back at the ORIGINAL cwd. A tracker that missed the `)` would judge
+      the push against /a and could ALLOW a mutation into a stalled repo. The
+      detection is quote-aware: `git commit -m "fix (bug)"` must not trip it,
+      or the false block comes straight back for parenthesised messages.
+    - an unquoted `#` comment. Everything after it is text the shell never
+      runs, so a `cd` sitting there is inert -- but it still looks like a
+      segment. Measured 2026-08-23, same shape as the two below.
+    - an unquoted heredoc (`<<`, `<<<`). A heredoc BODY is data, not commands,
+      but it arrives in the same string and its lines look exactly like
+      segments. Measured 2026-08-23: `cat <<EOF > f` / `cd /clean && echo hi` /
+      `EOF` / `git commit` moved the tracked cwd to /clean off a line the shell
+      only ever wrote to a FILE, and the commit into the stalled session cwd
+      was ALLOWED where the cwd-blind hook blocked it. Same class as the quoted
+      operator above, and the same call `_lib/gh_merge.py` makes.
+    - a `cd` whose destination is not a literal path -- `cd $VAR`,
+      `cd "$(...)"`, a glob, `cd -`, `popd`, a Windows drive-relative path, or
+      more than one operand.
+  Command substitution is NOT a subshell for this purpose: `$(cd /x)` cannot
+  move the caller's cwd, and it tokenizes as one word, not a bare paren.
 
 DETACHED HEAD gets its own, softer path (a warning, not a block) with its own
 message. Committing to a plain detached HEAD is survivable -- you can recover a
@@ -61,6 +125,15 @@ WHAT IS DELIBERATELY NOT BLOCKED
     would trap the repo in the stuck state with the bypass env var as the only
     exit, which trains everyone to disable the guard. Whoever owns the
     operation must be able to end it.
+  - Taking a side on a conflicted PATH: `git checkout --ours|--theirs <path>`
+    and the `git restore` spelling. Same principle one step earlier, and the
+    step that was missing until 2026-08-23. `checkout` and `restore` are both
+    mutating verbs, so the guard allowed `--continue` while blocking every way
+    to REACH it -- the resolution an operation stops for cannot be performed at
+    all. MYC-3779's fourth reporter hit exactly this and bypassed, on a rebase
+    they had started themselves seconds earlier. An escape hatch that does not
+    reach the exit is not an escape hatch. (`git add` was already allowed: it
+    is not a mutating verb by this hook's reckoning.)
   - `git tag` and `git branch`: both were the moves that actually PRESERVED
     work during the incident (a tag anchored an orphan commit; an unrelated
     session branching off it is the only reason six stranded commits survived).
@@ -87,9 +160,9 @@ forward-slash paths ARE covered, which is what Git Bash / WSL / PATH
 invocations actually look like.
 
 The parser reads leading env assignments, transparent wrappers (`env`/`sudo`/
-...), `-C`, `--git-dir`, `GIT_DIR` and `GIT_WORK_TREE`, which is the shape real
-sessions and agents emit. The incidents this exists for were plain `git commit`
-calls.
+...), `-C`, `--git-dir`, `GIT_DIR`, `GIT_WORK_TREE` and a preceding `cd`, which
+is the shape real sessions and agents emit. The incidents this exists for were
+plain `git commit` calls, reached either directly or through a `cd`.
 
 Fails OPEN on any error (missing git, unreadable dir, timeout). A correctness
 guard that hard-fails would block every git command in the repo on a transient
@@ -97,6 +170,32 @@ hiccup; the failure mode it prevents is rare, and the cost of a false block on
 every commit is not worth trading for it.
 
 Bypass: `GIT_INFLIGHT_OP_BYPASS=1` (env or inline prefix). Document why.
+
+BYPASS POLICY (decided 2026-08-23, MYC-3779 predicate 4). The bypass stays
+self-serviceable, and every use of it is now LOUD.
+
+  Why self-serviceable stays. The guard refuses to judge `--abort` vs
+  `--continue` on purpose; that call belongs to whoever owns the operation. A
+  bypass only a second party can grant would, in the one case that matters --
+  an abandoned operation whose owner is gone -- leave the repo with no exit at
+  all. The hook already declines to trap a repo (it never blocks the resolution
+  verbs) and this is the same principle one level up.
+
+  Why that was not enough before. MYC-3779 measured three subagents in one
+  session independently setting this var. Each had verified its own worktree was
+  clean and each was factually right; the guard was evaluating a DIFFERENT repo
+  and was unfalsifiable from where they stood. The honest reading is that the
+  scoping bug manufactured those bypasses -- which is why the fix is the
+  cwd tracking above, not a harder-to-reach escape hatch. Making a correct
+  guard harder to bypass would have punished the agents for the guard's error.
+
+  What changed anyway. A bypass that leaves no trace is a comment, not a
+  control. The bypass is now evaluated AFTER the repository check rather than
+  before it, so the log records what it actually SUPPRESSED -- repo, marker,
+  subcommand -- instead of merely that someone had the variable exported. A
+  bypass that suppresses nothing writes nothing. Blocks are recorded too, so a
+  guard that has gone quiet is distinguishable from one that never fires
+  (a dead guard and a healthy one otherwise emit the same signal).
 """
 
 from __future__ import annotations
@@ -109,10 +208,19 @@ import subprocess
 import sys
 
 BYPASS_VAR = "GIT_INFLIGHT_OP_BYPASS"
+HOOK_NAME = "block-git-mutation-mid-operation"
+
+# Fire telemetry (MYC-285). Fail-open: a missing _lib must never break a
+# fail-open guard, and a telemetry error must never turn an allow into a block.
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_lib"))
+    from guard_telemetry import log_fire
+except Exception:  # pragma: no cover - telemetry is never load-bearing
+    def log_fire(*_a, **_k):
+        return
 
 # Split a command into sequential segments on shell separators so each piece is
 # evaluated independently (mirrors session-lock.py / check-cd-outside-worktree.py).
-SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||[;\n|]")
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 # Transparent wrappers to skip before identifying `git`
@@ -131,6 +239,25 @@ MUTATING_SUBCOMMANDS = {
 # Subcommands that OWN an in-flight operation and can therefore end it.
 RESOLVABLE_SUBCOMMANDS = {"rebase", "merge", "cherry-pick", "revert", "am"}
 RESOLUTION_FLAGS = {"--abort", "--continue", "--skip", "--quit"}
+
+# Taking a side on a conflicted PATH. `git checkout --ours <f>` /
+# `--theirs <f>` (and the `git restore` spelling) are how a human or an agent
+# actually resolves the conflict an operation stopped on -- and both verbs sit
+# in MUTATING_SUBCOMMANDS, so until now the guard blocked every route from
+# "stopped at a conflict" to "`--continue`", while cheerfully allowing
+# `--continue` itself. That is an outage with a good error message: the only
+# way forward was the bypass, on the one repo where the guard is RIGHT.
+#
+# Narrow on purpose. The side flags are meaningless outside a conflicted path,
+# so `--ours` cannot smuggle a branch switch: `git checkout --ours main` is a
+# PATHSPEC operation, not a checkout of `main`. Bare `git checkout <branch>`
+# stays blocked (it abandons the operation), and so does bare `git commit`
+# (that IS the 2026-07-28 incident; every operation has a `--continue` that
+# concludes it properly). Neither of these verbs can create a commit, so
+# neither can land work on the doomed detached HEAD this hook exists to
+# protect.
+CONFLICT_SIDE_SUBCOMMANDS = {"checkout", "restore"}
+CONFLICT_SIDE_FLAGS = {"--ours", "--theirs"}
 
 # git global options that consume the FOLLOWING token as their value.
 GIT_GLOBAL_VALUE_OPTS = {
@@ -163,13 +290,41 @@ IN_FLIGHT_MARKERS = [
     ("sequencer", "multi-commit cherry-pick/revert sequence, mid-run", "cherry-pick"),
 ]
 
+# Shell builtins that move the working directory. `pushd` moves it too; `popd`
+# moves it back to a stack this hook never saw, so it is unresolvable by
+# construction and is listed to force the fallback rather than be mistaken for
+# a non-cd command.
+CD_BUILTINS = {"cd", "pushd"}
+UNRESOLVABLE_CD_BUILTINS = {"popd"}
+CD_FLAGS = {"-L", "-P", "-e", "-@"}
+
+# A destination containing any of these is not a literal path: the shell would
+# expand it and this hook would resolve the pre-expansion text to the wrong
+# directory. `$`/backtick are substitution, the rest are globs.
+UNRESOLVABLE_PATH_CHARS = ("$", "`", "*", "?", "[")
+
+# A Windows drive-relative destination. Found by the pre-push doubt-pass, not by
+# a failing test. `shlex` eats the backslashes in `cd C:\repo` (it is a POSIX
+# tokenizer and a backslash is an escape), leaving `C:repo` -- which `isabs`
+# rejects on BOTH platforms, so it got joined onto the base, produced a
+# directory that does not exist, failed the isdir check and made the hook SKIP
+# the git call entirely. Skipping is the false-allow direction. Treat any
+# `X:`-prefixed destination that is not already absolute as unresolvable so it
+# takes the documented session-cwd fallback instead.
+WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+
+# Sentinel: the segment is not a `cd` at all (distinct from a `cd` we could not
+# resolve, which must abandon tracking -- collapsing the two would silently
+# turn every unreadable `cd` into "cwd unchanged", the false-allow direction).
+NOT_A_CD = object()
+
 GIT_TIMEOUT_SEC = 5
 
 
 def _inline_bypass(command: str, var: str) -> bool:
     """True iff `<var>=1` leads any shell segment of `command`. A quoted token
     is not a leading assignment (`echo 'X=1'` -> no)."""
-    for seg in SEGMENT_SPLIT_RE.split(command):
+    for seg in _segments(command)[0]:
         try:
             tokens = shlex.split(seg)
         except ValueError:
@@ -182,6 +337,218 @@ def _inline_bypass(command: str, var: str) -> bool:
                 if k == var and v == "1":
                     return True
     return False
+
+
+def _segments(command: str):
+    """Split `command` into sequential shell segments plus the separator between
+    each pair, ignoring operators that sit INSIDE quotes.
+
+    Returns (segments, separators); separators[i] is the one FOLLOWING
+    segments[i], because `cd X && git ...` and `cd X || git ...` put the git
+    call in different directories and only the separator says which.
+
+    QUOTE AWARENESS IS LOAD-BEARING HERE, not tidiness. This started as a plain
+    `re.split` on the operators, and with cwd tracking on top of it,
+
+        echo "a ; cd /elsewhere" && git commit
+
+    split into a phantom `cd /elsewhere` segment cut out of text the shell never
+    executes. The tracker followed the phantom, the git call was judged against
+    a directory that does not exist, the isdir check skipped it, and a commit
+    into a PAUSED REBASE was ALLOWED. Measured 2026-08-23 during the pre-merge
+    doubt-pass: on that exact command the older, cwd-blind hook returned 2 and
+    the cwd-tracking one returned 0. The tracker did not merely fail to help --
+    it opened a hole the naive version did not have.
+
+    A quote-aware walk is also what `_lib/gh_merge.py` settled on for the same
+    class (MYC-357: `echo '... && gh pr merge 1'` minted a real marker off a
+    quoted string). Same bug, same shape, same fix.
+
+    Segments keep their quotes, so each one is independently balanced and
+    `shlex.split` succeeds on it. `&` is deliberately NOT a split point: leaving
+    `cd /a & git commit` as one segment makes the `cd` unparseable, which takes
+    the safe session-cwd fallback rather than a guess about backgrounding.
+    """
+    segs, seps, cur = [], [], []
+    i, n, quote = 0, len(command), None
+    while i < n:
+        c = command[i]
+        if quote:                        # inside quotes: copy through to the close
+            cur.append(c)
+            if c == "\\" and quote == '"' and i + 1 < n and command[i + 1] in '"\\$`':
+                cur.append(command[i + 1]); i += 2; continue
+            if c == quote:
+                quote = None
+            i += 1
+            continue
+        if c in ("'", '"'):
+            quote = c; cur.append(c); i += 1; continue
+        if c == "\\" and i + 1 < n:      # escaped operator outside quotes -> literal
+            cur.append(c); cur.append(command[i + 1]); i += 2; continue
+        two = command[i:i + 2]
+        if two in ("&&", "||"):
+            segs.append("".join(cur)); seps.append(two); cur = []; i += 2; continue
+        if c in (";", "\n", "|"):
+            segs.append("".join(cur)); seps.append(c); cur = []; i += 1; continue
+        cur.append(c); i += 1
+    segs.append("".join(cur))
+    return segs, seps
+
+
+# THE PROPERTY, not a list of syntax we happened to think of: a construct
+# belongs here iff it can make a computed segment boundary FAKE, or make a `cd`
+# we parsed INERT. Enumerated against that test, the shell's command-list
+# grammar yields exactly three, and each one was measured producing a
+# false ALLOW on this hook before it was added:
+#   ( )    subshell     -- scopes its own `cd`; it does not escape the group
+#   << <<< heredoc      -- the BODY is data whose lines look like commands
+#   #      comment      -- the tail is text the shell never runs
+# Deliberately NOT here, having been checked against the same property:
+#   > >> < 2>  redirects  -- create no boundary and leave no `cd` inert
+#   &          background -- `cd /a & git ...` leaves the `cd` with >1 operand,
+#                            so it is already unresolvable and takes the
+#                            session-cwd fallback
+#   $( ) ` `   substitution -- cannot move the CALLER's cwd, and tokenizes as
+#                            one word rather than a bare paren
+# Quoting is not on this list because it is not a bail: `_segments` handles it
+# correctly, which is the whole point of it being quote-aware.
+UNREADABLE_SHAPE_TOKENS = {"(", ")", "<<", "<<<", "#"}
+
+
+def _unreadable_shape(command: str) -> bool:
+    """True iff `command` has an UNQUOTED construct that invalidates cwd tracking.
+
+    Quote-aware by construction: tokenized with `shlex` in punctuation mode, a
+    paren or `<<` inside a quoted word stays inside that word (`git commit -m
+    "fix (bug)"` -> [..., 'fix (bug)']) while a real subshell or heredoc becomes
+    its own token (`(cd /a && git commit)` -> ['(', ..., ')']; `cat <<EOF` ->
+    ['cat', '<<', 'EOF']). A naive substring test would confuse the two and
+    re-break every commit message containing a paren, a `<<`, or an issue
+    number like "#42".
+
+    `commenters` is cleared so an unquoted `#` survives as its own token. Left
+    at the default, `shlex` silently DISCARDS the comment tail -- and a comment
+    tail is precisely where a phantom `cd` hides from this check.
+
+    Command substitution deliberately does NOT count: `$(...)` tokenizes as a
+    single word, and a substitution cannot move the caller's cwd anyway.
+
+    Fails toward True (abandon tracking, resolve from the session cwd) on any
+    tokenizer error -- an unbalanced quote means the shape is unreadable, and
+    an unreadable shape must not drive a repository decision.
+    """
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        lex.commenters = ""   # see docstring: the default HIDES comment tails
+        return any(tok in UNREADABLE_SHAPE_TOKENS for tok in lex)
+    except (ValueError, AttributeError):
+        return True
+
+
+def _cd_targets(segment: str, bases):
+    """Where a `cd` segment would land, relative to each of `bases`.
+
+    Returns NOT_A_CD when the segment is not a cd, None when it is a cd whose
+    destination cannot be resolved literally, else a list of absolute paths
+    (one per base, since a RELATIVE `cd` means something different from each).
+    """
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
+        tokens = segment.split()
+
+    i = 0
+    while i < len(tokens) and (
+        ENV_ASSIGN_RE.match(tokens[i]) or tokens[i] in WRAPPER_PREFIXES
+    ):
+        i += 1
+    if i >= len(tokens):
+        return NOT_A_CD
+    builtin = tokens[i]
+    if builtin in UNRESOLVABLE_CD_BUILTINS:
+        return None
+    if builtin not in CD_BUILTINS:
+        return NOT_A_CD
+
+    rest = []
+    seen_ddash = False
+    for tok in tokens[i + 1:]:
+        if not seen_ddash and tok == "--":
+            seen_ddash = True
+            continue
+        if not seen_ddash and not rest and tok in CD_FLAGS:
+            continue
+        rest.append(tok)
+
+    if not rest:
+        # Bare `cd` is $HOME; bare `pushd` swaps the top of a stack we cannot see.
+        if builtin == "pushd":
+            return None
+        home = os.path.expanduser("~")
+        return [os.path.normpath(home)] if home and home != "~" else None
+    if len(rest) > 1:
+        return None
+
+    dest = rest[0]
+    if dest == "-":
+        # $OLDPWD. Deliberately NOT resolved: tracking it correctly across the
+        # ambiguous separators is more machinery than the shape is worth, and a
+        # wrong OLDPWD is a wrong repository. Falls back to the session cwd.
+        return None
+    if any(c in dest for c in UNRESOLVABLE_PATH_CHARS):
+        return None
+
+    dest = os.path.expanduser(dest)
+    if os.path.isabs(dest):
+        return [os.path.normpath(dest)]
+    if WINDOWS_DRIVE_RE.match(dest) or "\\" in dest:
+        return None  # drive-relative / backslashed: not resolvable here
+    return [os.path.normpath(os.path.join(b, dest)) for b in bases]
+
+
+def _cwd_candidates_by_segment(command: str, session_cwd: str):
+    """Per shell segment, the working directories a command there could run in.
+
+    Aligned index-for-index with `_segments(command)[0]`, which is what
+    `_git_invocations` walks -- the same function, so the indices cannot drift.
+    Usually a single directory; more than one only for the genuinely ambiguous
+    `cd X ; git ...`, where the caller checks every candidate and blocks if ANY
+    is mid-operation.
+    """
+    segments, separators = _segments(command)
+
+    if _unreadable_shape(command):
+        return [[session_cwd] for _ in segments]
+
+    out = []
+    current = [session_cwd]
+    tracking = True
+    for idx, seg in enumerate(segments):
+        out.append(list(current))
+        if not tracking:
+            continue
+
+        targets = _cd_targets(seg, current)
+        if targets is NOT_A_CD:
+            continue
+        if targets is None:
+            # An unreadable `cd`: stop guessing and fall back to the session cwd
+            # for the rest of the command -- byte-for-byte the behavior this
+            # hook had before cwd tracking existed, so it cannot regress it.
+            tracking = False
+            current = [session_cwd]
+            continue
+
+        sep = separators[idx] if idx < len(separators) else None
+        prev = current
+        if sep == "&&":
+            current = targets                      # cd must have succeeded
+        elif sep in (";", "\n"):
+            current = targets + [p for p in prev if p not in targets]
+        else:
+            current = prev                         # `||` / `|`: cd did not apply
+    return out
 
 
 def _is_git_exe(token: str) -> bool:
@@ -200,10 +567,14 @@ def _is_git_exe(token: str) -> bool:
 
 
 def _git_invocations(command: str):
-    """Yield (subcommand, args, workdir_override, gitdir_override) for each git
-    call in `command`. Skips leading env assignments and transparent wrappers so
-    `FOO=1 sudo git commit` is still seen as a commit."""
-    for seg in SEGMENT_SPLIT_RE.split(command):
+    """Yield (segment_index, subcommand, args, workdir_override, gitdir_override)
+    for each git call in `command`. Skips leading env assignments and transparent
+    wrappers so `FOO=1 sudo git commit` is still seen as a commit.
+
+    The segment index is what lets the caller look up the working directory a
+    preceding `cd` put this call in; it indexes the same split, so it stays
+    correct even when earlier segments are skipped."""
+    for seg_index, seg in enumerate(_segments(command)[0]):
         seg = seg.strip()
         if not seg:
             continue
@@ -267,14 +638,23 @@ def _git_invocations(command: str):
 
         if i >= len(tokens):
             continue
-        yield tokens[i], tokens[i + 1:], workdir_override, gitdir_override
+        yield seg_index, tokens[i], tokens[i + 1:], workdir_override, gitdir_override
 
 
 def _is_resolution(subcmd: str, args) -> bool:
-    """`git rebase --abort`, `git merge --continue`, `git bisect reset`, ... --
-    the acts that END an in-flight operation. Never blocked."""
+    """The acts that ADVANCE or END an in-flight operation. Never blocked.
+
+    Two families: the operation-level verbs (`git rebase --abort`,
+    `git merge --continue`, `git bisect reset`) and the path-level ones that
+    take a side on a conflict (`git checkout --ours <f>`). Allowing only the
+    first is what MYC-3779's fourth reporter hit on 2026-08-22: the guard let
+    them run `--continue` but blocked every way to REACH it, so the bypass was
+    the only exit on the repo the guard was correctly protecting.
+    """
     if subcmd in RESOLVABLE_SUBCOMMANDS:
         return any(a in RESOLUTION_FLAGS for a in args)
+    if subcmd in CONFLICT_SIDE_SUBCOMMANDS:
+        return any(a in CONFLICT_SIDE_FLAGS for a in args)
     if subcmd == "bisect":
         return bool(args) and args[0] in {"reset", "bad", "good", "skip", "log", "view"}
     return False
@@ -326,17 +706,36 @@ def _is_detached(git_dir: str) -> bool:
 
 
 def _block_message(subcmd: str, marker: str, desc: str, owner: str,
-                   git_dir: str, workdir: str) -> str:
+                   git_dir: str, workdir: str, moved: bool = False,
+                   ambiguous: bool = False, session_cwd: str = "") -> str:
     resolution = (
         "  git bisect reset\n" if owner == "bisect"
         else "  git %s --abort      # or --continue -- see above, it is a real choice\n" % owner
     )
+    # Say HOW this directory was arrived at whenever it is not the session cwd.
+    # Without it the block reads as though it were about the session's own repo,
+    # which is exactly the confusion that made the old wrong-repo block look
+    # like a bug in the guard rather than a real finding about another repo.
+    provenance = ""
+    if moved:
+        provenance += (
+            f"  reached via : a `cd` earlier in this same command\n"
+            f"  session cwd : {session_cwd or '(unknown)'}  <- NOT the repo above\n"
+        )
+    if ambiguous:
+        provenance += (
+            "  ambiguity   : `;` runs the next command whether or not the `cd` "
+            "succeeded, so every candidate directory was checked and this one "
+            "is mid-operation. Use `&&` to pin it.\n"
+        )
     return (
         f"BLOCKED: `git {subcmd}` would mutate a repository that has an "
         f"operation already IN FLIGHT.\n\n"
         f"  working dir : {workdir}\n"
         f"  git-dir     : {git_dir}\n"
-        f"  in flight   : {marker}  ({desc})\n\n"
+        f"  in flight   : {marker}  ({desc})\n"
+        + provenance +
+        "\n"
         "HEAD is almost certainly detached onto that operation's temporary base. "
         "A commit here does NOT land on the branch you think it does -- it lands "
         "on the in-flight state, and the next `--abort` moves the branch out from "
@@ -390,8 +789,11 @@ def _detached_warning(subcmd: str, git_dir: str, workdir: str) -> str:
 
 
 def main() -> int:
-    if os.environ.get(BYPASS_VAR) == "1":
-        return 0
+    # NOTE: the bypass is resolved here but APPLIED at the block site, so the
+    # audit record can name what it suppressed. Returning early here would make
+    # every bypass indistinguishable from every other -- including the ones that
+    # suppressed nothing at all.
+    bypass_env = os.environ.get(BYPASS_VAR) == "1"
 
     try:
         payload = json.loads(sys.stdin.read() or "{}")
@@ -412,42 +814,70 @@ def main() -> int:
     if "git" not in command.lower():
         return 0
 
-    if _inline_bypass(command, BYPASS_VAR):
-        return 0
+    bypassed = bypass_env or _inline_bypass(command, BYPASS_VAR)
 
     session_cwd = payload.get("cwd") or os.getcwd()
+    seg_cwds = _cwd_candidates_by_segment(command, session_cwd)
     warnings = []
+    warned_git_dirs = set()
 
-    for subcmd, args, workdir_override, gitdir_override in _git_invocations(command):
+    for seg_index, subcmd, args, workdir_override, gitdir_override in _git_invocations(command):
         if subcmd not in MUTATING_SUBCOMMANDS:
             continue
         if _is_resolution(subcmd, args):
             continue  # ending the operation is exactly what should stay possible
 
-        workdir = session_cwd
-        if workdir_override:
-            workdir = os.path.normpath(
-                os.path.join(session_cwd, os.path.expanduser(workdir_override))
-            )
-        if not os.path.isdir(workdir):
-            continue
+        bases = seg_cwds[seg_index] if seg_index < len(seg_cwds) else [session_cwd]
+        moved = bases != [session_cwd]
+        ambiguous = len(bases) > 1
+        seen_git_dirs = set()
 
-        git_dir = _resolve_git_dir(workdir, gitdir_override)
-        if not git_dir or not os.path.isdir(git_dir):
-            continue  # not a git repo (or unreadable) -> fail open
+        for base in bases:
+            workdir = base
+            if workdir_override:
+                # An ABSOLUTE `-C` outranks the base outright -- os.path.join
+                # already discards the left side for an absolute right side, so
+                # every base collapses to the same target and the dedupe below
+                # keeps this to one resolution.
+                workdir = os.path.normpath(
+                    os.path.join(base, os.path.expanduser(workdir_override))
+                )
+            if not os.path.isdir(workdir):
+                continue
 
-        found = _in_flight(git_dir)
-        if found:
-            marker, desc, owner = found
-            sys.stderr.write(
-                _block_message(subcmd, marker, desc, owner, git_dir, workdir)
-            )
-            return 2
+            git_dir = _resolve_git_dir(workdir, gitdir_override)
+            if not git_dir or not os.path.isdir(git_dir):
+                continue  # not a git repo (or unreadable) -> fail open
+            if git_dir in seen_git_dirs:
+                continue  # several candidate dirs, one underlying repository
+            seen_git_dirs.add(git_dir)
 
-        if _is_detached(git_dir):
-            warnings.append(_detached_warning(subcmd, git_dir, workdir))
+            found = _in_flight(git_dir)
+            if found:
+                marker, desc, owner = found
+                if bypassed:
+                    # Honored -- and now on the record, with the thing it let
+                    # through. This is the ONLY place a bypass is logged: one
+                    # that suppressed nothing is not worth a line.
+                    log_fire(HOOK_NAME, status="bypassed", subcmd=subcmd,
+                             marker=marker, workdir=workdir, git_dir=git_dir,
+                             via="env" if bypass_env else "inline")
+                    return 0
+                log_fire(HOOK_NAME, status="blocked", subcmd=subcmd,
+                         marker=marker, workdir=workdir, git_dir=git_dir)
+                sys.stderr.write(_block_message(
+                    subcmd, marker, desc, owner, git_dir, workdir,
+                    moved=moved, ambiguous=ambiguous, session_cwd=session_cwd,
+                ))
+                return 2
 
-    if warnings:
+            # One warning per repository, not per candidate path that reaches it.
+            if _is_detached(git_dir) and git_dir not in warned_git_dirs:
+                warned_git_dirs.add(git_dir)
+                warnings.append(_detached_warning(subcmd, git_dir, workdir))
+
+    if warnings and not bypassed:
+        log_fire(HOOK_NAME, status="warned", detail="detached-head")
         print(json.dumps({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
