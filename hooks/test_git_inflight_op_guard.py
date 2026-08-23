@@ -33,6 +33,8 @@ Legs:
       any of the three opened a hole the cwd-blind hook did not have.
   17. The bypass leaves an audit record naming what it SUPPRESSED, and a bypass
       that suppressed nothing leaves none
+  18. The conflict-RESOLUTION path is reachable -- the guard allowed
+      `--continue` while blocking every way to get there
 
 Stdlib only. Exit 0 = all pass.
 """
@@ -730,6 +732,39 @@ def main():
         os.remove(TELEMETRY_LOG)
     except OSError:
         pass
+
+    # ----------------------------------------------------------------- leg 18
+    # An escape hatch that does not reach the exit is not an escape hatch.
+    # `checkout` and `restore` are both mutating verbs, so the guard blocked
+    # `git checkout --ours <f>` -- the ONLY way to resolve the conflict an
+    # operation stopped on -- while allowing `git rebase --continue`, the step
+    # AFTER it. On a repo where the guard is RIGHT to be watching, the bypass
+    # was the only route forward. MYC-3779's fourth reporter hit exactly this
+    # on 2026-08-22, on a rebase they had started themselves seconds earlier,
+    # and bypassed three times.
+    reachable = ["git checkout --ours f.txt", "git checkout --theirs f.txt",
+                 "git restore --ours f.txt", "git add f.txt",
+                 "git rebase --continue"]
+    trapped = [c for c in reachable if run_hook(c, cwd=stalled)[0] != 0]
+    if not trapped:
+        ok("18a. Every step of the conflict-resolution path is reachable")
+    else:
+        bad("18a. resolution path trapped",
+            "blocked, leaving the bypass as the only exit: " + ", ".join(trapped))
+
+    # 18b. ...and the widening stops exactly there. The side flags are
+    # meaningless outside a conflicted path, so `--ours` cannot smuggle a branch
+    # switch; everything that could abandon the operation or land a commit on
+    # its doomed detached HEAD stays blocked.
+    still_blocked = ["git checkout main", "git checkout -b other",
+                     "git restore f.txt", "git commit -m x",
+                     "git reset --hard", "git push"]
+    leaked = [c for c in still_blocked if run_hook(c, cwd=stalled)[0] != 2]
+    if not leaked:
+        ok("18b. Bare checkout/restore/commit/reset/push are still refused")
+    else:
+        bad("18b. resolution allow-list too wide",
+            "these should still block: " + ", ".join(leaked))
     subprocess.run(["rm", "-rf", tmp], capture_output=True)
 
     print("\n%d passed, %d failed" % (PASS, FAIL))

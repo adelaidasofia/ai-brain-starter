@@ -125,6 +125,15 @@ WHAT IS DELIBERATELY NOT BLOCKED
     would trap the repo in the stuck state with the bypass env var as the only
     exit, which trains everyone to disable the guard. Whoever owns the
     operation must be able to end it.
+  - Taking a side on a conflicted PATH: `git checkout --ours|--theirs <path>`
+    and the `git restore` spelling. Same principle one step earlier, and the
+    step that was missing until 2026-08-23. `checkout` and `restore` are both
+    mutating verbs, so the guard allowed `--continue` while blocking every way
+    to REACH it -- the resolution an operation stops for cannot be performed at
+    all. MYC-3779's fourth reporter hit exactly this and bypassed, on a rebase
+    they had started themselves seconds earlier. An escape hatch that does not
+    reach the exit is not an escape hatch. (`git add` was already allowed: it
+    is not a mutating verb by this hook's reckoning.)
   - `git tag` and `git branch`: both were the moves that actually PRESERVED
     work during the incident (a tag anchored an orphan commit; an unrelated
     session branching off it is the only reason six stranded commits survived).
@@ -230,6 +239,25 @@ MUTATING_SUBCOMMANDS = {
 # Subcommands that OWN an in-flight operation and can therefore end it.
 RESOLVABLE_SUBCOMMANDS = {"rebase", "merge", "cherry-pick", "revert", "am"}
 RESOLUTION_FLAGS = {"--abort", "--continue", "--skip", "--quit"}
+
+# Taking a side on a conflicted PATH. `git checkout --ours <f>` /
+# `--theirs <f>` (and the `git restore` spelling) are how a human or an agent
+# actually resolves the conflict an operation stopped on -- and both verbs sit
+# in MUTATING_SUBCOMMANDS, so until now the guard blocked every route from
+# "stopped at a conflict" to "`--continue`", while cheerfully allowing
+# `--continue` itself. That is an outage with a good error message: the only
+# way forward was the bypass, on the one repo where the guard is RIGHT.
+#
+# Narrow on purpose. The side flags are meaningless outside a conflicted path,
+# so `--ours` cannot smuggle a branch switch: `git checkout --ours main` is a
+# PATHSPEC operation, not a checkout of `main`. Bare `git checkout <branch>`
+# stays blocked (it abandons the operation), and so does bare `git commit`
+# (that IS the 2026-07-28 incident; every operation has a `--continue` that
+# concludes it properly). Neither of these verbs can create a commit, so
+# neither can land work on the doomed detached HEAD this hook exists to
+# protect.
+CONFLICT_SIDE_SUBCOMMANDS = {"checkout", "restore"}
+CONFLICT_SIDE_FLAGS = {"--ours", "--theirs"}
 
 # git global options that consume the FOLLOWING token as their value.
 GIT_GLOBAL_VALUE_OPTS = {
@@ -614,10 +642,19 @@ def _git_invocations(command: str):
 
 
 def _is_resolution(subcmd: str, args) -> bool:
-    """`git rebase --abort`, `git merge --continue`, `git bisect reset`, ... --
-    the acts that END an in-flight operation. Never blocked."""
+    """The acts that ADVANCE or END an in-flight operation. Never blocked.
+
+    Two families: the operation-level verbs (`git rebase --abort`,
+    `git merge --continue`, `git bisect reset`) and the path-level ones that
+    take a side on a conflict (`git checkout --ours <f>`). Allowing only the
+    first is what MYC-3779's fourth reporter hit on 2026-08-22: the guard let
+    them run `--continue` but blocked every way to REACH it, so the bypass was
+    the only exit on the repo the guard was correctly protecting.
+    """
     if subcmd in RESOLVABLE_SUBCOMMANDS:
         return any(a in RESOLUTION_FLAGS for a in args)
+    if subcmd in CONFLICT_SIDE_SUBCOMMANDS:
+        return any(a in CONFLICT_SIDE_FLAGS for a in args)
     if subcmd == "bisect":
         return bool(args) and args[0] in {"reset", "bad", "good", "skip", "log", "view"}
     return False
