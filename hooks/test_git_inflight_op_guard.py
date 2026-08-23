@@ -683,10 +683,16 @@ def main():
     # control for the control: shipping the telemetry without proving it writes
     # would be the same unfalsifiable-guard mistake one level up.
     def _telemetry():
+        # (OSError, ValueError), not bare OSError: `open(encoding=)` raises
+        # UnicodeDecodeError and `json.loads` raises JSONDecodeError, and BOTH
+        # are ValueError subclasses that a bare OSError handler lets escape.
+        # Returning [] on a corrupt log makes the legs below FAIL loudly, which
+        # is the right direction for a control -- an exception here would abort
+        # the suite instead of reporting that the audit trail is unreadable.
         try:
             with open(TELEMETRY_LOG, encoding="utf-8") as fh:
                 return [json.loads(ln) for ln in fh if ln.strip()]
-        except OSError:
+        except (OSError, ValueError):
             return []
 
     for _p in (TELEMETRY_LOG,):
