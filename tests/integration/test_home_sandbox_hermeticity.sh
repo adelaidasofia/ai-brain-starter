@@ -28,6 +28,18 @@
 #      means it read and wrote the developer's REAL health database.
 #   3. Its own negative control only proved the detector fired, never that a
 #      correctly-paired site was left alone.
+#   4. It built the offender list with `mapfile`, a bash-4 builtin. macOS ships
+#      bash 3.2 (2007) as /bin/bash, where that builtin does not exist -- and
+#      because this file runs `set -uo pipefail` WITHOUT `-e`, the failure was
+#      non-fatal. OFFENDERS stayed unset, the `${#OFFENDERS[@]}` test errored to
+#      stderr, check 1 -- this file's entire reason to exist -- never evaluated,
+#      and the run still printed PASS=6 FAIL=0 and exited 0. Linux CI (bash 4+)
+#      is blind to it by construction: a gate cannot catch a defect its own
+#      runner is incapable of expressing. Fixed three ways below: a portable
+#      read loop, a control proving that loop actually POPULATES, and a
+#      check-count invariant that fails loud when any check silently skips.
+#      The repo-wide half is tests/integration/test_bash32_portability.sh,
+#      which enforces scripts/PORTABILITY.md section 4 over every tracked *.sh.
 #
 # The companion runtime tripwire in scripts/ci.sh watches the real ~/.claude for
 # actual writes. This static half catches the mistake at author time on Linux CI,
@@ -44,6 +56,11 @@ cd "$REPO_ROOT" || exit 1
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS + 1)); echo "PASS  $1"; }
 bad() { FAIL=$((FAIL + 1)); echo "FAIL  $1 :: $2"; }
+
+# Every check below must report exactly once. Asserted at the bottom, because
+# `set -u` without `-e` lets a check that cannot EVALUATE disappear silently
+# instead of failing (see item 4 in the header). Bump this when adding a check.
+EXPECTED_CHECKS=8
 
 # Tests that assign HOME but are deliberately NOT converted. Each needs a reason.
 # Rule: the test must not reach the installer/merge path or any other writer of
@@ -166,13 +183,31 @@ for o in offenders:
 PY
 }
 
+# Fills the global OFFENDERS array from a run_scan output blob.
+#
+# bash-3.2-safe by construction: no `mapfile` (bash 4+, absent from macOS
+# /bin/bash), no `readarray -d` (4.4+). See scripts/PORTABILITY.md section 4.
+# The `|| [ -n "$line" ]` tail is not decoration -- command substitution strips
+# the trailing newline, so the final record arrives unterminated and a bare
+# `read` would return non-zero and drop it.
+#
+# OFFENDERS is reset here rather than at the call site so `set -u` can never see
+# it unset, whatever happens inside the loop.
+collect_offenders() {  # collect_offenders <run_scan-output>
+  OFFENDERS=()
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] && OFFENDERS+=("$line")
+  done < <(printf '%s' "$1" | sed -n 's/^OFFENDER=//p')
+}
+
 export SANDBOX_EXEMPT
 
 echo "=== 1. every HOME site pairs with a USERPROFILE (shell + python suites) ==="
 OUT="$(run_scan "")"
 FILES="$(printf '%s' "$OUT" | sed -n 's/^FILES=//p')"
 SITES="$(printf '%s' "$OUT" | sed -n 's/^SITES=//p')"
-mapfile -t OFFENDERS < <(printf '%s' "$OUT" | sed -n 's/^OFFENDER=//p')
+collect_offenders "$OUT"
 
 if [ "${FILES:-0}" -eq 0 ] || [ "${SITES:-0}" -eq 0 ]; then
   bad "detector matched something" "scanned $FILES file(s) / $SITES site(s) — the pattern must have rotted"
@@ -254,7 +289,34 @@ else
   bad "helper control" "a helper call site was flagged"
 fi
 
+# (e) the PLUMBING control. Controls (a)-(d) count OFFENDER= lines with `grep -c`
+# and so exercise the detector only. They stayed green through the whole macOS
+# outage described in header item 4, because the thing that was broken was the
+# step BETWEEN the detector and the verdict: filling the OFFENDERS array. This
+# runs a deliberately unpaired fixture through the exact code path check 1 uses,
+# and asserts the array is populated -- so the array-building idiom can never
+# again fail silently while the file reports PASS.
+cat > "$CTL/unpaired.sh" <<'EOF'
+#!/usr/bin/env bash
+export HOME="$LEAKY"
+EOF
+collect_offenders "$(run_scan "$CTL/unpaired.sh")"
+if [ "${#OFFENDERS[@]}" -eq 1 ] && case "${OFFENDERS[0]}" in *unpaired.sh:2:*) true ;; *) false ;; esac; then
+  ok "an unpaired HOME site reaches the verdict through the OFFENDERS array"
+else
+  bad "offender-plumbing control" "collect_offenders returned ${#OFFENDERS[@]} entry(ies) for a fixture with exactly 1 unpaired HOME site — the array-building step between the detector and the verdict is broken, which is precisely the failure that made check 1 evaluate nothing while the file still printed PASS"
+fi
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
+# Fail loud when a check did not EVALUATE. Without this, a check killed mid-run
+# (missing builtin, unset var — `set -u`, no `-e`) prints to stderr and simply
+# never reports, and the surviving checks render a clean PASS=N FAIL=0 that is
+# indistinguishable from real success. A guard that cannot run its own spec must
+# fail, not no-op.
+if [ "$((PASS + FAIL))" -ne "$EXPECTED_CHECKS" ]; then
+  echo "FAIL  check-count invariant :: only $((PASS + FAIL)) of $EXPECTED_CHECKS checks reported — one did not evaluate. Read stderr above for the cause; a bash-4-only builtin under macOS /bin/bash (3.2) is the known one. This is NOT a pass." >&2
+  exit 1
+fi
 [ "$FAIL" -eq 0 ] || exit 1
 echo "PASS: HOME sandboxing is hermetic on Windows as well as POSIX (MYC-3536)"

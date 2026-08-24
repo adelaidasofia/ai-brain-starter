@@ -284,6 +284,21 @@ type: runbook
 
 **118.** `graphify-out/` is typically gitignored. graph.json, GRAPH_REPORT.md, COVERAGE_REPORT.md cannot be committed. Only files outside it (insights markdown, CLAUDE.md, scripts) go into snapshots. `git add <out_dir>/...` is a silent no-op. Confirm with `git check-ignore <path>` if uncertain.
 
+## Report hygiene inside a real vault (119-121)
+
+**119.** The report's `## Community Hubs (Navigation)` section links one `[[_COMMUNITY_*]]` note per community, and those notes exist ONLY in the opt-in Obsidian export (Step 6). On a default run every link is unresolved, and Obsidian renders an unresolved link as a graph node. Measured on a 14,046-node vault: 2,695 grey placeholder nodes radiating from one file, swamping the user's real graph. Always run `scripts/graphify_report_sanitize.py` after ANY `report.generate()` — including Step 5, which rewrites the whole file and otherwise reinstates every ghost. Hand-cleaning the markdown does NOT hold: the next run regenerates it. Verify with `--check` (exit 1 on any surviving ghost).
+
+**120.** Most detected "communities" are not topics. On the same vault, 51% held a SINGLE node and 96% held ≤4 — extraction fragments. Only 101 communities had ≥5 nodes, and those covered 70% of all nodes. Label above the floor (≥5 nodes, ceiling 50 communities); listing the tail as navigation is noise, and naming it is wasted LLM spend.
+
+**121.** Never seed labels as `Community {cid}` — whatever labeling doesn't finish stays a bare index forever, which is what users see. `scripts/graphify_seed_labels.py` names each community after its highest-degree member, skipping dates / phone numbers / attachment stubs that win on degree while saying nothing ("Money", "Fear", "Learning", not "Community 0..2"). For a report already generated with placeholders, relabel WITHOUT re-running extraction:
+
+```bash
+python3 "{SKILL_DIR}/scripts/graphify_report_sanitize.py" graphify-out/GRAPH_REPORT.md \
+  --relabel-from graphify-out/graph.json
+```
+
+Only placeholder names are touched; a real semantic label is never clobbered.
+
 ## Standing rules
 
 ### Active lesson capture

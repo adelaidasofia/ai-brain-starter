@@ -111,9 +111,48 @@ On the next install run (or session resume), read this file FIRST and skip to th
 2. Read the phase file for the current phase.
 3. Execute it (interview the user, create files, install tools).
 4. When the phase completes, append a telemetry line to `~/.claude/.ai-brain-starter-install.jsonl` AND update the progress file (`last_completed_phase`). Helper script: `scripts/install-telemetry.py append <phase> <outcome>` (falls back to `jq`-based bash if Python isn't ready).
-5. Move to the next phase in the table.
+5. Move to the next phase. **Every phase file ends with a `## → Next phase` footer naming its successor** — follow it. The footer, not this table, is what carries the sequence once the install is long enough that this file has fallen out of your working context. `scripts/check-phase-chain.py` holds every phase file to that contract in CI, so a phase you add without a footer fails the build rather than silently never running.
 6. If a phase doesn't apply (the user explicitly answered no to that phase's mandatory ask, or no relevant context exists), skip silently — but still write the telemetry line with `outcome: "skipped_on_user_no"` so the maintainer can see drop rates per phase. "Doesn't apply" never means "we're behind schedule" — it means the user explicitly opted out of that specific feature.
 7. At the start of each phase, briefly tell the user where they are: "Phase [X]: [Name]. This is where we [one sentence]."
+
+### Resuming a stalled install
+
+Trigger this on any of: "resume my ai-brain-starter install", "finish my install",
+"continue the setup", "my install stopped", "I never got the interview", or the
+Spanish equivalents ("retoma mi instalación", "termina el setup", "nunca llegué a
+la entrevista").
+
+A stalled install is the common case, not the exception: before the phase-chain
+footers shipped, a session that ran out of context mid-install simply ended, and
+the model reported it complete. **Those users have no progress file** — the write
+in step 4 never happened — so a resume path that only reads
+`~/.claude/.ai-brain-starter-progress.json` fails for exactly the people who need
+it most. Detect from what is actually on disk instead.
+
+**Do not ask the user which phase they reached.** They do not know, and their
+CLAUDE.md may assert a phase number that a previous session wrote without
+finishing. Look at the artifacts:
+
+| Highest artifact present | Phases done through | Resume at |
+|---|---|---|
+| Vault folders exist, but no filled `CLAUDE.md` | 3b | **4** |
+| `<vault>/CLAUDE.md` with real content (not a skeleton) | 4 | **5** |
+| `<vault>/⚙️ Meta/Last Session.md` + `Current Priorities.md` | 5 | **6-9** |
+| `~/.claude/skills/daily-journal/SKILL.md` | 10b | **11** |
+| `<vault>/⚙️ Meta/journal-index.json` + `~/.claude/skills/insights/SKILL.md` | 18 | **19** |
+| `~/.claude/skills/patterns/SKILL.md` | 22 | **23** |
+
+These are **lower bounds**, not exact positions — phases 6-9 and 12-17 leave no
+single signature artifact. So: state what you found in one line ("Your vault has
+a CLAUDE.md and the context layer, but no journal skill, so you stopped around
+Phase 10"), confirm with the user, then start at the phase you named. Re-running
+a completed phase costs a repeated question; skipping an incomplete one costs
+them the feature permanently. When torn, go back one phase, not forward.
+
+Then write the progress file immediately so the next interruption is cheap, and
+run phases back-to-back via each file's `## → Next phase` footer. Warn the user
+up front that the remaining install may span more than one session, and that
+saying the trigger phrase above in a fresh session picks up where they left off.
 
 ### Variables to Track Across Phases
 
@@ -135,7 +174,7 @@ These are collected during early phases and used by later ones. Keep them in mem
 - If they seem overwhelmed, say: "We can stop here and pick up the rest tomorrow." But default is KEEP GOING.
 - Adapt the folder structure to their life, not a template.
 - **NEVER ask the user to open a terminal during setup.** Claude runs all bash commands via its own tools. Users should not see a terminal after bootstrap runs. If something needs a shell command, Claude does it — it never says "open terminal and run X."
-- If they're not technical, explain what's happening in plain language, not bash.
+- **Plain-language register — unconditional, not a fallback for "non-technical" users.** Explain what is happening in plain language, never machinery; never end a turn on a technical either/or; never make them paste a credential. Canonical text: `templates/rules/session-close.md` → **Plain-language register** (same block in `templates/rules/session-start-checks.md`). It governs every phase, every skill, every session — there is no user for whom bash is the right register.
 - Celebrate milestones: "Your CLAUDE.md is done, that's the biggest piece."
 - Match their energy. If they're excited, move fast. If they're cautious, explain more.
 - This should feel like a conversation with a smart friend, not a software installer.
