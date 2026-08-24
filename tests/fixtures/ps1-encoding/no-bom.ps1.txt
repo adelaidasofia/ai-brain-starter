@@ -1,0 +1,18 @@
+# FROZEN FIXTURE - controls for scripts/check-ps1-encoding.sh.
+#
+# THREE files, byte-identical except for the one defect each carries:
+#   with-bom.ps1.txt  BOM present, no em dash   the clean baseline
+#   no-bom.ps1.txt    same bytes, BOM stripped  negative control, BOM rule
+#   emdash.ps1.txt    same bytes + one U+2014   negative control, em-dash rule
+#
+# Do not 'fix' a negative control by adding its BOM back or removing its em
+# dash. A control that passes proves nothing; scripts/test_ps1_encoding_gate.py
+# fails if either stops carrying its defect, or if any file differs from the
+# baseline by more than that one thing.
+#
+# Suffixed .ps1.txt, not .ps1, so the repo's own *.ps1 globs (the encoding
+# gate, the pwsh ParseFile step) never scan the controls themselves.
+
+Write-Host "vault check"
+$path = Join-Path $HOME '.claude'
+if (Test-Path -LiteralPath $path) { Write-Host "ok" } else { Write-Host "missing" }

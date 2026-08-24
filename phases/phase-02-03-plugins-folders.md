@@ -123,6 +123,12 @@ machinery_excludes = [
     "⚙️ Meta/Worktree Snapshots/",
     "⚙️ Meta/Sessions/",
     "⚙️ Meta/logs/",
+    # graphify-out/ is the single heaviest one: a multi-MB graph.json, its rotating
+    # backups, and a GRAPH_REPORT.md whose community-hub section links one note per
+    # detected community. Indexed, those links render as thousands of unresolved grey
+    # nodes and the report becomes the biggest hub in the user's graph view.
+    "graphify-out/",
+    "graphify-input/",
 ]
 existing_filters = app_settings.get("userIgnoreFilters") or []
 app_settings["userIgnoreFilters"] = list(dict.fromkeys(existing_filters + machinery_excludes))
@@ -305,3 +311,23 @@ First create the `⚙️ Meta/Folder Resolvers/` directory, then create these fi
 4. Is this a concept that belongs to a specific project? → NO: that project's folder
 5. Is this your own original framework or thesis? → If short/raw, it can stay here or in a journal. If you're developing it into something longer, put it wherever your creative work lives. (Only mention `Writing/` here if the user has a `✍️ Writing/` folder — otherwise omit the whole sentence about drafts. Don't reference folders that don't exist in this user's vault.)
 ```
+
+---
+
+## → Next phase (the install is not finished)
+
+You have just completed **Phase 3**. Do not stop here, do not summarise the
+install as complete, and do not wait to be asked to continue.
+
+1. **Record progress.** Write `~/.claude/.ai-brain-starter-progress.json`:
+   `{"last_completed_phase": "3", "ts": "<ISO-8601 timestamp for now>", "version": 1}`
+   This one line is what lets a resumed install pick up here instead of starting over.
+2. **Run the next phase.** Read `phases/phase-04-claude-md.md` from this skill's own directory
+   and execute **Phase 4**.
+
+If you are running low on context, say so out loud and tell the user to open a
+fresh session and ask to resume the ai-brain-starter install; the progress file
+above is what makes that work. Ending here silently leaves them with a
+half-built brain that looks finished.
+
+<!-- phase-chain: next=phase-04-claude-md.md -->

@@ -99,7 +99,11 @@ if (-not $Vault) {
     $settings = Join-Path $HOME ".claude/settings.json"
     if ((Test-Path $settings) -and $Py) {
         # Reuse the exact regex the .sh uses: the installed hook commands embed
-        # "<vault>/⚙️ Meta/scripts/..." - grab that prefix.
+        # "<vault>/⚙️ Meta/scripts/..." - grab that prefix. POSIX root, Windows
+        # drive letter or UNC share, either separator; byte-identical to
+        # heal-journal-guard.py's _VAULT_FROM_CMD_RE, whose self-test pins it.
+        # This is the WINDOWS leg, so a `/`-only pattern never resolved a vault
+        # here and the sync silently skipped as "no vault resolved" (#370/#394).
         $pyCode = @'
 import json, re, sys
 try:
@@ -109,7 +113,7 @@ except Exception:
 for _ev, groups in (data.get("hooks") or {}).items():
     for g in groups:
         for h in g.get("hooks", []):
-            m = re.search(r"(/[^'\"]+?)/(?:⚙️ Meta|Meta)/scripts/", h.get("command",""))
+            m = re.search(r"((?:[A-Za-z]:)?[\\/][^'\"]+?)[\\/](?:⚙️ Meta|Meta)[\\/]scripts[\\/]", h.get("command",""))
             if m:
                 print(m.group(1)); sys.exit(0)
 sys.exit(1)

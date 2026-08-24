@@ -220,6 +220,39 @@ python3 scripts/footprint-sla-check.py --measure     # human report (add --execu
 python3 scripts/footprint-sla-check.py --selftest    # built-in pos/neg controls
 ```
 
+## Scheduling priority (the launchd axis)
+
+The budgets above bound how much work the fleet does. They do NOT bound the
+priority it does it at, and that is a separate way to freeze a machine.
+
+A LaunchAgent left at normal scheduling priority competes with WindowServer for
+CPU and disk. One is harmless. A fleet is not: measured 2026-08-19 on a 10-core
+host, 68 user agents (16 firing at least hourly, one every 60s) with none
+declaring itself background drove load to 43.78, then 109, and hard-froze the UI
+twice. RAM was fine throughout - 2GB free, swap flat - so the failure reads as a
+crash and misdirects every diagnosis at memory. Load, not memory, was the story.
+
+The default install wires **0 daemons**, so a fresh install does not start here.
+This is a GROWTH failure: it arrives as the operator adds jobs over months.
+
+Rules:
+
+- Every LaunchAgent carries `ProcessType=Background` (nice 10 + throttled CPU)
+  AND `LowPriorityIO=true` (disk yields to interactive). `LowPriorityIO` alone is
+  NOT enough - it covers disk only, leaving the job competing for CPU.
+- `scripts/com.granola-export.plist` is the shipped template and carries both.
+  Any new template must too: the template is what teaches the pattern.
+- Reload jobs with `RunAtLoad=true` ONE AT A TIME. Reloading a fleet together
+  fires every one of them at once, which is the same storm you are fixing.
+- A plist edit is deployed, not committed. Mirror it to wherever the plists are
+  tracked or the next installer run silently reverts it to normal priority.
+
+`hooks/surface-unniced-launchagents.py` detects the drift (pos/neg control:
+`tests/integration/test_surface_unniced_launchagents.sh`). It is deliberately
+NOT wired by default - SessionStart fan-out is at budget, and a growth failure
+does not warrant a cold `python3` start for every user on every session. Wire it
+by hand, or run it on demand, on a machine whose agent fleet is growing.
+
 ## Verify on a fresh install
 
 The repo being hardened is not the same as a fresh install landing the hardened

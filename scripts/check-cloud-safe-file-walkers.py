@@ -42,6 +42,14 @@ COPY_READERS = {"copy", "copy2", "copyfile", "copyfileobj"}
 class _Imports:
     os_modules: set[str] = field(default_factory=lambda: {"os"})
     os_walk_names: set[str] = field(default_factory=set)
+    # Modules whose `.walk()` traverses an IN-MEMORY tree, never a filesystem.
+    # Starts EMPTY and is populated only by a real `import ast [as X]`, unlike
+    # os_modules/shutil_modules which seed their own names. Seeding "ast" here
+    # would carve out `import os as ast; ast.walk(...)`, a real walker wearing
+    # the name. A module imported inside a function is not seen by this
+    # top-level scan, so its `.walk` stays flagged: conservative in the safe
+    # direction.
+    ast_modules: set[str] = field(default_factory=set)
     shutil_modules: set[str] = field(default_factory=lambda: {"shutil"})
     shutil_copy_names: dict[str, str] = field(default_factory=dict)
     safe_names: set[str] = field(default_factory=set)
@@ -348,7 +356,19 @@ class _BodyVisitor(ast.NodeVisitor):
             }
             or (isinstance(node.func, ast.Name) and node.func.id in self.imports.os_walk_names)
         )
-        path_walker = isinstance(node.func, ast.Attribute) and node.func.attr == "walk"
+        # `.walk()` on ANY object was treated as Path.walk. That matches by NAME
+        # against an open set: `ast.walk(tree)` traverses a parse tree in memory
+        # and cannot reach a filesystem, yet a lint that parses Python AND reads
+        # source files (which is what most of scripts/check-*.py are) was
+        # reported UNSAFE for pairing it with read_text. A false UNSAFE on a
+        # guard like this one is expensive: the reader's cheapest resolution is
+        # to weaken something real. Carve out only the in-memory walkers,
+        # resolved through the import table (see _Imports.ast_modules).
+        path_walker = (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "walk"
+            and dotted not in {f"{module}.walk" for module in self.imports.ast_modules}
+        )
         imported_copy = self.imports.shutil_copy_names.get(leaf)
         copytree = (
             dotted in {f"{module}.copytree" for module in self.imports.shutil_modules}
@@ -494,6 +514,8 @@ def _imports(tree: ast.Module, local_function_names: set[str]) -> _Imports:
                 local = alias.asname or alias.name.split(".", 1)[0]
                 if alias.name == "os":
                     imports.os_modules.add(local)
+                elif alias.name == "ast":
+                    imports.ast_modules.add(local)
                 elif alias.name == "shutil":
                     imports.shutil_modules.add(local)
                 elif alias.name == "_lib.safe_read" or alias.name.endswith("._lib.safe_read"):

@@ -68,10 +68,44 @@ If your vault holds journals, health data, or client/CRM notes, add `--encrypt`:
 bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh setup --encrypt
 ```
 
-It encrypts each archive with AES-256 (via `gpg`, or `openssl` as a fallback) and
-stores the passphrase in your **OS keychain** (macOS Keychain / libsecret /
-Windows DPAPI), never in plaintext on disk. The daily run reads it from there
-with no prompt.
+It encrypts each archive with AES-256 and stores the passphrase in your **OS
+keychain** (macOS Keychain / libsecret / Windows DPAPI). The daily run reads it
+from there with no prompt.
+
+**The crypto dependency differs by platform, and `--encrypt` fails loudly rather
+than silently shipping an unencrypted archive:**
+
+| Platform | Needs | If missing |
+|---|---|---|
+| macOS | `openssl` (ships with the OS) or `gpg` | n/a in practice |
+| Linux | `gpg` or `openssl` | error, nothing is written |
+| Windows | **`gpg` (Gpg4win), on `PATH`** — there is **no** `openssl` fallback | `-Encrypt` exits with an error |
+
+Windows, encrypted:
+
+```powershell
+pwsh ~/.claude/skills/ai-brain-starter/scripts/vault-backup.ps1 setup -Encrypt
+```
+
+### Where the passphrase actually lands
+
+On a machine with **no OS keychain**, the passphrase falls back to a `chmod 600`
+file at `~/.claude/.vault-backup-pass-<slug>` and setup prints a `WARN` saying so.
+This is weaker than a keychain: anyone who can read your home directory can
+decrypt the backups. It is a deliberate fallback, not a failure, but you should
+know which one you got.
+
+Because that warning is a one-shot you can scroll past, `status` reports the
+store on every run:
+
+```
+Encrypted:   True    Keep: 7
+Passphrase:  OS keychain (keychain)
+```
+
+If instead you see a `WARN` block naming a `chmod-600 file`, install a keychain
+(macOS has one built in; on Linux install `libsecret` / `secret-tool`) and re-run
+`setup`.
 
 ---
 
@@ -135,6 +169,11 @@ You do not have to remember any of this. Two surfaces keep it visible:
   ```bash
   bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh schedule
   ```
+
+  **`schedule` is POSIX-only** (launchd / cron). `vault-backup.ps1` has no
+  `schedule` command and will exit with `unknown command`. On Windows the repair
+  path is re-running `setup`, which self-heals the Scheduled Task as described
+  above.
 
   This exists because a self-heal that only fires inside `setup` misses exactly
   the population that has a dead schedule — those installs never re-run setup.
