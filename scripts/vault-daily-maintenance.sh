@@ -63,6 +63,11 @@ else
   close_load_per_core() { echo "0"; }
   close_mutex_acquire() { return 0; }
   close_mutex_release() { :; }
+  # The index-lock resolver FAILS CLOSED, unlike the three above. Without the
+  # guard we cannot resolve the real git dir, so we cannot prove no other writer
+  # holds the lock - skip the reconcile commit (artifacts stay on disk for the
+  # next run) rather than commit into an unknown lock state.
+  vault_git_wait_unlocked() { return 1; }
 fi
 
 # Auto-detect the Meta folder via the shared resolver (prefers the variant
@@ -169,9 +174,10 @@ AGG_DECISIONS="$SCRIPT_DIR/aggregate-decisions.py"
 # Commit any close artifacts left uncommitted by a load-deferred close. Targeted
 # paths only - NEVER `git add -A` (vaults are commonly 10k-60k+ files).
 if [ -d "$VAULT/.git" ] || git -C "$VAULT" rev-parse --git-dir >/dev/null 2>&1; then
-  WAITED=0
-  while [ -f "$VAULT/.git/index.lock" ] && [ $WAITED -lt 60 ]; do sleep 2; WAITED=$((WAITED + 2)); done
-  if [ ! -f "$VAULT/.git/index.lock" ]; then
+  # Lock path RESOLVED from git, never assembled as "$VAULT/.git/index.lock": on
+  # a sidecar-relocated vault .git is a POINTER FILE, so the assembled path can
+  # never exist and this check would pass forever. Fails closed.
+  if vault_git_wait_unlocked "$VAULT"; then
     PATHS=()
     for p in "$META_DIR/Sessions" "$META_DIR/Decisions" \
              "$META_DIR/Last Session.md" "$META_DIR/Decision Log.md" \
@@ -185,7 +191,7 @@ if [ -d "$VAULT/.git" ] || git -C "$VAULT" rev-parse --git-dir >/dev/null 2>&1; 
       log "[reconcile-commit] staged ${#PATHS[@]} close-artifact path(s)"
     fi
   else
-    log "[reconcile-commit] SKIPPED - git index.lock held >60s"
+    log "[reconcile-commit] SKIPPED - git index.lock held (or git dir unresolvable) after ${VAULT_GIT_LOCK_MAX_WAIT:-60}s"
   fi
 fi
 
@@ -234,6 +240,16 @@ PASSIVE="$SCRIPT_DIR/passive-capture.py"
 # no relocation was ever recorded. rc=1 (ALARM) is logged, never fatal (set +e + run).
 RELOCWATCH="$SCRIPT_DIR/relocate-sweep.py"
 [ -f "$RELOCWATCH" ] && run "relocate-watch" /usr/bin/env python3 "$RELOCWATCH" --watch
+
+# Cloud-sync machinery scan (MYC-1133). Walks every synced root for git repos /
+# node_modules / build trees -- the sync-daemon storm + silent-corruption class.
+# Heavy (full walk of every cloud root) so it belongs here and NOT on SessionStart:
+# a per-session walk becomes N concurrent full walks under N sessions, which is the
+# storm itself. It writes ~/.claude/state/sync-guard-last.json; the SessionStart
+# surfacer reads that snapshot. Scheduling this is what gives the surfacer anything
+# to say -- without it the surfacer is silent forever and the guard is decoration.
+SYNCGUARD="$SCRIPT_DIR/../hooks/check-sync-folder-machinery.py"
+[ -f "$SYNCGUARD" ] && run "sync-folder-machinery" /usr/bin/env python3 "$SYNCGUARD" --json
 
 # === AUTO-GC (MYC-2363) =====================================================
 # The reclaim tier. Every piece below already existed and every one was OPT-IN,
@@ -292,10 +308,22 @@ else
   WTREAP="$SCRIPT_DIR/dev-worktree-prune.py"
   [ -f "$WTREAP" ] && run "dev-worktree-prune" /usr/bin/env python3 "$WTREAP" $DESTRUCTIVE_MODE
 
-  # 5. Bare ~/dev hub freshness — fast-forward the clean ones so a recon read is
+  # 5. Regenerable BUILD OUTPUT inside worktrees that STAY (MYC-3727). Legs 1-4
+  #    free build artifacts only as a side effect of deleting a whole worktree,
+  #    and the reaper removes one only when its branch is provably merged — so an
+  #    unmerged, in-flight, long-lived worktree keeps its multi-GB target/ and
+  #    node_modules forever, which is the majority case. Measured 2026-08-05:
+  #    ~130 worktrees holding 438 GB while every leg above ran green daily and
+  #    the volume fell to 2.3 GB free. No-ops on a healthy disk (the pressure
+  #    ladder); never touches a worktree whose SOURCE is recent, whose session
+  #    lock is live, or whose source is too large to measure.
+  BUILDRECLAIM="$SCRIPT_DIR/dev-build-reclaim.py"
+  [ -f "$BUILDRECLAIM" ] && run "dev-build-reclaim" /usr/bin/env python3 "$BUILDRECLAIM" $DESTRUCTIVE_MODE
+
+  # 6. Bare ~/dev hub freshness — fast-forward the clean ones so a recon read is
   #    never weeks stale (MYC-677 STALE-BARE-CHECKOUT-READ). Dirty / diverged
   #    hubs are surfaced by the SessionStart hook, never force-moved here.
-  # 6. Un-backed-up drift report -> state file. The EXPENSIVE leg (fleet-wide
+  # 7. Un-backed-up drift report -> state file. The EXPENSIVE leg (fleet-wide
   #    git I/O) lives here so the SessionStart surface can render it for free
   #    instead of paying ~15s and a process on every interactive start.
   DRIFT="$SCRIPT_DIR/dev-drift-report.py"

@@ -45,6 +45,22 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 from _meta_resolver import find_meta_dir  # noqa: E402
+
+# `_lib` is a PACKAGE at hooks/_lib/ in the repo checkout, and this script is ALSO
+# synced into a live vault at <meta>/scripts/ (VAULT_SCRIPTS in
+# scripts/sync-vault-scripts.sh). ../hooks does not exist there, so this import
+# used to die with `ModuleNotFoundError: No module named '_lib'`. insights/SKILL.md
+# invokes the VAULT copy, so /weekly and /monthly rebuilt no index at all and the
+# stale (usually empty) journal-index.json just sat there looking fine.
+#
+# Fixed by SYNCING THE REAL PRIMITIVE, not by degrading to a local one: the sync
+# now mirrors hooks/_lib/{__init__,safe_read}.py into <meta>/scripts/_lib/, which
+# the first sys.path entry above resolves. Deliberately NOT a try/except fallback
+# with a hand-rolled reader -- scripts/check-cloud-safe-file-walkers.py refuses to
+# trust a locally-defined safe_read_text (its own negative control is "bogus
+# safe_read module is not trusted"), and it is right to: a recursive walker must
+# reach the ONE audited primitive, or the guarantee is only as good as the copy.
+# safe_read.py is stdlib-only, so mirroring it costs the vault nothing.
 from _lib.safe_read import safe_read_text  # noqa: E402
 
 # Read bounds for the shared safe_read primitive. Journal frontmatter sits in
@@ -75,12 +91,45 @@ def _parse_inline_list(v):
     return v
 
 
+JOURNAL_DIR_CANDIDATES = (
+    "📓 Journals", "Journals",       # en (Phase 3 default)
+    "📔 Journal", "Journal",
+    "📓 Diario", "Diario",           # es
+    "📓 Diário", "Diário",           # pt
+)
+
+
+def find_journal_dir(vault):
+    """Auto-detect the journal folder, mirroring what find_meta_dir does for Meta.
+
+    The --journal-dir default was the hardcoded English "Journals", but Phase 3
+    creates a LOCALIZED folder on a non-English install ("📓 Diario" on es), and
+    insights/SKILL.md invokes this script with NO arguments — so that default was
+    the only thing ever consulted. Result: /weekly and /monthly died with
+    "journal directory not found" on every non-English vault.
+
+    Returns None when nothing matches, so the caller still fails loud rather
+    than inventing a folder (same contract as the Meta resolver).
+
+    NOTE: no `str | None` return annotation — insights/SKILL.md runs this with
+    /usr/bin/python3, which is 3.9 on macOS, and this module has no
+    `from __future__ import annotations`, so a PEP 604 union would crash at
+    import time. (gate (a) of scripts/ci.sh guards this class.)
+    """
+    for name in JOURNAL_DIR_CANDIDATES:
+        p = os.path.join(vault, name)
+        if os.path.isdir(p):
+            return p
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--vault-root", default=".",
                     help="Vault root directory (default: current working directory)")
-    ap.add_argument("--journal-dir", default="Journals",
-                    help="Journal subfolder relative to vault root (default: Journals)")
+    ap.add_argument("--journal-dir", default=None,
+                    help="Journal subfolder relative to vault root. Default: auto-detect, "
+                         "handling localized names ('📓 Journals', '📓 Diario', '📓 Diário'...).")
     ap.add_argument("--meta-dir", default=None,
                     help="Meta subfolder where the index is written. Default: auto-detect the "
                          "vault's Meta folder (handles '⚙️ Meta' and plain 'Meta'). The folder "
@@ -88,7 +137,19 @@ def main():
     args = ap.parse_args()
 
     vault = os.path.abspath(args.vault_root)
-    journal_dir = os.path.join(vault, args.journal_dir)
+
+    if args.journal_dir is not None:
+        journal_dir = os.path.join(vault, args.journal_dir)
+    else:
+        journal_dir = find_journal_dir(vault)
+        if journal_dir is None:
+            print(
+                f"journal directory not found under {vault} "
+                f"(tried: {', '.join(JOURNAL_DIR_CANDIDATES)}). "
+                f"Pass --journal-dir if yours is named differently.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     if not os.path.isdir(journal_dir):
         print(f"journal directory not found: {journal_dir}", file=sys.stderr)
@@ -172,7 +233,16 @@ def main():
         "last_updated": datetime.now().strftime("%Y-%m-%dT%H:%M"),
         "entries": entries,
     }
-    with open(output_path, "w") as f:
+    # encoding="utf-8" is LOAD-BEARING, not decoration. Text mode without it uses
+    # locale.getpreferredencoding(), which is cp1252 on a stock Windows box. Paired
+    # with ensure_ascii=False below, a single accented title ("Reunión", "día") is
+    # then written as cp1252 bytes into a file every consumer opens as UTF-8 —
+    # /weekly, /monthly, diagnose, insight-fact-check — which die on
+    # `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xed`. The write itself
+    # raises nothing, so the corruption is silent at the point it is created.
+    # Not reproducible on a box with PYTHONUTF8=1 set, which is exactly why this
+    # survived: it is invisible to the maintainer and fatal to a fresh install.
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
 
     print(f"Indexed {len(entries)} entries → {output_path}")

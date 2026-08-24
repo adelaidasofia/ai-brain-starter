@@ -154,6 +154,28 @@ try {
   } finally {
     $env:RELOCATE_VAULT_OBSIDIAN = "absent"
   }
+
+  # ---- 7. THE OBSIDIAN PROBE FAILS CLOSED -----------------------------------
+  # A probe that CANNOT RUN is not a probe that found nothing. The old default
+  # branch used -ErrorAction SilentlyContinue, so an unreadable / restricted
+  # process list returned $null, [bool]$null was $false, and this gate waved
+  # through the move of a vault Obsidian may have had open. Only the documented
+  # "no process by that name" error now means absent; anything else refuses.
+  $old7 = Join-Path $TMP "cloud7/Brain"; New-Item -ItemType Directory -Force -Path $old7 | Out-Null
+  Set-Content -LiteralPath (Join-Path $old7 "CLAUDE.md") -Value "# brain"
+  $new7 = Join-Path $TMP "local7/Brain"
+  $cfg7 = Join-Path $TMP "cfg7"
+  $env:RELOCATE_VAULT_OBSIDIAN = "unreadable"
+  try {
+    $r = Run-RV -RvArgs @($old7, $new7) -ConfigDir $cfg7
+    Check "obsidian probe fail-closed: unreadable process list -> rc 1" ($r.rc -eq 1)
+    Check "obsidian probe fail-closed: refusal names Obsidian"          ($r.out -match "Obsidian is running")
+    Check "obsidian probe fail-closed: target not created"              (-not (Test-Path -LiteralPath $new7))
+    $r = Run-RV -RvArgs @($old7, $new7, "-Force") -ConfigDir $cfg7
+    Check "obsidian probe fail-closed neg-control: -Force still overrides -> rc 0" ($r.rc -eq 0)
+  } finally {
+    $env:RELOCATE_VAULT_OBSIDIAN = "absent"
+  }
 }
 finally {
   Remove-Item -LiteralPath $TMP -Recurse -Force -ErrorAction SilentlyContinue

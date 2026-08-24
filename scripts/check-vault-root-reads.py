@@ -89,8 +89,10 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(REPO / "hooks"))
 
+from _baseline_sections import check_read_counts, check_row_counts  # noqa: E402
 from _lib.safe_read import safe_read_text  # noqa: E402
 
 # The fleet this guard owns. scripts/ (vault-side CLIs) + hooks/ (the
@@ -321,15 +323,27 @@ def scan_file(path: Path, rel: str) -> tuple[list[Violation], str]:
 # baseline ratchet
 # --------------------------------------------------------------------------
 
-def load_baseline(path: Path) -> dict:
-    """path -> (sha256, tag). Raises ValueError on a malformed row."""
+def load_baseline(path: Path) -> tuple[dict, str]:
+    """(path -> (sha256, tag), the raw text). Raises ValueError on a malformed row.
+
+    "Malformed" includes a section header whose declared FILE count no longer
+    matches the rows beneath it. Those headers are the burn-down ledger a human
+    reads to decide whether the backlog is shrinking, and nothing else here can
+    notice when one goes stale: the loop below skips every `#` line, so a wrong
+    count is invisible to the ratchet it annotates (see _baseline_sections.py).
+
+    The text comes back because the READ counts in those same headers can only
+    be verified after the scan -- check_all() does that once the ratchet is
+    otherwise clean.
+    """
     entries = {}
     if not path.is_file():
         raise ValueError(f"baseline not found: {path}")
     result = safe_read_text(path, timeout=5.0, max_bytes=1_000_000)
     if not result.ok:
         raise ValueError(f"baseline {path} is {result.status}")
-    for line_no, raw in enumerate((result.text or "").splitlines(), start=1):
+    text = result.text or ""
+    for line_no, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -337,7 +351,10 @@ def load_baseline(path: Path) -> dict:
         if len(parts) != 3 or len(parts[0]) != _SHA_LEN:
             raise ValueError(f"invalid baseline row {path}:{line_no}: {raw!r}")
         entries[parts[2]] = (parts[0], parts[1])
-    return entries
+    drift = check_row_counts(text, declares_reads=True)
+    if drift:
+        raise ValueError("stale section header(s) in {}:\n  {}".format(path, "\n  ".join(drift)))
+    return entries, text
 
 
 def fleet_files(root: Path) -> list[str]:
@@ -356,7 +373,7 @@ def fleet_files(root: Path) -> list[str]:
 
 def check_all(root: Path, baseline_path: Path, report_only: bool = False) -> int:
     try:
-        baseline = {} if report_only else load_baseline(baseline_path)
+        baseline, baseline_text = ({}, "") if report_only else load_baseline(baseline_path)
         relative = fleet_files(root)
     except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
         print(f"ERROR vault-root fleet: {exc}", file=sys.stderr)
@@ -425,6 +442,22 @@ def check_all(root: Path, baseline_path: Path, report_only: bool = False) -> int
         print("    genuinely correct as-is:  add `# vault-root-ok: <reason>` on the line")
         print("        above. The reason is mandatory.")
         return 1
+
+    # Every baseline row is now known to be pinned at its declared digest, so
+    # each one's read count is exactly what its header claims it is. This is the
+    # half of the ledger load_baseline() cannot check: it counts rows, not the
+    # reads inside them, and the two drift independently (SEV-E was declaring 15
+    # files / 17 reads over 12 files / 14 reads -- both numbers wrong, by
+    # different amounts, for different reasons).
+    reads_by_tag: dict = {}
+    for rel, (_, tag) in baseline.items():
+        reads_by_tag[tag] = reads_by_tag.get(tag, 0) + len(current[rel][1])
+    read_drift = check_read_counts(baseline_text, reads_by_tag)
+    if read_drift:
+        print(f"::error::stale section header(s) in {baseline_path}:")
+        for line in read_drift:
+            print(f"  {line}")
+        return 2
 
     pinned_reads = sum(len(v) for _, v in current.values())
     print(

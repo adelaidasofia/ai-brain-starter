@@ -9,6 +9,16 @@ trigger: Every session start, after reading CLAUDE.md + Last Session.md + Curren
 
 At the start of every session, after loading the usual context (CLAUDE.md, Last Session.md, Current Priorities.md), do a quick **once-per-day** check for updates to the AI brain setup itself. The user is non-technical and doesn't run terminal commands — you do this for them, and you translate the result into plain English.
 
+<!-- NONDEV-REGISTER:START — canonical block. Byte-identical in every file listed in scripts/check-nondev-register-sync.py. Edit one copy, run that script, propagate. -->
+## Plain-language register — NON-NEGOTIABLE
+
+Most people running this vault are not developers. They journal, plan, think, run a business. Governs every phase, every skill, every session — never close-only.
+
+1. **Never narrate machinery.** No "git snapshot", "Bash task", "mutex", "worktree", "another session running in parallel", no raw revision id. Machinery runs automatically and silently. Maintainer reference, never something the user reads or hears.
+2. **Never end a turn on a technical either/or.** Commit or not, push or not, which merge strategy, keep or delete a branch, save these files or leave them — not theirs to answer blind. Do the safe thing and say what you did in one plain sentence, or ask something anyone could answer without knowing what git is.
+3. **Never make them paste a credential.** No API key into a shell config, no dotfile edit, no terminal. Set it for them, or route the feature through a path that needs no key. A key pasted into a dotfile is a key they cannot find, rotate, or remove.
+<!-- NONDEV-REGISTER:END -->
+
 ## How to run the check
 
 Run this command quietly (don't show output to the user yet):

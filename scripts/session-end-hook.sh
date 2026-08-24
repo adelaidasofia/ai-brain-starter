@@ -54,6 +54,11 @@ else
   close_load_per_core() { echo "0"; }
   close_mutex_acquire() { return 0; }
   close_mutex_release() { :; }
+  # The index-lock resolver FAILS CLOSED, unlike the three above. Without the
+  # guard we cannot resolve the real git dir, so we cannot prove no other
+  # session holds the lock - defer the snapshot (work stays on disk, daily
+  # maintenance reconciles) rather than commit into an unknown lock state.
+  vault_git_wait_unlocked() { return 1; }
 fi
 
 # Resolve VAULT to the MAIN vault root, never a worktree.
@@ -274,14 +279,12 @@ fi
 # are typically local-only snapshot repos).
 
 if [ -d "$VAULT/.git" ] || git -C "$VAULT" rev-parse --git-dir >/dev/null 2>&1; then
-  # Wait for any concurrent index lock (up to 60s, then give up gracefully)
-  WAITED=0
-  while [ -f "$VAULT/.git/index.lock" ] && [ $WAITED -lt 60 ]; do
-    sleep 2
-    WAITED=$((WAITED + 2))
-  done
-
-  if [ ! -f "$VAULT/.git/index.lock" ]; then
+  # Wait for any concurrent writer's index lock, then give up gracefully. The
+  # lock path is RESOLVED from git, never assembled as "$VAULT/.git/index.lock":
+  # on a sidecar-relocated vault .git is a POINTER FILE, the assembled path can
+  # never exist, and this mutex would silently pass forever. Fails closed - an
+  # unresolvable git dir defers the snapshot instead of committing blind.
+  if vault_git_wait_unlocked "$VAULT"; then
     # Stage only paths we know about
     PATHS_TO_STAGE=()
     [ -f "$SESSION_FILE" ] && PATHS_TO_STAGE+=("$SESSION_FILE")
@@ -310,7 +313,7 @@ if [ -d "$VAULT/.git" ] || git -C "$VAULT" rev-parse --git-dir >/dev/null 2>&1; 
       }
     fi
   else
-    log_err "git index.lock held >60s; skipped snapshot"
+    log_err "git index.lock held (or git dir unresolvable) after ${VAULT_GIT_LOCK_MAX_WAIT:-60}s; skipped snapshot"
   fi
 fi
 
