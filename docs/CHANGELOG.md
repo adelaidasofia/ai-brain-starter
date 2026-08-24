@@ -21,6 +21,8 @@ The frontmatter part matters more than it sounds. A nightly metadata pass that s
 
 **The merge step could not open a graph bigger than one megabyte.** `graphify_stage_finish.py` read your existing `graph.json` through a helper whose default size ceiling is 1 MB, and never raised it. A vault with a couple of thousand nodes is well past that, so the script aborted at the merge step with a "too-large" error, every time. It aborted rather than writing something broken, which is the right instinct — but it meant the one script the runbook tells you to always use for post-dispatch could not finish on any vault of realistic size.
 
+While in there, the eight text reads and writes these three scripts perform now pass `encoding="utf-8"` explicitly. Without it Python uses the machine's locale — cp1252 on a stock Windows box — which mangles accented characters and emoji folder names *without raising an error*. Vaults whose folders are named `📓 Diarios` or `⚙️ Meta` are exactly the ones this silently corrupts, so all three files came off the encoding backlog rather than being re-pinned.
+
 Both are fixed, in both copies of the sizer. It now calls `graphify.cache.file_hash()` when graphify is importable and falls back to a faithful local copy of the same rule when it is not (the common case — graphify usually lives in a virtualenv the wrapper scripts don't share). Cache lookup checks every layout this repo has shipped, so it can only ever find more entries than before, never fewer. Errors are reported instead of being counted as misses. And there are five regression tests at `tests/test_graphify_stage_select_cache_key.py`, each of which runs against *both* copies — the two drifted apart precisely because nothing was holding them to the same answer.
 
 ---

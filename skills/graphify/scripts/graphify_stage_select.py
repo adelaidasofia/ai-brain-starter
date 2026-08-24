@@ -191,7 +191,7 @@ def main():
             skipped_ai += 1
             continue
         try:
-            text = f.read_text(errors="ignore")
+            text = f.read_text(encoding="utf-8", errors="ignore")
         except Exception:
             continue
         wc = len(text.split())
@@ -214,7 +214,7 @@ def main():
         try:
             cache_file = find_cache_entry(cache_dir, cache_key(f, vault))
             if cache_file is not None:
-                data = json.loads(cache_file.read_text())
+                data = json.loads(cache_file.read_text(encoding="utf-8"))
                 if is_llm_extraction(data):
                     llm_hits += 1
                 else:
@@ -270,7 +270,9 @@ def main():
         old.unlink()
 
     for i, (b, w) in enumerate(zip(bins, bin_w), 1):
-        Path(f"{args.out_prefix}{i:02d}_files.txt").write_text("\n".join(str(f) for f in b))
+        Path(f"{args.out_prefix}{i:02d}_files.txt").write_text(
+            "\n".join(str(f) for f in b), encoding="utf-8"
+        )
         print(f"  chunk_{i:02d}: {len(b)} files, {w:,} words")
 
     print()

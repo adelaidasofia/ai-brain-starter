@@ -303,7 +303,7 @@ def main():
         lines.append(f"  {', '.join(sample)}{f' (+{more} more)' if more else ''}")
         lines.append("")
 
-    Path("graphify-out/GRAPH_REPORT.md").write_text("\n".join(lines))
+    Path("graphify-out/GRAPH_REPORT.md").write_text("\n".join(lines), encoding="utf-8")
     print(f"  wrote graphify-out/GRAPH_REPORT.md")
 
     # === Step 5: cache save ===
