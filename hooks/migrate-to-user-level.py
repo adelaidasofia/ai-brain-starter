@@ -61,7 +61,7 @@ def load_json(path: Path) -> dict | None:
     if not path.is_file():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8", errors="replace"))
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -92,7 +92,7 @@ def opted_out(cwd: Path) -> bool:
     if not claude_md.is_file():
         return False
     try:
-        text = claude_md.read_text(encoding="utf-8")
+        text = claude_md.read_text(encoding="utf-8", errors="replace")
         return bool(re.search(r"migrationDeclined\s*:\s*true", text, re.IGNORECASE))
     except OSError:
         return False
@@ -102,7 +102,7 @@ def load_state() -> dict:
     if not STATE_FILE.is_file():
         return {}
     try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return json.loads(STATE_FILE.read_text(encoding="utf-8", errors="replace"))
     except (json.JSONDecodeError, OSError):
         return {}
 
@@ -176,6 +176,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # A cp1252 Windows console raises UnicodeEncodeError the moment this prints a
+    # non-ASCII character, and the hook dies with no legible cause
+    # (ai-brain-starter#313). Idempotent; a no-op on an already-UTF-8 console.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     try:
         main()
     except Exception:

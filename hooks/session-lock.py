@@ -137,6 +137,44 @@ ALWAYS_MUTATING = {
 # git global options that consume the FOLLOWING token as their value.
 GIT_GLOBAL_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
 
+# ---- `git commit` option tables (for the scoped-commit exemption) -----------
+# The parse has ONE catastrophic failure mode: mistaking an option's VALUE for a
+# pathspec. `git commit -o -m msg` would then look like "-o plus the pathspec
+# 'msg'" and be ALLOWED while naming no paths at all -- a false-ALLOW, strictly
+# worse than the false-block this exemption exists to remove. So every option is
+# classified, and anything UNCLASSIFIED forfeits the exemption rather than being
+# guessed at.
+
+# Consume the FOLLOWING token as their value when written without `=`.
+COMMIT_LONG_VALUE_OPTS = {
+    "--message", "--file", "--author", "--date", "--template", "--cleanup",
+    "--reedit-message", "--reuse-message", "--fixup", "--squash", "--trailer",
+    "--pathspec-from-file",
+}
+# Consume nothing. (Options with an OPTIONAL value -- `--gpg-sign`,
+# `--untracked-files` -- only accept it attached with `=`, so bare they are
+# value-less and the `=` form is split off before lookup.)
+COMMIT_LONG_BOOL_OPTS = {
+    "--only", "--all", "--include", "--amend", "--interactive", "--patch",
+    "--signoff", "--no-signoff", "--verify", "--no-verify", "--edit", "--no-edit",
+    "--allow-empty", "--allow-empty-message", "--no-post-rewrite", "--reset-author",
+    "--short", "--branch", "--no-branch", "--porcelain", "--long", "--null",
+    "--dry-run", "--status", "--no-status", "--verbose", "--quiet",
+    "--pathspec-file-nul", "--gpg-sign", "--no-gpg-sign", "--untracked-files",
+    "--ahead-behind", "--no-ahead-behind",
+}
+COMMIT_SHORT_VALUE = set("mFcCt")   # -m <msg>, -F <file>, -c/-C <commit>, -t <file>
+COMMIT_SHORT_BOOL = set("ensvqz")   # -e -n -s -v -q -z
+COMMIT_SHORT_OPTARG = set("uS")     # -u[<mode>], -S[<keyid>]: value only ever attached
+
+# Flags that make a commit take content BEYOND the named pathspecs, so they defeat
+# the whole point of the exemption. `--amend` is here on measurement, not theory:
+# `git commit -o --amend` with no paths took the staged index (a file staged by
+# another process was swept into the amended commit), and it rewrites a HEAD a
+# sibling session may already have built on.
+COMMIT_UNSAFE_LONG = {"--all", "--include", "--amend", "--interactive", "--patch"}
+COMMIT_UNSAFE_SHORT = set("aip")    # -a (all), -i (include), -p (patch)
+
 
 def _emit(obj):
     sys.stdout.write(json.dumps(obj))
@@ -290,6 +328,97 @@ def _worktree_key(cwd, main_root):
     return os.path.normpath(cwd) if cwd else ""
 
 
+# A command that will touch a shared REF, not just the working tree. Branch
+# collisions only matter for these, so everything else stays off this path and
+# the extra `git rev-parse` never lands on the hot path for an ordinary command.
+_REF_TOUCHING_RE = re.compile(
+    r"(?:^|[\n;|&]\s*)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*git\b[^|;&\n]*"
+    r"\b(push|commit|merge|rebase|cherry-pick)\b"
+)
+
+
+def _current_branch(cwd):
+    """Short branch name for `cwd`, or '' when detached / not a repo / git slow.
+
+    Fail-open by construction: every failure path returns '', and an empty
+    branch never matches another session's branch, so a broken git can only
+    make this guard quieter, never louder or wrong.
+    """
+    if not cwd:
+        return ""
+    try:
+        out = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, timeout=2, check=False,
+            # NOT `text=True`. That decodes the child's bytes with the LOCALE
+            # encoding, which raises UnicodeDecodeError on a non-UTF-8 Windows
+            # console the moment a path holds a non-ASCII character -- and this
+            # brain ships cross-platform with emoji-named vault folders. Caught
+            # by scripts/check-utf8-subprocess.py, not by review.
+            encoding="utf-8", errors="replace",
+        )
+    except Exception:
+        return ""
+    if out.returncode != 0:
+        return ""
+    b = (out.stdout or "").strip()
+    return "" if b in ("", "HEAD") else b
+
+
+def _same_dir(a, b):
+    """True when two cwds are the same directory.
+
+    Deliberately NOT `_worktree_key`. That key only recognises the
+    `<main>/.claude/worktrees/<slug>` layout; a checkout laid out as a sibling
+    directory (`<repo>-<slug>`, which several worktree helpers produce) falls
+    through to main_root instead. Reusing it here made every sibling collapse
+    onto the caller's own key, so the guard matched nothing at all — caught by
+    its own positive control before it shipped, not in review.
+    """
+    if not a or not b:
+        return False
+    return os.path.normpath(a) == os.path.normpath(b)
+
+
+def _live_branch_siblings(sessions, my_id, now, main_root, my_cwd, my_branch):
+    """Live sessions on the SAME BRANCH but a DIFFERENT working tree.
+
+    This is the gap `_live_siblings` documents and deliberately leaves open:
+    "two sessions pushing the same branch ... OUT OF SCOPE here: per-session
+    branch isolation makes them rare." That premise assumes ONE BRANCH PER
+    SESSION. It stops holding the moment branches are named per TICKET or per
+    FEATURE, because then two sessions working the same ticket legitimately
+    share one branch and are invisible to a worktree-keyed check.
+
+    Measured: two sessions on one shared branch, in separate worktrees,
+    independently produced the same upstream merge with the same conflict
+    resolution. Nothing warned either of them. Git's non-fast-forward rejection
+    is what finally surfaced it, at push time, after both had done the work.
+
+    Deliberately a WARNING and never a block: a branch is a shared REF, not a
+    shared working tree, so the catastrophic HEAD/index stomp is not available
+    here and git already refuses the unsafe push. The recoverable cost of this
+    collision is DUPLICATED EFFORT, and the only way to recover that is to say
+    so BEFORE the work rather than at push time.
+    """
+    if not my_branch:
+        return []
+    out = []
+    for sid, e in sessions.items():
+        if sid == my_id:
+            continue
+        la = e.get("last_activity_at")
+        if not (isinstance(la, (int, float)) and (now - la) < WARN_WINDOW_SEC):
+            continue
+        if e.get("branch") != my_branch:
+            continue
+        if _same_dir(e.get("cwd") or "", my_cwd):
+            continue  # same directory -> already covered by _live_siblings
+        out.append((sid, e))
+    out.sort(key=lambda kv: kv[1].get("last_activity_at") or 0, reverse=True)
+    return out
+
+
 def _live_siblings(sessions, my_id, now, main_root, my_cwd):
     """Entries that are NOT me, were active within WARN_WINDOW_SEC, AND share my
     working tree (same worktree-key), newest first.
@@ -318,7 +447,7 @@ def _live_siblings(sessions, my_id, now, main_root, my_cwd):
     return live
 
 
-def _upsert_self(sessions, my_id, cwd, now):
+def _upsert_self(sessions, my_id, cwd, now, branch=""):
     """Insert/refresh my own entry, preserving started_at + a known cwd.
 
     `pid` is recorded for human debugging only (it is the hook pid, not the
@@ -330,6 +459,8 @@ def _upsert_self(sessions, my_id, cwd, now):
         e["started_at"] = now
     if cwd:
         e["cwd"] = cwd
+    if branch:
+        e["branch"] = branch
     e["pid"] = os.getpid()  # informational only
     sessions[my_id] = e
     return sessions
@@ -357,7 +488,7 @@ def _flock(lock_path):
     try:
         try:
             os.makedirs(os.path.dirname(sidecar), exist_ok=True)
-            f = open(sidecar, "a+")
+            f = open(sidecar, "ab+")
         except OSError:
             yield
             return
@@ -403,6 +534,36 @@ def _update_sessions(lock_path, mutate, now):
         sessions = mutate(sessions)
         _write_sessions(lock_path, sessions)
     return sessions
+
+
+def _git_gate_active(cwd, main_root):
+    """Can the PreToolUse git-mutation gate actually FIRE in this repo?
+
+    _is_home_repo_git_mutation attributes a command to the home repo by asking
+    whether its target sits INSIDE main_root. main_root comes from
+    `git rev-parse --git-common-dir`, which is right for LOCATING the shared lock
+    but wrong for that containment test whenever the git dir lives OUTSIDE the
+    checkout (a mirror or `--separate-git-dir` layout). There, main_root IS that
+    outside path, no working-tree command is ever inside it, and the gate silently
+    never fires -- while the once-per-session heads-up keeps firing, so it still
+    LOOKS alive.
+
+    Measured in such a repo with several live siblings and no bypass set: a live
+    `git commit --dry-run` ran unblocked and the detector returned False for a
+    bare commit, `reset --hard` and `push`. Passing main_root == cwd instead
+    returned True, isolating the cause to the path mismatch. Repos with an in-tree
+    `.git` gate normally.
+
+    Reported, not repaired: making the gate live in those repos changes WHICH
+    repos are gated at all, which is a behavior change with its own blast radius.
+    Surfacing it is what stops a dead guard and a quiet one emitting the same
+    signal.
+    """
+    if not cwd or not main_root:
+        return True                      # unknown -> never claim it is broken
+    cwd = os.path.normpath(cwd)
+    main_root = os.path.normpath(main_root)
+    return cwd == main_root or cwd.startswith(main_root + os.sep)
 
 
 def _sibling_summary(live, now, main_root):
@@ -461,6 +622,131 @@ def _tag_is_mutating(rest):
         if not tok.startswith("-"):
             return True  # positional tag name => creating
     return False
+
+
+def _is_literal_pathspec(tok):
+    """True for a plainly-named path; False for anything that sweeps unnamed files.
+
+    "Explicitly named" is the load-bearing word. `git commit -o .` is scoped in
+    the -o sense (it still ignores the index) but it commits EVERY modified file
+    under cwd -- including a sibling session's unstaged edits in the shared
+    working tree. That is the same harm through a different door, so whole-tree
+    and glob pathspecs forfeit the exemption. A named subdirectory is still a
+    deliberate scope and stays allowed.
+    """
+    if not tok or tok == "-":
+        return False
+    if tok.startswith(":"):                     # pathspec magic: :/ , :(glob), :!x
+        return False
+    if any(c in tok for c in "*?["):            # glob -> matches files you did not name
+        return False
+    if tok.rstrip("/") in {"", ".", ".."}:      # . ./ .. ../ -> whole tree
+        return False
+    return True
+
+
+def _commit_is_scoped_to_pathspecs(rest):
+    """PURE. True only if these `git commit` args PROVE the commit takes nothing
+    but explicitly named paths -- i.e. `-o`/`--only` plus >=1 literal pathspec,
+    with no index-widening flag.
+
+    `rest` is the token list AFTER the `commit` subcommand. Returns False on the
+    slightest doubt (unknown option, no pathspec, no -o): the caller then blocks,
+    which is the pre-existing behavior, so every ambiguity fails safe.
+
+    Why -o is genuinely safe here (measured, not read off the man page): it
+    commits the working-tree contents of the named paths and disregards anything
+    staged for other paths. With a file B staged, `git commit -o A` produced a
+    commit containing only A and left B still staged; the same commit run bare
+    swept B in. That bare sweep IS
+    SIBLING-SESSION-PARALLEL-COMMIT-COLLISION.
+
+    Short options cluster (`-om "msg"` really does parse as `-o -m "msg"`), so the
+    cluster walk is required, not defensive padding -- without it "msg" reads as a
+    pathspec and a commit naming no paths would be allowed.
+    """
+    only = False
+    pathspecs = []
+    i = 0
+    while i < len(rest):
+        tok = rest[i]
+        if tok == "--":
+            pathspecs.extend(rest[i + 1:])      # everything after -- is a pathspec
+            break
+        if tok.startswith("--"):
+            name, has_eq, _ = tok.partition("=")
+            if name in COMMIT_UNSAFE_LONG:
+                return False
+            if name == "--only":
+                only = True
+                i += 1
+                continue
+            if name in COMMIT_LONG_VALUE_OPTS:
+                i += 1 if has_eq else 2         # `--opt=v` self-contained; `--opt v` eats next
+                continue
+            if name in COMMIT_LONG_BOOL_OPTS:
+                i += 1
+                continue
+            return False                        # unclassified option -> cannot prove safety
+        if tok.startswith("-") and tok != "-":
+            j = 1
+            eats_next = False
+            while j < len(tok):
+                ch = tok[j]
+                if ch in COMMIT_UNSAFE_SHORT:
+                    return False
+                if ch == "o":
+                    only = True
+                    j += 1
+                    continue
+                if ch in COMMIT_SHORT_VALUE:
+                    # remainder of the cluster is the value (`-mmsg`); if the
+                    # cluster ends here (`-m msg`), the NEXT token is the value.
+                    eats_next = (j + 1 == len(tok))
+                    break
+                if ch in COMMIT_SHORT_OPTARG:
+                    break                       # optional value is attached; rest is it
+                if ch in COMMIT_SHORT_BOOL:
+                    j += 1
+                    continue
+                return False                    # unclassified flag -> cannot prove safety
+            i += 2 if eats_next else 1
+            continue
+        pathspecs.append(tok)
+        i += 1
+
+    if not only or not pathspecs:
+        return False
+    return all(_is_literal_pathspec(p) for p in pathspecs)
+
+
+def _index_is_empty(dirpath):
+    """True only if `dirpath`'s repo has NOTHING staged (index == HEAD).
+
+    `git diff --cached --quiet`: rc 0 = clean index, rc 1 = staged changes, other
+    = error. Anything but a clean 0 returns False so the caller keeps blocking --
+    an unreadable index is not an empty one.
+
+    Works on an UNBORN HEAD (verified: rc 0 with an empty index, rc 1 with a
+    staged file), so a first-commit repo needs no special case. Compares index to
+    HEAD without walking the working tree, so it stays cheap even on a very large
+    repository, and it only ever runs after the syntactic check has already passed
+    -- never on the hot path for ordinary commands.
+
+    NOTE this is belt-and-braces, not the primary safety property: `-o` ignores
+    the index whatever it holds, so the TOCTOU gap between this probe and the real
+    commit cannot reintroduce the collision.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "-C", dirpath, "diff", "--cached", "--quiet"],
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=GIT_TIMEOUT_SEC,
+            env=_GIT_CLEAN_ENV,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+    return r.returncode == 0
 
 
 def _git_mutation_target(tokens):
@@ -536,7 +822,7 @@ def _git_mutation_target(tokens):
 
     if not mutating:
         return False
-    return (True, cdir, gdir)
+    return (True, cdir, gdir, sub, rest)
 
 
 def _apply_cd(tokens, effective_cwd, cwd_known):
@@ -563,7 +849,7 @@ def _apply_cd(tokens, effective_cwd, cwd_known):
     return os.path.normpath(os.path.join(effective_cwd, dest)), True
 
 
-def _is_home_repo_git_mutation(command, cwd, main_root):
+def _is_home_repo_git_mutation(command, cwd, main_root, index_probe=None):
     """True if `command` runs a git-mutating op against the session's home repo.
 
     Tracks an in-command `cd` so a compound `cd /other-repo && git commit` is
@@ -576,6 +862,7 @@ def _is_home_repo_git_mutation(command, cwd, main_root):
     `git -C <path>` still wins over the tracked cwd."""
     if not command or "git" not in command:
         return False
+    probe = _index_is_empty if index_probe is None else index_probe
     main_root = os.path.normpath(main_root)
     effective_cwd = os.path.normpath(cwd) if cwd else main_root
     cwd_known = True
@@ -666,7 +953,7 @@ def _is_home_repo_git_mutation(command, cwd, main_root):
         res = _git_mutation_target(tokens)
         if not res:
             continue
-        _, cdir, gdir = res
+        _, cdir, gdir, sub, rest = res
         # `-C` changes git's working dir BEFORE the rest of the command resolves,
         # so apply it first to get the cwd this segment's git actually runs in.
         seg_cwd, seg_cwd_known = effective_cwd, cwd_known
@@ -705,6 +992,25 @@ def _is_home_repo_git_mutation(command, cwd, main_root):
                 continue  # bare git in an unknown dir (post unresolvable cd) → let through
             target = seg_cwd
         if _in_home(target):
+            # The one exemption: a commit that provably takes ONLY the paths it
+            # names and ignores the index cannot sweep a sibling's staged work, so
+            # it is not the collision this gate exists to stop. Every condition is
+            # required:
+            #   sub == "commit"        -- no other verb is exempt, ever
+            #   not gdir               -- an explicit git-dir means the index we
+            #                             probe may not be the one git commits
+            #                             against; do not reason about it, block
+            #   seg_cwd_known          -- must know WHERE to probe
+            #   _commit_is_scoped_...  -- -o + >=1 literal pathspec, no -a/-i/
+            #                             --amend/--interactive/--patch
+            #   probe(seg_cwd)         -- and nothing is staged right now
+            # Order matters for cost: the pure syntactic check runs first, so the
+            # git subprocess only ever fires for a command already shaped like a
+            # scoped commit.
+            if (sub == "commit" and not gdir and seg_cwd_known
+                    and _commit_is_scoped_to_pathspecs(rest)
+                    and probe(seg_cwd)):
+                continue
             return True
         # a git mutation pointed at a DIFFERENT repo is not a collision on this
         # repo's HEAD/index — let it through.
@@ -745,6 +1051,16 @@ def _session_start(payload):
             "separate repo, or wait for the other session to finish.\n"
             f"Bypass: {BYPASS_ENV}=1 (intentional parallel / collaborative work)."
         )
+        # Say plainly when the enforcement arm CANNOT fire here, so this warning
+        # is never mistaken for active protection. Without this line the notice
+        # reads identically in a gated repo and an ungated one.
+        if not _git_gate_active(cwd, main_root):
+            warn += (
+                "\n\nHEADS-UP: the git-mutation gate is DORMANT in this repo. Its git dir\n"
+                f"({main_root}) sits OUTSIDE the checkout ({cwd}), so no command\n"
+                "resolves as 'this repo' and commits / resets / pushes here are NOT blocked.\n"
+                "The warning above is informational only -- coordinate by hand."
+            )
 
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
@@ -772,7 +1088,7 @@ def _lock_path_from_cache(session_id):
     if not session_id:
         return ""
     try:
-        with open(_cache_path(session_id), "r", encoding="utf-8") as f:
+        with open(_cache_path(session_id), "r", encoding="utf-8", errors="replace") as f:
             return f.read().strip()
     except OSError:
         return ""
@@ -821,15 +1137,46 @@ def _pretooluse(payload):
 
     now = time.time()
     captured = {}
+    command = (payload.get("tool_input", {}) or {}).get("command", "") or ""
+
+    # Resolve the branch ONLY for commands that touch a shared ref, so an
+    # ordinary `ls` never pays for a git subprocess.
+    my_branch = _current_branch(cwd) if _REF_TOUCHING_RE.search(command) else ""
 
     # refresh my heartbeat on every Bash call (keep the slot warm), capturing live
     # siblings from the same consistent, flock-protected snapshot.
     def mutate(sessions):
         captured["live"] = _live_siblings(sessions, session_id, now, main_root, cwd)
-        return _upsert_self(sessions, session_id, payload.get("cwd"), now)
+        captured["branch_live"] = _live_branch_siblings(
+            sessions, session_id, now, main_root, cwd, my_branch
+        )
+        return _upsert_self(sessions, session_id, payload.get("cwd"), now, my_branch)
 
     _update_sessions(lock_path, mutate, now)
     live = captured.get("live", [])
+    branch_live = captured.get("branch_live", [])
+
+    # Cross-worktree, SAME-branch collision. Warn, never block: git's own
+    # non-fast-forward rejection already prevents the data loss, so the only
+    # thing left to save is the duplicated work — and that is saved by saying so
+    # BEFORE the work, not at push time.
+    if branch_live and not live:
+        _emit({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": (
+                f"[session-lock] ANOTHER LIVE SESSION IS ON THIS BRANCH ({my_branch}).\n"
+                + _sibling_summary(branch_live, now, main_root)
+                + "\nDifferent worktrees, so HEAD and the index are safe and this is NOT "
+                "blocked. The risk here is duplicated work: two sessions sharing one "
+                "branch have independently produced the same upstream merge, with the "
+                "same conflict resolution, and only git's non-fast-forward rejection "
+                "surfaced it — after both had done it.\n"
+                "Before you commit or push: `git fetch origin && git log --oneline "
+                "HEAD..origin/<branch>` to see whether they already did this.\n"
+                f"Bypass: {BYPASS_ENV}=1"
+            ),
+        }})
+        return -1  # emitted our own continue-with-context; main must not double-emit
 
     if not live:
         return 0
@@ -846,7 +1193,16 @@ def _pretooluse(payload):
             "exactly the SIBLING-SESSION-PARALLEL-COMMIT-COLLISION that can wipe "
             "in-flight work. Coordinate with the other session before mutating "
             "shared git state.\n\n"
-            f"Bypass (intentional parallel / collaborative work): {BYPASS_ENV}=1\n"
+            "If this is a COMMIT there is a way through that keeps the gate on.\n"
+            "Stage nothing, and name every path you are committing:\n"
+            "    git commit -o <path> [<path>...] -F <message-file>\n"
+            "`-o`/`--only` commits the working-tree contents of the named paths and\n"
+            "disregards the index, so it cannot sweep a sibling's staged work. That\n"
+            "form is ALLOWED here while the index is empty. It needs at least one\n"
+            "literal path (not `.`, not a glob) and no -a / -i / --amend / --patch;\n"
+            "use -F <file> or a single-line -m (a multi-line -m cannot be parsed\n"
+            "safely, so it stays blocked).\n\n"
+            f"Blanket bypass, disables this gate session-wide: {BYPASS_ENV}=1\n"
         )
         return 2
 
@@ -854,7 +1210,11 @@ def _pretooluse(payload):
     if not os.path.exists(marker):
         try:
             os.makedirs(CACHE_DIR, exist_ok=True)
-            open(marker, "w").close()
+            # `encoding=` on a file that receives ZERO bytes looks pointless and is
+            # not: text mode with no encoding resolves the LOCALE codec at open
+            # time, so the categorical rule holds even for an empty sentinel.
+            # check-utf8-file-io.py is right to refuse the judgement call.
+            open(marker, "w", encoding="utf-8").close()
         except OSError:
             pass
         sys.stderr.write(
@@ -892,6 +1252,8 @@ def main() -> int:
             rc = _pretooluse(payload)
             if rc == 0:
                 _emit_continue()
+            if rc < 0:
+                return 0  # _pretooluse already emitted its own continue-with-context
             return rc
         if event == "SessionEnd":
             _session_end(payload.get("session_id") or "")

@@ -55,7 +55,7 @@ def telemetry_enabled(cwd: Path) -> bool:
     claude_md = cwd / "CLAUDE.md"
     if claude_md.is_file():
         try:
-            text = claude_md.read_text(encoding="utf-8")
+            text = claude_md.read_text(encoding="utf-8", errors="replace")
             if re.search(r"cascadeTelemetry\s*:\s*true", text, re.IGNORECASE):
                 return True
         except OSError:
@@ -151,6 +151,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # A cp1252 Windows console raises UnicodeEncodeError the moment this prints a
+    # non-ASCII character, and the hook dies with no legible cause
+    # (ai-brain-starter#313). Idempotent; a no-op on an already-UTF-8 console.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     try:
         main()
     except Exception:

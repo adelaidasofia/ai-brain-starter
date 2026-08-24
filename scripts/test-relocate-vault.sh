@@ -344,6 +344,165 @@ CLAUDE_CONFIG_DIR="$CFG" RELOCATE_VAULT_OBSIDIAN=running \
   && pass "obsidian gate: --force -> vault moved + symlink left despite Obsidian running" \
   || fail "obsidian gate: --force did not relocate with Obsidian running"
 
+# --- 11. SAFETY PROBES FAIL CLOSED (MYC-4011) ---------------------------------
+# A gate whose probe cannot run must REFUSE, not proceed. "I could not look" and
+# "I looked and nothing was there" are different answers, and the old code
+# collapsed them into one:
+#     command -v pgrep >/dev/null 2>&1 && pgrep -x Obsidian >/dev/null 2>&1
+# On a machine with no `pgrep` that whole expression is false, which read as
+# "Obsidian is not running" and let the vault move under a live editor. Git Bash
+# on Windows has no `pgrep`, so that is a whole population where this gate was
+# inert while looking healthy.
+#
+# EVERY fixture below is given a SATISFIED backup gate on purpose. Without that,
+# the pre-fix script also "refuses" — at the backup gate, several steps later,
+# for a reason that has nothing to do with the probe — and every assertion here
+# passes against the very bug it is supposed to catch. Measured: with no backup
+# config, 10 of these 11 assertions passed against pre-fix code. With the backup
+# satisfied, the probe is the ONLY thing that can stop the move, so a probe that
+# fails open moves the vault and these go red.
+
+# A backup config that satisfies the backup gate for one source vault.
+satisfy_backup() {  # $1 = source dir, $2 = conf path to write
+  local src="$1" conf="$2" res dest
+  res="$(cd "$src" && pwd -P)"
+  dest="$TMP/probe-backups/$(basename "$src")"
+  mkdir -p "$dest"
+  touch "$dest/vault-backup-now.tar.gz"
+  printf '{"vaults": {"%s": {"dest": "%s", "archive_stem": "vault-backup"}}}\n' \
+    "$res" "$dest" > "$conf"
+}
+
+# A PATH holding exactly what relocate-vault.sh needs, MINUS one command.
+#
+# Deliberately an explicit list rather than a symlink farm over the whole PATH:
+# `python3` on a developer box is often a SHIM that locates its interpreter
+# relative to its own directory, so copying it elsewhere breaks it and the test
+# fails for a reason that has nothing to do with the probe. Resolve the real
+# interpreter and link that.
+PROBE_TOOLS="git find mv ln mkdir rm cp basename dirname sed tr wc head readlink realpath open pgrep env sh bash awk cat grep mktemp chmod date touch stat"
+make_path_without() {  # $1 = out dir, $2 = command to hide
+  local out="$1" hide="$2" name src
+  mkdir -p "$out"
+  for name in $PROBE_TOOLS; do
+    [ "$name" = "$hide" ] && continue
+    src="$(command -v "$name" 2>/dev/null || true)"
+    [ -n "$src" ] || continue
+    ln -s "$src" "$out/$name" 2>/dev/null || true
+  done
+  if [ "$hide" != "python3" ]; then
+    src="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null || true)"
+    [ -n "$src" ] && ln -s "$src" "$out/python3" 2>/dev/null || true
+  fi
+}
+
+# Did the move happen? This, not "did it exit non-zero", is the predicate that
+# separates a working gate from one that failed open.
+vault_moved() {  # $1 = src, $2 = dst
+  [ -e "$2" ] || return 1
+  return 0
+}
+
+# 11a REAL PROBE, no pgrep on PATH -> refuse, with the backup gate satisfied so
+# nothing else can be doing the refusing.
+NOPG="$TMP/path-no-pgrep"
+make_path_without "$NOPG" pgrep
+if [ -e "$NOPG/pgrep" ]; then
+  fail "probe fail-closed: fixture still exposes pgrep — the control proves nothing"
+elif ! PATH="$NOPG" python3 -c 'import sys' 2>/dev/null; then
+  fail "probe fail-closed: the fixture PATH cannot run python3 — a refusal there would prove nothing"
+else
+  pg_src="$TMP/pg-src"; pg_dst="$TMP/pg-dst"
+  mkdir -p "$pg_src"; : > "$pg_src/note.md"
+  PG_CONF="$TMP/pg-conf.json"; satisfy_backup "$pg_src" "$PG_CONF"
+  out="$(PATH="$NOPG" CLAUDE_CONFIG_DIR="$CFG" VAULT_BACKUP_CONF="$PG_CONF" \
+        VAULT_BACKUP_SKIP_TIMEMACHINE=1 RELOCATE_VAULT_OBSIDIAN=auto \
+        bash "$SCRIPT" "$pg_src" "$pg_dst" 2>&1)"; rc=$?
+  vault_moved "$pg_src" "$pg_dst" \
+    && fail "probe fail-closed: a missing pgrep MOVED the vault — the gate failed open" \
+    || pass "probe fail-closed: a missing pgrep did not move the vault"
+  [ "$rc" != 0 ] && pass "probe fail-closed: a missing pgrep REFUSES (rc=$rc)" \
+                 || fail "probe fail-closed: a missing pgrep exited 0 — the gate failed open"
+  echo "$out" | grep -qi 'cannot tell whether obsidian' \
+    && pass "probe fail-closed: it refuses because it could not TELL, not for some later reason" \
+    || fail "probe fail-closed: the refusal did not name the unprobeable state: $out"
+
+  # ...and the escape hatch still works, so fail-closed is not a dead end.
+  PATH="$NOPG" CLAUDE_CONFIG_DIR="$CFG" VAULT_BACKUP_CONF="$PG_CONF" \
+    VAULT_BACKUP_SKIP_TIMEMACHINE=1 RELOCATE_VAULT_OBSIDIAN=auto \
+    bash "$SCRIPT" "$pg_src" "$pg_dst" --force >/dev/null 2>&1; rc=$?
+  { [ "$rc" = 0 ] && [ -d "$pg_dst" ]; } \
+    && pass "probe fail-closed: --force still overrides an unprobeable gate" \
+    || fail "probe fail-closed: --force could not override the unprobeable gate (rc=$rc)"
+fi
+
+# 11b the seam's third state, for parity with the .ps1 twin which already has it
+un_src="$TMP/un-src"; un_dst="$TMP/un-dst"
+mkdir -p "$un_src"; : > "$un_src/note.md"
+UN_CONF="$TMP/un-conf.json"; satisfy_backup "$un_src" "$UN_CONF"
+out="$(CLAUDE_CONFIG_DIR="$CFG" VAULT_BACKUP_CONF="$UN_CONF" VAULT_BACKUP_SKIP_TIMEMACHINE=1 \
+      RELOCATE_VAULT_OBSIDIAN=unreadable \
+      bash "$SCRIPT" "$un_src" "$un_dst" 2>&1)"; rc=$?
+vault_moved "$un_src" "$un_dst" \
+  && fail "probe fail-closed: an unreadable process list MOVED the vault" \
+  || pass "probe fail-closed: an unreadable process list did not move the vault"
+[ "$rc" != 0 ] && pass "probe fail-closed: an unreadable process list REFUSES (rc=$rc)" \
+               || fail "probe fail-closed: an unreadable process list exited 0"
+
+# 11c DISCRIMINATION: the same seam saying "absent" is a real ANSWER and the move
+# proceeds — with no --force, so this is the gate deciding, not an override.
+# Without this, 11a/11b would pass on a script that simply refuses everything.
+ok2_src="$TMP/ok2-src"; ok2_dst="$TMP/ok2-dst"
+mkdir -p "$ok2_src"; : > "$ok2_src/note.md"
+OK2_CONF="$TMP/ok2-conf.json"; satisfy_backup "$ok2_src" "$OK2_CONF"
+CLAUDE_CONFIG_DIR="$CFG" VAULT_BACKUP_CONF="$OK2_CONF" VAULT_BACKUP_SKIP_TIMEMACHINE=1 \
+  RELOCATE_VAULT_OBSIDIAN=absent \
+  bash "$SCRIPT" "$ok2_src" "$ok2_dst" >/dev/null 2>&1; rc=$?
+{ [ "$rc" = 0 ] && [ -d "$ok2_dst" ]; } \
+  && pass "probe fail-closed: a real 'not running' answer still moves the vault" \
+  || fail "probe fail-closed: refuses even on a clean answer (rc=$rc) — over-refusing"
+
+# 11d THE SECOND PROBE, same class: the worktree-activity scan.
+# `find ... 2>/dev/null | head -1 || true` turned every failure into an empty
+# string, which read as "nothing is active". Hide `find` and it must refuse.
+NOFIND="$TMP/path-no-find"
+make_path_without "$NOFIND" find
+if [ -e "$NOFIND/find" ]; then
+  fail "worktree probe: fixture still exposes find — the control proves nothing"
+elif ! PATH="$NOFIND" python3 -c 'import sys' 2>/dev/null; then
+  fail "worktree probe: the fixture PATH cannot run python3 — a refusal there would prove nothing"
+else
+  wt_src="$TMP/wt-src"; wt_dst="$TMP/wt-dst"
+  mkdir -p "$wt_src/.claude/worktrees/live"; : > "$wt_src/note.md"
+  WT_CONF="$TMP/wt-conf.json"; satisfy_backup "$wt_src" "$WT_CONF"
+  out="$(PATH="$NOFIND" CLAUDE_CONFIG_DIR="$CFG" VAULT_BACKUP_CONF="$WT_CONF" \
+        VAULT_BACKUP_SKIP_TIMEMACHINE=1 RELOCATE_VAULT_OBSIDIAN=absent \
+        bash "$SCRIPT" "$wt_src" "$wt_dst" 2>&1)"; rc=$?
+  vault_moved "$wt_src" "$wt_dst" \
+    && fail "worktree probe: an unrunnable scan MOVED the vault — the gate failed open" \
+    || pass "worktree probe: an unrunnable scan did not move the vault"
+  [ "$rc" != 0 ] && pass "worktree probe: an unrunnable scan REFUSES (rc=$rc)" \
+                 || fail "worktree probe: an unrunnable scan exited 0"
+  echo "$out" | grep -qi 'cannot tell whether a claude session' \
+    && pass "worktree probe: it refuses because it could not TELL" \
+    || fail "worktree probe: refusal did not name the unprobeable state: $out"
+fi
+
+# 11e and the worktree gate still fires on a REAL live writer (positive control).
+lw_src="$TMP/lw-src"; lw_dst="$TMP/lw-dst"
+mkdir -p "$lw_src/.claude/worktrees/live"; : > "$lw_src/note.md"
+: > "$lw_src/.claude/worktrees/live/session.jsonl"
+LW_CONF="$TMP/lw-conf.json"; satisfy_backup "$lw_src" "$LW_CONF"
+out="$(CLAUDE_CONFIG_DIR="$CFG" VAULT_BACKUP_CONF="$LW_CONF" VAULT_BACKUP_SKIP_TIMEMACHINE=1 \
+      RELOCATE_VAULT_OBSIDIAN=absent \
+      bash "$SCRIPT" "$lw_src" "$lw_dst" 2>&1)"; rc=$?
+{ [ "$rc" != 0 ] && ! vault_moved "$lw_src" "$lw_dst"; } \
+  && pass "worktree probe: a live writer still refuses the move" \
+  || fail "worktree probe: a live writer did not refuse (rc=$rc)"
+echo "$out" | grep -qi 'worktrees' \
+  && pass "worktree probe: the refusal names .claude/worktrees" \
+  || fail "worktree probe: refusal did not name worktrees: $out"
+
 echo
 if [ "$fails" -gt 0 ]; then echo "FAILED: $fails"; exit 1; fi
 echo "ALL TESTS PASSED"

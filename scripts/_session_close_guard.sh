@@ -128,3 +128,83 @@ close_mutex_release() {
   _CLOSE_MUTEX_HELD=0
   trap - EXIT
 }
+
+# --- real git dir + index lock ---------------------------------------------
+# A vault that has been through scripts/relocate-machinery-sidecar.sh
+# (docs/CLOUD_SYNC.md "Shape B") keeps its git machinery OUTSIDE the synced tree
+# via `git init --separate-git-dir`. Its `$VAULT/.git` is then a one-line
+# POINTER FILE, not a directory, and the real index lives in the sidecar.
+#
+# So NEVER build a lock path by joining `.git/index.lock` onto the vault root.
+# On a relocated vault that path sits under a FILE and can never exist, so the
+# check reports "free" forever and the vault-wide commit mutex is SILENTLY
+# disarmed: two sessions closing at once both see "no lock" and both commit.
+# Ask git instead — `rev-parse --absolute-git-dir` answers correctly whether
+# `.git` is a directory, a pointer file, or a linked worktree.
+#
+# FAIL CLOSED. When the git dir cannot be resolved (not a repo, git missing,
+# unreadable) these report LOCKED / refuse. A mutex that fails OPEN is the exact
+# defect this exists to prevent. Refusing costs a deferred snapshot — the work
+# stays on disk and the daily-maintenance reconcile catches up — while failing
+# open costs a lost update, which nothing recovers.
+: "${VAULT_GIT_LOCK_MAX_WAIT:=60}"
+
+vault_git_dir() {
+  # Echoes the ABSOLUTE git directory for the repo at $1. Empty + rc 1 on any
+  # failure, so callers can distinguish "resolved" from "could not resolve".
+  local root="${1:-}" gd=""
+  { [ -n "$root" ] && [ -d "$root" ]; } || { echo ""; return 1; }
+  # --absolute-git-dir (git >= 2.13) resolves a pointer file and a linked
+  # worktree. Fall back to --git-dir on older git, absolutizing a relative
+  # answer (a normal repo answers a bare ".git") against the vault root.
+  gd=$(git -C "$root" rev-parse --absolute-git-dir 2>/dev/null)
+  if [ -z "$gd" ]; then
+    gd=$(git -C "$root" rev-parse --git-dir 2>/dev/null)
+    [ -n "$gd" ] || { echo ""; return 1; }
+    case "$gd" in
+      /*)     ;;                              # POSIX absolute (incl. Git Bash)
+      ?:/*|?:\\*) ;;                          # Windows drive-absolute
+      *)      gd="$root/$gd" ;;               # relative -> anchor to the vault
+    esac
+  fi
+  [ -d "$gd" ] || { echo ""; return 1; }
+  echo "$gd"
+}
+
+vault_git_index_lock() {
+  # Echoes <real-git-dir>/index.lock. Empty + rc 1 when the git dir cannot be
+  # resolved. Never join .git/index.lock onto the vault root yourself.
+  local gd
+  gd=$(vault_git_dir "${1:-}") || { echo ""; return 1; }
+  [ -n "$gd" ] || { echo ""; return 1; }
+  echo "$gd/index.lock"
+}
+
+vault_git_locked() {
+  # Returns 0 (LOCKED) when the real index lock is present, OR when the git dir
+  # cannot be resolved (fail closed). Returns 1 (provably free) only when
+  # resolution SUCCEEDED and no lock file is present.
+  local lock
+  lock=$(vault_git_index_lock "${1:-}") || return 0
+  [ -n "$lock" ] || return 0
+  [ -e "$lock" ] && return 0
+  return 1
+}
+
+vault_git_wait_unlocked() {
+  # Spin until the real index lock clears. $1 = vault root, $2 = max seconds
+  # (default $VAULT_GIT_LOCK_MAX_WAIT). Returns 0 once provably free; 1 if it is
+  # still held at the deadline or the git dir never resolved (fail closed).
+  local root="${1:-}" max_wait="${2:-$VAULT_GIT_LOCK_MAX_WAIT}" waited=0
+  # Validate the budget. A non-numeric value (a typo'd env var) would make the
+  # deadline test below error instead of returning true, so the loop would spin
+  # forever on a genuinely held lock - a hang, on the interactive close path.
+  case "$max_wait" in ''|*[!0-9]*) max_wait=60 ;; esac
+  vault_git_dir "$root" >/dev/null || return 1
+  while vault_git_locked "$root"; do
+    [ "$waited" -ge "$max_wait" ] && return 1
+    sleep 2
+    waited=$((waited + 2))
+  done
+  return 0
+}

@@ -291,7 +291,7 @@ python3 ~/.claude/skills/ai-brain-starter/scripts/check-vault-backup.py "<VAULT_
 bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh setup --vault "<VAULT_PATH>"
 ```
 
-Walk them through it in their language: it asks for a destination folder — **an external drive, or a Google Drive / Dropbox / OneDrive folder** (a single daily archive syncs fine; it is the churning vault that must never live in cloud sync, not one compressed file). It writes one compressed snapshot immediately, installs a daily schedule, and never touches the machine-exhaust dirs. **For a vault that will hold journals, health data, or client/CRM notes, add `--encrypt`** — it stores the passphrase in the OS keychain, never in plaintext.
+Walk them through it in their language: it asks for a destination folder — **an external drive, or a Google Drive / Dropbox / OneDrive folder** (a single daily archive syncs fine; it is the churning vault that must never live in cloud sync, not one compressed file). It writes one compressed snapshot immediately, installs a daily schedule, and never touches the machine-exhaust dirs. **For a vault that will hold journals, health data, or client/CRM notes, add `--encrypt`** — it stores the passphrase in the OS keychain when the machine has one, and says so loudly if it has to fall back to a protected file instead. (On Windows, `-Encrypt` needs gpg/Gpg4win installed; it errors rather than writing an unencrypted archive.) Tell them `vault-backup.sh status` reports which of the two they got, any time.
 
 Then have them prove it actually restores (a backup nobody has restored is a hope, not a backup):
 
@@ -301,3 +301,22 @@ bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh verify --vault "<
 
 **If the user genuinely wants to defer** (no external disk handy, wants to decide on a cloud folder later): do not fight them, but do not let it pass silently either. Say plainly: *"Okay — just so you know, your brain currently has no off-machine backup, so right now one disk failure would lose everything. I've left it un-set-up at your call. You'll see a reminder at the start of every session until a backup exists, and the one command to fix it is `bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh setup`."* The SessionStart signal (`surface-backup-status.py`) then keeps it visible until it's done — it is advisory and never blocks, but it does not go quiet. See `docs/BACKUP.md`.
 
+---
+
+## → Next phase (the install is not finished)
+
+You have just completed **Phase 1**. Do not stop here, do not summarise the
+install as complete, and do not wait to be asked to continue.
+
+1. **Record progress.** Write `~/.claude/.ai-brain-starter-progress.json`:
+   `{"last_completed_phase": "1", "ts": "<ISO-8601 timestamp for now>", "version": 1}`
+   This one line is what lets a resumed install pick up here instead of starting over.
+2. **Run the next phase.** Read `phases/phase-02-03-plugins-folders.md` from this skill's own directory
+   and execute **Phase 2-3**.
+
+If you are running low on context, say so out loud and tell the user to open a
+fresh session and ask to resume the ai-brain-starter install; the progress file
+above is what makes that work. Ending here silently leaves them with a
+half-built brain that looks finished.
+
+<!-- phase-chain: next=phase-02-03-plugins-folders.md -->
