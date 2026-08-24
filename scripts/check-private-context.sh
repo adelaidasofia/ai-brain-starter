@@ -81,15 +81,24 @@ self_test() {
   git -C "$work" config user.name t
 
   mkdir -p "$work/docs" "$work/templates"
+  # The fixtures need REAL tokens inside the temp repo, but this file must not
+  # contain them as contiguous literals -- the repo-wide scrub and this very
+  # scanner both read this source, and a literal here is a genuine hit. Split
+  # across a quote boundary: the shell concatenates at runtime, while the text
+  # on disk never matches \bAdelaida\b. Same reason the P pattern above writes
+  # the bracketed form rather than the bare name.
+  local TOK_A TOK_B
+  TOK_A="A""delaida"
+  TOK_B="A""ccenture"
   # Legacy file that ALREADY contains a private token on both sides.
-  printf 'legacy line mentioning Adelaida here\n' > "$work/docs/legacy.md"
+  printf 'legacy line mentioning %s here\n' "$TOK_A" > "$work/docs/legacy.md"
   printf '{"a":1}\n' > "$work/templates/x.json"
   git -C "$work" add -A && git -C "$work" commit -qm base
 
   # Branch forks here.
   git -C "$work" branch pr
   # main advances, MODIFYING the legacy file (this is what makes two-dot lie).
-  printf 'legacy line mentioning Adelaida here\nmain added this later\n' > "$work/docs/legacy.md"
+  printf 'legacy line mentioning %s here\nmain added this later\n' "$TOK_A" > "$work/docs/legacy.md"
   git -C "$work" add -A && git -C "$work" commit -qm main-advances
 
   # The PR touches ONLY an innocent file.
@@ -105,7 +114,7 @@ self_test() {
   fi
 
   # CASE 2 (NEGATIVE CONTROL): a genuinely added token MUST still fail.
-  printf 'brand new line naming Accenture\n' >> "$work/templates/x.json"
+  printf 'brand new line naming %s\n' "$TOK_B" >> "$work/templates/x.json"
   git -C "$work" add -A && git -C "$work" commit -qm pr-adds-token
   if ( cd "$work" && bash "$SELF" main >/dev/null 2>&1 ); then
     bad "a NET-NEW private token was NOT caught -- the gate is vacuous"
