@@ -95,8 +95,7 @@
 # to trust a hand-written count; `python3 scripts/check-utf8-stdout.py` prints
 # the live split.)
 
-# ---- SEV-3-doc-only  (3 file(s)) ----
-028b9d634e09a6515f64176895cb35fc1415eae2ab1b74692aefa4a96da27e4f SEV-3-doc-only hooks/_lib/secret_patterns.py
+# ---- SEV-3-doc-only  (2 file(s)) ----
 ed1d68dba02ab76c99907e8efc27ac0aac8c98a14dad261da73fa5d8e1610369 SEV-3-doc-only hooks/_lib/template_purity.py
 8dea18caf79e387a2fbeddca90403ef8af0d0ff1e6395e3b1f00e1b396491a4b SEV-3-doc-only hooks/inject-instinct-context.py
 
