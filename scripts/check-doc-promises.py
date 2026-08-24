@@ -164,15 +164,29 @@ NON_COMMAND_TOKENS = {
 }
 
 # Confirmed references to something this repo does NOT resolve, found by
-# this script but left unfixed because they are outside MYC-4121's eight
-# findings. Listed here (never silently folded into NON_COMMAND_TOKENS,
-# which is reserved for tokens confirmed NOT to be commands) so a future
-# pass can grep this exact name and decide: ship it, or remove the promise.
-#   /plan (phases/phase-19-23-finish.md) -- "If they use `/plan week`...";
-#     no skill in this repo resolves /plan.
-#   /code-security (skills/sunday-review/SKILL.md) -- escalation target in
-#     the security-cadence model; no skill in this repo resolves it.
-DEFERRED_UNRESOLVED_TOKENS = {"plan", "code-security"}
+# this script but not yet decided. Listed here (never silently folded into
+# NON_COMMAND_TOKENS, which is reserved for tokens confirmed NOT to be
+# commands) so a future pass can grep this exact name and decide: ship it,
+# or remove the promise. EMPTY IS THE CORRECT STEADY STATE -- an entry here
+# is a debt with a name, not an exemption, and it is never the way to
+# silence a finding.
+#
+# Both original entries were resolved by removing the promise (2026-08-24):
+#   /plan (phases/phase-19-23-finish.md) and /code-security
+#   (skills/sunday-review/SKILL.md) are both paid-tier capabilities that live
+#   in a private repo -- not part of the free substrate.
+#   Neither was ever planned or built here (no file on any ref, zero mentions
+#   across CHANGELOG.md), and neither is an externally installable tool like
+#   the obra/superpowers bundle POWER_TOOLS.md documents, so there is no
+#   "install from X" note to write: X is private. The prose was rewritten to
+#   drop the command and keep the advice. Layer 3 of the security-cadence
+#   model now states plainly that this repo does not ship that layer --
+#   security-snapshot (passive, external-only) and secret-warn (edit-time
+#   guardrails) both explicitly disclaim deep review, so neither could stand
+#   in for it. The "removed in v" convention deliberately does NOT apply:
+#   nothing was removed from this repo, and writing it would both fabricate
+#   history and buy a green via REMOVED_MARKER instead of earning one.
+DEFERRED_UNRESOLVED_TOKENS: set[str] = set()
 
 HTTP_VERBS = ("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS")
 
