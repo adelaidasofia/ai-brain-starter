@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Optional
@@ -322,12 +323,32 @@ def check_commands(root: Path, files: list[Path], vocabulary: set[str]) -> list[
 _VAULT_PATH_PREFIXES = ("Meta/", "⚙️ Meta/")
 
 
+def _contains(parent: Path, child: Path) -> bool:
+    """True if child resolves to a path inside parent. Both are resolved
+    first so a ../ in `ref` can't walk the check outside the repo -- the
+    doc-promises regex's own charset allows '.' and '/' in a script path's
+    prefix (it has to, to match a real nested path like
+    services/health-mcp/scripts/x.py), so nothing stops a crafted line like
+    `../../../etc/scripts/passwd.py` from reaching this function. The
+    consequence of NOT checking would only ever be an existence probe (this
+    function calls is_file(), never reads content), but a doc-accuracy
+    linter has no business resolving anywhere outside its own repo."""
+    try:
+        parent_r = str(parent.resolve())
+        child_r = str(child.resolve())
+    except OSError:
+        return False
+    return child_r == parent_r or child_r.startswith(parent_r + "/")
+
+
 def resolve_script(root: Path, doc_file: Path, ref: str, skills_scripts: dict[str, list[Path]]) -> bool:
     if ref.startswith(_VAULT_PATH_PREFIXES):
         return True
-    if (root / ref).is_file():
+    candidate = root / ref
+    if _contains(root, candidate) and candidate.is_file():
         return True
-    if (doc_file.parent / ref).is_file():
+    candidate = doc_file.parent / ref
+    if _contains(root, candidate) and candidate.is_file():
         return True
     if ref.startswith("scripts/") and ref.count("/") == 1:
         basename = ref.split("/", 1)[1]
@@ -507,9 +528,29 @@ def self_test() -> int:
         False,
     )
 
+    # A ../ reference that genuinely resolves to a REAL file outside the
+    # repo must still be refused. The regex's own charset allows '.' and
+    # '/' in a script path's prefix (needed to match a real nested path
+    # like services/health-mcp/scripts/x.py), so nothing in the extraction
+    # step stops a crafted `../../outside/scripts/x.py` -- only _contains()
+    # does. Proven against a file that ACTUALLY EXISTS: if this test used a
+    # nonexistent traversal target, it would pass for the wrong reason (the
+    # file's absence) and never exercise the containment check at all.
+    traversal_root = root.parent / "_check_doc_promises_traversal_fixture"
+    (traversal_root / "scripts").mkdir(parents=True, exist_ok=True)
+    (traversal_root / "scripts" / "evil.py").write_text("# fixture\n", encoding="utf-8")
+    try:
+        traversal_ref = f"../{traversal_root.name}/scripts/evil.py"
+        check(
+            "../ traversal to a file that genuinely exists outside root is still refused",
+            resolve_script(root, fake_doc, traversal_ref, skills_scripts),
+            False,
+        )
+    finally:
+        shutil.rmtree(traversal_root, ignore_errors=True)
+
     # --- flags ---
     fixture_dir = Path("/tmp/check-doc-promises-selftest")
-    import shutil
     shutil.rmtree(fixture_dir, ignore_errors=True)
     (fixture_dir / "skills" / "fixture-skill").mkdir(parents=True)
     (fixture_dir / "skills" / "fixture-skill" / "SKILL.md").write_text(
