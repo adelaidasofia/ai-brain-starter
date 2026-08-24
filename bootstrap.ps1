@@ -423,6 +423,198 @@ if (Have winget) {
     $UseWinget = $false
 }
 
+# ─── git ──────────────────────────────────────────────────────────────────────
+# WHY THIS SECTION EXISTS (MYC-3895)
+# ----------------------------------
+# This installer calls git itself - `git clone` for the skill, `git fetch` /
+# `git pull` for the self-update, `git clone` for humanizer - and git was the
+# one prerequisite it never installed. A 2026-08-12 cohort install session
+# recorded the wall verbatim: "Git and Node.js CLI installs require
+# administrator rights." Several people finished a paid session un-installed,
+# because every no-admin recovery path further down this file was unreachable:
+# the script holding them could not be fetched.
+#
+# The entry command in the README already falls back to a zip, so bootstrap.ps1
+# now STARTS without git. This section is what lets the rest of the run recover:
+#   1. winget install -e --id Git.Git - correct whenever it is allowed.
+#   2. The official PortableGit self-extracting archive, unpacked under
+#      LOCALAPPDATA with the USER PATH wired. No elevation anywhere - the same
+#      shape as the Node ZIP fallback a few sections below, which exists for
+#      exactly the same reason.
+#
+# NOTHING on this path may call Err. git is NOT required for the rest of the
+# install; only auto-update depends on it. A git we cannot install DEGRADES the
+# run and is reported as Skipped, never as a red actionable failure - a scary
+# red line on a locked-down laptop is the experience this ticket exists to
+# remove. tests/integration/test_bootstrap_ps1_git_install.ps1 asserts that
+# structurally, so it cannot regress into an Err later.
+#
+# Placed BEFORE Python/Node so a git installed here is on PATH by the time the
+# clone/self-update section runs. Installing it any later cannot help the run
+# that needed it.
+
+# ai-brain:install-git:start
+# Test-WorkingGit - PRESENCE IS NOT CAPABILITY. `Get-Command git` answers true
+# for a git that cannot run: a half-removed Git for Windows leaves git.exe on
+# PATH pointing into a deleted install, and a PortableGit left behind by an
+# interrupted run sits there without a usable libexec. Same class as the macOS
+# Command Line Tools stub that bootstrap.sh's have_working_git guards against.
+# Probe by EXECUTION.
+#
+# Neutralises $ErrorActionPreference exactly as Run-Native does: under "Stop" a
+# native command writing ANY stderr can surface as a terminating
+# NativeCommandError even when it succeeded, and git is chatty on stderr.
+# Success is the exit code, never stderr.
+function Test-WorkingGit {
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return $false }
+    $eapSaved = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $global:LASTEXITCODE = 0
+    try { & git --version 2>&1 | Out-Null }
+    catch { $global:LASTEXITCODE = 1 }
+    finally { $ErrorActionPreference = $eapSaved }
+    return ($LASTEXITCODE -eq 0)
+}
+
+# Get-PortableGitUri - the official git-for-windows release asset.
+#
+# Version-pinned the way the Node fallback pins v20.18.0: a pin is reviewable,
+# reproducible, and what the corporate profile's manifest promises. ARM is a
+# real Windows laptop now and an x64 PortableGit runs only under emulation
+# there, so the architecture is read rather than assumed.
+# PROCESSOR_ARCHITEW6432 is where an x86/x64 PowerShell on an ARM64 machine
+# reports the machine's REAL architecture; PROCESSOR_ARCHITECTURE would say
+# AMD64 and quietly hand that laptop the wrong build.
+function Get-PortableGitUri {
+    param(
+        [string]$Arch    = "",
+        [string]$Tag     = "v2.55.0.windows.5",
+        [string]$Version = "2.55.0.5"
+    )
+    if (-not $Arch) { $Arch = $env:PROCESSOR_ARCHITEW6432 }
+    if (-not $Arch) { $Arch = $env:PROCESSOR_ARCHITECTURE }
+    $asset = "PortableGit-$Version-64-bit.7z.exe"
+    if ($Arch -match "ARM64") { $asset = "PortableGit-$Version-arm64.7z.exe" }
+    return "https://github.com/git-for-windows/git/releases/download/$Tag/$asset"
+}
+
+# Test-TrustedGitArchive - this fallback DOWNLOADS AND RUNS an executable, which
+# the Node fallback (a plain zip) never does, so the trust question is real and
+# gets answered before anything is executed.
+#
+# Authenticode rather than a pinned SHA-256: a hash rots at every version bump
+# and would silently disable the fallback on exactly the machines that need it,
+# while the signature keeps verifying whatever Git for Windows actually signed.
+# BOTH halves are required - Status alone accepts any validly signed binary, so
+# the publisher is checked too.
+function Test-TrustedGitArchive([string]$Path) {
+    if (-not (Get-Command Get-AuthenticodeSignature -ErrorAction SilentlyContinue)) { return $false }
+    $sig = $null
+    try { $sig = Get-AuthenticodeSignature -LiteralPath $Path } catch { return $false }
+    if ($null -eq $sig) { return $false }
+    if ($sig.Status -ne "Valid") { return $false }
+    $subject = ""
+    if ($sig.SignerCertificate) { $subject = [string]$sig.SignerCertificate.Subject }
+    return ($subject -match "Schindelin" -or $subject -match "Git for Windows")
+}
+
+# Install-PortableGit - unpack git for THIS USER, no elevation. Returns the
+# directory to put on PATH, or $null on any failure. Never throws: the caller
+# reads a $null as "git stays unavailable", which is a degraded run, not a
+# failed one.
+function Install-PortableGit {
+    param(
+        [Parameter(Mandatory=$true)][string]$Uri,
+        [Parameter(Mandatory=$true)][string]$DestDir,
+        [Parameter(Mandatory=$true)][string]$TempDir
+    )
+    $exe = Join-Path $TempDir ("PortableGit-" + [System.Guid]::NewGuid().ToString("N") + ".7z.exe")
+    try { Invoke-WebRequest -Uri $Uri -OutFile $exe -UseBasicParsing } catch { return $null }
+    if (-not (Test-TrustedGitArchive $exe)) {
+        Remove-Item -LiteralPath $exe -Force -ErrorAction SilentlyContinue
+        return $null
+    }
+    # Move an existing folder aside rather than deleting it - the same
+    # .bak-<stamp> convention the Node fallback and the rest of this installer
+    # use. We only get here because git does not work, so whatever is there is
+    # broken or stale, but it is still the user's.
+    if (Test-Path -LiteralPath $DestDir) {
+        $shelved = "$DestDir.bak-$(Get-Date -Format 'yyyy-MM-dd-HHmm')"
+        Move-Item -LiteralPath $DestDir -Destination $shelved -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $DestDir) {
+            Remove-Item -LiteralPath $exe -Force -ErrorAction SilentlyContinue
+            return $null
+        }
+    }
+    New-Item -ItemType Directory -Force -Path $DestDir | Out-Null
+    # 7-Zip self-extractor: -o<dir> -y, silent, no elevation. -ArgumentList is
+    # passed as ONE string so the quoting around a path with spaces
+    # (C:\Users\First Last\AppData\Local\...) is ours, and is not rebuilt by the
+    # array-to-command-line joiner.
+    $exitCode = 1
+    try {
+        $proc = Start-Process -FilePath $exe -ArgumentList ('-o"' + $DestDir + '" -y') `
+                              -Wait -PassThru -WindowStyle Hidden
+        $exitCode = $proc.ExitCode
+    } catch { $exitCode = 1 }
+    Remove-Item -LiteralPath $exe -Force -ErrorAction SilentlyContinue
+    if ($exitCode -ne 0) { return $null }
+    # cmd\git.exe is PortableGit's self-locating launcher - the one directory
+    # that belongs on PATH. Verify the payload actually landed rather than
+    # trusting the extractor's exit code alone.
+    $cmdDir = Join-Path $DestDir "cmd"
+    if (-not (Test-Path -LiteralPath (Join-Path $cmdDir "git.exe"))) { return $null }
+    return $cmdDir
+}
+# ai-brain:install-git:end
+
+if (-not (Test-WorkingGit) -and $CorporateProfile) {
+    Warn (T "Corporate profile: git not found - NOT auto-installing (user-space, pinned-version policy)." `
+            "Perfil corporativo: no se encontro git - NO se instala automaticamente (espacio de usuario, version fija).")
+    Warn (T "Provision git via your IT-approved channel, then re-run. Automatic updates stay off until then." `
+            "Instala git por tu canal aprobado de IT y volve a correr. Las actualizaciones automaticas quedan apagadas hasta entonces.")
+    Warn (T "The exact command for IT to approve/run: winget install -e --id Git.Git" `
+            "El comando exacto para que IT apruebe/corra: winget install -e --id Git.Git")
+} elseif (-not (Test-WorkingGit) -and $DryRun) {
+    Dry "would: winget install -e --id Git.Git (or a no-admin PortableGit unpack into LOCALAPPDATA)"
+} elseif (-not (Test-WorkingGit)) {
+    Hdr (T "Installing git" "Instalando git")
+    Log (T "git is how this install keeps itself up to date." `
+          "git es como esta instalacion se mantiene actualizada.")
+    if ($UseWinget) {
+        [void](Run-Native { winget install -e --id Git.Git --accept-source-agreements --accept-package-agreements })
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    }
+    if (-not (Test-WorkingGit)) {
+        # winget's Git package is per-machine, so an unelevated run walks into
+        # the denied-elevation wall the cohort session reported. The PortableGit
+        # archive needs no privileges at all.
+        Log (T "Installing git for this user only (no Administrator needed)." `
+              "Instalando git solo para este usuario (sin Administrador).")
+        $gitHome   = "$env:LOCALAPPDATA\Programs\PortableGit"
+        $gitCmdDir = Install-PortableGit -Uri (Get-PortableGitUri) -DestDir $gitHome -TempDir $env:TEMP
+        if ($gitCmdDir) {
+            Add-UserPathEntry $gitCmdDir
+            $script:Installed += "git (user-scoped, $gitHome)"
+            Ok (T "git installed at $gitHome (user-scoped)." `
+                  "git instalado en $gitHome (solo para este usuario).")
+        }
+    }
+}
+if (Test-WorkingGit) {
+    $gitVersion = ""
+    try { $gitVersion = ((& git --version) -join " ").Trim() } catch { $gitVersion = "" }
+    if ($gitVersion) { Ok $gitVersion } else { Ok "git available" }
+} elseif (-not $DryRun -and -not $CorporateProfile) {
+    # DELIBERATELY NOT Err - see the section header. The archive entry path
+    # means the install completes without git; only auto-update waits on it.
+    Warn (T "git isn't available yet - everything else continues, only automatic updates wait on it." `
+            "git todavia no esta disponible - todo lo demas sigue, solo las actualizaciones automaticas dependen de eso.")
+    Warn (T "  Ask IT to approve: winget install -e --id Git.Git" `
+            "  Pedile a IT que apruebe: winget install -e --id Git.Git")
+    $script:Skipped += "git (install blocked; automatic updates stay off)"
+}
+
 # ─── Python 3.10+ ─────────────────────────────────────────────────────────────
 # Windows offers three separate ways to be wrong about "is Python here?", and
 # testing the single name `python` walked into all three:
@@ -1043,7 +1235,11 @@ if (Test-Path "$SkillDir\.git") {
     # fetched a zip because git was unavailable. `git clone` into a non-empty
     # directory FAILS, and that failure used to land in the red actionable list -
     # trading a missing-git block for a scary-looking one. Adopt instead.
-    if (-not (Have git)) {
+    #
+    # Gated on Test-WorkingGit, not `Have git`: a PortableGit left half-unpacked
+    # by an interrupted earlier run answers a PRESENCE check and then fails
+    # every git call Adopt-ArchiveInstall makes. Presence is not capability.
+    if (-not (Test-WorkingGit)) {
         Warn (T "Installed from an archive, and git isn't available yet - automatic updates stay off until git is installed." `
                 "Instalado desde un archivo, y git todavia no esta disponible - las actualizaciones automaticas quedan apagadas hasta instalar git.")
         $script:Skipped += "ai-brain-starter clone (archive install, git unavailable)"
@@ -1142,6 +1338,53 @@ foreach ($sub in @("graphify", "cierre-de-llamada", "meeting-todos", "patterns",
         Ok "${sub}: already current"
     }
 }
+
+# ─── Slash commands ───────────────────────────────────────────────────────────
+# Install commands/*.md into ~/.claude/commands/.
+#
+# Skill folders alone do NOT register slash commands in Claude Code's palette;
+# plugin-style `commands/<name>.md` files do. bootstrap.sh has done this since
+# the 2026-05-14 install report (/second-brain-mapping installed but absent
+# from the palette) -- bootstrap.ps1 never did, so every Windows install got
+# the skills with NONE of the 16 slash commands. `/meeting-todos`,
+# `/daily-journal`, `/graphify` and the rest simply did not exist there, with
+# no error to notice: the skills still answered natural language, so the gap
+# only showed when someone typed a slash. Bug class ARTIFACT-WITHOUT-ACTIVATION,
+# Windows leg. Mirrors the bootstrap.sh step; keep the two in step.
+# ai-brain:slash-commands:start
+$commandsSrc = "$SkillDir\commands"
+$commandsDst = "$env:USERPROFILE\.claude\commands"
+if (-not (Test-Path -LiteralPath $commandsSrc)) {
+    Warn "commands/ not found at $commandsSrc - slash commands will not appear in the palette"
+} elseif ($DryRun) {
+    Dry "would install slash commands from $commandsSrc to $commandsDst (with backup-before-overwrite)"
+} else {
+    Hdr "Installing slash commands"
+    New-Item -ItemType Directory -Force -Path $commandsDst | Out-Null
+    $cmdNew = 0
+    $cmdUpdated = 0
+    Get-ChildItem -File -Filter *.md -LiteralPath $commandsSrc | ForEach-Object {
+        $dstFile = Join-Path $commandsDst $_.Name
+        if (Test-Path -LiteralPath $dstFile) {
+            if ((Get-FileHash $_.FullName).Hash -ne (Get-FileHash $dstFile).Hash) {
+                Copy-Item -LiteralPath $dstFile -Destination "$dstFile.bak-$stamp"
+                $script:Backups += "$dstFile.bak-$stamp"
+                Copy-Item -Force -LiteralPath $_.FullName -Destination $dstFile
+                $cmdUpdated++
+            }
+        } else {
+            Copy-Item -Force -LiteralPath $_.FullName -Destination $dstFile
+            $cmdNew++
+        }
+    }
+    if ($cmdNew -gt 0 -or $cmdUpdated -gt 0) {
+        Ok "commands: $cmdNew new, $cmdUpdated updated (backups preserved)"
+        $script:Updated += "slash commands ($cmdNew new, $cmdUpdated updated)"
+    } else {
+        Ok "commands: already current"
+    }
+}
+# ai-brain:slash-commands:end
 
 # ─── Humanizer ────────────────────────────────────────────────────────────────
 $humDir = "$env:USERPROFILE\.claude\skills\humanizer"

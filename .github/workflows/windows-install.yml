@@ -117,6 +117,161 @@ jobs:
             Write-Host "::error::bootstrap.ps1 Python discovery suite failed (exit $LASTEXITCODE)"
             exit $LASTEXITCODE
           }
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\tests\integration\test_bootstrap_ps1_slash_commands.ps1"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::bootstrap.ps1 Python discovery suite failed (exit $LASTEXITCODE)"
+            exit $LASTEXITCODE
+          }
+          exit 0
+
+      # THE NO-GIT PATH (MYC-3895)
+      # --------------------------
+      # The install's first command was `git clone`, and git was the one
+      # prerequisite bootstrap.ps1 never installed - while calling `git clone`,
+      # `git fetch` and `git pull` itself. A 2026-08-12 cohort install session
+      # lost five participants to exactly that, verbatim: "Git and Node.js CLI
+      # installs require administrator rights."
+      #
+      # The end-to-end run further down CANNOT cover this: windows-latest ships
+      # git, so the no-git branch is unreachable there. This step seals every
+      # directory holding a git.exe out of PATH and proves the two halves on the
+      # real platform:
+      #   1. the README's PowerShell fetch snippet - EXTRACTED from the shipped
+      #      README rather than retyped, so a README that regresses fails here -
+      #      completes with no git anywhere on PATH;
+      #   2. the real PortableGit fallback downloads the official asset, passes
+      #      the Authenticode publisher check, unpacks, and leaves a RUNNABLE
+      #      git. This is the positive control for Test-TrustedGitArchive; the
+      #      unit suite below covers its reject paths.
+      #
+      # Verify the premise before arming the leg: if the runner's git survived
+      # the seal, every assertion here would be vacuous, so that fails loudly.
+      #
+      # Seconds plus one ~60MB download, on this job's already-paid runner - no
+      # second windows-latest job floor at the 2x multiplier (see the cost note
+      # at the top of this file). Runs BEFORE the seed/e2e steps so nothing it
+      # does can colour them: it writes only into RUNNER_TEMP and never touches
+      # the user PATH (Add-UserPathEntry lives in bootstrap's driver, not in the
+      # function this exercises).
+      - name: git absent from PATH - README fetch + PortableGit fallback (MYC-3895)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($PSVersionTable.PSEdition -ne "Desktop") {
+            Write-Host "::error::Expected Windows PowerShell 5.1 (Desktop edition); got $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)."
+            exit 1
+          }
+
+          # --- seal git off PATH ------------------------------------------------
+          $before = (Get-Command git -ErrorAction SilentlyContinue)
+          if (-not $before) {
+            Write-Host "::error::This runner has NO git to begin with - the seal below would prove nothing. Investigate the image before trusting this gate."
+            exit 1
+          }
+          Write-Host "runner git before the seal: $($before.Source)"
+          $kept = @()
+          foreach ($p in ($env:PATH -split ';')) {
+            if (-not $p) { continue }
+            $hit = $false
+            foreach ($n in @("git.exe", "git.cmd", "git.bat")) {
+              if (Test-Path -LiteralPath (Join-Path $p $n)) { $hit = $true }
+            }
+            if (-not $hit) { $kept += $p }
+          }
+          $env:PATH = ($kept -join ';')
+          if (Get-Command git -ErrorAction SilentlyContinue) {
+            Write-Host "::error::git survived the PATH seal at $((Get-Command git).Source) - every assertion in this step would be vacuous."
+            exit 1
+          }
+          Write-Host "git sealed off PATH (kept $($kept.Count) entries)."
+
+          # --- 1. the SHIPPED README fetch snippet, with no git ------------------
+          # Invoke-Expression on a line from this repo's own README is the point:
+          # the claim under test is that the text a participant pastes works.
+          $readme = Join-Path $env:GITHUB_WORKSPACE "README.md"
+          $line = @(Get-Content -LiteralPath $readme | Where-Object { $_ -match 'Expand-Archive \$z \$t -Force' })[0]
+          if (-not $line) {
+            Write-Host "::error::Could not find the Windows fetch snippet in README.md (looked for the Expand-Archive line). If the install command moved, this gate must move with it."
+            exit 1
+          }
+          $snippet = $line -replace '^\s*>\s?', ''
+          $D = Join-Path $env:RUNNER_TEMP ("abs-fetch-" + [guid]::NewGuid().ToString("N"))
+          Write-Host "running the README fetch into $D"
+          Invoke-Expression $snippet
+          if (-not (Test-Path -LiteralPath (Join-Path $D "bootstrap.ps1"))) {
+            Write-Host "::error::The README's Windows fetch did NOT land bootstrap.ps1 with git absent. This is the exact block that stranded the cohort."
+            exit 1
+          }
+          Write-Host "README fetch OK with no git on PATH (bootstrap.ps1 present in $D)."
+
+          # --- 2. the real PortableGit fallback ---------------------------------
+          $src = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE "bootstrap.ps1"))
+          $si = $src.IndexOf("# ai-brain:install-git:start")
+          $ei = $src.IndexOf("# ai-brain:install-git:end")
+          if ($si -lt 0 -or $ei -le $si) {
+            Write-Host "::error::bootstrap.ps1 is missing its ai-brain:install-git markers; cannot exercise the git install."
+            exit 1
+          }
+          $blockFile = Join-Path $env:RUNNER_TEMP "gitblock.ps1"
+          [System.IO.File]::WriteAllText($blockFile, $src.Substring($si, $ei - $si), (New-Object System.Text.UTF8Encoding($false)))
+          . $blockFile
+
+          if (Test-WorkingGit) {
+            Write-Host "::error::Test-WorkingGit says git works while PATH is sealed - the shipped probe disagrees with the seal."
+            exit 1
+          }
+
+          $uri  = Get-PortableGitUri
+          $dest = Join-Path $env:RUNNER_TEMP ("PortableGit-" + [guid]::NewGuid().ToString("N"))
+          Write-Host "fetching $uri"
+          $cmdDir = Install-PortableGit -Uri $uri -DestDir $dest -TempDir $env:RUNNER_TEMP
+          if (-not $cmdDir) {
+            Write-Host "::error::The no-admin PortableGit fallback produced no runnable git from $uri. Causes: the pinned asset moved, the download was blocked, or the Authenticode publisher check rejected it."
+            exit 1
+          }
+          $env:PATH = "$cmdDir;$env:PATH"
+          if (-not (Test-WorkingGit)) {
+            Write-Host "::error::PortableGit unpacked to $cmdDir but git still does not run from there."
+            exit 1
+          }
+          Write-Host "no-admin git works: $((& git --version) -join ' ') from $cmdDir"
+          exit 0
+
+      # The unit half of the same suite: the capability probe, the release-asset
+      # URI, and - only meaningful here, because Get-AuthenticodeSignature does
+      # not exist off Windows - the publisher check's REJECT paths. scripts/ci.sh
+      # runs this same file on ubuntu under pwsh 7, where those two cases are
+      # trivially true. Neither runner alone is the gate.
+      - name: bootstrap.ps1 git install suite (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\tests\integration\test_bootstrap_ps1_git_install.ps1"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::bootstrap.ps1 git install suite failed (exit $LASTEXITCODE)"
+            exit $LASTEXITCODE
+          }
+          exit 0
+
+      # Prove the premise the .ps1 BOM rule rests on, on the platform it
+      # protects. Every other gate enforces "must start with EF BB BF" and takes
+      # the REASON on trust. The parse step in lint.yml runs on ubuntu under
+      # pwsh 7, which defaults to UTF-8 and so is green by construction for this
+      # exact class - it cannot express the failure it is nearest to.
+      # This asserts the whole chain under 5.1: a BOM-less .ps1 carrying the
+      # three character classes the 2026-04-22 outage named (em dash,
+      # box-drawing, gear) fails to parse; the same bytes with a BOM parse
+      # clean; and pwsh 7 parses the BOM-less one without complaint.
+      # Seconds, on this job's already-paid runner - no second windows floor.
+      - name: .ps1 BOM premise (Windows PowerShell 5.1 vs pwsh 7)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\tests\integration\test_ps1_bom_crash_windows.ps1"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::.ps1 BOM premise suite failed (exit $LASTEXITCODE)"
+            exit $LASTEXITCODE
+          }
           exit 0
 
       # A clean, known Python interpreter. The user-level hook installer is a
@@ -244,6 +399,44 @@ jobs:
       # (7 = the PR-#254-era count; the template currently ships more, and grows)
       # cleanly separates a healthy install from the regression. Also assert MCP
       # registration (.mcp.json parses and the default-profile servers are present).
+      # Slash commands are a SEPARATE activation surface from skills, and until
+      # 2026-08-19 bootstrap.ps1 installed the skills but never the commands --
+      # so every Windows install had the meeting/journal/graphify skills with
+      # none of their slash commands, and nothing errored, because the skills
+      # still answered natural language. Only typing "/" showed the gap.
+      # Asserted on the REAL runner because a parse check cannot see it.
+      - name: assert slash commands installed (bootstrap.ps1 parity with bootstrap.sh)
+        shell: pwsh
+        run: |
+          $fail = @()
+          $dst = Join-Path $env:USERPROFILE ".claude/commands"
+          $src = Join-Path $env:GITHUB_WORKSPACE "commands"
+
+          if (-not (Test-Path -LiteralPath $dst)) {
+            $fail += "commands dir missing at $dst - bootstrap.ps1 did not install slash commands"
+          } else {
+            $want = @(Get-ChildItem -File -Filter *.md -LiteralPath $src).Count
+            $got  = @(Get-ChildItem -File -Filter *.md -LiteralPath $dst).Count
+            Write-Host "slash commands: $got installed at $dst (repo ships $want)"
+            if ($got -lt $want) {
+              $fail += "expected >= $want slash commands, found $got"
+            }
+            # Name one explicitly so a silent rename of the meeting command is
+            # caught too, not just a count that happens to match.
+            $meeting = Join-Path $dst "meeting-todos.md"
+            if (-not (Test-Path -LiteralPath $meeting)) {
+              $fail += "meeting-todos.md not installed - /meeting-todos will not appear in the palette"
+            }
+          }
+
+          if ($fail.Count -gt 0) {
+            Write-Host ""
+            foreach ($f in $fail) { Write-Host "::error::$f" }
+            exit 1
+          }
+          Write-Host "slash-command install OK."
+          exit 0
+
       - name: assert install outcome (settings.json hooks + .mcp.json servers)
         shell: pwsh
         run: |

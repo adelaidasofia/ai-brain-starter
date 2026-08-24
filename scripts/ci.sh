@@ -61,6 +61,9 @@
 #                           switched off, so it never fires and nothing says so.
 #                           Same SILENT-NO-OP family as (e)/(e2)/(e3); pure stdlib.
 #   (e5) subprocess decode - scripts/check-utf8-subprocess.py is the READ half of (e).
+#   (e6) py3.9 annotation parity - scripts/check-py39-annotations.py fails `X | None`
+#        without `from __future__ import annotations`. This job pins 3.9, where that
+#        compiles fine and raises TypeError when the annotation is evaluated.
 #                           (e) fails a CLI that PRINTS non-ASCII without a UTF-8
 #                           stdout guard; this fails one that READS a child's output
 #                           with text=True and no encoding=, so the decode uses the
@@ -70,6 +73,18 @@
 #                           subprocess.run(). Shipped twice: #313 (write side) and
 #                           #430 (read side, memory stranded outside the vault).
 #                           Content-pinned in scripts/utf8-subprocess-baseline.txt.
+#   (e7) ps1 encoding     - scripts/check-ps1-encoding.sh fails a *.ps1 that does not
+#                           start with EF BB BF, or that CONTAINS an em dash.
+#                           Windows PowerShell 5.1 reads a BOM-less .ps1 as the
+#                           console ANSI code page instead of UTF-8 and dies on
+#                           the first non-ASCII byte, and U+2014 is the byte most
+#                           likely to be that one. Both rules, one scanner, one
+#                           enumeration - which is where the bugs were. lint.yml
+#                           holds the enforcing copy but used to hold the ONLY
+#                           copy, as an inline loop no local command could run -
+#                           so the class was caught one full CI round-trip AFTER
+#                           the push. Both callers now run the same script and
+#                           scripts/test_ps1_encoding_gate.py pins that.
 #   (f) Python unit tests - the scripts/test_*.py stdlib suites (the claude-router
 #                           structured-envelope gate, the graph-liveness
 #                           STAMP-GREEN-WHILE-GONE guard). Gate (a) py_compiles them,
@@ -83,12 +98,15 @@
 #                           Unlike (c)/(d)/(e) it has no dedicated CI job, so it runs
 #                           in BOTH CI and the local pre-push gate (like (a) and (b)).
 #
-# It does NOT run the OTHER pure-lint jobs (bash -n, pwsh ParseFile, BOM, em-dash,
+# It does NOT run the OTHER pure-lint jobs (bash -n, pwsh ParseFile, em-dash,
 # JSON, privacy, references, no-remote-pipe-install). Those stay as their own
-# lint.yml jobs - they are lint, not the unit/type gate. Two are exceptions,
+# lint.yml steps - they are lint, not the unit/type gate. Three are exceptions,
 # enforced pre-push because they are cross-platform CORRECTNESS gates, not style:
-# the shell static-analysis gate (the GNU-vs-BSD `stat` mtime class) and the UTF-8
-# console guard (the Windows cp1252 print-crash class).
+# the shell static-analysis gate (the GNU-vs-BSD `stat` mtime class), the UTF-8
+# console guard (the Windows cp1252 print-crash class), and the .ps1 encoding
+# gate (the Windows PS 5.1 parse-crash class: BOM required, em dash banned). Each of the three is a defect a Linux
+# runner or a Mac laptop structurally cannot observe at RUN time, so a byte/static
+# assertion is the only thing that can see it before a user does.
 #
 # Environment the integration tests need (lint.yml provides these in the `ci`
 # job; this script adds a non-invasive fallback so a fresh `bash scripts/ci.sh`
@@ -206,12 +224,21 @@ INTEGRATION_TESTS=(
   # Windows half of the same bug (#290): bootstrap.ps1 tested the single name
   # `python`, never the `py -3.x` launcher, so a box with 3.12 read as no-Python.
   test_bootstrap_ps1_python_discovery
+  # Windows leg of ARTIFACT-WITHOUT-ACTIVATION: bootstrap.ps1 installed the
+  # skills but never commands/*.md, so no slash command existed on Windows.
+  test_bootstrap_ps1_slash_commands
+  # Windows half of MYC-3895: bootstrap.ps1 called `git clone` itself and never
+  # installed git, so the one prerequisite a locked-down laptop cannot get was
+  # also the one nothing provided.
+  test_bootstrap_ps1_git_install
   test_preflight_git_and_it_request
   test_remediate_runaway_procs
+  test_surface_unniced_launchagents
   test_scan_prior_single_instance
   test_scan_prior_failclosed_scrub
   test_sessionstart_freeze_class_excluded
   test_sessionstart_boundedness
+  test_decode_safe_reads
   test_orphan_branch_bounded_git
   test_footprint_sla
   test_vault_safety_guards
@@ -221,12 +248,19 @@ INTEGRATION_TESTS=(
   test_scheduled_task_registration
   test_vault_backup_task_healing
   test_resource_aware_session_close
+  test_vault_lock_separated_gitdir
   test_cloud_sync_guard
   test_cloud_safe_file_walkers
   test_delegated_task_needs_source
   test_cloud_sync_offer
   test_worktree_on_vault_guard
   test_machinery_sidecar
+  test_repair_sidecar_note_deletion
+  # Refuses $HOME / a filesystem root as a relocate target, in the helpers AND
+  # the checker they share. Carries the two adversarial cases: --force must not
+  # open the home refusal, and --rollback must stay ungated so an already
+  # damaged machine can still be repaired (MYC-4028).
+  test_check_vault_target
   test_relocate_vault
   test_relocate_sweep
   test_relocate_watch
@@ -255,6 +289,7 @@ INTEGRATION_TESTS=(
   test_meeting_todos_step0_create_if_absent
   test_meeting_workflow_trigger_hook
   test_personal_brain_not_optional
+  test_private_context_scan_merge_base
   test_phase11_writes_to_vault_rule_file
   test_post_commit_ff_worktrees
   test_write_hook_meeting_folder_i18n
@@ -302,6 +337,22 @@ INTEGRATION_TESTS=(
   # every test ran against the vault the env var already named, which makes
   # "resolve from the env" and "resolve from the target" indistinguishable.
   test_hook_vault_root_per_target
+  # That same hook's launchd pass read `launchctl list`'s exit-status column
+  # only, which reads 0 for BOTH a healthy job and one that has never run at
+  # all -- a hollow job was indistinguishable from a clean one and stayed
+  # silently unflagged. Proves the blind spot on a frozen, independent
+  # reimplementation of the old rule (not a git-history diff, which would stop
+  # meaning anything once this fix lands on main), then proves the shipped fix
+  # (a second `launchctl print` probe, only for the ambiguous status==0 case)
+  # closes it -- with regression + false-positive + probe-failure controls.
+  test_launchd_hollow_job_detection
+  # The three shipped launchd plist templates carried no PATH, so a client
+  # script that shells out to a brew-installed tool failed with "not found"
+  # under launchd while working fine in every interactive shell. Validates the
+  # added EnvironmentVariables/PATH key with two independent parsers (plutil
+  # -lint where available, portable plistlib everywhere else) against both the
+  # raw template and a simulated real installer render.
+  test_launchd_template_path_env
   # The rm -rf rule in that same hook, which MYC-3529 left alone: its regex
   # spelled the vault root `$HOME/vault` -- a SHELL string in a PYTHON regex,
   # where `$` is an end-of-line anchor, so the branch was dead and the vault
@@ -338,6 +389,30 @@ INTEGRATION_TESTS=(
   # copy, with a negative control that a first install from a dev tree still
   # wires a runner that exists.
   test_hook_runner_path_stability
+  # sync-vault-scripts.sh labelled its log header with `${DRY_RUN:+ (dry-run)}`,
+  # which tests NON-EMPTY while DRY_RUN is initialised to `0` — so every REAL run
+  # was recorded as "(dry-run)". Behaviour was correct (the write-guards use
+  # `-eq 1`); only the audit trail lied, which is the half that matters when you
+  # are reading the log to find out what overwrote your files. A dry run prints
+  # to stdout and never writes the log, so a "(dry-run)" header IN the log was
+  # unreachable except as a mislabel.
+  test_sync_vault_scripts_dryrun_label
+  # At-rest leg of the sync-clobber class. test_vault_script_sync.sh section 1b
+  # PREVENTS a manifest gap; this detects vaults already damaged, plus the case
+  # closure cannot see — a committed local patch silently overwritten by the sync
+  # (file present, deps resolve, simply the wrong version). Every assertion is a
+  # negative control, including the indirect `VAR="$SCRIPT_DIR/x.sh"` form that
+  # shipped the real outage and that the first draft of the detector was blind to.
+  test_clobbered_vault_scripts
+  # vault-safe-commit.sh is the ONLY sanctioned route past the raw-git block
+  # guard, so a bare `git commit -m` there gave that guard zero real scoping
+  # while it looked fully enforced — a sibling session's staged work rode along
+  # under an unrelated message (measured: 1,191 files / 598,702 insertions from
+  # two calls that each named ONE path). Carries a negative control that re-runs
+  # the pre-fix commit line against the same fixture and asserts it DOES sweep,
+  # so a green positive proves the `--only` scoping rather than a scenario that
+  # never reproduces.
+  test_vault_safe_commit_index_scoping
   # In-flight git-operation gate (incident 2026-07-28): proves a fresh install
   # REGISTERS the guard, wires it in the block-preserving `if [ -f ]` form, and
   # that the SHIPPED command refuses a commit into a genuinely stalled rebase
@@ -363,6 +438,7 @@ INTEGRATION_TESTS=(
   # — silently, on a whole platform. Two layers must hold (the path gate AND the
   # vault-root resolve); fixing only the first looks right and still fails open.
   test_journal_guard_windows_paths
+  test_team_broadcast_install_gap
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new
@@ -884,6 +960,38 @@ else
   utf8_note="passed"
 fi
 
+# The utf8 baseline's per-tier section headers are the burn-down ledger a human
+# reads to decide whether that backlog is shrinking, and check-utf8-stdout.py
+# cannot catch a stale one: it computes its own counts and skips every '#' line.
+# Four headers across the two tiered baselines were stale at once before this
+# landed. Validated from outside the checker because check-utf8-stdout.py is
+# itself content-pinned by the cloud-safe walker ratchet (test_cloud_safe_file_walkers),
+# whose rule is that any edit obliges a safe_read migration; vault-root's own
+# checker validates its baseline inline, since only the scanner can count reads.
+echo "==> (e1b) baseline burn-down headers: $PY scripts/_baseline_sections.py --check-all scripts"
+# Quiet on success: two of its negative controls deliberately PRINT an error
+# (empty-glob, planted drift), and a gate that emits "ERROR ... checked
+# NOTHING" on every green run teaches people to skim past error lines.
+# On failure, re-run verbosely so the reason is visible.
+"$PY" scripts/_baseline_sections.py --self-test >/dev/null 2>&1 || {
+  "$PY" scripts/_baseline_sections.py --self-test
+  exit 1
+}
+# One sweep, not one line per baseline. The two explicit --check lines this
+# replaces are exactly the defect: utf8-file-io-baseline.txt needed a SECOND
+# hand-added line, and the third baseline would have needed a third. --check-all
+# globs them, so a new baseline is covered the day it lands.
+#
+# Carrying forward the note from that wiring, because it is still true and is
+# WHY the sweep reports flat files rather than silently passing them: a baseline
+# with NO section headers has no counted ledger, so there is nothing to compare
+# and checking it proves nothing. utf8-file-io-baseline.txt is deliberately
+# written with counted SEV-A/SEV-B sections instead of a flat list for that
+# reason. --check-all prints "flat ... (no tiers, no ledger to go stale)" for the
+# genuinely flat ones, so a baseline that SHOULD be sectioned and is not is
+# visible in the gate output instead of being indistinguishable from a pass.
+"$PY" scripts/_baseline_sections.py --check-all scripts
+
 # ---- (e2) Hook block-protocol ----------------------------------------------
 # scripts/check-hook-block-protocol.py fails a hook that is registered with the
 # allow-fallback wrapper (`... || echo '{...permissionDecision:allow}'`) but
@@ -944,6 +1052,58 @@ echo "==> (e5) subprocess decode: $PY scripts/check-utf8-subprocess.py"
 "$PY" scripts/check-utf8-subprocess.py --self-test >/dev/null
 "$PY" scripts/check-utf8-subprocess.py
 
+# The version-parity twin of (e5). scripts/check-py39-annotations.py fails a PEP 604
+# annotation (`X | None`) in a file without `from __future__ import annotations`. THIS
+# job pins Python 3.9, where that syntax is legal to COMPILE and raises TypeError the
+# moment the annotation is EVALUATED -- at def time, on import. So gate (a) py_compiles
+# it clean, every local check on a 3.12+ dev box passes, and the file dies here. Caught
+# exactly that way once; a static check is the only thing that can see it from a newer
+# interpreter, which is what `ci-test` runs locally. Self-test first (it must still
+# bite, INCLUDING staying quiet on plain bitwise `|`), then the fleet.
+echo "==> (e6) py3.9 annotation parity: $PY scripts/check-py39-annotations.py"
+"$PY" scripts/check-py39-annotations.py --self-test >/dev/null
+"$PY" scripts/check-py39-annotations.py
+
+# ---- (e7) *.ps1 encoding: UTF-8 BOM required, em dashes banned -----------------------------------------------
+# Windows PowerShell 5.1 reads a BOM-less .ps1 as the console ANSI code page,
+# not UTF-8, so the first non-ASCII byte decodes wrong and the parser dies on a
+# file that is valid UTF-8 everywhere else. A Linux runner cannot observe that
+# crash, which is why this is a byte assertion rather than a parse.
+#
+# lint.yml carries the ENFORCING copy, but until now that was the ONLY copy: the
+# rule was an inline shell loop in the workflow, unreachable from any local
+# command. So a BOM-less .ps1 passed a full green `bash scripts/ci.sh` and went
+# red only after a push - a whole CI round-trip per occurrence (measured
+# 2026-08-19 on tests/integration/test_bootstrap_ps1_slash_commands.ps1).
+# All callers now run scripts/check-ps1-encoding.sh, so none can drift; the
+# delegation itself is pinned by scripts/test_ps1_encoding_gate.py.
+#
+# Unlike (c)/(d)/(e) this is NOT skipped in CI. Those skip because a dedicated
+# lint.yml job owns them and double-running muddies attribution; here the cost
+# is a millisecond byte read over 14 files, and the local gate is the entire
+# point. Self-test first (proves the check still bites), then the fleet.
+echo "==> (e7) ps1 encoding (BOM + em dash): bash scripts/check-ps1-encoding.sh"
+bash scripts/check-ps1-encoding.sh --self-test >/dev/null
+bash scripts/check-ps1-encoding.sh
+
+# ---- (e8) Locale-encoded FILE I/O ------------------------------------------
+# The third edge of the cp1252 class, and the one (e) and (e5) left open: what a
+# script WRITES TO and READS FROM A FILE. open(p,"w") / write_text() / read_text()
+# in text mode with no encoding= use the LOCALE encoding, so identical source
+# produces UTF-8 artifacts on macOS and cp1252 artifacts on Windows. Shipped
+# live: this is how build-journal-index.py wrote journal-index.json as cp1252
+# while printing "Indexed N entries" and exiting 0, leaving every UTF-8 consumer
+# (/weekly, /monthly, diagnose, insight-fact-check) to die on
+# `UnicodeDecodeError: ... byte 0xed`. The READ half misbehaves more quietly
+# still: it usually does not raise at all, it decodes into mojibake and silently
+# mis-matches. PYTHONUTF8=1 masks the whole class locally, so a maintainer
+# cannot reproduce a user's report -- hence a gate rather than review. Self-test
+# first (proves the detector still bites in BOTH directions), then the fleet
+# against the content-pinned baseline. Pure stdlib, always runs here.
+echo "==> (e8) file I/O encoding: $PY scripts/check-utf8-file-io.py"
+"$PY" scripts/check-utf8-file-io.py --self-test >/dev/null
+"$PY" scripts/check-utf8-file-io.py
+
 # ---- (f) Python unit tests (scripts/ + hooks/ + tests/) --------------------
 # Every Python unit suite in the repo, run under the SAME interpreter as the rest
 # of the gate. Gate (a) py_compiles them (proves they parse); this proves their
@@ -976,6 +1136,7 @@ echo "    OK - $unit_count scripts/ unit suite(s) passed"
 PY_DIRECT=(
   hooks/test_memory_index.py
   tests/test_instinct.py
+  tests/test_entity_disambiguator_clustering.py
   hooks/test_live_session_reap.py
   hooks/test_relocation_orphan_reclaim.py
   hooks/test_secret_patterns_fp_filter.py
@@ -1037,4 +1198,4 @@ done
 echo "    OK - ${#PY_DIRECT[@]} hooks/+tests/ direct suite(s) passed; dormancy invariant clean"
 
 echo
-echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed] + home-hook deploy [passed] + subprocess decode [passed]."
+echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed] + home-hook deploy [passed] + subprocess decode [passed] + py3.9 annotation parity [passed] + ps1 encoding [passed]."

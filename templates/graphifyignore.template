@@ -1,0 +1,51 @@
+# .graphifyignore — keep the knowledge graph made of KNOWLEDGE.
+#
+# Copy to your vault root as `.graphifyignore`. gitignore semantics,
+# last-match-wins. graphify reads it automatically (detect.py).
+#
+# WHY THIS SHIPS BY DEFAULT
+# A vault that also stores its own tooling will graph that tooling as if it
+# were knowledge. Measured on a real 13,772-file vault: 39% of graph nodes
+# came from scripts, config backups, agent memory and an exported social
+# archive whose JS bundles were parsed as prose. The wikilink-gap report's
+# top "entities" were bundle hashes like 2dc10ba500b9.js and bare letters
+# T / A / o / n. Applying that report would have written junk links into
+# 1,937 places. Excluding the above cut gaps from 1,937 to 383 and every
+# remaining suggestion was a real entity.
+
+# --- Code + config: not knowledge ---
+scripts/
+.claude/
+**/Agent Memory/
+**/Worktree Snapshots/
+**/claude-infra-backup/
+
+# --- Web assets (social/HTML exports parsed as prose) ---
+*.js
+*.css
+*.map
+*.json.gz
+
+# --- Backups + machine-compressed copies ---
+*.bak
+*.bak-*
+*.backup
+*.compressed
+
+# --- Generated artifacts ---
+# Anything your own tooling writes back into the vault. A generated INDEX is
+# the worst offender: an index of wikilinks, graphed, mints one phantom
+# entity per row. Add yours by name here.
+#
+# NOTE: name-matching is a stopgap. The durable rule is to exclude by
+# PROPERTY (frontmatter `type: report` / `generated:`), which needs a
+# graphify change — see the ticket referenced in the skill docs.
+#
+# Examples from the reference vault:
+# ⚙️ Meta/Wikilink Reference.md
+# ⚙️ Meta/CRM Enrichment Report.md
+# ⚙️ Meta/Journal-Like AI Chats Index.md
+
+# --- KEEP (do not add these; they are real knowledge) ---
+# Decision records, operating rules, session records, meeting notes,
+# journals, CRM entries, and your photographs.

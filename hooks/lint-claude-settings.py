@@ -111,7 +111,7 @@ def lint_file(path: Path, label: str) -> None:
     if not path.exists():
         return
     try:
-        with path.open() as f:
+        with path.open(encoding="utf-8", errors="replace") as f:
             data = json.load(f, object_pairs_hook=lambda p: collect_dups(p, path=label))
     except json.JSONDecodeError as e:
         _emit("BLOCK", f"INVALID-JSON in {label}: {e}")
