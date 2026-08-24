@@ -367,10 +367,15 @@ function Cmd-Verify {
       # Prefer the tar Windows ships in System32 (bsdtar): GNU tar, which is what
       # Git for Windows puts on PATH, reads the colon in C:\... as a remote host
       # and refuses the path outright.
-      $sysTar = Join-Path $env:SystemRoot "System32\tar.exe"
-      if ($env:SystemRoot -and (Test-Path -LiteralPath $sysTar)) {
-        $tarExe = $sysTar
-      } else {
+      # $env:SystemRoot is null off Windows, and Join-Path throws on a null
+      # -Path, so the lookup itself has to sit inside the guard -- not just the
+      # Test-Path. (Caught by this file's own suite on the Linux runner.)
+      $tarExe = $null
+      if ($env:SystemRoot) {
+        $sysTar = Join-Path $env:SystemRoot "System32\tar.exe"
+        if (Test-Path -LiteralPath $sysTar) { $tarExe = $sysTar }
+      }
+      if (-not $tarExe) {
         $tarCmd = Get-Command tar -ErrorAction SilentlyContinue
         if (-not $tarCmd) { Die "cannot open $([IO.Path]::GetFileName($archive)): tar not found on PATH" }
         $tarExe = $tarCmd.Source
