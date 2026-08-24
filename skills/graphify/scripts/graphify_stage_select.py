@@ -48,19 +48,21 @@ from datetime import datetime
 
 # ── Cache key ────────────────────────────────────────────────────────────────
 #
-# ⚠️ This key MUST be byte-identical to graphify.cache.file_hash(). It was not,
-# and this script reported 0 cache hits against 1,113 valid entries — sizing
-# every run as if the cache were empty. It diverged in four ways:
-#   1. it looked in cache/{h}.json; entries live in cache/semantic/{h}.json
-#   2. it fed the ABSOLUTE path into the digest; the library uses the path
-#      relative to the vault root, lowercased, so a cache stays portable
-#   3. it hashed the WHOLE file; the library strips YAML frontmatter from .md,
-#      so a metadata-only edit does not invalidate an expensive extraction
-#   4. `except Exception: miss` swallowed every error into the miss pile
+# ⚠️ This key MUST be byte-identical to graphify.cache.file_hash(). Hand-rolled
+# variants have drifted from it four ways at once, and the symptom is silent:
+# the sizer reports 0 cache hits against a perfectly good cache and bills the
+# operator again for work already paid for. The four:
+#   1. entries live under cache/semantic/ (and, for newer ones, one level
+#      deeper under a p{fingerprint}/ directory) — a flat cache/ lookup misses
+#   2. the digest takes the path RELATIVE to the vault root, lowercased, so a
+#      cache survives the vault being moved or shared between machines
+#   3. for .md the library hashes only the body BELOW the YAML frontmatter, so
+#      a metadata-only rewrite does not invalidate an expensive extraction
+#   4. swallowing errors into the miss pile hides all of the above
 #
-# ALWAYS prefer the library function. The local reimplementation exists only for
-# the common case where this script runs under a python without graphify
-# installed (graphify usually lives in graphify-out/.venv).
+# ALWAYS prefer the library function. The local reimplementation exists for the
+# common case where this script runs under a python without graphify installed
+# (graphify usually lives in a virtualenv the wrapper scripts do not share).
 
 try:
     from graphify.cache import file_hash as _lib_file_hash
@@ -100,13 +102,21 @@ def cache_key(path: Path, root: Path) -> str:
     return h.hexdigest()
 
 
-def find_cache_entry(semantic_dir: Path, key: str):
-    """Look up the flat (legacy) entry and inside p{fingerprint}/ subdirectories."""
-    flat = semantic_dir / f"{key}.json"
-    if flat.exists():
-        return flat
-    if semantic_dir.is_dir():
-        for sub in semantic_dir.iterdir():
+def find_cache_entry(cache_base: Path, key: str):
+    """Find a cache entry under any layout this repo has shipped.
+
+    Deliberately permissive: checks the base directory, the semantic/
+    subdirectory, and one level of p{fingerprint}/ nesting under either. It can
+    only ever find more than a flat lookup, never fewer, so it is safe across
+    the personal and team cache layouts without needing to know which is active.
+    """
+    for base in (cache_base, cache_base / "semantic"):
+        if not base.is_dir():
+            continue
+        flat = base / f"{key}.json"
+        if flat.exists():
+            return flat
+        for sub in base.iterdir():
             if sub.is_dir():
                 cand = sub / f"{key}.json"
                 if cand.exists():
@@ -147,7 +157,7 @@ def main():
     args = ap.parse_args()
 
     vault = Path(args.vault_root).resolve()
-    cache_dir = vault / "graphify-out" / "cache" / "semantic"
+    cache_dir = vault / "graphify-out" / "cache"
     os.chdir(vault)
 
     folder = Path(args.corpus_folder)

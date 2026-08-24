@@ -42,10 +42,27 @@ import sys
 import tempfile
 from pathlib import Path
 
-_SCRIPT = Path(__file__).resolve().parents[1] / "skills/graphify/scripts/graphify_stage_select.py"
-_spec = importlib.util.spec_from_file_location("graphify_stage_select", _SCRIPT)
-gss = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(gss)
+_REPO = Path(__file__).resolve().parents[1]
+
+# The repo ships this sizer twice, for two different vault layouts. Both grew
+# their own hand-rolled cache key, and both drifted from the library. Every test
+# below runs against BOTH, so a fix to one copy cannot silently leave the other
+# behind -- which is exactly how they diverged in the first place.
+_COPIES = {
+    "skills": _REPO / "skills/graphify/scripts/graphify_stage_select.py",
+    "scripts": _REPO / "scripts/graphify_stage_select.py",
+}
+
+
+def _load(path: Path):
+    spec = importlib.util.spec_from_file_location(f"gss_{path.parent.name}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+MODULES = {name: _load(p) for name, p in _COPIES.items() if p.exists()}
+assert MODULES, "no copy of graphify_stage_select.py found"
 
 
 def _write(root: Path, rel: str, front: str, body: str) -> Path:
@@ -65,9 +82,10 @@ def test_matches_library() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         p = _write(root, "Notes/Concept.md", "type: note\ntags: [a]", "# Title\n\nBody text.\n")
-        assert gss.cache_key(p, root) == file_hash(p, root=root), (
-            "cache_key disagrees with graphify.cache.file_hash -- every lookup will miss"
-        )
+        for name, gss in MODULES.items():
+            assert gss.cache_key(p, root) == file_hash(p, root=root), (
+                f"[{name}] cache_key disagrees with graphify.cache.file_hash -- every lookup will miss"
+            )
 
 
 def test_frontmatter_only_change_keeps_the_key() -> None:
@@ -80,12 +98,16 @@ def test_frontmatter_only_change_keeps_the_key() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         p = _write(root, "Notes/C.md", "type: note\nstatus: draft", "# T\n\nBody.\n")
-        before = gss.cache_key(p, root)
-        p.write_text(
-            "---\ntype: note\nstatus: done\nreviewed: 2026-08-23\n---\n\n# T\n\nBody.\n",
-            encoding="utf-8",
-        )
-        assert gss.cache_key(p, root) == before, "a frontmatter-only edit invalidated the key"
+        for name, gss in MODULES.items():
+            before = gss.cache_key(p, root)
+            p.write_text(
+                "---\ntype: note\nstatus: done\nreviewed: 2026-08-23\n---\n\n# T\n\nBody.\n",
+                encoding="utf-8",
+            )
+            assert gss.cache_key(p, root) == before, (
+                f"[{name}] a frontmatter-only edit invalidated the key"
+            )
+            p.write_text("---\ntype: note\nstatus: draft\n---\n\n# T\n\nBody.\n", encoding="utf-8")
 
 
 def test_body_change_breaks_the_key() -> None:
@@ -93,9 +115,11 @@ def test_body_change_breaks_the_key() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         p = _write(root, "Notes/C.md", "type: note", "# T\n\nBody.\n")
-        before = gss.cache_key(p, root)
-        p.write_text("---\ntype: note\n---\n\n# T\n\nDifferent body.\n", encoding="utf-8")
-        assert gss.cache_key(p, root) != before, "a body edit did NOT invalidate the key"
+        for name, gss in MODULES.items():
+            p.write_text("---\ntype: note\n---\n\n# T\n\nBody.\n", encoding="utf-8")
+            before = gss.cache_key(p, root)
+            p.write_text("---\ntype: note\n---\n\n# T\n\nDifferent body.\n", encoding="utf-8")
+            assert gss.cache_key(p, root) != before, f"[{name}] a body edit did NOT invalidate the key"
 
 
 def test_key_is_root_relative_not_absolute() -> None:
@@ -106,24 +130,28 @@ def test_key_is_root_relative_not_absolute() -> None:
     with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
         pa = _write(Path(a), "Notes/C.md", "type: note", "# T\n\nBody.\n")
         pb = _write(Path(b), "Notes/C.md", "type: note", "# T\n\nBody.\n")
-        assert gss.cache_key(pa, Path(a)) == gss.cache_key(pb, Path(b)), (
-            "the key depends on the absolute path -- a moved vault loses every cache hit"
-        )
+        for name, gss in MODULES.items():
+            assert gss.cache_key(pa, Path(a)) == gss.cache_key(pb, Path(b)), (
+                f"[{name}] the key depends on the absolute path -- a moved vault loses every hit"
+            )
 
 
 def test_find_cache_entry_searches_prompt_fingerprint_subdirs() -> None:
     """Bug 1. Entries live under cache/semantic/, and newer ones nest one level
     deeper under a p{fingerprint}/ directory. A flat-only lookup misses those."""
     with tempfile.TemporaryDirectory() as td:
-        semantic = Path(td) / "semantic"
-        (semantic / "pabc123").mkdir(parents=True)
-        (semantic / "deadbeef.json").write_text("{}", encoding="utf-8")
-        (semantic / "pabc123" / "cafe1234.json").write_text("{}", encoding="utf-8")
-        assert gss.find_cache_entry(semantic, "deadbeef") is not None, "missed a flat entry"
-        assert gss.find_cache_entry(semantic, "cafe1234") is not None, (
-            "missed an entry nested under a p{fingerprint}/ subdirectory"
-        )
-        assert gss.find_cache_entry(semantic, "0000none") is None, "invented a hit"
+        base = Path(td) / "cache"
+        (base / "semantic" / "pabc123").mkdir(parents=True)
+        (base / "flat0001.json").write_text("{}", encoding="utf-8")
+        (base / "semantic" / "deadbeef.json").write_text("{}", encoding="utf-8")
+        (base / "semantic" / "pabc123" / "cafe1234.json").write_text("{}", encoding="utf-8")
+        for name, gss in MODULES.items():
+            assert gss.find_cache_entry(base, "flat0001") is not None, f"[{name}] missed a base entry"
+            assert gss.find_cache_entry(base, "deadbeef") is not None, f"[{name}] missed a semantic/ entry"
+            assert gss.find_cache_entry(base, "cafe1234") is not None, (
+                f"[{name}] missed an entry nested under a p{{fingerprint}}/ subdirectory"
+            )
+            assert gss.find_cache_entry(base, "0000none") is None, f"[{name}] invented a hit"
 
 
 def _main() -> int:
