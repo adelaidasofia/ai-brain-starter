@@ -401,11 +401,24 @@ def main():
     print(f"  {len(communities)} communities")
     scores = score_all(G, communities)
 
-    # Lesson #43: build community_labels from highest-degree node per community
-    community_labels = {}
-    for cid, nids in communities.items():
-        best = max(nids, key=lambda n: G.degree(n))
-        community_labels[cid] = G.nodes[best].get("label", best)
+    # Name each community after its highest-degree member, skipping labels that
+    # identify a record rather than a topic -- a daily-note or timestamp node wins on
+    # degree in journal-heavy corpora while saying nothing about the cluster. Falls
+    # back to the plain highest-degree pick if the shared module isn't importable.
+    _here = Path(__file__).resolve().parent
+    for _cand in (_here, _here.parent / "skills" / "graphify" / "scripts"):
+        if (_cand / "graphify_seed_labels.py").is_file():
+            sys.path.insert(0, str(_cand))
+            break
+    try:
+        from graphify_seed_labels import anchor_label
+
+        community_labels = {cid: anchor_label(G, nids) for cid, nids in communities.items()}
+    except ImportError:
+        community_labels = {}
+        for cid, nids in communities.items():
+            best = max(nids, key=lambda n: G.degree(n))
+            community_labels[cid] = G.nodes[best].get("label", best)
 
     gn = god_nodes(G, top_n=20)
     try:

@@ -87,12 +87,29 @@ function Die  { param([string]$m, [int]$code = 1) Write-Host "relocate-vault: RE
 # Obsidian-running probe with a test seam (parity with the .sh sibling's
 # obsidian_running). Default is the real Get-Process probe, so production
 # behavior is unchanged. $env:RELOCATE_VAULT_OBSIDIAN: 'running' -> report
-# running, 'absent' -> report not running, unset/anything else -> real probe.
+# running, 'absent' -> report not running, 'unreadable' -> simulate a probe that
+# could not run, unset/anything else -> real probe.
+#
+# FAILS CLOSED. "I could not read the process list" is not "Obsidian is not
+# running". -ErrorAction SilentlyContinue used to swallow exactly that case:
+# Get-Process returned $null, [bool]$null is $false, and this soft gate waved
+# through the move of a vault Obsidian may have open (a move whose whole risk is
+# an open writer). Only the documented "no process by that name" error means
+# absent; every other failure means refuse.
 function Test-ObsidianRunning {
   switch ("$($env:RELOCATE_VAULT_OBSIDIAN)") {
-    "running" { return $true }
-    "absent"  { return $false }
-    default   { return [bool](Get-Process -Name Obsidian -ErrorAction SilentlyContinue) }
+    "running"    { return $true }
+    "absent"     { return $false }
+    "unreadable" { Warn "process-list probe unavailable (test seam) - treating Obsidian as RUNNING"; return $true }
+    default {
+      try {
+        return (@(Get-Process -Name Obsidian -ErrorAction Stop).Count -gt 0)
+      } catch {
+        if ("$($_.FullyQualifiedErrorId)" -like "NoProcessFoundForGivenName*") { return $false }
+        Warn "could not read the process list ($_) - treating Obsidian as RUNNING (pass -Force to override)"
+        return $true
+      }
+    }
   }
 }
 
@@ -348,6 +365,36 @@ $OldAbs = "$(Get-PhysicalPath $Old)".Trim()
 $NewAbs = "$(Get-AbsPath $New)".Trim()
 if ($OldAbs -eq $NewAbs) { Die "source and target are the same path" }
 if (Test-Path -LiteralPath $NewAbs) { Die "target '$NewAbs' already exists (will not overwrite)" }
+
+# HARD gate, above the soft ones: WHAT is being moved. This script moves the
+# source and leaves a link behind. Aimed at the profile folder it relocates the
+# user's entire home - every dotfile, key and credential - and replaces it with
+# a link. The only validation used to be "exists, is a directory, is not a
+# link" (MYC-4028). FAIL-CLOSED: a check that cannot answer is not a pass.
+$cvt = Join-Path $ScriptDir "check-vault-target.py"
+if (-not (Test-Path -LiteralPath $cvt)) {
+  Die "cannot validate the source path - $cvt is missing. Re-run the installer to restore it."
+}
+$cvtOut = ""
+try { $cvtOut = "$(& (Get-PyExe) $cvt --porcelain $OldAbs 2>$null)".Trim() } catch { $cvtOut = "" }
+if ($cvtOut -like 'REFUSE_HOME*') {
+  Die "source '$OldAbs' is $($cvtOut -replace '^REFUSE_HOME:?\s*','').
+  This script MOVES that path and leaves a link in its place. Doing it here
+  relocates your entire profile folder - dotfiles, SSH keys, credentials.
+  Point it at your vault instead, e.g. C:\Brain or C:\vaults\<name>.
+  There is NO -Force for this one, by design."
+} elseif ($cvtOut -like 'REFUSE_CREDENTIALS*') {
+  $what = $cvtOut -replace '^REFUSE_CREDENTIALS:?\s*', ''
+  if ($Force) {
+    Write-Host "relocate-vault: WARN - source holds credential material ($what) - proceeding under -Force" -ForegroundColor Yellow
+  } else {
+    Die "source '$OldAbs' holds credential material at its top level ($what).
+  That looks like a profile folder, not a vault. Pass -Force if you are certain."
+  }
+} elseif ($cvtOut -ne 'OK_VAULT') {
+  Die "could not validate the source path (check-vault-target.py said: '$cvtOut').
+  A check that cannot answer is not a pass. Fix the install, then re-run."
+}
 
 # Soft gates - skippable with -Force.
 if (-not $Force) {

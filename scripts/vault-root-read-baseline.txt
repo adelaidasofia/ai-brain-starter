@@ -60,13 +60,12 @@
 # missing; #404's bug survived because the suite only ever ran on the
 # env-named vault.
 
-# ---- SEV-B-cwd  (16 file(s), 16 read(s)) ----
+# ---- SEV-B-cwd  (14 file(s), 14 read(s)) ----
 dd3795425a250401136ea1739bbc0090324a54ca2ac737fcb7ed36f7268d66a3 SEV-B-cwd scripts/check-claude-md-drift.py
 dfd1dee24edf0b7a56cc5241504e9190ac1625f24df2fc3b1a223baa9802f581 SEV-B-cwd scripts/check-rule-conflicts.py
 ecf437791a2199e922f3b4ea83fd5541e1f9b2852b6323243791ba827770a243 SEV-B-cwd scripts/crm-collision-check.py
 113b61af71c96cce33c625f6865f16050662270b509619ef3d032a5452aaab2a SEV-B-cwd scripts/decision-retrospective.py
 926b37dcb6f6b689dab5c69b74f169a74e911887f20e7ed6aeb3c1b51e507b58 SEV-B-cwd scripts/drift-detection.py
-1c7184abe8bea026809915956b43a5b945e44680a9248a8c83887a66f8d19bf0 SEV-B-cwd scripts/entity-disambiguator.py
 b461174f186d1a5bee479caf657c50c002324a09336324aa1bfef88090bfc8f1 SEV-B-cwd scripts/mcp-config-check.py
 601e5c47d84531274d14e3d0211c411fe4d37d1293879aa9c3c3fa163dd62883 SEV-B-cwd scripts/passive-capture.py
 3c41956000c24ca559be548481031b53a6fc269ef980af1bfedcd3c0bab133f0 SEV-B-cwd scripts/proposed-update-drafter.py
@@ -87,10 +86,9 @@ fd7dcaf462d1fe6a8a3d350573c2b63c896ca4089a02b7888048b70e9807b459 SEV-C-script-lo
 # ---- SEV-D-cli-default  (1 file(s), 1 read(s)) ----
 36aafbca40f8381430c029bb0a53794a679a102007dfe0b06a174d4d72955576 SEV-D-cli-default scripts/whatsapp/rename-contacts.py
 
-# ---- SEV-E-no-default  (15 file(s), 17 read(s)) ----
+# ---- SEV-E-no-default  (12 file(s), 14 read(s)) ----
 85006d7e25f42ba787b2ce616bd1c71590c3990f89f3153a6f958156c93029ed SEV-E-no-default hooks/coach-auto-prescribe-on-journal.py
 33804a89b8c6ac80575f93ea2a5e0f9f6e47aeb3bb6e8dab0413729fd3fc8c94 SEV-E-no-default hooks/inject-love-language-context.py
-439b81f59712732d566301a7a1fe2b7f4f61c8f49a48c56a2b45f69a331c3087 SEV-E-no-default hooks/inject-meeting-workflow-on-trigger.py
 d11e46cfd26ba07935e39f6bd73c36095e242d4a2a5a6856d12a07f7b929195b SEV-E-no-default scripts/backfill-journal-body-context.py
 66295b6759ce0653131ffa32fcbdb4e2c467fb833fe9770f1d72948ece7df513 SEV-E-no-default scripts/extractors/_base.py
 9ceedddb923461f4c803b48b1d8349c9e54f9f6ff73e40969aeb3332206c8824 SEV-E-no-default scripts/granola_core.py

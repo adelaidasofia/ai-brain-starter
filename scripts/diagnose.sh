@@ -203,6 +203,31 @@ else
   warn "graph-context-hook.sh not in ⚙️ Meta/scripts/" "Phase 5 installs it."
 fi
 
+# Sync-clobber check: a synced script whose sibling dependency did not come along
+# (it is silently running a fallback stub), or a local patch the sync overwrote.
+# Measured incident: the commit wrapper fell to a fail-closed stub and EVERY vault
+# commit refused for ~19h, while the session-end hook fell to "defer" and silently
+# skipped every snapshot. Neither surfaced anywhere until a detector existed.
+# Resolved from this script's own location: diagnose.sh defines no repo variable,
+# and a `[ -f "$UNSET/..." ]` guard would make this check a silent no-op — the
+# exact failure class it exists to catch.
+_ABS_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)"
+CLOBBER="$_ABS_REPO/scripts/check-clobbered-vault-scripts.py"
+if [ -f "$CLOBBER" ] && command -v python3 >/dev/null 2>&1; then
+  CLOBBER_OUT=$(python3 "$CLOBBER" --vault "$VAULT" --repo "$_ABS_REPO" 2>&1)
+  if [ $? -eq 0 ]; then
+    ok "vault scripts: no broken sibling deps, none reverted by a sync"
+  else
+    # Report each finding on its own line so the remedy is actionable, not a blob.
+    printf '%s\n' "$CLOBBER_OUT" | grep -E '^\s+(BROKEN-DEP|REVERTED)' | while IFS= read -r l; do
+      warn "$(printf '%s' "$l" | sed 's/^[[:space:]]*//')"
+    done
+    warn "vault scripts need attention" "Full detail: python3 '$CLOBBER' --vault '$VAULT'"
+  fi
+else
+  warn "sync-clobber check did not run" "Missing $CLOBBER or python3 — this check is INACTIVE, not passing."
+fi
+
 # ----- 5. Journal index -----
 section "5. Insights pipeline"
 INDEX="$META/journal-index.json"
@@ -258,28 +283,51 @@ fi
 
 # ----- 8. .ps1 sanity (if any exist) -----
 section "8. PowerShell files (Windows compat)"
-ps1_files=$(find "$VAULT" "$HOME/.claude/skills/ai-brain-starter" \
-  -name '*.ps1' -not -path '*/.git/*' 2>/dev/null | head -20)
-if [ -z "$ps1_files" ]; then
-  ok "No .ps1 files to check"
+# NEITHER .ps1 byte rule is reimplemented here. Both have one owner,
+# scripts/check-ps1-encoding.sh, which the CI gate and the pre-push gate also
+# call - so a fix lands everywhere at once. This block used to carry its own
+# copy of both, sharing one enumeration capped at `head -20`: a vault with more
+# than 20 .ps1 files printed "All .ps1 files have UTF-8 BOM" without ever
+# reading the rest, while diagnose.ps1 (no cap) reported the same vault
+# honestly. Same vault, two different answers.
+CHECK_ENC=""
+for c in "$(cd "$(dirname "$0")" && pwd)/check-ps1-encoding.sh" \
+         "$HOME/.claude/skills/ai-brain-starter/scripts/check-ps1-encoding.sh"; do
+  [ -f "$c" ] && CHECK_ENC="$c" && break
+done
+if [ -n "$CHECK_ENC" ]; then
+  enc_verdict="$(bash "$CHECK_ENC" --porcelain "$VAULT" "$HOME/.claude/skills/ai-brain-starter" 2>/dev/null)"
+  # Contract: `scanned=<n> missing_bom=<m> emdash=<k>`. Parsed field by field so
+  # a malformed line leaves the counts empty and falls through to the warn below
+  # rather than being read as zeros, which would print a clean bill of health.
+  enc_scanned=""; enc_bom=""; enc_em=""
+  for kv in $enc_verdict; do
+    case "$kv" in
+      scanned=*)     enc_scanned="${kv#scanned=}" ;;
+      missing_bom=*) enc_bom="${kv#missing_bom=}" ;;
+      emdash=*)      enc_em="${kv#emdash=}" ;;
+    esac
+  done
+  if [ -z "$enc_scanned" ] || [ -z "$enc_bom" ] || [ -z "$enc_em" ]; then
+    warn "Could not evaluate .ps1 encoding" "check-ps1-encoding.sh returned: ${enc_verdict:-<empty>}"
+  elif [ "$enc_scanned" -eq 0 ]; then
+    ok "No .ps1 files to check"
+  else
+    if [ "$enc_bom" -eq 0 ]; then
+      ok "All .ps1 files have UTF-8 BOM ($enc_scanned scanned)"
+    else
+      warn "$enc_bom of $enc_scanned .ps1 file(s) missing UTF-8 BOM" \
+        "Windows PowerShell 5.1 will crash on non-ASCII bytes."
+    fi
+    if [ "$enc_em" -eq 0 ]; then
+      ok "No em dashes in .ps1 files ($enc_scanned scanned)"
+    else
+      warn "$enc_em of $enc_scanned .ps1 file(s) contain em dashes" \
+        "Replace with ASCII hyphens (defense-in-depth)."
+    fi
+  fi
 else
-  bom_fail=0; emdash_fail=0
-  while IFS= read -r f; do
-    [ -z "$f" ] && continue
-    head_bytes=$(head -c 3 "$f" 2>/dev/null | od -An -tx1 | tr -d ' \n')
-    [ "$head_bytes" != "efbbbf" ] && bom_fail=$((bom_fail+1))
-    grep -l $'\xe2\x80\x94' "$f" >/dev/null 2>&1 && emdash_fail=$((emdash_fail+1))
-  done <<< "$ps1_files"
-  if [ "$bom_fail" -eq 0 ]; then
-    ok "All .ps1 files have UTF-8 BOM"
-  else
-    warn "$bom_fail .ps1 file(s) missing UTF-8 BOM" "Windows PowerShell 5.1 will crash on non-ASCII bytes."
-  fi
-  if [ "$emdash_fail" -eq 0 ]; then
-    ok "No em dashes in .ps1 files"
-  else
-    warn "$emdash_fail .ps1 file(s) contain em dashes" "Replace with ASCII hyphens (defense-in-depth)."
-  fi
+  warn "check-ps1-encoding.sh not found" "Cannot verify .ps1 BOM or em-dash status."
 fi
 
 # ----- 9. MCP config -----
@@ -548,7 +596,17 @@ else
   ssverdict="$(python3 "$AUDIT_SS" --settings "$SS_SETTINGS" --porcelain 2>/dev/null)"
   case "$ssverdict" in
     OK:*)
-      ok "Effective SessionStart fleet is bounded (${ssverdict#OK:} clean/declared/unresolved)" ;;
+      ok "Effective SessionStart fleet is bounded (${ssverdict#OK:} clean/declared/unevaluated)" ;;
+    PARTIAL:*)
+      # MYC-3879. The auditor resolves each wired command to a file and reads it;
+      # anything it cannot resolve is SKIPPED. This branch used to be folded into
+      # OK:, so a real machine printed "6 resolved - 6 clean, 0 unguarded; 19
+      # unresolved" and diagnose showed a green line. Nineteen SessionStart
+      # commands unread is not a bounded fleet - it is an unmeasured one, and a
+      # freeze-class hook sitting in any of them was structurally invisible.
+      _rest="${ssverdict#PARTIAL:}"; _skipped="${_rest##*:}"
+      warn "$_skipped SessionStart command(s) could not be evaluated for boundedness" \
+        "The auditor never opened them, so nothing is known about their work shape - this is NOT a clean bill of health. Run: python3 \"$AUDIT_SS\" --settings \"$SS_SETTINGS\" to see each skipped command and why (unresolvable command string, script not on disk, or unreadable source). Common cause on Windows: hook commands are wired in the 'py -3 \"<runner>\" --fallback silent \"<hook>\"' form, whose backslash paths the resolver does not match." ;;
     UNGUARDED:*)
       _rest="${ssverdict#UNGUARDED:}"; _n="${_rest%%:*}"; _hooks="${_rest#*:}"
       bad "$_n SessionStart hook(s) do an unguarded corpus walk: $_hooks" \

@@ -222,6 +222,75 @@ check("gate DORMANT: sibling-prefix path is not containment",
       mod._git_gate_active(HOME + "-other/src", HOME), False)
 check("gate active: unknown inputs never claim breakage", mod._git_gate_active("", ""), True)
 
-print(f"\n=== {len(CASES) + 8 + len(SCOPED_ALLOWED) + len(SCOPED_BLOCKED) + 9} "
+# ---------------------------------------------------------------------------
+# Cross-worktree SAME-BRANCH collision.
+#
+# `_live_siblings` is keyed to the WORKING TREE and says so: "two sessions
+# pushing the same branch ... OUT OF SCOPE here: per-session branch isolation
+# makes them rare." That premise assumes ONE BRANCH PER SESSION, and it stops
+# holding the moment branches are named per TICKET or per FEATURE -- two
+# sessions on one ticket then legitimately share a branch and are invisible to
+# a worktree-keyed check. Observed: two such sessions independently produced
+# the SAME upstream merge, with the same conflict resolution, and only git's
+# non-fast-forward rejection surfaced it, after both had done the work.
+#
+# The FIRST version of this guard was INERT and these controls are why that was
+# caught: it reused `_worktree_key` to exclude same-tree siblings, but that key
+# only recognises `<main>/.claude/worktrees/<slug>`, so a sibling-directory
+# checkout fell through to main_root and every sibling collapsed onto the
+# caller's own key. The positive control below failed and said so.
+_NOW = 1_000_000.0
+_MAIN, _MY, _OTH, _BR = "/x/repo", "/x/repo-a", "/x/repo-b", "feat/shared"
+
+
+def _sib(**kw):
+    e = {"last_activity_at": _NOW, "cwd": _OTH, "branch": _BR}
+    e.update(kw)
+    return e
+
+
+def _n(sessions, my_branch=_BR):
+    return len(mod._live_branch_siblings(sessions, "me", _NOW, _MAIN, _MY, my_branch))
+
+
+BRANCH_CASES = [
+    ("POSITIVE: same branch, different worktree", _n({"s": _sib()}), 1),
+    ("different branch is silent", _n({"s": _sib(branch="feat/other")}), 0),
+    ("same directory defers to _live_siblings", _n({"s": _sib(cwd=_MY)}), 0),
+    ("trailing slash is the same directory", _n({"s": _sib(cwd=_MY + "/")}), 0),
+    ("stale sibling is silent", _n({"s": _sib(last_activity_at=_NOW - 99_999)}), 0),
+    ("unknown own branch fails OPEN", _n({"s": _sib()}, ""), 0),
+    ("sibling that recorded no branch is silent", _n({"s": {"last_activity_at": _NOW, "cwd": _OTH}}), 0),
+    ("never matches myself", _n({"me": _sib()}), 0),
+    ("two siblings both counted", _n({"a": _sib(), "b": _sib(cwd=_OTH + "2")}), 2),
+]
+for _name, _got, _want in BRANCH_CASES:
+    check("branch-collision: " + _name, _got, _want)
+
+# The trigger. A git subprocess only runs for commands that touch a shared REF,
+# so an ordinary command never pays for it -- and `echo git push` must not count.
+BRANCH_TRIGGERS = [
+    ("git push origin main", True),
+    ("git commit -o a.txt -F msg", True),
+    ("git merge origin/main", True),
+    ("git rebase main", True),
+    ("git cherry-pick abc123", True),
+    ("cd /x && git push", True),
+    ("FOO=1 git push", True),
+    ("ls -la", False),
+    ("git status", False),
+    ("git log --oneline", False),
+    ("echo git push", False),
+    ("grep -r 'git push' .", False),
+]
+for _cmd, _want in BRANCH_TRIGGERS:
+    check(f"branch-trigger({_cmd!r})", bool(mod._REF_TOUCHING_RE.search(_cmd)), _want)
+
+# Branch resolution fails OPEN on every error path: an empty branch can never
+# match a sibling, so a broken git makes this quieter, never wrong.
+check("branch resolve: non-repo -> ''", mod._current_branch("/nonexistent-xyz"), "")
+check("branch resolve: empty cwd -> ''", mod._current_branch(""), "")
+
+print(f"\n=== {len(CASES) + 8 + len(SCOPED_ALLOWED) + len(SCOPED_BLOCKED) + 9 + len(BRANCH_CASES) + len(BRANCH_TRIGGERS) + 2} "
       f"assertions, {len(fails)} failed ===")
 sys.exit(1 if fails else 0)

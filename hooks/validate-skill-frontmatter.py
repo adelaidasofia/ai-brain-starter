@@ -101,7 +101,7 @@ def project_post_edit_content(tool_name: str, tool_input: dict) -> str | None:
 
     if tool_name == "Edit":
         try:
-            existing = Path(file_path).read_text(encoding="utf-8")
+            existing = Path(file_path).read_text(encoding="utf-8", errors="replace")
         except (OSError, FileNotFoundError):
             existing = ""
         old = tool_input.get("old_string", "")
@@ -112,7 +112,7 @@ def project_post_edit_content(tool_name: str, tool_input: dict) -> str | None:
 
     if tool_name == "MultiEdit":
         try:
-            content = Path(file_path).read_text(encoding="utf-8")
+            content = Path(file_path).read_text(encoding="utf-8", errors="replace")
         except (OSError, FileNotFoundError):
             content = ""
         for edit in tool_input.get("edits", []):
@@ -204,7 +204,7 @@ def load_skill_tool_access(skill_md_path: Path) -> tuple[list[str] | None, str |
     declare a whitelist (sandboxing pass is then a no-op for that skill).
     """
     try:
-        text = skill_md_path.read_text(encoding="utf-8")
+        text = skill_md_path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
         return None, f"could not read {skill_md_path}: {e}"
 
@@ -293,7 +293,7 @@ def run_schema_validation(tool_name: str, tool_input: dict) -> int:
         return 0
 
     try:
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        schema = json.loads(schema_path.read_text(encoding="utf-8", errors="replace"))
     except (OSError, json.JSONDecodeError) as e:
         log_debug(f"schema load failed: {e}")
         emit_allow()

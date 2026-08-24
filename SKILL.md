@@ -174,7 +174,7 @@ These are collected during early phases and used by later ones. Keep them in mem
 - If they seem overwhelmed, say: "We can stop here and pick up the rest tomorrow." But default is KEEP GOING.
 - Adapt the folder structure to their life, not a template.
 - **NEVER ask the user to open a terminal during setup.** Claude runs all bash commands via its own tools. Users should not see a terminal after bootstrap runs. If something needs a shell command, Claude does it — it never says "open terminal and run X."
-- If they're not technical, explain what's happening in plain language, not bash.
+- **Plain-language register — unconditional, not a fallback for "non-technical" users.** Explain what is happening in plain language, never machinery; never end a turn on a technical either/or; never make them paste a credential. Canonical text: `templates/rules/session-close.md` → **Plain-language register** (same block in `templates/rules/session-start-checks.md`). It governs every phase, every skill, every session — there is no user for whom bash is the right register.
 - Celebrate milestones: "Your CLAUDE.md is done, that's the biggest piece."
 - Match their energy. If they're excited, move fast. If they're cautious, explain more.
 - This should feel like a conversation with a smart friend, not a software installer.
