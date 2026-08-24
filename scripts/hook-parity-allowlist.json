@@ -1,0 +1,45 @@
+{
+  "_README": [
+    "Reviewed cross-platform hook asymmetries. Enforced by scripts/check-hook-parity.py.",
+    "",
+    "Every entry is a FEATURE that users on one platform do not have. This file is",
+    "not an exception mechanism to get CI green - it is the record that somebody",
+    "looked at a drop and accepted it. An entry with no reason fails the gate; an",
+    "entry describing a difference that no longer exists fails it too, so the list",
+    "cannot decay into excuses for problems that were already fixed.",
+    "",
+    "posix_only  = wired by hooks.json, NOT wired by the installer's Windows leg",
+    "              (platformize_template_for_windows drops it).",
+    "windows_only = wired only on Windows. hook_runner.py is NOT listed: it is the",
+    "              launcher shim every rewritten command names, and the gate",
+    "              excludes it by deriving its basename from the installer.",
+    "",
+    "Adding an entry: say WHAT is lost and WHO loses it, not just that bash is",
+    "involved. Removing a drop is always better than describing it.",
+    "",
+    "Provenance: MYC-3879."
+  ],
+  "posix_only": [
+    {
+      "event": "PostToolUse",
+      "hook": "write-hook.sh",
+      "reason": "Bash-only vault script; no Windows equivalent exists. Windows installs get NO PostToolUse(Write) hook at all, so automatic meeting-todos extraction never fires when a meeting note is saved - the user must invoke it by hand and is never told why. This is the largest of the four gaps: it is the only hook on its event, so platformize deletes the whole PostToolUse block. Fix is a port, not a longer reason."
+    },
+    {
+      "event": "Stop",
+      "hook": "session-end-hook.sh",
+      "reason": "Bash-only vault script; no Windows equivalent exists. It is Layer 3 of the session-close cascade (Haiku fallback when the model bails, Last Session / Decision Log aggregators, git snapshot, retention cleanup). On Windows Layers 1-2 still run - detect-closing-signal.py injects the cascade context and the model writes captures - but nothing finalizes them, so a close that LOOKS complete leaves the aggregators stale. Silent-partial-cascade, not a clean absence."
+    },
+    {
+      "event": "UserPromptSubmit",
+      "hook": "graph-context-hook.sh",
+      "reason": "Bash-only vault script; no Windows equivalent exists. Windows users with a /graphify knowledge graph get no per-prompt routing hint, so Claude re-reads source files instead of opening the right GRAPH_REPORT.md. Degrades answer quality and context cost rather than breaking anything, which is why it went unnoticed."
+    },
+    {
+      "event": "SessionStart",
+      "hook": "check-claude-code-version.sh",
+      "reason": "Bash-only, and the ONLY one of the four that is a deliberate documented choice: install-hooks-user-level.py keeps it out of ABS_OWNED_BASENAMES precisely because it is skipped on Windows, so hooks/surface-deployed-hooks-behind.py does not nag Windows users with drift no action can clear. Cost: Windows installs are never told the Claude Code CLI is behind, nor what changed in the releases they skipped. scripts/update-check.ps1 is NOT this hook's equivalent - it tracks the ai-brain-starter checkout, not the CLI."
+    }
+  ],
+  "windows_only": []
+}

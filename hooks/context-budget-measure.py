@@ -613,6 +613,15 @@ def main():
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (ai-brain-starter#313; hooks/ sweep #314).
+    # A hook that print()s non-ASCII raises UnicodeEncodeError on a cp1252
+    # console: the gate then fails silently OPEN, or denies the tool call with
+    # no legible cause. Idempotent; a no-op on an already-UTF-8 console.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     try:
         main()
     except SystemExit:

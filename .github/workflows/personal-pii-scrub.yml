@@ -11,10 +11,31 @@ name: personal-pii-scrub
 # Claude Code sessions; this workflow catches it for ANY commit path
 # (gh CLI, direct git, contractor co-author, future agent).
 #
-# Patterns kept in lockstep with CLAUDE.md "Personal-data scrub" section.
-# Adding/removing patterns: edit ~/.claude/CLAUDE.md AND this template
-# (in ⚙️ Meta/scripts/gh-harden-repos.sh) in the same commit, then let
-# the daily run propagate.
+# TIER SPLIT (MYC-3943, bug class GUARD-DISCLOSES-THE-SECRET-IT-GUARDS).
+# This file used to carry the full personal-data roster inline, which
+# published the exact private tokens it exists to protect as a curated,
+# machine-readable, semantically labelled list in every managed public
+# repo. The vocabulary is now two tiers:
+#   PUBLIC tier — inline in this file. Only tokens already public by
+#   deliberate choice (the author name that signs these repos and a
+#   published writing title). Discloses nothing; keeps fork PRs and
+#   unarmed installs measurably gated.
+#   PRIVATE tier — the repo Actions secret PII_PRIVATE_PATTERNS, one
+#   POSIX extended regex per line, injected at run time and masked
+#   line-by-line in Actions logs. The plaintext roster lives ONLY in the
+#   private generator vault and each managed repo secret store, never in
+#   any public artifact.
+# Adding/removing patterns: edit the private roster next to the generator
+# (in ⚙️ Meta/scripts/gh-harden-repos.sh) AND, for public-tier tokens,
+# this template, in the same commit, then let the harden run propagate.
+# The harden run must sync the SECRET to a repo BEFORE shipping this file
+# there: on a managed repo this gate fails closed when the secret is
+# missing, because a gate that shrugs off a broken secret sync is green
+# and vacuous exactly where it broke (auto-managed-gate-self-dos).
+# Hashing the roster instead was REJECTED: personal-name tokens have a
+# tiny preimage space, so a public salted-hash denylist is one dictionary
+# pass away from plaintext (operating rule: a hashed identifier is
+# pseudonymous only while nothing else emits its preimage).
 
 on:
   pull_request:
@@ -51,51 +72,195 @@ permissions:
 jobs:
   scrub:
     runs-on: ubuntu-latest
+    env:
+      # The private-tier roster (one POSIX extended regex per line). Absent
+      # by GitHub design on fork PR and dependabot runs; required on
+      # trusted runs of managed repos (fail closed — see each step).
+      PII_PRIVATE_PATTERNS: ${{ secrets.PII_PRIVATE_PATTERNS }}
+      # true exactly when GitHub withholds Actions secrets from this run:
+      # a PR whose head repo is not this repo, or a dependabot actor
+      # (dependabot runs read a separate secret store).
+      PII_UNTRUSTED_RUN: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.actor == 'dependabot[bot]') }}
+      # Owners whose repos the harden script manages: there, a trusted run
+      # with no secret is a broken secret sync and fails closed. Any other
+      # owner (a fork of the substrate, a fresh client install) runs the
+      # public tier with a notice saying how to arm the private tier.
+      # Generator-maintained: a client install carries its own owner here.
+      PII_MANAGED_OWNERS: mycelium-hq adelaidasofia
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v4
         with:
           fetch-depth: 0
       - name: Personal-name + vault-path scrub (source files)
         run: |
           set -e
-          # Word-boundary patterns (auto-injected from a single source; this
-          # array and the archive-step array below are filled from the same
-          # list, so they cannot drift). NOT case-insensitive: 'wOnder'
-          # contains 'Onde' but \bOnde\b skips it (CLAUDE.md false-positive trap).
-          PATTERNS=(
+          # PUBLIC tier, inline (auto-injected from a single source; this
+          # array and the archive-step copy below are filled from the same
+          # list, so they cannot drift). ONLY tokens that are already public
+          # by deliberate choice may appear here. NOT case-insensitive: a
+          # capitalised name pattern must keep skipping unrelated lowercase
+          # words that merely contain it (the CLAUDE.md false-positive trap;
+          # widen only the first letter, never the whole pattern).
+          PUBLIC_PATTERNS=(
             '\b[Aa]delaida\b'
             '\b[Dd]iaz-[Rr]oa\b'
-            '\bSergio\b'
-            '\b[Ss]neider\b'
-            '\b[Aa]lfonso\b'
-            '\b[Pp]anorama\b'
-            '\bDiana\b'
-            '\bPaola\b'
-            '\b[Bb]everly\b'
-            '\b[Nn]atalia\b'
-            '\b[Ss]ilvia\b'
-            '\bAccenture\b'
-            '\bCentre415\b'
-            '\bvinitos\b'
-            '/Users/adelaidadiaz-roa/'
-            'AdelaidaNotes'
-            'adelaida@'
-            'tech@onde'
             'After the Shock'
           )
-          fail=0
+          # PRIVATE tier, from the PII_PRIVATE_PATTERNS repo secret. The
+          # roster of private-person, client and infra tokens NEVER appears
+          # inline: a plaintext denylist in a public artifact publishes the
+          # exact tokens it exists to protect (MYC-3943). Runs that cannot
+          # read the secret are CLASSIFIED, never guessed at — see each
+          # branch below.
+          PRIVATE_PATTERNS=()
+          if [ -n "${PII_PRIVATE_PATTERNS:-}" ]; then
+            while IFS= read -r pii_line; do
+              pii_line="${pii_line%$'\r'}"
+              # Trim edge whitespace: a stray padded or blank line must not
+              # become a match-anything pattern that turns the fleet red.
+              pii_line="${pii_line#"${pii_line%%[![:space:]]*}"}"
+              pii_line="${pii_line%"${pii_line##*[![:space:]]}"}"
+              if [ -n "$pii_line" ]; then
+                PRIVATE_PATTERNS+=("$pii_line")
+              fi
+            done <<< "$PII_PRIVATE_PATTERNS"
+            if [ "${#PRIVATE_PATTERNS[@]}" -lt 1 ]; then
+              echo "::error::PII_PRIVATE_PATTERNS is set but parsed to zero patterns. A gate with an empty private tier is green and vacuous. Refusing to run."
+              exit 1
+            fi
+          elif [ "$PII_UNTRUSTED_RUN" = "true" ]; then
+            # Fork PRs and dependabot cannot read Actions secrets by GitHub
+            # design. Reduced scope here is DOCUMENTED, not silent: the full
+            # vocabulary still gates push and merge_group, which read the
+            # secret. Recorded MYC-3943 trade: post-merge detection on fork
+            # PRs beats a standing roster disclosure in every managed repo.
+            echo "::notice::Fork and dependabot runs cannot read Actions secrets, so the private-tier roster is unavailable here. Scanning the public tier only; the full vocabulary runs on push and merge_group."
+          elif [ -z "${PII_MANAGED_OWNERS:-}" ]; then
+            # This env line ships inside this file, so on a real run it can
+            # only be empty when the template misrendered. Guessing between
+            # managed and unmanaged here would turn a broken secret sync
+            # into a green vacuous gate on the managed fleet. Fail closed.
+            echo "::error::PII_MANAGED_OWNERS rendered EMPTY, so this run cannot classify the repo as managed or unmanaged. Failing closed rather than guessing."
+            exit 1
+          elif [[ " $PII_MANAGED_OWNERS " == *" $GITHUB_REPOSITORY_OWNER "* ]]; then
+            # A managed repo on a trusted event with no secret is a broken
+            # secret sync, and a gate that shrugs that off would be green
+            # and vacuous exactly where the sync broke. Fail closed.
+            echo "::error::Repo secret PII_PRIVATE_PATTERNS is not set on a managed repo. The private roster never ships inline (MYC-3943), so without the secret this gate cannot see the tokens it exists to catch. Arm it with: gh secret set PII_PRIVATE_PATTERNS --repo $GITHUB_REPOSITORY (one POSIX extended regex per line, from the private generator vault roster)."
+            exit 1
+          else
+            # A fork of the substrate or a fresh client install: no roster
+            # is not an error, it is an unarmed install. Say how to arm it.
+            echo "::notice::PII_PRIVATE_PATTERNS is not set, so only the public-tier patterns run. To arm the install-specific private tier, set that repo secret to your own roster, one POSIX extended regex per line."
+          fi
+          PATTERNS=( "${PUBLIC_PATTERNS[@]}" "${PRIVATE_PATTERNS[@]}" )
+          # ONE scan implementation, called with the patterns to scan for. The
+          # positive control below runs THIS function, so it exercises the real
+          # engine, the real pathspecs and the real invocation shape rather than
+          # a copy that could drift from them.
           # Scan source files. Exclude markdown docs (README, CHANGELOG,
           # docs/), vendored deps, lock files, and the workflows themselves
           # (this file MENTIONS the patterns by definition).
-          for p in "${PATTERNS[@]}"; do
-            matches=$(git grep -nE "$p"               -- ':!README*' ':!CHANGELOG*' ':!docs/' ':!*.md'               ':!LICENSE*' ':!COPYING*' ':!NOTICE*'               ':!AUTHORS*' ':!MAINTAINERS*'               ':!*pyproject.toml' ':!*setup.py' ':!*setup.cfg'               ':!*package.json' ':!*Cargo.toml' ':!*manifest.json' ':!*server.json'               ':!.claude-plugin/'               ':!.env.example' ':!*.env.example'               ':!tests/integration/test_smoke.py'               ':!vendor/' ':!node_modules/' ':!*.lock'               ':!package-lock.json' ':!pnpm-lock.yaml'               ':!.github/workflows/personal-pii-scrub.yml' 2>/dev/null || true)
-            if [ -n "$matches" ]; then
-              echo "::error::personal-data pattern leaked into source: $p"
-              echo "$matches"
-              fail=1
+          scan_for() {
+            local p m
+            for p in "$@"; do
+              m=$(git grep -nE "$p"                 -- ':!README*' ':!CHANGELOG*' ':!docs/' ':!*.md'                 ':!LICENSE*' ':!COPYING*' ':!NOTICE*'                 ':!AUTHORS*' ':!MAINTAINERS*'                 ':!*pyproject.toml' ':!*setup.py' ':!*setup.cfg'                 ':!*package.json' ':!*Cargo.toml' ':!*manifest.json' ':!*server.json'                 ':!.claude-plugin/'                 ':!.env.example' ':!*.env.example'                 ':!tests/integration/test_smoke.py'                 ':!vendor/' ':!node_modules/' ':!*.lock'                 ':!package-lock.json' ':!pnpm-lock.yaml'                 ':!.github/workflows/personal-pii-scrub.yml' 2>/dev/null || true)
+              if [ -n "$m" ]; then
+                printf '%s\n' "::error::personal-data pattern leaked into source: $p"
+                printf '%s\n' "$m"
+              fi
+            done
+            return 0
+          }
+          # POSITIVE CONTROL. A scan that can no longer match ANYTHING reports
+          # the same green as a genuinely clean tree, so the gate must first
+          # prove it can still catch a known plant. Most patterns above lean on
+          # \b, which is a GNU regex EXTENSION: glibc honors it, a BSD/macOS
+          # regex silently matches nothing (measured: on macOS git grep -E for
+          # a \b pattern returns zero while the token is plainly present). If
+          # this runner image ever moves to such a regex, every \b pattern would
+          # quietly stop matching and this gate would pass on every tree,
+          # forever. Same shape as the bash 3.2 runner control in lint.yml.
+          if [ "${#PATTERNS[@]}" -lt 1 ]; then
+            echo "::error::PATTERNS rendered EMPTY. This gate would report clean on any tree. Refusing to run vacuous."
+            exit 1
+          fi
+          canary=pii-scrub-positive-control.txt
+          trap 'git rm -q -f --cached "$canary" >/dev/null 2>&1 || true; rm -f "$canary"' EXIT
+          # Both production pattern shapes: bare word-boundary, and the
+          # bracket-class first letter used by the widened name patterns.
+          printf 'PiiCanaryProbe\n' > "$canary"
+          git add -f "$canary" >/dev/null
+          for probe in '\bPiiCanaryProbe\b' '\b[Pp]iiCanaryProbe\b'; do
+            if [ -z "$(scan_for "$probe")" ]; then
+              echo "::error::POSITIVE CONTROL FAILED: the scan did not find a planted token matching $probe."
+              echo "::error::Word boundary is a GNU regex extension. If this runner regex drops it, every \b pattern matches NOTHING and this gate passes on every tree."
+              echo "::error::Do not leave it green and vacuous. Switch the engine to git grep -P (PCRE) or pipe through plain grep -E, then re-verify with this control."
+              exit 1
             fi
           done
-          if [ $fail -eq 1 ]; then
+          # The boundary must also CONSTRAIN. An engine that silently DROPS \b
+          # over-matches instead, which turns the fleet red on its own published
+          # content (the AUTO-MANAGED-GATE-SELF-DOS incident).
+          printf 'xPiiCanaryProbex\n' > "$canary"
+          git add -f "$canary" >/dev/null
+          for probe in '\bPiiCanaryProbe\b' '\b[Pp]iiCanaryProbe\b'; do
+            if [ -n "$(scan_for "$probe")" ]; then
+              echo "::error::POSITIVE CONTROL FAILED: $probe matched xPiiCanaryProbex, so the word boundary is NOT constraining."
+              echo "::error::This engine over-matches and would fail the gate on legitimately published content."
+              exit 1
+            fi
+          done
+          # VOCABULARY CONTROL. Everything above proves the ENGINE: that \b is
+          # honored, and that it constrains. None of it proves the VOCABULARY,
+          # because it probes a synthetic token that is not in PATTERNS. A
+          # pattern that was deleted, mistyped or malformed leaves all of the
+          # above green while the gate is blind to exactly that token. So every
+          # pattern must also catch a specimen synthesized from ITSELF.
+          # The specimens are derived HERE from the same PATTERNS array the scan
+          # uses, rather than injected as a second array, so there is no parallel
+          # list that can drift from the one being tested. Both ends of each
+          # bracket class are planted, which is what keeps the lowercase widening
+          # (\bSomename\b became \b[Ss]omename\b) proven rather than assumed.
+          # Bug class: SILENT-FALSE-CLEAN-FROM-INCOMPLETE-VOCABULARY.
+          # NOTE: written with if/else, never a case statement. This heredoc sits
+          # inside a $( ) command substitution, and bash counts parens there
+          # BEFORE heredoc processing, so a bare `last)` case label closes the
+          # substitution early and breaks the whole script. Measured 2026-08-16:
+          # zsh parsed it happily and rendered valid YAML while bash -n failed,
+          # so the render succeeding is NOT proof the template is well-formed.
+          specimen_of() {
+            if [ "${2:-first}" = "last" ]; then
+              printf '%s' "$1" | sed -E 's/^\\b//; s/\\b$//; s/\[[^]]*(.)\]/\1/g'
+            else
+              printf '%s' "$1" | sed -E 's/^\\b//; s/\\b$//; s/\[(.)[^]]*\]/\1/g'
+            fi
+          }
+          : > "$canary"
+          for p in "${PATTERNS[@]}"; do
+            printf ' %s \n' "$(specimen_of "$p" first)" >> "$canary"
+            printf ' %s \n' "$(specimen_of "$p" last)"  >> "$canary"
+          done
+          git add -f "$canary" >/dev/null
+          vocab_fail=0
+          for p in "${PATTERNS[@]}"; do
+            if [ -z "$(scan_for "$p")" ]; then
+              echo "::error::VOCABULARY CONTROL FAILED: pattern cannot catch its own specimen: $p"
+              vocab_fail=1
+            fi
+          done
+          if [ "$vocab_fail" != "0" ]; then
+            echo "::error::A pattern in this gate cannot detect the token it names, so a CLEAN result here would be a silent no-op rather than a measurement."
+            exit 1
+          fi
+          git rm -q -f --cached "$canary" >/dev/null 2>&1 || true
+          rm -f "$canary"
+          trap - EXIT
+          echo "Positive control OK: boundaries bind and constrain, and all ${#PATTERNS[@]} patterns catch their own specimen."
+          # --- the real scan, same function, same engine, same pathspecs ---
+          hits="$(scan_for "${PATTERNS[@]}")"
+          if [ -n "$hits" ]; then
+            printf '%s\n' "$hits"
             echo "::error::Personal-data scrub failed (source files). See CLAUDE.md 'Personal-data scrub' section + repo-evaluation.md cherry-pick A."
             exit 1
           fi
@@ -109,35 +274,135 @@ jobs:
         # the next regression).
         run: |
           set -e
+          # Same two-tier vocabulary as the source-files step above: the
+          # inline PUBLIC tier is injected from one placeholder in both steps
+          # (so they cannot drift), and the PRIVATE tier is read from the
+          # same PII_PRIVATE_PATTERNS secret, with the same run
+          # classification (see the source step for the full reasoning).
+          PUBLIC_PATTERNS=(
+            '\b[Aa]delaida\b'
+            '\b[Dd]iaz-[Rr]oa\b'
+            'After the Shock'
+          )
+          PRIVATE_PATTERNS=()
+          if [ -n "${PII_PRIVATE_PATTERNS:-}" ]; then
+            while IFS= read -r pii_line; do
+              pii_line="${pii_line%$'\r'}"
+              # Trim edge whitespace: a stray padded or blank line must not
+              # become a match-anything pattern that turns the fleet red.
+              pii_line="${pii_line#"${pii_line%%[![:space:]]*}"}"
+              pii_line="${pii_line%"${pii_line##*[![:space:]]}"}"
+              if [ -n "$pii_line" ]; then
+                PRIVATE_PATTERNS+=("$pii_line")
+              fi
+            done <<< "$PII_PRIVATE_PATTERNS"
+            if [ "${#PRIVATE_PATTERNS[@]}" -lt 1 ]; then
+              echo "::error::PII_PRIVATE_PATTERNS is set but parsed to zero patterns. A gate with an empty private tier is green and vacuous. Refusing to run."
+              exit 1
+            fi
+          elif [ "$PII_UNTRUSTED_RUN" = "true" ]; then
+            echo "::notice::Fork and dependabot runs cannot read Actions secrets, so the private-tier roster is unavailable here. Scanning the public tier only; the full vocabulary runs on push and merge_group."
+          elif [ -z "${PII_MANAGED_OWNERS:-}" ]; then
+            # This env line ships inside this file, so on a real run it can
+            # only be empty when the template misrendered. Guessing between
+            # managed and unmanaged here would turn a broken secret sync
+            # into a green vacuous gate on the managed fleet. Fail closed.
+            echo "::error::PII_MANAGED_OWNERS rendered EMPTY, so this run cannot classify the repo as managed or unmanaged. Failing closed rather than guessing."
+            exit 1
+          elif [[ " $PII_MANAGED_OWNERS " == *" $GITHUB_REPOSITORY_OWNER "* ]]; then
+            echo "::error::Repo secret PII_PRIVATE_PATTERNS is not set on a managed repo. The private roster never ships inline (MYC-3943), so without the secret this gate cannot see the tokens it exists to catch. Arm it with: gh secret set PII_PRIVATE_PATTERNS --repo $GITHUB_REPOSITORY (one POSIX extended regex per line, from the private generator vault roster)."
+            exit 1
+          else
+            echo "::notice::PII_PRIVATE_PATTERNS is not set, so only the public-tier patterns run. To arm the install-specific private tier, set that repo secret to your own roster, one POSIX extended regex per line."
+          fi
+          PATTERNS=( "${PUBLIC_PATTERNS[@]}" "${PRIVATE_PATTERNS[@]}" )
+          # Same exclusions as the source-file step (LICENSE/COPYING/
+          # NOTICE legitimately attribute the author; README/CHANGELOG/
+          # *.md are docs; vendored deps + lock files don't count).
+          # -a forces grep to treat binary-detected files as text so
+          # extracted scripts with non-UTF8 bytes still get scanned.
+          # ONE scan implementation, shared by the positive control and the real
+          # per-archive scan. $1 is the directory to scan; the rest are patterns.
+          archive_scan_for() {
+            local dir="$1"; shift
+            local p m
+            for p in "$@"; do
+              m=$(grep -rnaE                 --exclude='README*' --exclude='CHANGELOG*' --exclude='*.md'                 --exclude='LICENSE*' --exclude='COPYING*' --exclude='NOTICE*'                 --exclude='AUTHORS*' --exclude='MAINTAINERS*'                 --exclude='pyproject.toml' --exclude='setup.py'                 --exclude='setup.cfg' --exclude='package.json'                 --exclude='Cargo.toml' --exclude='manifest.json'                 --exclude='.env.example'                 --exclude='test_smoke.py'                 --exclude='*.lock' --exclude='package-lock.json'                 --exclude='pnpm-lock.yaml'                 --exclude-dir='vendor' --exclude-dir='node_modules'                 --exclude-dir='docs' --exclude-dir='.claude-plugin'                 "$p" "$dir" 2>/dev/null || true)
+              if [ -n "$m" ]; then
+                printf '%s\n' "::error::personal-data pattern leaked into archive: $p"
+                printf '%s\n' "$m"
+              fi
+            done
+            return 0
+          }
+          # POSITIVE CONTROL on the archive scanner. This deliberately runs
+          # BEFORE the no-archives early exit: a repo that ships no bundle today
+          # can ship one tomorrow, and a scanner proven only where archives
+          # already exist is unproven exactly where it starts to matter. This
+          # tier uses plain grep -E, a DIFFERENT engine from the git grep tiers,
+          # so it needs its own proof rather than inheriting theirs.
+          if [ "${#PATTERNS[@]}" -lt 1 ]; then
+            echo "::error::PATTERNS rendered EMPTY. This tier would report clean on any archive. Refusing to run vacuous."
+            exit 1
+          fi
+          ctldir=$(mktemp -d)
+          trap 'rm -rf "$ctldir"' EXIT
+          printf 'PiiCanaryProbe\n' > "$ctldir/canary.txt"
+          for probe in '\bPiiCanaryProbe\b' '\b[Pp]iiCanaryProbe\b'; do
+            if [ -z "$(archive_scan_for "$ctldir" "$probe")" ]; then
+              echo "::error::POSITIVE CONTROL FAILED (archive tier): grep -E did not find a planted token matching $probe."
+              echo "::error::This scanner cannot see inside bundles any more. Do not leave it green and vacuous."
+              exit 1
+            fi
+          done
+          printf 'xPiiCanaryProbex\n' > "$ctldir/canary.txt"
+          for probe in '\bPiiCanaryProbe\b' '\b[Pp]iiCanaryProbe\b'; do
+            if [ -n "$(archive_scan_for "$ctldir" "$probe")" ]; then
+              echo "::error::POSITIVE CONTROL FAILED (archive tier): $probe matched xPiiCanaryProbex, so the word boundary is NOT constraining."
+              exit 1
+            fi
+          done
+          # VOCABULARY CONTROL for this tier. The probe above proves the engine;
+          # it cannot prove the token list (see the source step for the full
+          # reasoning). This tier runs plain grep -E rather than git grep, so it
+          # needs its OWN vocabulary proof and cannot inherit the source tier.
+          # NOTE: written with if/else, never a case statement. This heredoc sits
+          # inside a $( ) command substitution, and bash counts parens there
+          # BEFORE heredoc processing, so a bare `last)` case label closes the
+          # substitution early and breaks the whole script. Measured 2026-08-16:
+          # zsh parsed it happily and rendered valid YAML while bash -n failed,
+          # so the render succeeding is NOT proof the template is well-formed.
+          specimen_of() {
+            if [ "${2:-first}" = "last" ]; then
+              printf '%s' "$1" | sed -E 's/^\\b//; s/\\b$//; s/\[[^]]*(.)\]/\1/g'
+            else
+              printf '%s' "$1" | sed -E 's/^\\b//; s/\\b$//; s/\[(.)[^]]*\]/\1/g'
+            fi
+          }
+          : > "$ctldir/canary.txt"
+          for p in "${PATTERNS[@]}"; do
+            printf ' %s \n' "$(specimen_of "$p" first)" >> "$ctldir/canary.txt"
+            printf ' %s \n' "$(specimen_of "$p" last)"  >> "$ctldir/canary.txt"
+          done
+          vocab_fail=0
+          for p in "${PATTERNS[@]}"; do
+            if [ -z "$(archive_scan_for "$ctldir" "$p")" ]; then
+              echo "::error::VOCABULARY CONTROL FAILED (archive tier): pattern cannot catch its own specimen: $p"
+              vocab_fail=1
+            fi
+          done
+          if [ "$vocab_fail" != "0" ]; then
+            echo "::error::An archive-tier pattern cannot detect the token it names, so a CLEAN archive result would be a silent no-op."
+            exit 1
+          fi
+          rm -rf "$ctldir"
+          trap - EXIT
+          echo "Positive control OK (archive tier): boundaries bind and constrain, and all ${#PATTERNS[@]} patterns catch their own specimen."
           ARCHIVES=$(git ls-files '*.mcpb' '*.zip' 2>/dev/null || true)
           if [ -z "$ARCHIVES" ]; then
             echo "No tracked .mcpb / .zip archives. Skipping archive scan."
             exit 0
           fi
-          # Same single-source pattern list as the source-files step above
-          # (both arrays are injected from one placeholder, so they cannot
-          # drift).
-          PATTERNS=(
-            '\b[Aa]delaida\b'
-            '\b[Dd]iaz-[Rr]oa\b'
-            '\bSergio\b'
-            '\b[Ss]neider\b'
-            '\b[Aa]lfonso\b'
-            '\b[Pp]anorama\b'
-            '\bDiana\b'
-            '\bPaola\b'
-            '\b[Bb]everly\b'
-            '\b[Nn]atalia\b'
-            '\b[Ss]ilvia\b'
-            '\bAccenture\b'
-            '\bCentre415\b'
-            '\bvinitos\b'
-            '/Users/adelaidadiaz-roa/'
-            'AdelaidaNotes'
-            'adelaida@'
-            'tech@onde'
-            'After the Shock'
-          )
           fail=0
           while IFS= read -r archive; do
             [ -z "$archive" ] && continue
@@ -149,19 +414,11 @@ jobs:
               rm -rf "$tmp"
               continue
             fi
-            # Same exclusions as the source-file step (LICENSE/COPYING/
-            # NOTICE legitimately attribute the author; README/CHANGELOG/
-            # *.md are docs; vendored deps + lock files don't count).
-            # -a forces grep to treat binary-detected files as text so
-            # extracted scripts with non-UTF8 bytes still get scanned.
-            for p in "${PATTERNS[@]}"; do
-              matches=$(grep -rnaE                 --exclude='README*' --exclude='CHANGELOG*' --exclude='*.md'                 --exclude='LICENSE*' --exclude='COPYING*' --exclude='NOTICE*'                 --exclude='AUTHORS*' --exclude='MAINTAINERS*'                 --exclude='pyproject.toml' --exclude='setup.py'                 --exclude='setup.cfg' --exclude='package.json'                 --exclude='Cargo.toml' --exclude='manifest.json'                 --exclude='.env.example'                 --exclude='test_smoke.py'                 --exclude='*.lock' --exclude='package-lock.json'                 --exclude='pnpm-lock.yaml'                 --exclude-dir='vendor' --exclude-dir='node_modules'                 --exclude-dir='docs' --exclude-dir='.claude-plugin'                 "$p" "$tmp" 2>/dev/null || true)
-              if [ -n "$matches" ]; then
-                echo "::error::personal-data pattern leaked into $archive: $p"
-                echo "$matches" | sed "s|^$tmp/|$archive::|"
-                fail=1
-              fi
-            done
+            hits="$(archive_scan_for "$tmp" "${PATTERNS[@]}")"
+            if [ -n "$hits" ]; then
+              printf '%s\n' "$hits" | sed "s|^$tmp/|$archive::|"
+              fail=1
+            fi
             rm -rf "$tmp"
           done <<< "$ARCHIVES"
           if [ $fail -eq 1 ]; then
@@ -173,44 +430,132 @@ jobs:
         # PII-GATE-MARKDOWN-BLIND-SPOT fix (2026-06-06). The source-file step
         # above excludes *.md + docs/, so private third-party names + vault
         # paths leaked into published markdown were NEVER scanned. This step
-        # scans *.md for a NARROWER token set (private third-party names +
-        # vault paths only). It deliberately does NOT scan for the author's
-        # own name (legitimate attribution in README/LICENSE/CHANGELOG) or
-        # published feature/brand tokens (Onde/Colombia/High-Rise). Conventional
-        # attribution files (README/LICENSE/CONTRIBUTING/AUTHORS/...) are
-        # excluded; CHANGELOG + docs/ ARE scanned — that's where leaks hid.
-        # MD_PATTERNS is injected from the SAME pii_markdown_scan_patterns the
-        # dry-run uses (single source; the regression test asserts lockstep).
+        # scans *.md for a NARROWER token set: the PRIVATE tier only
+        # (private third-party names + vault paths). It deliberately does
+        # NOT scan the public tier — the author name is legitimate
+        # attribution in prose (README/LICENSE/CHANGELOG) and published
+        # feature/brand tokens are published. Conventional attribution
+        # files (README/LICENSE/CONTRIBUTING/AUTHORS/...) are excluded;
+        # CHANGELOG + docs/ ARE scanned — that is where leaks hid.
+        # MD_PATTERNS reads the SAME PII_PRIVATE_PATTERNS secret the source
+        # and archive steps read (single source; the tiers cannot drift).
         run: |
           set -e
-          MD_PATTERNS=(
-            '\bSergio\b'
-            '\b[Ss]neider\b'
-            '\b[Aa]lfonso\b'
-            '\b[Pp]anorama\b'
-            '\bDiana\b'
-            '\bPaola\b'
-            '\b[Bb]everly\b'
-            '\b[Nn]atalia\b'
-            '\b[Ss]ilvia\b'
-            '\bAccenture\b'
-            '\bCentre415\b'
-            '\bvinitos\b'
-            '/Users/adelaidadiaz-roa/'
-            'AdelaidaNotes'
-            'adelaida@'
-            'tech@onde'
-          )
-          fail=0
-          for p in "${MD_PATTERNS[@]}"; do
-            matches=$(git grep -nE "$p"               -- '*.md'               ':!README*' ':!LICENSE*' ':!COPYING*' ':!NOTICE*'               ':!AUTHORS*' ':!MAINTAINERS*' ':!CONTRIBUTING*'               ':!CONTRIBUTORS*' ':!CITATION*'               ':!vendor/' ':!node_modules/'               ':!.github/workflows/personal-pii-scrub.yml' 2>/dev/null || true)
-            if [ -n "$matches" ]; then
-              echo "::error::private-data pattern leaked into markdown prose: $p"
-              echo "$matches"
-              fail=1
+          # PRIVATE tier only, from the PII_PRIVATE_PATTERNS repo secret
+          # (see the source step for the full classification reasoning).
+          # This tier has NO inline patterns at all, so a run that cannot
+          # read the secret has nothing to scan — it says so loudly and
+          # exits by classification, never silently.
+          MD_PATTERNS=()
+          if [ -n "${PII_PRIVATE_PATTERNS:-}" ]; then
+            while IFS= read -r pii_line; do
+              pii_line="${pii_line%$'\r'}"
+              # Trim edge whitespace: a stray padded or blank line must not
+              # become a match-anything pattern that turns the fleet red.
+              pii_line="${pii_line#"${pii_line%%[![:space:]]*}"}"
+              pii_line="${pii_line%"${pii_line##*[![:space:]]}"}"
+              if [ -n "$pii_line" ]; then
+                MD_PATTERNS+=("$pii_line")
+              fi
+            done <<< "$PII_PRIVATE_PATTERNS"
+          elif [ "$PII_UNTRUSTED_RUN" = "true" ]; then
+            echo "::notice::The markdown tier scans private-tier tokens only, and fork or dependabot runs cannot read Actions secrets. Skipping this tier here; it runs in full on push and merge_group."
+            exit 0
+          elif [ -z "${PII_MANAGED_OWNERS:-}" ]; then
+            # This env line ships inside this file, so on a real run it can
+            # only be empty when the template misrendered. Guessing between
+            # managed and unmanaged here would turn a broken secret sync
+            # into a green vacuous gate on the managed fleet. Fail closed.
+            echo "::error::PII_MANAGED_OWNERS rendered EMPTY, so this run cannot classify the repo as managed or unmanaged. Failing closed rather than guessing."
+            exit 1
+          elif [[ " $PII_MANAGED_OWNERS " == *" $GITHUB_REPOSITORY_OWNER "* ]]; then
+            echo "::error::Repo secret PII_PRIVATE_PATTERNS is not set on a managed repo, so the markdown tier has no vocabulary. Failing closed rather than passing vacuous. Arm it with: gh secret set PII_PRIVATE_PATTERNS --repo $GITHUB_REPOSITORY (one POSIX extended regex per line, from the private generator vault roster)."
+            exit 1
+          else
+            echo "::notice::PII_PRIVATE_PATTERNS is not set and the markdown tier scans only private-tier tokens. Skipping this tier; set that repo secret to arm it."
+            exit 0
+          fi
+          # ONE scan implementation, shared by the positive control and the real
+          # scan below (see the source-files step for why the control matters).
+          # This tier has its OWN pathspec set, so it needs its OWN control: a
+          # control on the source step proves nothing about this one.
+          md_scan_for() {
+            local p m
+            for p in "$@"; do
+              m=$(git grep -nE "$p"                 -- '*.md'                 ':!README*' ':!LICENSE*' ':!COPYING*' ':!NOTICE*'                 ':!AUTHORS*' ':!MAINTAINERS*' ':!CONTRIBUTING*'                 ':!CONTRIBUTORS*' ':!CITATION*'                 ':!vendor/' ':!node_modules/'                 ':!.github/workflows/personal-pii-scrub.yml' 2>/dev/null || true)
+              if [ -n "$m" ]; then
+                printf '%s\n' "::error::private-data pattern leaked into markdown prose: $p"
+                printf '%s\n' "$m"
+              fi
+            done
+            return 0
+          }
+          if [ "${#MD_PATTERNS[@]}" -lt 1 ]; then
+            echo "::error::MD_PATTERNS rendered EMPTY. This tier would report clean on any tree. Refusing to run vacuous."
+            exit 1
+          fi
+          mdcanary=pii-scrub-positive-control.md
+          trap 'git rm -q -f --cached "$mdcanary" >/dev/null 2>&1 || true; rm -f "$mdcanary"' EXIT
+          printf 'PiiCanaryProbe\n' > "$mdcanary"
+          git add -f "$mdcanary" >/dev/null
+          for probe in '\bPiiCanaryProbe\b' '\b[Pp]iiCanaryProbe\b'; do
+            if [ -z "$(md_scan_for "$probe")" ]; then
+              echo "::error::POSITIVE CONTROL FAILED (markdown tier): the scan did not find a planted .md token matching $probe."
+              echo "::error::Either the regex engine dropped the word boundary, or the *.md pathspec set no longer reaches published markdown."
+              echo "::error::Do not leave it green and vacuous."
+              exit 1
             fi
           done
-          if [ $fail -eq 1 ]; then
+          printf 'xPiiCanaryProbex\n' > "$mdcanary"
+          git add -f "$mdcanary" >/dev/null
+          for probe in '\bPiiCanaryProbe\b' '\b[Pp]iiCanaryProbe\b'; do
+            if [ -n "$(md_scan_for "$probe")" ]; then
+              echo "::error::POSITIVE CONTROL FAILED (markdown tier): $probe matched xPiiCanaryProbex, so the word boundary is NOT constraining."
+              exit 1
+            fi
+          done
+          # VOCABULARY CONTROL for this tier. Same reasoning as the source step.
+          # This tier has its own pathspec set and its own DERIVED token list
+          # (canonical minus the md-exempt set), so a proof on the source tier
+          # says nothing about whether these patterns still reach markdown.
+          # NOTE: written with if/else, never a case statement. This heredoc sits
+          # inside a $( ) command substitution, and bash counts parens there
+          # BEFORE heredoc processing, so a bare `last)` case label closes the
+          # substitution early and breaks the whole script. Measured 2026-08-16:
+          # zsh parsed it happily and rendered valid YAML while bash -n failed,
+          # so the render succeeding is NOT proof the template is well-formed.
+          specimen_of() {
+            if [ "${2:-first}" = "last" ]; then
+              printf '%s' "$1" | sed -E 's/^\\b//; s/\\b$//; s/\[[^]]*(.)\]/\1/g'
+            else
+              printf '%s' "$1" | sed -E 's/^\\b//; s/\\b$//; s/\[(.)[^]]*\]/\1/g'
+            fi
+          }
+          : > "$mdcanary"
+          for p in "${MD_PATTERNS[@]}"; do
+            printf ' %s \n' "$(specimen_of "$p" first)" >> "$mdcanary"
+            printf ' %s \n' "$(specimen_of "$p" last)"  >> "$mdcanary"
+          done
+          git add -f "$mdcanary" >/dev/null
+          vocab_fail=0
+          for p in "${MD_PATTERNS[@]}"; do
+            if [ -z "$(md_scan_for "$p")" ]; then
+              echo "::error::VOCABULARY CONTROL FAILED (markdown tier): pattern cannot catch its own specimen: $p"
+              vocab_fail=1
+            fi
+          done
+          if [ "$vocab_fail" != "0" ]; then
+            echo "::error::A markdown-tier pattern cannot detect the token it names, so a CLEAN markdown result would be a silent no-op."
+            exit 1
+          fi
+          git rm -q -f --cached "$mdcanary" >/dev/null 2>&1 || true
+          rm -f "$mdcanary"
+          trap - EXIT
+          echo "Positive control OK (markdown tier): boundaries bind and constrain, and all ${#MD_PATTERNS[@]} patterns catch their own specimen."
+          # --- the real scan, same function, same engine, same pathspecs ---
+          hits="$(md_scan_for "${MD_PATTERNS[@]}")"
+          if [ -n "$hits" ]; then
+            printf '%s\n' "$hits"
             echo "::error::Markdown-prose scrub failed. A private third-party name or vault path leaked into published .md. Author attribution (README/LICENSE/CHANGELOG) + published-feature tokens are exempt — this is a real third-party leak. See CLAUDE.md 'Personal-data scrub' + auto-managed-gate-self-dos.md."
             exit 1
           fi

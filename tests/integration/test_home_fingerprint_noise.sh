@@ -80,5 +80,35 @@ touch "$FAKE/.claude/settings.json.bak-20260101"
 if [ "$(fp)" != "$BASE" ]; then ok "catches a new installer .bak-* (write-then-rollback)"; else no "MISSED a new .bak-*"; fi
 
 echo
+echo "=== MANIFEST mode: the failure must NAME the path, not just digest it ==="
+# MYC-3721 Done= requires the failure to name the exact path. A digest cannot,
+# so ci.sh re-walks in FINGERPRINT_MANIFEST mode on the failure path. Two things
+# have to hold, and only one of them is obvious.
+mf() { run_sandboxed "$FAKE" env FINGERPRINT_MANIFEST=1 bash -c "source '$FN'; real_home_fingerprint"; }
+
+printf 'print("escaped")\n' > "$FAKE/.claude/hooks/escaped.py"
+if mf | grep -q "hooks/escaped.py"; then
+  ok "manifest names the exact path a test wrote"
+else
+  no "manifest did NOT name hooks/escaped.py — the gate's failure message is decorative"
+fi
+
+# The non-obvious half. The manifest is a SECOND output mode of the same walk;
+# if it ever became a second implementation it could name paths the digest never
+# compared, and the gate would report a path it did not actually fail on. Pin
+# them together: anything the digest excludes must be absent from the manifest.
+if mf | grep -q "cwd-changed.log"; then
+  no "manifest lists cwd-changed.log — it has drifted from the digest's exclusions and would name churn the gate never compares"
+else
+  ok "manifest inherits the digest's exclusions (append-only logs stay out)"
+fi
+
+if mf | grep -q "^settings.json content="; then
+  ok "manifest breaks settings.json into content/mtime/baks (a rewrite is told apart from a bare touch)"
+else
+  no "manifest does not carry the settings.json components"
+fi
+
+echo
 echo "test_home_fingerprint_noise: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ] || exit 1

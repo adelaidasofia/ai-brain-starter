@@ -17,6 +17,12 @@ set -uo pipefail
 GREEN_COUNT=0
 YELLOW_COUNT=0
 RED_COUNT=0
+# Set to 1 by any check whose fix needs an admin/IT actor, not the participant
+# (missing git capability, no admin group). Drives print_it_request below,
+# independent of RED/YELLOW: git is deliberately non-blocking (the install
+# fetches without it — see bootstrap.sh's archive-entry path), but a
+# participant who hits it still needs the SAME copy-pasteable ask.
+IT_HELP_NEEDED=0
 GREEN_LINES=()
 YELLOW_LINES=()
 RED_LINES=()
@@ -62,6 +68,63 @@ info()   { INFO_LINES+=("$1"); [[ $JSON_MODE -eq 0 && $QUIET_MODE -eq 0 ]] && pr
 section() { [[ $JSON_MODE -eq 0 && $QUIET_MODE -eq 0 ]] && printf "\n${C_BLD}%s${C_RST}\n" "$1"; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# run_with_timeout SECS CMD [ARGS...] — portable timeout wrapper, mirrored
+# from bootstrap.sh's helper of the same name (this script runs standalone,
+# before bootstrap.sh is even fetched, so it cannot source it).
+run_with_timeout() {
+  local secs="$1"; shift
+  if have timeout; then timeout "$secs" "$@"; return $?; fi
+  if have gtimeout; then gtimeout "$secs" "$@"; return $?; fi
+  "$@" & local pid=$! elapsed=0
+  while [[ $elapsed -lt $secs ]] && kill -0 "$pid" 2>/dev/null; do sleep 1; elapsed=$((elapsed + 1)); done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null || true; return 124
+  fi
+  wait "$pid"
+}
+
+# have_working_git — PRESENCE IS NOT CAPABILITY on macOS: with the Command
+# Line Tools absent, /usr/bin/git exists and is on PATH (`have git` is true),
+# but running it raises the CLT install GUI dialog and hangs. Probe by
+# EXECUTION, bounded, so a stub that opens a GUI cannot hang this report.
+# Mirrors bootstrap.sh's identically-named probe.
+have_working_git() { have git || return 1; run_with_timeout 15 git --version >/dev/null 2>&1; }
+
+# print_it_request — one copy-pasteable, bilingual block naming exactly what
+# to ask IT for: the packages, the repo URL, and why. EN + ES TOGETHER
+# (not routed through t()) because the cohort is bilingual and the person
+# reading it may not be the person who ran this check. Voice matches
+# bootstrap.sh's own "exact request for IT" line (~1050).
+print_it_request() {
+  cat <<EOF
+
+━━━ $(t "Copy-paste request for your IT team" "Pedido para copiar y enviar a tu equipo de IT") ━━━
+
+EN — please install, for the AI Brain Starter workshop:
+  - Git (macOS: Xcode Command Line Tools, "xcode-select --install"; Linux: the distro's git package)
+  - Homebrew (macOS package manager, https://brew.sh) — or local admin rights to run its installer
+  - Python 3.10 or newer
+  - Node.js 18 or newer
+  Repo: https://github.com/mycelium-hq/ai-brain-starter
+  Why: standard open-source developer tools to run a local AI assistant (Claude Code) against a
+  private notes vault. Nothing installs system-wide beyond Git/Homebrew; everything else installs
+  into this user's own home directory.
+
+ES — por favor instalar, para el taller de AI Brain Starter:
+  - Git (macOS: Xcode Command Line Tools, "xcode-select --install"; Linux: el paquete git de la distro)
+  - Homebrew (gestor de paquetes de macOS, https://brew.sh) — o permisos de administrador para correr su instalador
+  - Python 3.10 o más reciente
+  - Node.js 18 o más reciente
+  Repo: https://github.com/mycelium-hq/ai-brain-starter
+  Por qué: herramientas estándar de desarrollo open-source para correr un asistente de IA local
+  (Claude Code) sobre un vault de notas privado. Nada se instala a nivel de sistema más allá de
+  Git/Homebrew; el resto se instala en la carpeta de este usuario.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EOF
+}
 
 # ─── Header ───────────────────────────────────────────────────────────────────
 if [[ $JSON_MODE -eq 0 && $QUIET_MODE -eq 0 ]]; then
@@ -212,6 +275,15 @@ fi
 # ─── 6. Optional pre-existing tools (ahead of the install) ────────────────────
 section "$(t "Existing tools (informational)" "Herramientas ya instaladas (informativo)")"
 
+if have_working_git; then
+  info "$(t "git $(git --version 2>/dev/null | awk '{print $3}') (OK)" "git $(git --version 2>/dev/null | awk '{print $3}') (OK)")"
+else
+  IT_HELP_NEEDED=1
+  yellow "$(t \
+    "git is missing or not runnable yet (macOS: Xcode Command Line Tools not installed — a git binary can exist on PATH and still fail this way). Not required to start — the install fetches without git — but auto-update and any git workflow need it. Run: xcode-select --install, or ask IT (see the request below)." \
+    "git falta o todavía no funciona (macOS: no están instaladas las Xcode Command Line Tools — puede haber un binario de git en el PATH y aun así fallar así). No hace falta para empezar — la instalación funciona sin git — pero la auto-actualización y cualquier flujo con git lo necesitan. Corré: xcode-select --install, o pedile a IT (ver el pedido más abajo).")"
+fi
+
 if have brew; then
   info "$(t "Homebrew already installed: $(brew --version 2>/dev/null | head -1)" "Homebrew ya instalado: $(brew --version 2>/dev/null | head -1)")"
 fi
@@ -305,7 +377,11 @@ if [[ $RED_COUNT -gt 0 ]]; then
     printf "${C_RED}%s${C_RST}\n" "$(t \
       "Pre-flight FAILED. Fix the items marked ✗ above, then run:" \
       "Verificación FALLÓ. Arreglá los ítems marcados con ✗ y volvé a correr:")"
-    printf "  bash scripts/preflight.sh\n\n"
+    printf "  bash scripts/preflight.sh\n"
+    # A red blocker on a locked-down machine usually means "I can't fix this
+    # myself" — hand over the composed ask so the very next step is pasting
+    # it to IT, not re-deriving which packages to name.
+    [[ $IT_HELP_NEEDED -eq 1 ]] && print_it_request
   fi
   exit 2
 elif [[ $YELLOW_COUNT -gt 0 ]]; then
@@ -313,6 +389,9 @@ elif [[ $YELLOW_COUNT -gt 0 ]]; then
     printf "${C_YEL}%s${C_RST}\n\n" "$(t \
       "Pre-flight PASSED with warnings. Bootstrap will continue; see warnings above." \
       "Verificación OK con advertencias. Bootstrap va a continuar; revisá las advertencias arriba.")"
+    # git non-working is exactly this case: a warning, not a blocker — but
+    # still something only IT can fix on a locked-down machine.
+    [[ $IT_HELP_NEEDED -eq 1 ]] && print_it_request
   fi
   exit 1
 else

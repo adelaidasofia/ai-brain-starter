@@ -45,6 +45,22 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 from _meta_resolver import find_meta_dir  # noqa: E402
+
+# `_lib` is a PACKAGE at hooks/_lib/ in the repo checkout, and this script is ALSO
+# synced into a live vault at <meta>/scripts/ (VAULT_SCRIPTS in
+# scripts/sync-vault-scripts.sh). ../hooks does not exist there, so this import
+# used to die with `ModuleNotFoundError: No module named '_lib'`. insights/SKILL.md
+# invokes the VAULT copy, so /weekly and /monthly rebuilt no index at all and the
+# stale (usually empty) journal-index.json just sat there looking fine.
+#
+# Fixed by SYNCING THE REAL PRIMITIVE, not by degrading to a local one: the sync
+# now mirrors hooks/_lib/{__init__,safe_read}.py into <meta>/scripts/_lib/, which
+# the first sys.path entry above resolves. Deliberately NOT a try/except fallback
+# with a hand-rolled reader -- scripts/check-cloud-safe-file-walkers.py refuses to
+# trust a locally-defined safe_read_text (its own negative control is "bogus
+# safe_read module is not trusted"), and it is right to: a recursive walker must
+# reach the ONE audited primitive, or the guarantee is only as good as the copy.
+# safe_read.py is stdlib-only, so mirroring it costs the vault nothing.
 from _lib.safe_read import safe_read_text  # noqa: E402
 
 # Read bounds for the shared safe_read primitive. Journal frontmatter sits in
@@ -217,7 +233,16 @@ def main():
         "last_updated": datetime.now().strftime("%Y-%m-%dT%H:%M"),
         "entries": entries,
     }
-    with open(output_path, "w") as f:
+    # encoding="utf-8" is LOAD-BEARING, not decoration. Text mode without it uses
+    # locale.getpreferredencoding(), which is cp1252 on a stock Windows box. Paired
+    # with ensure_ascii=False below, a single accented title ("Reunión", "día") is
+    # then written as cp1252 bytes into a file every consumer opens as UTF-8 —
+    # /weekly, /monthly, diagnose, insight-fact-check — which die on
+    # `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xed`. The write itself
+    # raises nothing, so the corruption is silent at the point it is created.
+    # Not reproducible on a box with PYTHONUTF8=1 set, which is exactly why this
+    # survived: it is invisible to the maintainer and fatal to a fresh install.
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
 
     print(f"Indexed {len(entries)} entries → {output_path}")
