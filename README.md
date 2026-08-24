@@ -440,7 +440,6 @@ Every tool is installed and wired during setup. They work together, not in isola
 | `/patterns` | Extract recurring patterns from sessions into permanent captures |
 | `/meeting-todos` | Pull action items from meeting notes into your to-do list |
 | `/optimize-brain` | Deep vault optimization: CRM, graphs, dashboards, compression, wikilinks |
-| `/mem-search` | Search Claude's cross-session memory database |
 
 The table above is the daily-driver subset. The full first-party catalog — forty-plus skills grouped by what they do — is in [`docs/SKILLS.md`](docs/SKILLS.md).
 
