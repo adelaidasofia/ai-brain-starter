@@ -78,6 +78,26 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "hooks"))
+from _lib.safe_read import safe_read_text  # noqa: E402
+
+# Every file read in this module calls safe_read_text(...) DIRECTLY, inline
+# at the read site -- never through a further wrapper function.
+# scripts/check-cloud-safe-file-walkers.py's AST check looks for a direct
+# call to one of SAFE_READ_NAMES in the same function that performs the
+# recursive glob; a wrapper one level removed reads as an unguarded reader
+# to that check, even though it calls safe_read_text internally. This
+# module walks the whole doc tree with a recursive glob (**/SKILL.md,
+# docs/**/*.md, ...), and a recursive walk over a cloud-synced checkout can
+# hand back a placeholder file whose read blocks indefinitely
+# (hooks/_lib/safe_read.py's own docstring). A doc-accuracy linter has no
+# reason to hang the whole CI job on one placeholder file, so every call
+# site uses the pattern `safe_read_text(p, timeout=5.0, max_bytes=4_000_000,
+# errors="replace").text or ""` -- non-ok reads simply contribute no
+# vocabulary and no findings, the same tolerance a bare errors="replace"
+# was reaching for, just bounded in time and size too.
+
 # ---------------------------------------------------------------------------
 # Scan surface
 # ---------------------------------------------------------------------------
@@ -214,7 +234,7 @@ def build_command_vocabulary(root: Path) -> set[str]:
     for skill_md in root.glob("**/SKILL.md"):
         if ".git" in skill_md.parts:
             continue
-        text = skill_md.read_text(encoding="utf-8", errors="replace")
+        text = safe_read_text(skill_md, timeout=5.0, max_bytes=4_000_000, errors="replace").text or ""
         m = re.search(r"^name:\s*(\S+)\s*$", text, re.MULTILINE)
         if m:
             names.add(m.group(1).strip())
@@ -296,7 +316,7 @@ def check_commands(root: Path, files: list[Path], vocabulary: set[str]) -> list[
     findings: list[Finding] = []
     for f in files:
         rel = f.relative_to(root).as_posix()
-        text = f.read_text(encoding="utf-8", errors="replace")
+        text = safe_read_text(f, timeout=5.0, max_bytes=4_000_000, errors="replace").text or ""
         removed = tokens_with_removed_marker(text)
         for lineno, line in enumerate(text.splitlines(), 1):
             if is_exempt_line(line):
@@ -361,7 +381,8 @@ def check_scripts(root: Path, files: list[Path], skills_scripts: dict[str, list[
     findings: list[Finding] = []
     for f in files:
         rel = f.relative_to(root).as_posix()
-        for lineno, line in enumerate(f.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+        text = safe_read_text(f, timeout=5.0, max_bytes=4_000_000, errors="replace").text or ""
+        for lineno, line in enumerate(text.splitlines(), 1):
             if is_exempt_line(line):
                 continue
             for m in _SCRIPT_PATH.finditer(line):
@@ -408,7 +429,7 @@ def check_flags(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     for skill_md in sorted(root.glob("skills/*/SKILL.md")):
         skill_dir = skill_md.parent
-        text = skill_md.read_text(encoding="utf-8", errors="replace")
+        text = safe_read_text(skill_md, timeout=5.0, max_bytes=4_000_000, errors="replace").text or ""
         trigger = skill_trigger_word(text, skill_dir.name)
         if not trigger:
             continue
@@ -434,7 +455,7 @@ def check_flags(root: Path) -> list[Finding]:
         for ref_md in skill_dir.glob("**/*.md"):
             if ref_md == skill_md:
                 continue
-            corpus += "\n" + ref_md.read_text(encoding="utf-8", errors="replace")
+            corpus += "\n" + (safe_read_text(ref_md, timeout=5.0, max_bytes=4_000_000, errors="replace").text or "")
 
         for flag, lineno in menu_flags.items():
             name = flag[2:]  # strip leading --
