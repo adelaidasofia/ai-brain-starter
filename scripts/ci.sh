@@ -1137,6 +1137,7 @@ PY_DIRECT=(
   hooks/test_memory_index.py
   tests/test_instinct.py
   tests/test_entity_disambiguator_clustering.py
+  tests/test_graphify_stage_select_cache_key.py
   hooks/test_live_session_reap.py
   hooks/test_relocation_orphan_reclaim.py
   hooks/test_secret_patterns_fp_filter.py
