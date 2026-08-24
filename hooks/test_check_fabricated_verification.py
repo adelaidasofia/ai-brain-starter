@@ -275,7 +275,7 @@ _blocked, _ = run(
     commands=[INCIDENT_CMD], results=[INCIDENT_TAIL],
     env=dict(_os.environ, GUARD_FIRES_LOG=_log),
 )
-if _blocked and _os.path.exists(_log) and "check-fabricated-verification" in open(_log).read():
+if _blocked and _os.path.exists(_log) and "check-fabricated-verification" in open(_log, encoding="utf-8").read():
     PASS += 1
     print("PASS  23. block emits guard-fire telemetry (fleet report can see it)")
 else:
@@ -285,7 +285,7 @@ else:
 _log2 = _os.path.join(_td, "bypass.jsonl")
 run("It is pushed.", commands=["git push"], results=["ok"],
     env=dict(_os.environ, FAB_VERIFY_CHECK_BYPASS="1", GUARD_FIRES_LOG=_log2))
-if _os.path.exists(_log2) and "bypassed" in open(_log2).read():
+if _os.path.exists(_log2) and "bypassed" in open(_log2, encoding="utf-8").read():
     PASS += 1
     print("PASS  24. bypass is recorded as 'bypassed' (heeded-vs-bypassed math works)")
 else:

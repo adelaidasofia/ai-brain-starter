@@ -384,7 +384,7 @@ def _forensic_whole(text: str, claim_re: "re.Pattern") -> bool:
 
 def _last_assistant_text(transcript_path: str) -> str:
     text = ""
-    with open(transcript_path) as f:
+    with open(transcript_path, encoding="utf-8") as f:
         for line in f:
             try:
                 rec = json.loads(line)
@@ -414,7 +414,7 @@ def _evidence(transcript_path: str) -> "tuple[str, str]":
     """
     results = []
     commands = []
-    with open(transcript_path) as f:
+    with open(transcript_path, encoding="utf-8") as f:
         for line in f:
             try:
                 rec = json.loads(line)
