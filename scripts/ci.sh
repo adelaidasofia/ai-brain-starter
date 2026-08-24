@@ -243,6 +243,7 @@ INTEGRATION_TESTS=(
   test_footprint_sla
   test_vault_safety_guards
   test_vault_backup_conf_bom
+  test_vault_backup_ps1_archive_dispatch
   test_backup_staleness_surfaces
   test_home_fingerprint_noise
   test_scheduled_task_registration

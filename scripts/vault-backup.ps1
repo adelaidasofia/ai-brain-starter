@@ -100,7 +100,22 @@ function Store-Passphrase { param([string]$slug, [string]$plain)
 function Get-Passphrase { param([string]$slug)
   $pf = Join-Path $env:USERPROFILE ".claude\.vault-backup-pass-$slug"
   if (-not (Test-Path -LiteralPath $pf)) { return $null }
-  $secure = ((Get-Content -Raw -LiteralPath $pf) -replace '[^0-9A-Fa-f]', '') | ConvertTo-SecureString
+  # Same file name, two formats. This script writes a DPAPI blob here;
+  # vault-backup.sh writes the passphrase itself to the identically-named file.
+  # When the .sh half set this vault up, ConvertTo-SecureString throws a raw
+  # CryptographicException ("El parametro no es correcto" / "Key not valid"),
+  # which reads as a damaged secret. Name the real cause and hand over the
+  # command that works instead.
+  try {
+    $secure = ((Get-Content -Raw -LiteralPath $pf) -replace '[^0-9A-Fa-f]', '') | ConvertTo-SecureString -ErrorAction Stop
+  } catch {
+    $shPath = Join-Path $PSScriptRoot "vault-backup.sh"
+    if (Test-Path -LiteralPath $shPath) {
+      Die ("this vault was set up by vault-backup.sh, whose passphrase store this script cannot read.`n" +
+           "     Use:  bash `"$shPath`" $Command --vault `"$(Resolve-Vault $Vault)`"")
+    }
+    Die "cannot read the stored passphrase at $pf (not a DPAPI blob written by this script)"
+  }
   $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
   try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
   finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
@@ -314,22 +329,64 @@ function Cmd-Verify {
   New-Item -ItemType Directory -Force -Path $tmp | Out-Null
   Say "Restoring $($newest.FullName) to a temp dir to prove it works..."
   try {
-    if ($newest.Name -like "*.zip.gpg") {
+    # DISPATCH ON THE ARCHIVE THAT IS ACTUALLY THERE, not on the one this script
+    # would have written. Both halves of the product write into the same
+    # destination folder and share ~/.claude/.vault-backup.conf: vault-backup.ps1
+    # writes .zip/.zip.gpg, vault-backup.sh writes .tar.gz/.tar.gz.gpg. The
+    # install phases hand every user the .sh setup command (phases/phase-01 and
+    # phase-12-17), and it runs fine on Windows under Git Bash, so a Windows
+    # vault very often holds .tar.gz.gpg snapshots. Verifying only zip fed the
+    # .gpg straight to Expand-Archive:
+    #     ".gpg is not a supported archive file format. .zip is the only
+    #      supported archive file format."
+    # which reads as a CORRUPT BACKUP. The backup was fine; the opener was wrong.
+    # That is the worst possible error to get wrong: the one moment a user goes
+    # looking for reassurance is the one moment this told them they had none.
+    $archive = $newest.FullName
+    if ($newest.Name -like "*.gpg") {
       $gpg = Get-Command gpg -ErrorAction SilentlyContinue
       if (-not $gpg) { Die "cannot decrypt: gpg not found" }
       $slug = if ($e.keychain_account) { $e.keychain_account } else { Slug-For $v }
       $pass = Get-Passphrase $slug
-      $zip = Join-Path $tmp "restore.zip"
+      # Keep the inner extension (foo.tar.gz.gpg -> restore.tar.gz) so the
+      # extractor below can still tell what kind of archive it is.
+      $inner = [IO.Path]::GetFileNameWithoutExtension($newest.Name)
+      if ($inner -like "*.tar.gz") {
+        $plain = Join-Path $tmp "restore.tar.gz"
+      } else {
+        $plain = Join-Path $tmp ("restore" + [IO.Path]::GetExtension($inner))
+      }
       $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-      & $gpg.Source --batch --yes --pinentry-mode loopback --passphrase $pass -o $zip -d $newest.FullName 2>$null
+      & $gpg.Source --batch --yes --pinentry-mode loopback --passphrase $pass -o $plain -d $newest.FullName 2>$null
       $gpgCode = $LASTEXITCODE
       $ErrorActionPreference = $prevEAP
-      if ($gpgCode -ne 0 -or -not (Test-Path -LiteralPath $zip)) { Die "gpg decryption failed (exit $gpgCode)" }
-      Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
-      Remove-Item -LiteralPath $zip -Force
-    } else {
-      Expand-Archive -LiteralPath $newest.FullName -DestinationPath $tmp -Force
+      if ($gpgCode -ne 0 -or -not (Test-Path -LiteralPath $plain)) { Die "gpg decryption failed (exit $gpgCode)" }
+      $archive = $plain
     }
+    if ($archive -like "*.tar.gz" -or $archive -like "*.tgz") {
+      # Prefer the tar Windows ships in System32 (bsdtar): GNU tar, which is what
+      # Git for Windows puts on PATH, reads the colon in C:\... as a remote host
+      # and refuses the path outright.
+      $sysTar = Join-Path $env:SystemRoot "System32\tar.exe"
+      if ($env:SystemRoot -and (Test-Path -LiteralPath $sysTar)) {
+        $tarExe = $sysTar
+      } else {
+        $tarCmd = Get-Command tar -ErrorAction SilentlyContinue
+        if (-not $tarCmd) { Die "cannot open $([IO.Path]::GetFileName($archive)): tar not found on PATH" }
+        $tarExe = $tarCmd.Source
+      }
+      $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+      & $tarExe -xzf $archive -C $tmp 2>$null
+      $tarCode = $LASTEXITCODE
+      $ErrorActionPreference = $prevEAP
+      if ($tarCode -ne 0) { Die "tar could not extract $([IO.Path]::GetFileName($archive)) (exit $tarCode)" }
+    } elseif ($archive -like "*.zip") {
+      Expand-Archive -LiteralPath $archive -DestinationPath $tmp -Force
+    } else {
+      Die "don't know how to open $($newest.Name) - expected .zip, .tar.gz, or either with .gpg"
+    }
+    # Drop the decrypted copy before counting, so it cannot pad the file count.
+    if ($archive -ne $newest.FullName) { Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue }
     $count = (Get-ChildItem -Recurse -File -LiteralPath $tmp -ErrorAction SilentlyContinue).Count
     if ($count -lt 1) { Die "restore produced ZERO files - the backup is empty/broken" }
     $sentinel = if (Test-Path -LiteralPath (Join-Path $tmp "CLAUDE.md")) { ", CLAUDE.md present" } else { "" }
