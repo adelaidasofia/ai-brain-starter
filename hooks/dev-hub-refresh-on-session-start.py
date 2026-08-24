@@ -19,6 +19,15 @@ from __future__ import annotations
 import json
 import os
 import sys
+
+# Windows consoles default to cp1252; this hook prints non-ASCII, and an
+# unreconfigured stream raises UnicodeEncodeError mid-write (ai-brain-starter#313).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+    except (AttributeError, ValueError):
+        pass
+
 import time
 from pathlib import Path
 
@@ -47,9 +56,21 @@ try:
 except Exception:
     print(json.dumps({}))
     sys.exit(0)
+try:
+    from _lib.standing_report import condense
+except Exception:  # fail-open: a surfacer must never break a session start
+    def condense(key, full, session_id=None):
+        return full
 
 
 def _emit(message: str | None = None) -> None:
+    # This is a STANDING INVENTORY: the same hubs are behind session after
+    # session until someone acts, and reciting the whole list every time is
+    # how a surfacer trains itself into wallpaper. Full render when the
+    # finding-set CHANGES, a one-line digest carrying the count and how long
+    # it has been stuck when it has not. See _lib/standing_report.py.
+    if message:
+        message = condense("dev-hub-refresh", message)
     if message:
         print(json.dumps({
             "hookSpecificOutput": {

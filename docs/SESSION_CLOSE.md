@@ -66,6 +66,39 @@ cascadeTelemetry: false              # opt in to anonymized cascade-fire / compl
 ---
 ```
 
+## Which vault does the cascade write to?
+
+Session artifacts go to the **nearest folder that declares it owns a close cascade**, walking up from the working directory. If none does, resolution falls back to `$VAULT_ROOT`, then to the working directory itself.
+
+That fallback matters more than it looks. `VAULT_ROOT` is usually set once, globally. So a folder that does *not* declare itself gets its session notes filed into whatever other vault `VAULT_ROOT` names — the cascade runs, the paths look normal, and one project's notes land in another project's vault. If the resolved root is not the folder you are working in, the injected block now says so explicitly.
+
+A folder declares itself in either of two ways.
+
+**A heading in its `CLAUDE.md`** (zero-config, and what `/setup-brain` writes for you). Matched case-insensitively in the same three languages as the closing signals, and it must also have a `Meta` (or `⚙️ Meta`) directory:
+
+| Language | Headings that declare a root |
+|---|---|
+| English | `## Session End`, `## Session Close` |
+| Spanish | `## Cierre de sesión`, `## Fin de sesión` (accent optional) |
+| Portuguese | `## Fim de sessão`, `## Encerramento` |
+
+Session-adjacent headings like `## Session Protocol` deliberately do **not** count — a vault can discuss sessions without owning a cascade.
+
+**A declarative marker** (prose-independent, survives translation and rewording). Either:
+
+- an empty `.session-close-root` file in the folder, or
+- `sessionCloseRoot: true` in the frontmatter of its `CLAUDE.md`.
+
+Either marker replaces the heading, but **both routes still require a `Meta` (or `⚙️ Meta`) directory** — a folder has to have somewhere to write before it can claim your session artifacts.
+
+That requirement is deliberate. `.session-close-root` is a dotfile, and dotfiles travel by accident in ways a heading never does: committed to a repo and cloned, swept up by `cp -r`, baked into a template, invisible in `ls`. If a stray marker could claim a folder on its own, your session notes would land inside it — inside a cloned client repo, that means your private notes in someone else's tree. Requiring a `Meta` directory keeps a stray marker inert until a person deliberately creates one.
+
+To make an existing folder own its cascade:
+
+```bash
+mkdir -p "Meta/Sessions" "Meta/Decisions" && touch .session-close-root
+```
+
 ## Closing signals (what gets matched)
 
 Three confidence levels:

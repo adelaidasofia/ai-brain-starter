@@ -126,14 +126,40 @@ def _in_vault_namespace(command: str, cwd: str) -> bool:
 
 
 def _is_under(path: str, root: Path) -> bool:
-    """True iff `path` is `root` or sits beneath it. Lexical, no existence
-    requirement — `rm -rf <vault>/x` must be caught before x exists."""
+    """True iff `path` is `root` or sits beneath it.
+
+    Compared lexically AND through realpath, for the same reason _same_dir is:
+    `vault_root_for` hands back a RESOLVED root, while cwd and the command's
+    path tokens arrive spelled exactly as the caller wrote them. A vault
+    reached through a symlinked ANCESTOR -- `/var` -> `/private/var`, which is
+    macOS's default TMPDIR -- therefore failed on spelling alone, and every
+    namespace-scoped rule (grep, find) silently un-scoped itself: no match, no
+    message, exit 0. The rm rule was unaffected because it goes through
+    _same_dir, which already carries this pair; this function was the half of
+    the fix that never landed.
+
+    The lexical pair is tried FIRST and still carries the deliberate
+    unresolved-operand behaviour _resolve_operand documents (`<vault>/🍄 brand`
+    is a symlink out of the vault, and deleting through it still destroys the
+    vault's own top-level entry). realpath only ever ADDS a match, so nothing
+    that matched before can stop matching.
+
+    No existence requirement either way -- `rm -rf <vault>/x` must be caught
+    before x exists, and realpath leaves a missing tail untouched.
+    """
     try:
-        a = os.path.normcase(os.path.abspath(str(path)))
-        b = os.path.normcase(os.path.abspath(str(root)))
+        pairs = (
+            (os.path.abspath(str(path)), os.path.abspath(str(root))),
+            (os.path.realpath(str(path)), os.path.realpath(str(root))),
+        )
     except (OSError, ValueError):
         return False
-    return a == b or a.startswith(b.rstrip(os.sep) + os.sep)
+    for raw_a, raw_b in pairs:
+        a = os.path.normcase(raw_a)
+        b = os.path.normcase(raw_b)
+        if a == b or a.startswith(b.rstrip(os.sep) + os.sep):
+            return True
+    return False
 
 
 def _effective_cwd(command: str, initial: str) -> str:
@@ -388,7 +414,12 @@ def _targets_vault_repo(cwd: str) -> bool:
     try:
         out = subprocess.run(
             ["git", "-C", cwd, "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, timeout=5,
+            # encoding pinned, not left to the locale: this prints a PATH, and
+            # a vault path carries "⚙️ Meta" (U+FE0F, byte 0x8F unmapped in
+            # cp1252). text=True alone would raise UnicodeDecodeError inside
+            # subprocess.run on a non-UTF-8 console, before we see a byte.
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=5,
         )
     except Exception:
         return False
@@ -425,7 +456,10 @@ def _git_dir_is_vault(git_dir: str) -> bool:
     try:
         out = subprocess.run(
             ["git", "--git-dir", git_dir, "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, timeout=5,
+            # encoding pinned for the same reason as _targets_vault_repo above:
+            # the child prints a path, and vault paths carry non-cp1252 bytes.
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=5,
             cwd=git_dir if os.path.isdir(git_dir) else None,
         )
         if out.returncode == 0 and out.stdout.strip():

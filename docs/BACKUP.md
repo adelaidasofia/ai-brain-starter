@@ -68,10 +68,44 @@ If your vault holds journals, health data, or client/CRM notes, add `--encrypt`:
 bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh setup --encrypt
 ```
 
-It encrypts each archive with AES-256 (via `gpg`, or `openssl` as a fallback) and
-stores the passphrase in your **OS keychain** (macOS Keychain / libsecret /
-Windows DPAPI), never in plaintext on disk. The daily run reads it from there
-with no prompt.
+It encrypts each archive with AES-256 and stores the passphrase in your **OS
+keychain** (macOS Keychain / libsecret / Windows DPAPI). The daily run reads it
+from there with no prompt.
+
+**The crypto dependency differs by platform, and `--encrypt` fails loudly rather
+than silently shipping an unencrypted archive:**
+
+| Platform | Needs | If missing |
+|---|---|---|
+| macOS | `openssl` (ships with the OS) or `gpg` | n/a in practice |
+| Linux | `gpg` or `openssl` | error, nothing is written |
+| Windows | **`gpg` (Gpg4win), on `PATH`** — there is **no** `openssl` fallback | `-Encrypt` exits with an error |
+
+Windows, encrypted:
+
+```powershell
+pwsh ~/.claude/skills/ai-brain-starter/scripts/vault-backup.ps1 setup -Encrypt
+```
+
+### Where the passphrase actually lands
+
+On a machine with **no OS keychain**, the passphrase falls back to a `chmod 600`
+file at `~/.claude/.vault-backup-pass-<slug>` and setup prints a `WARN` saying so.
+This is weaker than a keychain: anyone who can read your home directory can
+decrypt the backups. It is a deliberate fallback, not a failure, but you should
+know which one you got.
+
+Because that warning is a one-shot you can scroll past, `status` reports the
+store on every run:
+
+```
+Encrypted:   True    Keep: 7
+Passphrase:  OS keychain (keychain)
+```
+
+If instead you see a `WARN` block naming a `chmod-600 file`, install a keychain
+(macOS has one built in; on Linux install `libsecret` / `secret-tool`) and re-run
+`setup`.
 
 ---
 
@@ -113,6 +147,36 @@ You do not have to remember any of this. Two surfaces keep it visible:
 - **`/diagnose`** (section 12) reports the same verdict in the health check, and
   the onboarding interview (`phases/phase-01-welcome.md`, step 8.6) establishes a
   backup — or makes you decline it on purpose — before setup is called done.
+- **On Windows**, re-running `setup` self-heals the daily scheduled task: it reads
+  the existing task back, checks the script path, the interpreter, and the
+  battery-power setting, and re-registers it automatically if any of them is
+  wrong — no prompt, and a healthy task is left untouched.
+- **On macOS and Linux**, re-running `setup` does the same for the launchd agent /
+  cron entry. `setup` now reports the daily schedule as installed only when
+  launchd or cron actually holds the job, verified by reading it back
+  (`launchctl print gui/<uid>/<label>`, `crontab -l`) — not because a job file was
+  written. It repairs a job whose file is unparseable, whose script path no longer
+  exists (a moved repo), or that launchd is simply not running; a healthy, loaded
+  job is left untouched. If it cannot install one, it prints the scheduler's own
+  error instead of claiming success.
+- **`vault-backup.sh schedule`** is the reachable repair path for that, and the
+  one to reach for when snapshots have gone stale. It checks the daily schedule
+  is really held by the OS scheduler and repairs it if not — non-interactive, no
+  prompts, and it takes no snapshot, so it is cheap to run often. It exits
+  non-zero when the schedule is not installed and could not be repaired, so a
+  script can branch on the status rather than read prose:
+
+  ```bash
+  bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh schedule
+  ```
+
+  **`schedule` is POSIX-only** (launchd / cron). `vault-backup.ps1` has no
+  `schedule` command and will exit with `unknown command`. On Windows the repair
+  path is re-running `setup`, which self-heals the Scheduled Task as described
+  above.
+
+  This exists because a self-heal that only fires inside `setup` misses exactly
+  the population that has a dead schedule — those installs never re-run setup.
 
 The single source of truth for all of these is
 `scripts/check-vault-backup.py` — run it directly any time:
