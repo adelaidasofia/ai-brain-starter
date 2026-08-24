@@ -561,7 +561,7 @@ If what you need is agent federation, swarm topologies, or a 300-tool MCP server
 - **[`templates/CRM-examples/`](templates/CRM-examples/)** — three sample CRM cards (maintainer, advisor, contractor) showing what a populated entry looks like, plus the Source/Location/Shape/Channel pattern for delegating contractor tasks
 - **[`templates/rules/`](templates/rules/)** — opt-in rule files (voice-firewall, session-close, hookify-authoring, mcp-build-checks) to paste into your CLAUDE.md
 - **[`for-teams/`](for-teams/)** — extra docs for teams sharing a vault (working-with-me pages, team workflows)
-- **[`docs/OPTIMIZE.md`](docs/OPTIMIZE.md)** — the deep vault optimization guide (11 phases, weekend project). Run `/optimize-brain` after setup to become a power user.
+- **[`skills/optimize-brain/SKILL.md`](skills/optimize-brain/SKILL.md)** — the deep vault optimization guide (11 phases, weekend project). Run `/optimize-brain` after setup to become a power user.
 - **[`EXAMPLES.md`](EXAMPLES.md)** — sample journal entry and weekly insight report showing output quality
 - **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — how to contribute (the project is opinionated by design)
 - **[`SECURITY.md`](SECURITY.md)** — four practical habits that protect your machine and data when running a local AI + vault setup (secrets, skills/hooks, MCPs, Claude permissions)
