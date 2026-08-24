@@ -40,9 +40,78 @@ import argparse
 import json
 import hashlib
 import os
+import re
 import sys
 from pathlib import Path
 from datetime import datetime
+
+
+# ── Cache key ────────────────────────────────────────────────────────────────
+#
+# ⚠️ This key MUST be byte-identical to graphify.cache.file_hash(). It was not,
+# and this script reported 0 cache hits against 1,113 valid entries — sizing
+# every run as if the cache were empty. It diverged in four ways:
+#   1. it looked in cache/{h}.json; entries live in cache/semantic/{h}.json
+#   2. it fed the ABSOLUTE path into the digest; the library uses the path
+#      relative to the vault root, lowercased, so a cache stays portable
+#   3. it hashed the WHOLE file; the library strips YAML frontmatter from .md,
+#      so a metadata-only edit does not invalidate an expensive extraction
+#   4. `except Exception: miss` swallowed every error into the miss pile
+#
+# ALWAYS prefer the library function. The local reimplementation exists only for
+# the common case where this script runs under a python without graphify
+# installed (graphify usually lives in graphify-out/.venv).
+
+try:
+    from graphify.cache import file_hash as _lib_file_hash
+except Exception:
+    _lib_file_hash = None
+
+_FRONTMATTER_DELIM = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
+
+
+def _body_content(content: bytes) -> bytes:
+    """Strip YAML frontmatter. Mirrors graphify.cache._body_content."""
+    text = content.decode(errors="replace")
+    opener = _FRONTMATTER_DELIM.match(text)
+    if opener is None:
+        return content
+    closer = _FRONTMATTER_DELIM.search(text, opener.end())
+    if closer is None:
+        return content
+    return text[closer.start() + 3:].encode()
+
+
+def cache_key(path: Path, root: Path) -> str:
+    """Cache key for a file. Delegates to the library when it is importable."""
+    if _lib_file_hash is not None:
+        return _lib_file_hash(path, root=root)
+    raw = path.read_bytes()
+    content = _body_content(raw) if path.suffix.lower() == ".md" else raw
+    resolved = path.resolve()
+    try:
+        salt = resolved.relative_to(Path(root).resolve()).as_posix().lower()
+    except ValueError:
+        salt = resolved.as_posix().lower()
+    h = hashlib.sha256()
+    h.update(content)
+    h.update(b"\x00")
+    h.update(salt.encode())
+    return h.hexdigest()
+
+
+def find_cache_entry(semantic_dir: Path, key: str):
+    """Look up the flat (legacy) entry and inside p{fingerprint}/ subdirectories."""
+    flat = semantic_dir / f"{key}.json"
+    if flat.exists():
+        return flat
+    if semantic_dir.is_dir():
+        for sub in semantic_dir.iterdir():
+            if sub.is_dir():
+                cand = sub / f"{key}.json"
+                if cand.exists():
+                    return cand
+    return None
 
 
 def is_llm_extraction(cache_data: dict) -> bool:
@@ -78,7 +147,7 @@ def main():
     args = ap.parse_args()
 
     vault = Path(args.vault_root).resolve()
-    cache_dir = vault / "graphify-out" / "cache"
+    cache_dir = vault / "graphify-out" / "cache" / "semantic"
     os.chdir(vault)
 
     folder = Path(args.corpus_folder)
@@ -130,13 +199,11 @@ def main():
     llm_hits = 0
     preflight_only_hits = 0
     real_misses = []
+    errors = []
     for f in eligible:
         try:
-            content = f.read_bytes()
-            resolved = str(f.resolve()).encode()
-            h = hashlib.sha256(content + b"\x00" + resolved).hexdigest()
-            cache_file = cache_dir / f"{h}.json"
-            if cache_file.exists():
+            cache_file = find_cache_entry(cache_dir, cache_key(f, vault))
+            if cache_file is not None:
                 data = json.loads(cache_file.read_text())
                 if is_llm_extraction(data):
                     llm_hits += 1
@@ -145,8 +212,15 @@ def main():
                     real_misses.append(f)
             else:
                 real_misses.append(f)
-        except Exception:
+        except Exception as exc:
+            # NEVER silently: an error is not a cache miss, and counting it as one
+            # inflates the cost estimate without anyone noticing.
+            errors.append((f, exc))
             real_misses.append(f)
+    if errors:
+        print(f"  ⚠️  {len(errors)} file(s) could not be checked against the cache:")
+        for f, exc in errors[:5]:
+            print(f"      {f}: {type(exc).__name__}: {exc}")
 
     print()
     print(f"Cache breakdown (preflight-aware):")
