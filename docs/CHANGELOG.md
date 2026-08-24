@@ -9,6 +9,193 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-19: the privacy checker no longer publishes the private word list it checks for
+
+**Who this affects:** anyone who publishes repos with this starter installed, and anyone who forked one of ours.
+
+Every public repo managed by this project runs a check on each change: does this change accidentally include a private name, a client, a home folder path, an email? Useful check. One problem, found in an audit: the list of private words it looked for was written out, in plain text, inside the checker itself — which is a public file. A privacy guard that carries a neatly labelled list of everything it protects is not a guard, it is a directory.
+
+Now the private part of that list lives in a sealed repo setting (a GitHub Actions secret named `PII_PRIVATE_PATTERNS`) that only the repo's own checks can read. The public file keeps only words that were already public on purpose. Nothing about what the check catches changes when the secret is in place — same words, same matching, and the check still proves on every run that each word on the list can actually be caught.
+
+Three situations to know about:
+
+- **A managed repo missing its secret fails the check loudly** instead of quietly checking nothing. That is deliberate: a silently disarmed guard looks exactly like a clean repo.
+- **Changes proposed from a fork** cannot read secrets (GitHub's rule, a good one), so they get checked against the public words only, with a visible note saying so. The full check runs the moment the change lands.
+- **Your own install:** if you copied this repo and never set the secret, the check now tells you how to add your own private list instead of checking ours. One command, shown in the check's output.
+
+## 2026-08-18: everything felt slower on Windows, and now it is about twice as fast
+
+**Who this affects:** Windows users, most of all anyone on a work laptop with antivirus running. Mac and Linux are unaffected.
+
+Before Claude runs a tool for you, it runs a set of small background checks. They are the guards that keep a secret out of a config file, stop a command being run in the middle of a git operation, and so on. Each one is quick. There are a lot of them, and they all run before you see anything happen.
+
+On Windows they were costing twice what they should have. The reason turned out to be embarrassing and easy to miss: the small program that runs each check was itself a Python program, and it started a *second* Python program to do the actual check. Starting Python is the expensive part, especially with antivirus watching every file it opens, so every check paid that price twice. Measured on a four-core Windows 11 laptop with two antivirus products running: 97 milliseconds to run a check directly, 189 through the wrapper. Multiplied across every check, that was about 1.6 seconds of waiting before every single tool call, and roughly 3 seconds at the start of a session.
+
+Two things were fixed.
+
+**The wrapper now does the work itself** instead of handing it to a second copy of Python. That is the bigger half. Nothing about what the checks can do has changed: one that blocks a dangerous action still blocks it, one that crashes is still ignored quietly instead of shouting at you, and what each one prints still comes back on the same channel it always did. That is not a claim, it is tested: 28 different situations are run through both the old and the new version and the results have to come out identical, down to the byte.
+
+**And the Python it starts is now worked out once, when you install, instead of on every check.** Windows ships a small helper called `py` whose whole job is to look up where Python actually lives. Looking that up takes about 21 milliseconds, and it was being looked up again for every check, forever, to get the same answer. The installer now works it out once and writes the real answer down.
+
+That second change had to be careful, because Windows may hand these commands to any of four different shells, and they disagree about what a file path looks like. Git Bash, for instance, silently eats the backslashes. So the installer does not guess: it runs the exact command it is about to write, in every shell it can find on your machine, and if any of them will not run it, it keeps the old safe version and skips the optimization. You get the speed when it is provably safe and the status quo when it is not.
+
+**Together: roughly half the waiting, gone.** The wrapper change on its own, measured on a Mac over 40 runs, took the per-check cost from 34 ms to 19 ms, which is one Python start exactly as intended. A Mac starts Python in about a sixth of the time an antivirus-laden Windows laptop does, so on the machines this was reported from the same change is worth far more, and the second fix takes another 21 ms per check on top of it.
+
+**What you should do:** update once and re-run the installer, so your settings pick up the resolved path. Tell Claude "update the ai-brain-starter skill". Nothing else changes, and re-running is safe as many times as you like.
+
+### Follow-up the same day: six ways a check could have gone quiet, closed
+
+Two reviews went looking for what the speed-up above might have broken, and found six things. All six are fixed. None of them ever made a check say the wrong thing; the failure was always that a check's answer went missing, which looks exactly like everything being fine.
+
+When each check was its own separate program, the operating system kept it walled off. Running it in the same program is what made it fast, and it also removed that wall. These are the six places the wall turned out to be doing work nobody had noticed.
+
+- **A check that tidies up after itself could take its own answer with it.** A common cleanup step closes file handles a program is no longer using, and two of those handles were now the only way the wrapper had of talking back. The answer went into a scratch file nobody reads and you saw nothing at all. Those handles are now kept somewhere a cleanup step will not reach.
+- **Anything a check scheduled for "on my way out" landed after its answer had already been sent**, tacking stray text onto the end of it. The wrapper now finishes the check's shutdown while it is still listening, then stops the moment the answer is out.
+- **A check that splits itself in two reported twice.** Two answers arrive glued together and neither can be read. The copy now stops instead of reporting.
+- **A check that asked to be told about shutdown made the whole thing unstoppable.** Not a hostile check: an ordinary "let me save my work first" one was enough. It now gets to save its work, and then things shut down exactly as they used to.
+- **A stumble while the wrapper put things back could replace a real answer with "carry on".** Every step of that tidy-up is now independent, so one of them tripping cannot overwrite what a check decided.
+- **Two protections from a separate fix were carried over.** Checks read your files as UTF-8 again rather than whatever your console happens to use, which on Windows is the difference between working and a crash that was being swallowed as "carry on". And a check that hangs is bounded again: it gives up cleanly after 45 seconds instead of stalling the tool call until the harness gives up minutes later.
+
+The speed is unchanged. The test suite that stayed green through all six of these now has a section aimed squarely at them, and every new test was confirmed to fail against the morning's version before it was allowed to pass against this one.
+
+**What you should do:** nothing beyond the update and re-install above. Same instruction, same one time.
+
+---
+
+## 2026-08-15: the setup could stop halfway and tell you it was finished
+
+**Who this affects:** anyone whose install ended early, especially if you never reached the journaling interview or your CLAUDE.md came out mostly empty.
+
+Setup runs in phases, 0 through 24, and each phase lives in its own file so Claude only loads the part it is working on. Which file comes next was written down in exactly one place: the routing table at the top of the setup guide.
+
+That works right up until the install gets long. By the time Claude has finished creating your folders it has read tens of thousands of words of setup instructions plus your own answers, and the routing table is no longer the thing steering it. The current file ends. Nothing tells Claude there are fifteen more phases. So it stops, and because stopping looks exactly like finishing, it tells you the install is complete.
+
+Nothing errors. No file is missing. You are left with a folder structure, a skeleton CLAUDE.md, and none of the parts that make this a second brain: the context layer, the journal, the advisory panel, the weekly insights. One person's CLAUDE.md recorded "phases completed: folder structure + profile" while fifteen phases had never run, and they had no way to know that was wrong.
+
+**Every phase file now ends by naming the next one.** The instruction travels with the file being read, so it cannot fall out of context the way a table at the top can. A new check, run on every change, walks the whole sequence and fails the build if any phase does not point somewhere, if any phase is unreachable, or if the chain loops or runs off the end. Adding a phase and forgetting to wire it in is now a build failure instead of a feature nobody ever receives.
+
+**And you can now pick up where you stopped.** Ask Claude to "resume my ai-brain-starter install" (or "retoma mi instalación") in a fresh session. It works out how far you actually got by looking at what exists in your vault rather than asking you, tells you where it landed, and carries on from there. It also records your progress as it goes, so the next interruption costs you nothing. That detection had to read the vault directly, because the people most affected by this bug are precisely the ones whose progress was never recorded.
+
+**What you should do:** if your install ended early, update, then start a fresh session and ask Claude to resume your ai-brain-starter install. Step-by-step, including a self-contained prompt that works even if you cannot update yet: [`docs/RESUME_INSTALL.md`](RESUME_INSTALL.md).
+
+---
+
+## 2026-08-13: three helpers that were never actually installed, and a Windows setup that could fail without saying so
+
+**Who this affects:** everyone, for the second half. Windows users especially, for the first.
+
+Both of these came out of one real Windows install, where a person hit them, worked around them by hand, and told us.
+
+**Setup could fail to install Node.js and not say why.** Node's installer puts itself in a location that belongs to the whole machine, which Windows only allows after you approve a permission prompt. Setup ran that installer in silent mode, where no prompt can appear, so on a normal (non-Administrator) PowerShell the install simply refused. Worse, setup was throwing away the installer's answer entirely: whether it succeeded, failed, or never started, the next line of output looked the same. All you saw, several lines later, was a bare "node install failed" with no reason attached.
+
+Now setup checks whether it is running as Administrator first. If it is, nothing changes. If it is not, it installs Node just for you, from the official ZIP build, into your own user folder, and adds it to your PATH. That path needs no permission prompt at all, so it cannot fail this way. It also adds the folder npm uses for global tools, which the machine-wide installer would normally have added, so Claude Code installs and runs straight afterward. If winget was tried first and could not do it, setup now falls back to the direct download instead of giving up. And every installer's real exit code is now read and reported, so a failure says what happened and what to do about it. The same fix is applied to the Python installer beside it, which had the identical problem.
+
+**Three background helpers were being wired up but never copied into place.** `vault-context.py` (reads your priorities and open loops and puts them in front of Claude before it answers a strategic question), `retry-budget.py` (stops Claude looping on the same failing command), and `validate-mcp-json.py` (catches a broken `.mcp.json` before it silently disables every connector you have).
+
+Setup listed them in your settings, so they looked installed. But the actual copying was a `cp` command written inside one of the setup guides, meant to be run while Claude walked you through setup. `cp` is not a command on Windows, so there it could not run at all. And because each of these hooks is deliberately wired as "run this only if the file exists", a missing file produces no error, no warning, and no output. Nothing to notice, on any platform.
+
+There was a second layer to it. `vault-context.py` reads a small shared library that ships beside it, and nothing ever copied that library anywhere. So even where the `cp` did run, the hook loaded, found no library, fell back to its own do-nothing branch, and exited cleanly. It has been reporting healthy and injecting nothing, on every operating system, since it shipped.
+
+All three now install with everything else, on every platform, along with the library they need. Setup verifies them afterward instead of assuming.
+
+**What you should do:** run this once, and you are current:
+
+```
+python3 ~/.claude/skills/ai-brain-starter/scripts/install-hooks-user-level.py
+```
+
+If your session start mentions "background helpers not active", this is what it was pointing at. Nothing else changes, and re-running is safe: anything you edited by hand is backed up to `<file>.bak-YYYY-MM-DD-HHMM` before it is replaced.
+
+---
+
+## 2026-08-10: a missing team-broadcast install looked exactly like a healthy one
+
+**Who this affects:** anyone using the team-broadcast skill (Slack session-close recaps) across more than one machine.
+
+**The silent-failure watchdog (`surface-stale-automation-failures.py`) couldn't tell "never installed" from "installed and fine."** It works by scanning a log file for recent failures — no recent failures, no warning. But a machine that never had `auto-send.py` installed also has no log file, for the same reason: nothing ever ran there. Both cases produced exactly zero signal, on every session, forever. That's a stricter silence than an outright failure would have been — a broken install eventually leaves an error in the log; a missing install leaves nothing to ever go wrong. The watchdog now checks installation directly (the script's presence, then whether the daily launchd job is registered) before it ever looks at the log, and says so specifically instead of staying quiet. The launchd job is matched by its name ending, so it is found whatever reverse-DNS namespace you installed it under.
+
+**If you never set up team-broadcast, you will not hear about this at all.** This starter does not install that skill, so a missing one is the normal state for most people, and a warning about a component you never asked for is just noise that teaches you to ignore the rest. The check only speaks up when there is evidence you did set it up here and it since broke: a scheduled job that refers to it, a log from a previous run, or a half-present skill folder.
+
+**And a scheduled job that exists but has never actually run now gets caught too.** macOS reports the same status for a job that ran and finished cleanly as for one that was registered and never fired, so "the schedule is there" was being read as "it is working". The daily summary is the one job where that distinction is the entire point: the failure people actually hit is a broadcast that has never been sent. It now says so and gives you the two commands that reload it.
+
+**Also:** this file's non-ASCII console output (the warning emoji, some em dashes) was carried over from before the UTF-8 console-crash lint was widened to cover `hooks/`. It's provably safe — the only print is `json.dumps(...)`, which escapes non-ASCII before it reaches stdout — so it's now marked `# utf8-stdout-ok` and dropped from the legacy pin list instead of staying silently grandfathered in.
+
+## 2026-08-05: on Mac and Linux, "daily backup scheduled" now means it really is
+
+**Who this affects:** anyone on macOS or Linux who set up the daily vault backup.
+
+Setup said "Daily backup scheduled (03:00 local)" as long as it managed to write the small job file that describes the schedule. Whether the operating system's scheduler ever *accepted* that job was never checked, and any error it gave back was thrown away. So that message really only reported "I wrote a file", while the thing meant to take your nightly snapshot might never have been running at all.
+
+There is a concrete way this happened. The job file is XML, and your vault's own path gets written into it. A vault in a folder with an `&` in the name (say, "R & D Vault") produced a file that is not valid XML, which macOS refuses to load. The file still existed, so setup still called it scheduled. Two other versions of the same problem: a vault or starter folder you later moved, leaving the job pointing at a script that is no longer there (it runs every night and fails every night), and a job that is simply not loaded any more.
+
+Now setup writes your vault path into the job file correctly whatever characters it contains, then asks the scheduler itself whether it holds the job, and only says "scheduled" if the answer is yes. Re-running setup reads the existing schedule back and repairs it when it is broken, automatically and with no prompt, the same way the Windows fix below does. A healthy schedule is left completely alone. When it cannot install one, you get the scheduler's own error and the command to take a snapshot by hand, instead of a bare "could not".
+
+There is also a new, faster way to check and fix just the schedule, without re-running the whole setup:
+
+```
+bash scripts/vault-backup.sh schedule
+```
+
+It asks the operating system whether it really holds your daily backup job, repairs it if not, and takes no snapshot, so it is safe to run any time. If it cannot fix it, it tells you why and gives you the command to take a snapshot by hand. This matters because a repair that only happens when you re-run setup would miss exactly the people whose schedule is dead, since those are the people who never re-run setup.
+
+**What you should do:** run `bash scripts/vault-backup.sh schedule` once (or ask Claude to), then check `status` and confirm a snapshot has actually landed in the last day or two. Worth doing now in particular if your vault folder has an `&`, `<` or `>` in its name, or if you have moved your vault or the starter since you set backups up.
+
+---
+
+## 2026-08-05: on Windows, a backup that never actually ran now fixes itself
+
+**Who this affects:** anyone who set up the daily vault backup on Windows before 2026-07-31.
+
+A previous fix stopped the daily backup's Windows scheduled task from being registered broken in the first place. What it could not do was reach back and fix a task that was ALREADY broken on a machine that had run setup before that fix landed — and nothing else in the product ever looked at that task again. Measured on a real install: 25 days with zero snapshots, while setup had printed "Backup is live" and the health check reported the vault backed up. Three separate things could each cause this on their own: the script path the task points at being empty, the task pointing at a PowerShell version that is not on a stock Windows machine, or Windows Task Scheduler's own default of refusing to run on battery power.
+
+Now, every time you run backup setup again, it reads your existing scheduled task back, checks all three things, and — if any of them is wrong — re-registers it correctly, automatically, with no prompt. A healthy task is left alone. If it truly cannot fix it (for example, no PowerShell interpreter can be found at all), it says so loudly instead of pretending it worked.
+
+**What you should do:** run backup setup again once (`vault-backup.ps1 setup`, or ask Claude to do it) if you set up backups on Windows before 2026-07-31. Then check status and confirm a snapshot has actually landed recently.
+
+---
+
+## 2026-08-01: a graphify stage looked like it worked, then charged you twice
+
+**Who this affects:** anyone who runs `/graphify` with more than one chunk.
+
+Finishing a graphify stage crashed at the very last step, and the crash landed in the one place where it did the most damage while looking like the least. By the time it fired, the merged graph had already been written to disk. What had *not* run yet was the step that saves the semantic cache. So you got a healthy-looking graph, a stack trace you could reasonably read as "the report failed, no big deal" — and a cache that never recorded any of the work. The next `--update` re-extracted every one of those files from scratch and re-paid the full token cost. On a real run that was thousands of files silently re-billed.
+
+The cause was a single wrong key. The function that ranks your most-connected nodes returns each one's `degree`; the report step asked for `edges`, which has never existed on it. Three lines asked for it.
+
+**And the check that was supposed to catch it counted zero every time.** After saving the cache, the script reports how many entries it touched, so you can confirm the run landed. It looked for cache files directly inside the cache folder — but the cache is nested, in `semantic/` and `ast/` subfolders. So the count was always zero, whether the run had upgraded nothing or upgraded thousands. A verification step that cannot distinguish success from failure is worse than no verification, because you stop looking.
+
+Both are fixed. The report reads `degree` (and still falls back to the older key names if a future version renames it), and the cache check walks the nested folders. If a stage ever crashes again, it will crash *before* the merge instead of after.
+
+## 2026-08-01: WhatsApp chats that were all filed as one-on-ones
+
+**Who this affects:** anyone using the WhatsApp bridge, especially if your vault is not in English.
+
+Three things the chat extractor was getting wrong, each of which produced a field that looked filled in and was not.
+
+**Every group chat was labelled a direct message.** The extractor decided group-vs-direct from two signals: a `chat_type` field, or a `jid` ending in `@g.us`. Exports written by older versions of the bridge wrapper carry neither, so on those vaults the answer was always "direct" -- measured at 113 of 113 groups. It now falls back to what those exports do carry: the group subject in the filename, and the `-` discriminator that a group JID has and a phone number never does. It deliberately does not guess from JID length, because direct chats get named after long numeric identifiers too.
+
+**The "this chat contains a decision" flag only spoke English.** The trigger words were `exception, incident, pricing, escalation, outage, edge case, refund`. On a Spanish vault that fired on 6 chats out of 736 -- not a signal, just noise near zero. Spanish equivalents are now included by default, which takes it to 100, and `WHATSAPP_DECISION_TERMS` lets you replace the list entirely for any other language.
+
+**The "people mentioned" field was empty on every single chat.** It reused the helper that finds `[[wikilinks]]`, and a chat file is a verbatim message log that never contains one. Every chat reported nobody, in a vault with 35 people in the CRM. It now matches names as plain text, and resolves the chat's own counterpart to their CRM note even when the phone book spells it differently -- a trailing org tag (`Ana Ruiz 30X`) or missing accents (`Angela` for `Ángela`) previously meant no link at all. On the test vault that went from 0 chats linked to 46.
+
+---
+
+## 2026-08-01: entries that quietly drop out of every query
+
+**Who this affects:** anyone whose notes put wikilinks in a frontmatter field -- `people:`, `related:`, `projects:`, `attendees:`.
+
+A wikilink is made of square brackets. YAML reads square brackets as list syntax. Put them together without quotes and one of two things happens, and neither one tells you.
+
+`people: [[Ada]], [[Alan]]` stops the frontmatter from parsing at all. The consequence is not a warning, it is that the file becomes **invisible** -- Dataview stops returning it, the metadata extractors skip it, and weekly and monthly reviews are computed as if the entry had never been written. Open the note and it looks completely normal. That is why this can run for weeks before anyone wonders why a review came back thinner than the month actually felt.
+
+`related: [[[Ada]], [[Alan]]]` is the worse one, because it **works**. YAML reads the inner brackets as nested lists and gives you lists inside lists where you wanted two links. No error, no unparseable file, nothing to notice. The queries just never match.
+
+The coaching skill's session template was prescribing that second form. It now shows the correct one, and the journal skill states the rule with both failure modes named, so it covers any wikilink field you add later rather than only the ones shipped today.
+
+**The whole fix:** quote each link on its own. `people: ["[[Ada Lovelace]]", "[[Alan Turing]]"]`
+
+---
+
 ## 2026-07-31: five Windows install bugs, all of them silent
 
 **Who this affects:** everyone on Windows. Two of the five also affect Mac and Linux. All of them were reported by people who ran the installer, were told it succeeded, and found out later that it hadn't.
@@ -38,6 +225,43 @@ Now it does. When a session set a goal that was never cleared, the close ends by
 **Also fixed, same area:** the session-close rule and the close instructions Claude receives had drifted apart on what their step numbers meant. "Phase 3" was the goodbye in one and the audit in the other; "Phase 4" was the goodbye in one and the automatic cleanup in the other. Two documents describing one process, disagreeing about which step is which — and each was internally consistent, so nothing looked wrong. The rule was also missing its commit step entirely, which could hard-block a close. Both are fixed, and a checker now runs against **your** copy of the rule during daily maintenance, since a customised rule is exactly where this drifts.
 
 **On macOS:** the `vault-root` test suite had been failing on every Mac for a path-spelling reason (`/var` vs `/private/var`) that never appeared in CI. Fixed. A gate that is always red on your platform is a gate you learn to skip.
+
+---
+
+## 2026-07-27: journal entries now carry `type: journal`, so metadata extraction stops skipping them
+
+**Who this affects:** everyone who uses `/journal` together with `/second-brain-mapping` (or anything else that reads the vault's typed frontmatter).
+
+**The bug:** the journal skill's entry template never wrote a `type:` field into the frontmatter. The metadata extractor sorts every note by that field — no field, no sort: each entry landed in the "No type field" bucket and was silently left out of extraction, even though every other journal template in this repo already says `type: journal`. In one real vault, twelve days of entries were invisible to mapping until the field was added by hand.
+
+**The fix:** the entry template now opens with `type: journal`, and the capture-first save names it as a required field. Nothing else about the entry changed.
+
+**What you should do:** nothing for new entries. If you journaled before this fix, ask Claude to backfill `type: journal` into your existing entries' frontmatter so extraction sees them too.
+
+## 2026-07-16: the Spanish close detector stopped firing mid-conversation and started hearing "cierra esta sesión"
+
+**Who this affects:** anyone journaling or working in Spanish (or Portuguese) — the session-close detector was misbehaving in both directions for you, and English users never saw it.
+
+**The bug:** two failures, same root cause. The close detector lets its strong tiers (explicit, high-confidence sign-offs) override the false-positive guards — and the guard tier that's *allowed* to override them (`strict_guards`) existed only in the English pack. So in Spanish, every false-positive guard was dead code:
+
+- **Fired when it shouldn't:** "¿Ya está en el prompt o no está creado?" — a question in the middle of a working session — triggered the full close cascade, because `ya (está|estuvo|fue)` was unanchored and matched inside any sentence.
+- **Stayed silent when it should have fired:** "cierra esta sesión" did nothing. The pattern was built on the stem `cerr`, which covers *cerrar/cerremos/cerramos* but not the imperative *cierra* — Spanish *cerrar* is an e→ie stem-changing verb, so the command form is *cierr-*, not *cerr-*.
+
+**The fix:** ported the `strict_guards` tier to `es.json` (meta-discussion of the cascade, technical references, "close the *database* session", questions *about* closing), anchored `ya está/estuvo/fue/quedó` to end-of-message, and added the imperative `cierra/cierre/cierren` (plus Argentine `cerrá`) to the close-session pattern.
+
+**New test:** `tests/integration/test_detect_closing_signal_es_guards.sh`, wired into `scripts/ci.sh`. The English `strict_guards` test is unchanged and still passes.
+
+---
+
+## 2026-07-16: /weekly and /monthly could not find your journal folder
+
+**Who this affects:** anyone whose journal folder is named anything other than a bare, emoji-less `Journals` — which includes the **default `📓 Journals`** that the setup interview creates, and every localized name (`📓 Diario` on a Spanish install, `📓 Diário` on Portuguese).
+
+**The bug:** `build-journal-index.py` auto-detects your Meta folder (so `⚙️ Meta` and plain `Meta` both work) but did **not** do the same for the journal folder — it fell back to a hardcoded English `Journals`. Since `insights/SKILL.md` runs the script with no arguments, that hardcoded default was the only thing ever consulted. The result was `/weekly` and `/monthly` failing at step 0 with `journal directory not found`.
+
+**The fix:** the journal folder is now auto-detected the same way the Meta folder already was, across the emoji and plain forms of the English, Spanish, and Portuguese names. Passing `--journal-dir` explicitly still wins, and a vault with no journal folder at all still fails loudly instead of inventing one.
+
+**New test:** `tests/integration/test_journal_index_localized_dir.sh` (6 assertions incl. a negative control), wired into `scripts/ci.sh`. Against the pre-fix code it fails on `📓 Diario`, `📓 Diário`, **and `📓 Journals`**.
 
 ---
 

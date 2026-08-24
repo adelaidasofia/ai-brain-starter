@@ -83,7 +83,7 @@ def project_post_edit_content(tool_name: str, tool_input: dict) -> str | None:
 
     if tool_name == "Edit":
         try:
-            existing = Path(file_path).read_text(encoding="utf-8")
+            existing = Path(file_path).read_text(encoding="utf-8", errors="replace")
         except (OSError, FileNotFoundError):
             existing = ""
         old = tool_input.get("old_string", "")
@@ -94,7 +94,7 @@ def project_post_edit_content(tool_name: str, tool_input: dict) -> str | None:
 
     if tool_name == "MultiEdit":
         try:
-            content = Path(file_path).read_text(encoding="utf-8")
+            content = Path(file_path).read_text(encoding="utf-8", errors="replace")
         except (OSError, FileNotFoundError):
             content = ""
         for edit in tool_input.get("edits", []):
@@ -230,7 +230,8 @@ def main() -> int:
         # validator reads --type explicitly, so we just pass it.
         result = subprocess.run(
             [sys.executable, str(validator), "--file", tmp_path, "--type", type_name, "--strict", "--quiet"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=10,
         )
     except Exception as e:
         log_debug(f"validator subprocess failed: {e}")
@@ -258,6 +259,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # A cp1252 Windows console raises UnicodeEncodeError the moment this prints a
+    # non-ASCII character, and the hook dies with no legible cause
+    # (ai-brain-starter#313). Idempotent; a no-op on an already-UTF-8 console.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     try:
         main()
     except Exception as e:  # never block on unexpected errors

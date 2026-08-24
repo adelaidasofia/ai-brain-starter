@@ -165,3 +165,22 @@ After all the installs and imports, quickly verify: "Let's make sure everything 
 - Test journal: "Let's do a quick /journal test"
 - Test vault search: "Ask me something about your notes"
 
+---
+
+## → Next phase (the install is not finished)
+
+You have just completed **Phase 17**. Do not stop here, do not summarise the
+install as complete, and do not wait to be asked to continue.
+
+1. **Record progress.** Write `~/.claude/.ai-brain-starter-progress.json`:
+   `{"last_completed_phase": "17", "ts": "<ISO-8601 timestamp for now>", "version": 1}`
+   This one line is what lets a resumed install pick up here instead of starting over.
+2. **Run the next phase.** Read `phases/phase-18-insights.md` from this skill's own directory
+   and execute **Phase 18**.
+
+If you are running low on context, say so out loud and tell the user to open a
+fresh session and ask to resume the ai-brain-starter install; the progress file
+above is what makes that work. Ending here silently leaves them with a
+half-built brain that looks finished.
+
+<!-- phase-chain: next=phase-18-insights.md -->

@@ -23,6 +23,8 @@ This skill produces files at three different timescales:
 
 3. **Rolling pattern aggregator (across sessions)** — `🏠 Home/Panel Feedback Log.md`. Patterns table at the top tracks mention counts. Single mention = watch. 2+ mentions across different contexts = promote to acute action item. The aggregator is what tells you "this is a real recurring pattern" vs "this was a one-off."
 
+**All three tiers honor `__SKIP`.** Coaching sessions are exactly where someone says something out loud to think about it, not to record it. Before writing any of the three files, strip every line whose first token is `__SKIP`, then confirm one line per dropped item (`Dropped __SKIP line N (token preview: ...)`). Never paraphrase the dropped content into the synthesized record — tier 2 summarizing what tier 1 was told not to keep is the exact leak the convention exists to stop. Enforced by `block-skip-prefix-in-vault-write.py`; full rule at `templates/rules/skip-prefix-convention.md`.
+
 ## When to use vs. /journal
 
 **Use `/coaching` when:**
@@ -112,7 +114,7 @@ panelists_seated:
   - <Name 1>
   - <Name 2>
   - ...
-related: [<wikilinks to verbatim file, source transcripts, decision logs>]
+related: ["[[verbatim file]]", "[[source transcript]]", "[[decision log]]"]   # quote EVERY wikilink individually
 status: open
 re_eval_date: YYYY-MM-DD (one month from session)
 ---

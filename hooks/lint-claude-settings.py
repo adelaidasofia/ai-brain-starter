@@ -111,7 +111,7 @@ def lint_file(path: Path, label: str) -> None:
     if not path.exists():
         return
     try:
-        with path.open() as f:
+        with path.open(encoding="utf-8", errors="replace") as f:
             data = json.load(f, object_pairs_hook=lambda p: collect_dups(p, path=label))
     except json.JSONDecodeError as e:
         _emit("BLOCK", f"INVALID-JSON in {label}: {e}")
@@ -243,4 +243,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (ai-brain-starter#313; hooks/ sweep #314).
+    # A hook that print()s non-ASCII raises UnicodeEncodeError on a cp1252
+    # console: the gate then fails silently OPEN, or denies the tool call with
+    # no legible cause. Idempotent; a no-op on an already-UTF-8 console.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())

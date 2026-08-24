@@ -20,6 +20,14 @@ Codified 2026-05-14 as the meta-fix for the stranded-files class.
 
 from __future__ import annotations
 
+# utf8-stdout-ok: the only console write in this module is
+# `print(json.dumps({"systemMessage": msg}))`, and json.dumps defaults to
+# ensure_ascii=True, so the warning emoji and em dashes in `msg` are escaped to
+# \uXXXX before they reach stdout -- there is no cp1252 console crash to guard
+# against here. Replaces this file's SEV-4-json-encoded row in
+# scripts/utf8-stdout-baseline.txt, per that file's rule: rows are DELETED,
+# never re-pinned to stay quiet.
+
 import datetime
 import json
 import os
@@ -140,7 +148,7 @@ def fail_count_in_window(
         return 0
 
     try:
-        text = log_path.read_text(errors="replace")
+        text = log_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return 0
 
@@ -161,39 +169,154 @@ def fail_count_in_window(
     return len(fail_minutes)
 
 
+def user_launchd_labels() -> set[str]:
+    """Labels of the launchd agents THIS user installed.
+
+    Scoped BY PROPERTY, not by a hardcoded namespace. A plist in the user's
+    own LaunchAgents directory is, by definition, a job they installed; its
+    filename stem is the label by the platform's own convention. That covers
+    every operator on every machine, which a hardcoded reverse-DNS prefix
+    could never do — a prefix naming one person's namespace makes this pass
+    permanently DEAD for everyone else, and this file ships in a public repo
+    that other people install.
+
+    Empty set off macOS (no such directory), which makes the caller a no-op
+    exactly as it already is where `launchctl` does not exist.
+    """
+    agents = HOME / "Library" / "LaunchAgents"
+    try:
+        return {p.stem for p in agents.glob("*.plist")}
+    except OSError:
+        return set()
+
+
+def _launchd_print_liveness(label: str, uid: int, timeout: float = 3.0) -> tuple[int, str] | None:
+    """Probe `launchctl print gui/<uid>/<label>` for the job's run count.
+
+    Disambiguates the case `launchd_failures()` cannot resolve from
+    `launchctl list` alone: last-exit-status 0 means both "ran and exited
+    clean" and "has never run at all" (see that function's docstring).
+    `launchctl print`'s `runs` field tells the two apart — 0 means the job
+    has never executed since it was loaded.
+
+    Returns `(runs, last_exit_text)` on a clean parse. Returns None on ANY
+    failure — binary missing, non-zero return, timeout, or output that does
+    not contain a parseable `runs = N` line — so the caller can degrade to
+    the pre-probe reading (silence) instead of raising. This hook runs at
+    every session start and must never crash or hang on a probe that a given
+    macOS version, sandbox, or permission set does not support.
+
+    `launchctl print` is slower per-label than the one-shot `list` table, so
+    callers should only reach this for labels already narrowed down to
+    "mine, loaded, ambiguous" — see MAX_LAUNCHD_PRINT_PROBES.
+    """
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", f"gui/{uid}/{label}"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=timeout, check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    runs_match = re.search(r"^\s*runs\s*=\s*(\d+)\s*$", result.stdout, re.MULTILINE)
+    if not runs_match:
+        return None
+    exit_match = re.search(r"^\s*last exit code\s*=\s*(.+?)\s*$", result.stdout, re.MULTILINE)
+    last_exit = exit_match.group(1) if exit_match else ""
+    return int(runs_match.group(1)), last_exit
+
+
 def launchd_failures() -> list[str]:
-    """Flag com.adelaida.* launchd jobs whose last run exited non-zero.
+    """Flag the user's own launchd jobs that are failing OR that are HOLLOW.
 
     `launchctl list` column 2 is the last exit status: 0 = clean, a positive
-    int = non-zero exit, a negative int = killed by signal, '-' = never run.
+    int = non-zero exit, a negative int = killed by signal, '-' in the PID
+    column = not currently running (irrelevant to this check). Measured
+    2026-08-20: a job launchd has REGISTERED but has NEVER EXECUTED also
+    reads 0 in this column — byte-identical to a genuinely healthy job. That
+    blind spot let a dead job sit unnoticed for days with real downstream
+    damage — this function used to treat status 0 as simply "clean", which
+    is exactly the misread.
+
+    So status 0 is now AMBIGUOUS, not clean, and is disambiguated by a
+    second, slower probe: `_launchd_print_liveness()`, whose `runs` field is
+    0 only when the job has truly never run. That is reported as a DISTINCT
+    "hollow" finding, because the remedy differs — a hollow job needs
+    `bootout` + `bootstrap` (reload it), a failing job needs its error log
+    read. A non-zero status is unambiguous already (you cannot have a real
+    exit code without having executed) and is flagged directly, exactly as
+    before, with no extra probe.
+
+    The print probe is bounded three ways so this stays fast at every
+    session start: (1) only reached for labels the cheap `list` pass already
+    narrowed to "mine, loaded, status==0"; (2) capped at
+    MAX_LAUNCHD_PRINT_PROBES total calls per run; (3) each call carries its
+    own short timeout. Any failure of the probe itself — `launchctl print`
+    unavailable, non-zero exit, timeout, unparseable output, no UID — silently
+    degrades that label to the pre-probe reading (not flagged), never raises.
+
     This auto-covers every job — including ones not in RUNNERS, the gap that
-    let routing-health-check and receipts-reconcile fail unnoticed.
+    let a health-check and a reconcile job fail unnoticed. Restricted to
+    labels the user installed (see user_launchd_labels), so the machine's
+    Apple and third-party agents stay out of the report.
     """
     try:
         result = subprocess.run(
             ["launchctl", "list"],
-            capture_output=True, text=True, timeout=10, check=False,
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=10, check=False,
         )
     except (subprocess.SubprocessError, OSError):
         return []
+    mine = user_launchd_labels()
+    if not mine:
+        return []
+    try:
+        uid = os.getuid()  # type: ignore[attr-defined]
+    except AttributeError:
+        uid = None  # no os.getuid on Windows — the print probe degrades below
     out: list[str] = []
+    probes_used = 0
     for line in result.stdout.splitlines():
         parts = line.split("\t")
         if len(parts) != 3:
             continue
         _pid, status, label = parts
-        if not label.startswith("com.adelaida."):
+        if label not in mine:
             continue
-        if label in BESPOKE_LAUNCHD_LABELS:
+        if any(label.endswith(suffix) for suffix in BESPOKE_LAUNCHD_SUFFIXES):
             continue  # has a dedicated finder with recovery guidance
         try:
             code = int(status)
         except ValueError:
-            continue  # '-' — job has never run this boot
+            continue  # not a documented `launchctl list` status column value
         if code != 0:
             out.append(
                 f"  - {label}: last run exited {code} (launchctl status) — "
                 f"check the job's log / plist"
+            )
+            continue
+        # code == 0 is ambiguous (see docstring above) — disambiguate via the
+        # slower print probe, bounded so a large fleet can't slow down every
+        # session start.
+        if uid is None or probes_used >= MAX_LAUNCHD_PRINT_PROBES:
+            continue
+        probes_used += 1
+        liveness = _launchd_print_liveness(label, uid)
+        if liveness is None:
+            continue  # probe unavailable/erroring — degrade to pre-probe silence
+        runs, last_exit = liveness
+        if runs == 0:
+            plist_path = HOME / "Library" / "LaunchAgents" / f"{label}.plist"
+            exit_note = f", last exit code {last_exit}" if last_exit else ""
+            out.append(
+                f"  - {label}: loaded but has NEVER RUN (runs=0{exit_note}, "
+                f"launchctl print) — a hollow job, not a healthy one; "
+                f"`launchctl list` alone cannot tell the two apart. Reload it: "
+                f"launchctl bootout gui/{uid}/{label}; "
+                f"launchctl bootstrap gui/{uid} {plist_path}"
             )
     return out
 
@@ -228,7 +351,7 @@ def receipts_reconcile_findings(vault: Path | None) -> list[str]:
             f"({newest.name}) — the daily reconcile job may have stopped"
         )
     try:
-        text = newest.read_text(errors="replace")
+        text = newest.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return out
     m = re.search(r"^hard_violations:\s*(\d+)", text, re.MULTILINE)
@@ -240,7 +363,143 @@ def receipts_reconcile_findings(vault: Path | None) -> list[str]:
     return out
 
 
-BESPOKE_LAUNCHD_LABELS = {"com.adelaida.team-broadcast-daily"}
+# Matched as a SUFFIX so any operator's reverse-DNS namespace works
+# (`com.<whoever>.team-broadcast-daily`). These jobs have a dedicated finder
+# below that gives better recovery guidance than the generic launchd pass.
+BESPOKE_LAUNCHD_SUFFIXES = (".team-broadcast-daily",)
+
+# `launchctl print` is slow enough per-label that an unbounded fleet could slow
+# down every session start. This caps total probes per run regardless of how
+# many "mine, loaded, status==0" candidates exist.
+MAX_LAUNCHD_PRINT_PROBES = 25
+TEAM_BROADCAST_SCRIPT = (
+    HOME / ".claude" / "skills" / "team-broadcast" / "scripts" / "auto-send.py"
+)
+
+
+def registered_bespoke_label() -> tuple[bool, str | None]:
+    """The operator's OWN daily-broadcast launchd label, if launchd has it loaded.
+
+    Resolved BY SUFFIX off `launchctl list`, never by a literal namespace. The
+    label is `com.<operator>.team-broadcast-daily` and the `<operator>` half is
+    chosen by whoever installed it, so a hardcoded reverse-DNS prefix would
+    query a label that exists on exactly one machine — reporting "not
+    registered" to every other operator who HAS installed it, and reporting it
+    forever. That is the same dead-for-everyone-else failure
+    user_launchd_labels() above exists to avoid, and this file ships in a
+    public repo that other people install.
+
+    Returns (queried, label). `queried` is False when launchd could not be
+    asked at all (no `launchctl` — Linux, Windows), which is evidence of
+    nothing and must not produce a finding.
+    """
+    try:
+        result = subprocess.run(
+            ["launchctl", "list"],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=10, check=False,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return (False, None)
+    if result.returncode != 0:
+        return (False, None)
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        _pid, _status, label = parts
+        if any(label.endswith(suffix) for suffix in BESPOKE_LAUNCHD_SUFFIXES):
+            return (True, label)
+    return (True, None)
+
+
+def team_broadcast_opted_in(label: str | None) -> bool:
+    """Did this operator ever ask for a daily broadcast at all?
+
+    This substrate does NOT install team-broadcast: no phase, no bootstrap
+    step, and no skill in this repo ships it. "auto-send.py is missing" is
+    therefore the NORMAL, correct state for nearly everyone who installs
+    this, and reporting it as a fault would nag every one of them, on every
+    session, forever, about a component they never asked for and cannot get
+    from here. A watchdog that cries on a healthy default install is how
+    operators learn to ignore the watchdog.
+
+    So fire only on evidence the operator opted IN and the install then
+    broke: a registered daily job, a log from a run that already happened,
+    or a half-present skill directory. No evidence at all -> silence.
+    """
+    if label:
+        return True  # a daily job is registered, so the script should be here
+    if (HOME / ".claude" / "logs" / "team-broadcast-daily.log").exists():
+        return True  # it has run on this machine before
+    return TEAM_BROADCAST_SCRIPT.parent.parent.exists()  # partial install
+
+
+def team_broadcast_install_gap() -> str | None:
+    """Distinguish 'never installed here' from 'installed and quiet'.
+
+    team_broadcast_findings() below returns [] both when the daily broadcast
+    is healthy and quiet AND when it was never installed at all — a missing
+    log file reads the same either way. That gap is how a machine can go
+    through every session-close cascade silently skipping the mandatory
+    broadcast (a vault CLAUDE.md's Session End step) with nothing ever
+    flagging it: there's no failure to log because there's nothing to fail.
+    Check installation directly instead of inferring it from log absence.
+    auto-send.py is the shared dependency of both the live session-close
+    broadcast and this daily cron, so its absence is the more serious of the
+    two findings; the launchd lookup above is resolved once and reused by
+    both branches.
+    """
+    queried, label = registered_bespoke_label()
+    if not TEAM_BROADCAST_SCRIPT.exists():
+        if not team_broadcast_opted_in(label):
+            return None  # never set up here, and this substrate never installs it
+        return (
+            "  - team-broadcast: set up on this machine but NOT INSTALLED — "
+            f"{TEAM_BROADCAST_SCRIPT} does not exist. Session-close broadcasts "
+            "(invoked live by Claude at session close) and the daily-summary "
+            "cron are both unreachable from here. Reinstall the "
+            "team-broadcast skill to restore them."
+        )
+    if not queried:
+        return None  # can't check launchd here; don't false-positive on that alone
+    if label is None:
+        return (
+            "  - team-broadcast-daily: script is installed but no "
+            "*.team-broadcast-daily launchd job is registered — the daily "
+            "summary cron will never fire. (Session-close broadcasts, "
+            "triggered live by Claude rather than this cron, are unaffected.)"
+        )
+    # Registered is NOT the same as running. `launchctl list` reports status 0
+    # both for a job that ran and exited clean and for one that has never
+    # executed at all, and launchd_failures() SKIPS this label by suffix
+    # precisely because this finder owns it — so silence here means silence
+    # everywhere. A hollow daily broadcast is the exact shape this finder
+    # exists to catch: the job is present, nothing looks wrong, and the
+    # summary has never once been sent.
+    #
+    # Bounded by construction: registered_bespoke_label() returns at most one
+    # label, so this adds at most ONE `launchctl print` per run, well inside
+    # the budget MAX_LAUNCHD_PRINT_PROBES exists to protect.
+    try:
+        uid = os.getuid()  # type: ignore[attr-defined]
+    except AttributeError:
+        return None  # no os.getuid (Windows) — cannot probe; stay silent
+    liveness = _launchd_print_liveness(label, uid)
+    if liveness is None:
+        return None  # probe unavailable/erroring — degrade to pre-probe silence
+    runs, last_exit = liveness
+    if runs == 0:
+        plist_path = HOME / "Library" / "LaunchAgents" / f"{label}.plist"
+        exit_note = f", last exit code {last_exit}" if last_exit else ""
+        return (
+            f"  - {label}: registered but has NEVER RUN (runs=0{exit_note}, "
+            "launchctl print) — a hollow job, so the daily summary has never "
+            "been sent from this machine and nothing else reports it. Reload "
+            f"it: launchctl bootout gui/{uid}/{label}; "
+            f"launchctl bootstrap gui/{uid} {plist_path}"
+        )
+    return None
 
 
 def team_broadcast_findings(log_path: Path | None = None) -> list[str]:
@@ -258,18 +517,25 @@ def team_broadcast_findings(log_path: Path | None = None) -> list[str]:
     so a recovered failure self-clears instead of nagging for 72h. Also flags
     the cron going stale (no run in 48h).
     """
+    install_gap = team_broadcast_install_gap()
+    if install_gap:
+        return [install_gap]
+
     if log_path is None:
         log_path = HOME / ".claude" / "logs" / "team-broadcast-daily.log"
     if not log_path.exists():
         return []
     try:
-        text = log_path.read_text(errors="replace")
+        text = log_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
 
     last_exit: dict[str, int] = {}
     last_ts: str | None = None
-    exit_re = re.compile(r"^\[([^\]]+)\]\s+(onde|mycelium)\s+exit=(\d+)")
+    # Workspace token is generic: hardcoding one operator's workspace names
+    # here made the parser silently match nothing for everyone else, so a
+    # failed broadcast never surfaced on any other install.
+    exit_re = re.compile(r"^\[([^\]]+)\]\s+([A-Za-z0-9][\w.-]*)\s+exit=(\d+)")
     for line in text.splitlines():
         m = exit_re.match(line)
         if not m:
@@ -293,16 +559,15 @@ def team_broadcast_findings(log_path: Path | None = None) -> list[str]:
             if age_h > 48:
                 out.append(
                     f"  - team-broadcast-daily: no run in {int(age_h)}h. The "
-                    f"18:00 cron may have stopped (launchctl list "
-                    f"com.adelaida.team-broadcast-daily)"
+                    f"daily cron may have stopped (launchctl list | grep "
+                    f"team-broadcast-daily)"
                 )
         except ValueError:
             pass
 
-    channels = {"onde": "#daily-stand-ups", "mycelium": "#daily-updates"}
     failed = sorted(ws for ws, code in last_exit.items() if code != 0)
     if failed:
-        named = ", ".join(f"{ws} ({channels.get(ws, ws)})" for ws in failed)
+        named = ", ".join(failed)
         out.append(
             f"  - team-broadcast-daily: last run FAILED for {named}. That "
             f"stand-up never posted.\n"
@@ -345,7 +610,7 @@ def main() -> int:
                 f"    log: {log_path}"
             )
 
-    # launchd exit-status pass — auto-covers every com.adelaida.* job,
+    # launchd exit-status pass — auto-covers every job this user installed,
     # including ones not in RUNNERS (the gap behind the silent failures).
     try:
         findings.extend(launchd_failures())
@@ -383,4 +648,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())

@@ -46,7 +46,12 @@ trap 'rm -rf "$TMP"' EXIT
 HOOKS="$TMP/hooks"
 mkdir -p "$HOOKS/_lib"
 cp "$SRC_HOOK" "$HOOKS/scan-prior-sessions-for-secrets.py"
-cp "$SRC_LIB/__init__.py" "$SRC_LIB/secret_patterns.py" "$HOOKS/_lib/"
+# safe_read.py joined this list when the hook adopted the cloud-safe read
+# primitive (MYC-3537). The hermetic _lib is an explicit allow-list, so a new
+# hook dependency that is NOT copied here makes the hook die at import inside
+# the fixture only -- green everywhere else, silent here. Pure stdlib, no
+# further _lib deps of its own.
+cp "$SRC_LIB/__init__.py" "$SRC_LIB/secret_patterns.py" "$SRC_LIB/safe_read.py" "$HOOKS/_lib/"
 HOOK="$HOOKS/scan-prior-sessions-for-secrets.py"
 
 # Tiny innocuous corpus under the fake HOME (~/.claude/projects).

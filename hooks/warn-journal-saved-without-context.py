@@ -61,12 +61,30 @@ def _target_today():
     return d.isoformat()
 
 
+def _norm(text):
+    """Backslashes -> forward slashes before ANY path matching.
+
+    On Windows the journal path arrives as `C:\\vault\\Journals\\May 2026\\x.md`,
+    which matches none of the '/'-written patterns here. Without this the gate
+    never opens on Windows: no warning, no error, no signal — a silent fail-open
+    on the platform rather than a visible break. Matching only; nothing here is
+    executed as a path (and Python opens `C:/x/y` fine on Windows)."""
+    return text.replace("\\", "/")
+
+
 def _vault_root(text):
     """Absolute dir before the '<optional emoji >Journals/<Month YYYY>/' segment.
-    Anchored on the absolute path (starts at a real '/'), so a leading shell prefix
-    like `cat > '/vault/.../x.md'` is NOT captured into the root (that was the
-    2026-07-07 Bash-path fail-open bug). Quotes bound the segment on the Bash path."""
-    m = re.search(r"(/[^\n\"']*?)/(?:[^/\n]*\s)?Journals/[A-Z][a-zA-Z]+\s+\d{4}/", text)
+    Anchored on the absolute path (starts at a real '/', or a `C:/` drive root),
+    so a leading shell prefix like `cat > '/vault/.../x.md'` is NOT captured into
+    the root (that was the 2026-07-07 Bash-path fail-open bug). Quotes bound the
+    segment on the Bash path.
+
+    The drive-letter alternative is guarded by `(?<![A-Za-z])` so a URL like
+    `http://host/Journals/May 2026/` cannot have its `p:` read as a drive."""
+    m = re.search(
+        r"((?:(?<![A-Za-z])[A-Za-z]:)?/[^\n\"']*?)/(?:[^/\n]*\s)?"
+        r"Journals/[A-Z][a-zA-Z]+\s+\d{4}/",
+        text)
     return m.group(1) if m else None
 
 
@@ -87,7 +105,7 @@ tool_input = payload.get("tool_input", {}) or {}
 
 blob = ""          # text to scan for path + date + vault root
 if tool_name == "Write":
-    fp = tool_input.get("file_path", "") or ""
+    fp = _norm(tool_input.get("file_path", "") or "")
     if JOURNAL_PATH_RE.search(fp):
         blob = fp + "\n" + (tool_input.get("content", "") or "")
 elif tool_name == "Bash":
@@ -98,10 +116,12 @@ elif tool_name == "Bash":
     if inline_bypass(cmd, "JOURNAL_CONTEXT_BYPASS") or \
        re.search(r"(^|\s)JOURNAL_CONTEXT_BYPASS=1(\s|$)", cmd):
         sys.exit(0)
-    if JOURNAL_PATH_RE.search(cmd) and any(
+    cmd_norm = _norm(cmd)
+    if JOURNAL_PATH_RE.search(cmd_norm) and any(
         m in cmd for m in ("cat >", "cat >>", "tee ", "tee -", " > ", " >> ", "mv ", "cp ", "rsync ")
     ):
-        blob = cmd
+        # Normalized, because _vault_root() below must see forward slashes too.
+        blob = cmd_norm
 
 if not blob:
     sys.exit(0)  # not a journal save

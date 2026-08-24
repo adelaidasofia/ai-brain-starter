@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""
+graphify_seed_labels.py -- deterministic, zero-LLM provisional names for communities.
+
+The report is generated BEFORE the model semantically labels anything, so whatever
+label the first pass supplies is what a user sees if labeling never finishes. Seeding
+"Community 412" produces a report -- and, via the community hub notes, a graph -- where
+every cluster is an anonymous number.
+
+Instead, name each community after its highest-degree member: the node the rest of the
+cluster actually hangs off. Measured on a 14,046-node vault this turns "Community 0"
+into "Money", "Community 2" into "Fear", "Community 4" into "Learning".
+
+Journal-heavy corpora hub on daily-note nodes, so a bare date wins on degree while
+saying nothing about the topic. Skip low-signal labels (dates, phone numbers,
+attachment stubs, bare numerals) and take the best real node beneath them; fall back
+to the raw top node only when a cluster is genuinely nothing else.
+
+These are PROVISIONAL. A semantic label from the model beats an anchor every time --
+this only guarantees the floor is a real word instead of an index.
+"""
+
+from __future__ import annotations  # PEP 604 annotations; gate pins Python 3.9
+
+import re
+
+MAX_LABEL_CHARS = 40
+
+_LOW_SIGNAL = re.compile(
+    r"""^(
+        \d{4}-\d{2}-\d{2}([T ][\d:\-]+)?   # 2026-05-28, 2014-10-19T12:58
+      | \+?\d[\d\s()\-]{6,}                # phone numbers
+      | at_\d+_.*                          # attachment stubs
+      | [\d\s.,%$-]+                       # bare numerals
+      | .{0,2}                             # 1-2 char noise
+    )$""",
+    re.VERBOSE,
+)
+
+_MEDIA_SUFFIX = (".png", ".jpg", ".jpeg", ".heic", ".pdf", ".mp4", ".mov", ".webp", ".gif")
+
+# Session/journal slugs like "2026-05-30T03-36-concurrency-at-scale". Not low-signal --
+# the tail is the topic -- but a sibling note that leads with the topic reads better.
+_DATE_PREFIX = re.compile(r"^\d{4}[-_]?\d{2}[-_]?\d{2}")
+
+
+def is_low_signal(label: str) -> bool:
+    """True when a label identifies a record rather than a topic."""
+    text = (label or "").strip()
+    return bool(_LOW_SIGNAL.match(text)) or text.lower().endswith(_MEDIA_SUFFIX)
+
+
+def _truncate(label: str, limit: int = MAX_LABEL_CHARS) -> str:
+    label = " ".join(label.split())
+    return label if len(label) <= limit else label[: limit - 1].rstrip() + "…"
+
+
+def anchor_label(G, node_ids: list[str]) -> str:
+    """Best-reading high-degree member: topic beats record, plain name beats dated slug."""
+    if not node_ids:
+        return "unnamed"
+
+    def rank(node):
+        text = str(G.nodes[node].get("label", node))
+        # Tiers first, degree only inside a tier, then label for a stable tie-break.
+        return (is_low_signal(text), bool(_DATE_PREFIX.match(text)), -G.degree(node), text)
+
+    best = min(node_ids, key=rank)
+    return _truncate(str(G.nodes[best].get("label", best)))
+
+
+def seed_labels(G, communities: dict) -> dict:
+    """{cid: provisional name}, guaranteed unique.
+
+    Uniqueness is not cosmetic: these names become _COMMUNITY_<name>.md in the Obsidian
+    export, so two communities sharing one would silently overwrite each other's hub note.
+    The disambiguating suffix must be reserved BEFORE truncating -- appending it first and
+    truncating after just cuts it off again, which collapsed 9 pairs of long dated slugs
+    back onto identical 40-char names on a real 14,046-node graph.
+    """
+    used: set[str] = set()
+    out = {}
+    # Largest first so the biggest cluster keeps the clean name on a collision.
+    for cid in sorted(communities, key=lambda c: (-len(communities[c]), c)):
+        base = anchor_label(G, communities[cid])
+        name, n = base, 1
+        while name in used:
+            n += 1
+            suffix = f" ({n})"
+            name = _truncate(base, MAX_LABEL_CHARS - len(suffix)) + suffix
+        used.add(name)
+        out[cid] = name
+    return {cid: out[cid] for cid in communities}
+
+
+class _DegreeGraph:
+    """Minimal networkx stand-in so a graph.json can be labeled without the package."""
+
+    def __init__(self, data):
+        import collections
+
+        self.nodes = {n["id"]: n for n in data["nodes"]}
+        self._deg = collections.Counter()
+        for e in data.get("links", data.get("edges", [])):
+            self._deg[e["source"]] += 1
+            self._deg[e["target"]] += 1
+
+    def degree(self, node):
+        return self._deg[node]
+
+
+def load_graph_json(path):
+    """(graph, {cid: [node_id]}) from a graphify graph.json. No graphify import needed."""
+    import collections
+    import json
+
+    with open(path, encoding="utf-8") as fh:
+        raw = json.load(fh)
+    communities = collections.defaultdict(list)
+    for node in raw["nodes"]:
+        if node.get("community") is not None:
+            communities[node["community"]].append(node["id"])
+    return _DegreeGraph(raw), dict(communities)
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    # Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
+
+    ap = argparse.ArgumentParser(description="Preview seeded community names from a graph.json.")
+    ap.add_argument("graph_json", nargs="?", default="graphify-out/graph.json")
+    ap.add_argument("--top", type=int, default=20)
+    args = ap.parse_args()
+
+    G, comms = load_graph_json(args.graph_json)
+
+    names = seed_labels(G, comms)
+    ordered = sorted(comms, key=lambda c: -len(comms[c]))
+    print(f"{len(ordered)} communities; showing top {args.top}\n")
+    for cid in ordered[: args.top]:
+        print(f"  {len(comms[cid]):>5} nodes  community {cid:<5} -> {names[cid]!r}")
