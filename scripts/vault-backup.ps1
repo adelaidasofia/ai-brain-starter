@@ -100,7 +100,7 @@ function Store-Passphrase { param([string]$slug, [string]$plain)
 function Get-Passphrase { param([string]$slug)
   $pf = Join-Path $env:USERPROFILE ".claude\.vault-backup-pass-$slug"
   if (-not (Test-Path -LiteralPath $pf)) { return $null }
-  $secure = (Get-Content -Raw -LiteralPath $pf) | ConvertTo-SecureString
+  $secure = ((Get-Content -Raw -LiteralPath $pf) -replace '[^0-9A-Fa-f]', '') | ConvertTo-SecureString
   $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
   try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
   finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
@@ -127,7 +127,11 @@ function New-Archive {
       $pass = Get-Passphrase $slug
       if (-not $pass) { Die "could not read backup passphrase" }
       $out = "$outBase.zip.gpg"
+      $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
       & $gpg.Source --batch --yes --pinentry-mode loopback --passphrase $pass -c --cipher-algo AES256 -o $out $zip 2>$null
+      $gpgCode = $LASTEXITCODE
+      $ErrorActionPreference = $prevEAP
+      if ($gpgCode -ne 0 -or -not (Test-Path -LiteralPath $out)) { Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue; Die "gpg encryption failed (exit $gpgCode)" }
       Remove-Item -LiteralPath $zip -Force
       return $out
     }
@@ -316,7 +320,11 @@ function Cmd-Verify {
       $slug = if ($e.keychain_account) { $e.keychain_account } else { Slug-For $v }
       $pass = Get-Passphrase $slug
       $zip = Join-Path $tmp "restore.zip"
+      $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
       & $gpg.Source --batch --yes --pinentry-mode loopback --passphrase $pass -o $zip -d $newest.FullName 2>$null
+      $gpgCode = $LASTEXITCODE
+      $ErrorActionPreference = $prevEAP
+      if ($gpgCode -ne 0 -or -not (Test-Path -LiteralPath $zip)) { Die "gpg decryption failed (exit $gpgCode)" }
       Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
       Remove-Item -LiteralPath $zip -Force
     } else {
@@ -343,6 +351,22 @@ function Cmd-Status {
     $reach = if (Test-Path -LiteralPath $e.dest) { "(reachable)" } else { "(UNREACHABLE)" }
     Say "Destination: $($e.dest) $reach"
     Say "Encrypted:   $($e.encrypt)    Keep: $($e.keep)"
+    # Parity with vault-backup.sh: report WHERE the passphrase lives, not just
+    # that encryption is on. "Encrypted: True" alone does not tell the user
+    # whether the key is protected by the OS.
+    # Explicit rather than truthiness: ConvertFrom-Json normally yields a real
+    # bool, but any non-empty STRING is truthy in PowerShell, so a conf carrying
+    # "False" would print this line on an unencrypted vault.
+    $encOn = ($e.encrypt -is [bool] -and $e.encrypt) -or
+             ("$($e.encrypt)".Trim().ToLower() -in @("true", "1", "yes"))
+    if ($encOn) {
+      switch ($e.store_kind) {
+        "dpapi" { Say "Passphrase:  OS-protected (DPAPI, current user)" }
+        ""      { Warn "Passphrase:  unknown (no store_kind recorded) - re-run setup to repair" }
+        $null   { Warn "Passphrase:  unknown (no store_kind recorded) - re-run setup to repair" }
+        default { Say "Passphrase:  $($e.store_kind)" }
+      }
+    }
     $n = (Get-ChildItem -LiteralPath $e.dest -Filter "$Stem-*" -File -ErrorAction SilentlyContinue).Count
     Say "Snapshots:   $n in destination"
     Say "Last run:    $(if ($e.last) { $e.last } else { 'never' })"

@@ -13,19 +13,19 @@
     "\\bnos vemos\\b",
     "\\bhasta (luego|mañana|pronto|la próxima)\\b",
     "\\bbuenas noches\\b",
-    "\\bya (está|estuvo|fue)\\b",
-    "\\bya quedó\\b",
+    "\\bya (está|estuvo|fue)[,.!\\s]*(gracias)?[!.\\s]*$",
+    "\\bya quedó[,.!\\s]*(gracias)?[!.\\s]*$",
     "\\b(eso|esto) es todo\\b",
     "\\blisto[,.!\\s]*(gracias)?[!.\\s]*$",
     "\\bgracias,? (eso|esto) es todo\\b",
     "\\bnos hablamos\\b",
     "\\bme voy[.!?\\s]*$",
     "\\bcerremos (acá|aquí|esto|por (hoy|ahora))\\b",
-    "\\bcerr(emos|ar|amos)\\s+(la\\s+|esta\\s+)?sesi[oó]n\\b",
+    "\\b(cerr(emos|ar|amos|á)|cierr(a|e|en|as))\\s+(la\\s+|esta\\s+|mi\\s+)?sesi[oó]n\\b",
     "\\b(termin(amos|emos)|listo)\\s+por\\s+(hoy|ahora)\\b",
     "\\bya\\s+termin(amos|é)\\b",
     "\\btermin(emos|amos)\\s+(esto|aquí|acá|por\\s+hoy)\\b",
-    "\\bya\\s+estuvo\\s+(por\\s+(hoy|ahora))?\\b",
+    "\\bya\\s+estuvo\\s+por\\s+(hoy|ahora)\\b",
     "\\bya\\s+fue\\s+(por\\s+(hoy|ahora))\\b",
     "\\bhasta luego\\b",
     "^chao+[!.\\s]*$",
@@ -81,6 +81,39 @@
     {
       "_comment": "Don't match question-form prompts ending in '?'",
       "pattern": "\\b(chao|chau|listo|hasta luego|nos vemos|gracias)\\b[^?]*\\?\\s*$"
+    }
+  ],
+
+  "_strict_guards_comment": "Spanish counterparts of the en.json strict_guards tier (codified 2026-05-25). Required because false_positive_guards do NOT override an explicit/high_confidence match — see detect-closing-signal.py: 'Strong tiers (explicit, high_confidence) override FP guards'. Without this tier, every Spanish FP guard above is dead code against a high_confidence hit, and Spanish/Portuguese users had no way to suppress meta-discussion of the cascade.",
+
+  "strict_guards": [
+    {
+      "_comment": "Meta-discussion / debugging of the close cascade itself ('por qué se cierra sola la sesión', 'arregla el regex de cierre de sesión', 'el hook de cierre dispara mal'). Requires a diagnostic/interrogative word + a close verb + a session/cascade noun, so a bare imperative close ('cierra esta sesión') is NOT suppressed.",
+      "pattern": "\\b(por\\s?qu[ée]|c[óo]mo|cu[áa]ndo|arregl\\w*|corrig\\w*|correg\\w*|diagnostic\\w*|depur\\w*|debug|frena\\w*|evita\\w*|desactiv\\w*|deshabilit\\w*|rot[oa]|da[ñn]ad\\w*|error|bug|fall[ao]\\w*|problema|revis\\w*|inspeccion\\w*|hook|regex|patr[óo]n|dispar\\w*|falso[\\s-]?positivo)\\b.{0,80}\\b(cerr\\w*|cierr\\w*|archiv\\w*|termin\\w*|finaliz\\w*)\\b.{0,80}\\b(sesi[óo]n|sesiones|cascada|hook|marcador\\w*)\\b"
+    },
+    {
+      "_comment": "User describing the bug pattern ('las sesiones se archivan solas', 'la sesión se cierra sola', 'las sesiones siguen disparando'). A genuine close never describes sessions in the third person.",
+      "pattern": "\\b(las?\\s+)?sesi(ón|on|ones)\\b[^.?!\\n]{0,40}\\b(se\\s+(archiv|cierr|crea|guard|dispar)\\w*|sigue[n]?\\s+\\w+|siempre\\s+\\w+|nunca\\s+\\w+|sol[ao]s?)\\b"
+    },
+    {
+      "_comment": "Backtick/quote-wrapped technical references to close phrases (regex, code, or script content quoted in a question).",
+      "pattern": "[`\"'].{0,40}\\b(cerr(ar|emos|amos)\\s+(la|esta)\\s+sesi[óo]n|cierr[ae]\\s+(la|esta)\\s+sesi[óo]n|chao|chau|buenas noches|hasta luego)\\b.{0,40}[`\"']"
+    },
+    {
+      "_comment": "'cerrar la sesión de X' where X is a technical/other noun (base de datos, terminal, navegador, coaching…) — closing something else, not this conversation.",
+      "pattern": "\\b(cerr(ar|emos|amos|á)|cierr[ae])\\s+(la\\s+|una\\s+|mi\\s+|esa\\s+|esta\\s+|cada\\s+)?sesi[óo]n\\s+(de|del)\\s+(la\\s+|el\\s+|los\\s+|las\\s+|un\\s+|una\\s+|mi\\s+|ese\\s+|esa\\s+)?(base\\s+de\\s+datos|bd|db|usuario|cliente|terminal|navegador|pesta[ñn]a|ssh|conexi[óo]n|depuraci[óo]n|debug|coaching|escritura|entrevista|reuni[óo]n|clase|chat|conversaci[óo]n|trabajo|obra)\\b"
+    },
+    {
+      "_comment": "Meta-QUESTION about a close word — '¿qué significa chao?', '¿cómo se dice listo?'. Asking ABOUT a close phrase is referenced content, never a close itself. Strict because the weak-tier meta-question FP guard does NOT override a high_confidence match on the bare word.",
+      "pattern": "\\b(qu[ée]|c[óo]mo|por\\s?qu[ée]|cu[áa]ndo|d[óo]nde|qui[ée]n|define|explica|significa|ejemplo\\s+de)\\b.{0,40}\\b(chao|chau|bye|listo|gracias|buenas\\s+noches|hasta\\s+luego|nos\\s+vemos|cerrar\\s+(la|esta)\\s+sesi[óo]n|cascada\\s+de\\s+cierre)\\b"
+    },
+    {
+      "_comment": "INTERROGATIVE about whether a close ALREADY happened — '¿ya cerraste la sesión?', '¿la sesión quedó cerrada?'. A question about the close's state, not a request to perform it. Modal requests ('¿puedes cerrar la sesión?') carry no past/state verb, so they still fire.",
+      "pattern": "\\b(ya\\s+)?(cerraste|cerr[óo]|cerraron|cerramos|has\\s+cerrado|hab[íi]as?\\s+cerrado|est[áa]\\s+cerrad[ao]|qued[óo]\\s+cerrad[ao]|se\\s+cerr[óo]|archivaste|se\\s+archiv[óo])\\b[^?\\n]{0,45}\\?"
+    },
+    {
+      "_comment": "INTERROGATIVE 'ya está/estuvo/fue/quedó + more content + ?' — the reported false positive: '¿Ya está en el prompt o no está creado?' fired the full cascade mid-explanation. Requires trailing content before the '?', so a bare '¿ya está?' is not caught here.",
+      "pattern": "\\bya\\s+(est[áa]|estuvo|fue|qued[óo])\\s+[^?\\n]{2,60}\\?"
     }
   ]
 }

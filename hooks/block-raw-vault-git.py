@@ -87,14 +87,33 @@ def _vault_git_dir_for(target: str) -> str | None:
 
 
 def _effective_cwd(command: str, initial: str) -> str:
-    """Resolve cwd after any leading `cd <path>` commands in the command string."""
+    """Resolve cwd after any `cd <path>` in the command string.
+
+    A NEWLINE separates statements exactly like `;` does. Splitting only on
+    `&&`/`||`/`;` left a newline-separated script as ONE chunk, and the
+    `re.match` below anchors at the chunk start -- so a `cd` was seen only
+    when it was the very first token of the whole command. Any statement
+    before it (`set -e`, an echo, a var assignment) made the `cd` invisible
+    and this hook resolved the HARNESS cwd instead. That disabled the guard
+    outright: from an unrelated repo, `set -e` + `cd <vault>` + a raw
+    `git add` reached the vault with no mutex.
+
+    A `cd` whose target is not an existing directory is IGNORED rather than
+    applied. `_targets_vault_repo` fails OPEN when it cannot resolve a repo,
+    so honouring a bogus path (a `cd` quoted inside a heredoc body or an echo)
+    would silently turn a blocked vault op into an allowed one -- the newline
+    split makes such lines reachable, so this clause is load-bearing, not
+    defensive dressing.
+    """
     cwd = os.path.expanduser(initial) if initial else ""
-    for chunk in re.split(r"\s*(?:&&|\|\||;)\s*", command):
+    for chunk in re.split(r"\s*(?:&&|\|\||;|\n)\s*", command):
         chunk = chunk.strip()
         m = re.match(r"cd\s+(?:\"([^\"]+)\"|'([^']+)'|(\S+))", chunk)
         if m:
             new_path = os.path.expanduser(next(g for g in m.groups() if g is not None))
-            cwd = new_path if os.path.isabs(new_path) else os.path.normpath(os.path.join(cwd, new_path))
+            cand = new_path if os.path.isabs(new_path) else os.path.normpath(os.path.join(cwd, new_path))
+            if os.path.isdir(cand):
+                cwd = cand
     return cwd
 
 
@@ -157,7 +176,7 @@ def _targets_vault_repo(cwd: str) -> bool:
     try:
         out = subprocess.run(
             ["git", "-C", cwd, "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
         )
     except Exception:
         return False
@@ -194,7 +213,7 @@ def _git_dir_is_vault(git_dir: str) -> bool:
     try:
         out = subprocess.run(
             ["git", "--git-dir", git_dir, "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
             cwd=git_dir if os.path.isdir(git_dir) else None,
         )
         if out.returncode == 0 and out.stdout.strip():

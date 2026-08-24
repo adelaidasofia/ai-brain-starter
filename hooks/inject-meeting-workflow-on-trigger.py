@@ -41,6 +41,18 @@ import json
 import os
 import re
 import sys
+
+# Windows consoles default to cp1252; this file carries non-ASCII (the "⚙️ Meta"
+# rule path it echoes back, em-dashes in the injected header), and an
+# unreconfigured stream raises UnicodeEncodeError mid-write
+# (ai-brain-starter#313). json.dumps escapes the stdout payload, but a
+# traceback or any stderr write of the resolved rule path does not.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+    except (AttributeError, ValueError):
+        pass
+
 import unicodedata
 from typing import Optional
 
@@ -88,26 +100,50 @@ DET_EN = r"a|an|the|my|our|your|today'?s|that|this|some|another"
 DET_ES = r"una|la|mi|nuestra|el|este|esa|esta|nuestro|otro|otra"
 MOD = r"(?:[\w\-]+\s+){0,3}"  # 0-3 hyphen-aware adjective tokens
 
+# Adverbs allowed between "is/was" and "done/over/finished". This is an
+# ALLOW-list on purpose: a permissive `(?:\w+\s+){0,2}` slot admits NEGATION
+# and hedges — "the meeting is not done yet", "the call is almost over",
+# "is never over" — each of which fired the full cascade on a meeting that
+# had NOT ended. Denylisting negations loses against an open set (not / never
+# / almost / nearly / hardly / barely / n't / far from / nowhere near ...);
+# enumerating the affirmative adverbs is bounded and cannot silently widen.
+ADV_DONE = r"(?:finally|officially|now|all|totally|completely|basically|actually|thankfully|mercifully|already|just)"
+
+# Core meeting nouns — the unambiguous subset. Used ONLY by the bare
+# "finished|ended <det> <noun>" trigger, which carries no "just" anchor and so
+# would otherwise fire on ordinary work talk ("finished the review of the
+# contract", "ended the session"). The ambiguous nouns from NOUN_EN
+# (review, session, chat, conversation, catch-up, check-in, alignment) are
+# deliberately absent here; they still fire through every anchored pattern.
+NOUN_EN_CORE = (
+    r"meeting(?:s)?|call(?:s)?|sync(?:s)?|standup(?:s)?|stand-?up(?:s)?|"
+    r"1[:\- ]on[:\- ]1|1[:\- ]1|one[:\- ]?on[:\- ]?one|"
+    r"interview(?:s)?|huddle(?:s)?|kickoff(?:s)?|kick[\-\s]?off(?:s)?|"
+    r"retro(?:s)?|retrospective(?:s)?|briefing(?:s)?|workshop(?:s)?|"
+    r"offsite(?:s)?|demo(?:s)?|all-?hands"
+)
+
 TRIGGERS_EN = [
     # "I just <verb> <det> [adj×0-3] <noun>" — the standard form.
-    rf"\bi\s+just\s+(?:had|finished|wrapped(?:\s+up)?|got\s+out\s+of|came\s+out\s+of|ended|got\s+off)\s+"
+    rf"\bi\s+just\s+(?:had|did|finished|wrapped(?:\s+up)?|got\s+out\s+of|came\s+out\s+of|ended|got\s+off)\s+"
     rf"(?:{DET_EN})\s+{MOD}({NOUN_EN})\b",
     # "Just <verb> <det> [adj×0-3] <noun>" — terse, no "I".
-    rf"\bjust\s+(?:had|finished|wrapped(?:\s+up)?|got\s+out\s+of|came\s+out\s+of|ended|got\s+off)\s+"
+    rf"\bjust\s+(?:had|did|finished|wrapped(?:\s+up)?|got\s+out\s+of|came\s+out\s+of|ended|got\s+off)\s+"
     rf"(?:{DET_EN})\s+{MOD}({NOUN_EN})\b",
     # "<det> [adj×0-3] <noun> [with X×1-5] just (ended|wrapped|finished|is done)"
     rf"\b(?:{DET_EN})\s+{MOD}({NOUN_EN})\s+(?:with\s+(?:[\w\-]+\s+){{1,5}})?(?:just\s+)?"
-    rf"(?:ended|wrapped(?:\s+up)?|finished|is\s+done|was\s+done|is\s+over)\b",
+    rf"(?:ended|wrapped(?:\s+up)?|finished|(?:is|was)\s+(?:{ADV_DONE}\s+){{0,2}}(?:done|over|finished))\b",
     # "<noun> [with X×1-5] just (ended|wrapped|...)"  — no det, e.g. "meeting just ended"
     rf"\b({NOUN_EN})\s+(?:with\s+(?:[\w\-]+\s+){{1,5}})?(?:just\s+)?"
-    rf"(?:ended|wrapped(?:\s+up)?|is\s+done|was\s+done|is\s+over)\b",
+    rf"(?:ended|wrapped(?:\s+up)?|(?:is|was)\s+(?:{ADV_DONE}\s+){{0,2}}(?:done|over|finished))\b",
     # "[name]'s [adj×0-2] <noun> (is done|just ended|...)"
     rf"\b[\w\-]+(?:'s|s')\s+(?:[\w\-]+\s+){{0,2}}({NOUN_EN})\s+"
     rf"(?:is\s+done|just\s+ended|ended|wrapped|finished)\b",
     # "done|finished with <det> [adj×0-3] <noun>"
     rf"\b(?:done|finished)\s+with\s+(?:{DET_EN})\s+{MOD}({NOUN_EN})\b",
-    # "wrapped (up) <det> [adj×0-3] <noun>"
-    rf"\bwrapped(?:\s+up)?\s+(?:{DET_EN})\s+{MOD}({NOUN_EN})\b",
+    # "wrapped|finished|ended (up) <det> [adj×0-3] <noun>" — no "just"
+    # required; "finished a call with the client" is a completion signal.
+    rf"\b(?:wrapped(?:\s+up)?|finished|ended)\s+(?:{DET_EN})\s+{MOD}({NOUN_EN_CORE})\b",
     # "Pull|process|file|save|capture|extract [det] [adj×0-3] (notes|transcript|...)"
     # Artifact list — pull/process targeting the meeting artifact.
     rf"\b(?:pull|process|file|save|capture|extract)\s+(?:{DET_EN}|all)?\s*"
@@ -117,6 +153,15 @@ TRIGGERS_EN = [
     # → no fire). "process today's meeting" / "file the standup note" → fire.
     rf"\b(?:pull|process|file|save|capture|extract)\s+(?:{DET_EN})\s+"
     rf"{MOD}({NOUN_EN})\b",
+    # "<noun>'s done" / "the standup's over" — contracted "is". The
+    # possessive pattern above catches "[name]'s meeting is done"; this
+    # catches the 's riding on the NOUN itself, which is how people type.
+    rf"\b({NOUN_EN})(?:'s|s')\s+(?:\w+\s+){{0,2}}"
+    rf"(?:done|over|finished|ended|wrapped(?:\s+up)?)\b",
+    # "had a meeting just now" — postfix temporal anchor. Needs the literal
+    # "just now", so bare past tense ("I had a meeting last week") stays out.
+    rf"\b(?:had|did|finished|wrapped(?:\s+up)?|got\s+out\s+of)\s+"
+    rf"(?:{DET_EN})\s+{MOD}({NOUN_EN})\s+just\s+now\b",
     # "I just got off the phone (with X)" — phone-call end signal.
     r"\b(?:i\s+just\s+)?got\s+off\s+the\s+phone\b",
 ]
@@ -165,6 +210,11 @@ def matches_trigger(prompt: str) -> Optional[str]:
 def find_vault_root() -> Optional[str]:
     """Walk up from cwd looking for the canonical Current Priorities marker
     or a Meta/ folder. VAULT_ROOT env var wins if set."""
+    # vault-root-ok: read-only CONTEXT injection, never a write. The env var is
+    # honored only after isdir() confirms it, and every miss degrades through a
+    # shipped chain (vault rule -> starter template -> FALLBACK_SUMMARY), so a
+    # wrong or absent root cannot fail silently open the way a writer would --
+    # the worst case is injecting the generic cascade instead of the tuned one.
     env_root = os.environ.get("VAULT_ROOT")
     if env_root and os.path.isdir(env_root):
         return env_root
