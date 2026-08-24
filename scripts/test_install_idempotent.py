@@ -142,6 +142,74 @@ for n in (2, 3, 7, 12):
     c, r = inst.dedupe_identical_hooks(settings(*[UNOWNED] * n))
     check(f"pile-of-{n}-collapses-to-one", r == n - 1 and count(c) == 1)
 
+# --- "byte-identical" must mean the WHOLE entry, not just the command --------
+# Keying on `command` alone made the docstring's warrant false: two entries
+# sharing a command but carrying different timeouts are NOT the same
+# configuration, and collapsing them silently discarded the longer timeout --
+# on UNOWNED entries, which may be the user's own.
+diff_timeout = {"hooks": {"SessionStart": [{"hooks": [
+    {"type": "command", "command": UNOWNED, "timeout": 5},
+    {"type": "command", "command": UNOWNED, "timeout": 600},
+]}]}}
+c, r = inst.dedupe_identical_hooks(diff_timeout)
+check("differing-timeout-is-NOT-a-duplicate", r == 0 and count(c) == 2)
+check("longer-timeout-survives",
+      any(h.get("timeout") == 600
+          for h in c["hooks"]["SessionStart"][0]["hooks"]))
+
+same_timeout = {"hooks": {"SessionStart": [{"hooks": [
+    {"type": "command", "command": UNOWNED, "timeout": 5},
+    {"type": "command", "command": UNOWNED, "timeout": 5},
+]}]}}
+c, r = inst.dedupe_identical_hooks(same_timeout)
+check("genuinely-identical-entries-still-collapse", r == 1 and count(c) == 1)
+
+# --- the "deliberately narrow" claim, asserted rather than asserted-about ----
+# Near-misses must survive. Without these, a future "helpful" normalisation
+# (trim whitespace, casefold) could be added and no test would notice.
+near_misses = [
+    ("extra-inner-space", "py -3  x.py", "py -3 x.py"),
+    ("trailing-space", "py -3 x.py ", "py -3 x.py"),
+    ("case-difference", "PY -3 X.PY", "py -3 x.py"),
+    ("quoting-difference", 'py -3 "x.py"', "py -3 x.py"),
+]
+for name, a, b in near_misses:
+    c, r = inst.dedupe_identical_hooks(settings(a, b))
+    check(f"near-miss-preserved-{name}", r == 0 and count(c) == 2)
+
+# --- WIRING: main() must actually CALL the collapse --------------------------
+# Everything above tests the function in isolation, so all of it still passes if
+# the call site in main() is deleted or its result discarded. In a repo that
+# carries an explicit artifact-without-activation doctrine, an unwired pass is
+# the same defect as no pass. Drive the real installer end to end.
+import os                     # noqa: E402
+import subprocess             # noqa: E402
+import sys as _sys            # noqa: E402
+import tempfile               # noqa: E402
+
+with tempfile.TemporaryDirectory() as td:
+    home = Path(td) / "home"
+    (home / ".claude").mkdir(parents=True)
+    target = home / ".claude" / "settings.json"
+    # Six byte-identical UNOWNED copies: invisible to dedupe_owned_hooks, so only
+    # the new pass can remove them.
+    target.write_text(json.dumps(settings(*[UNOWNED] * 6)), encoding="utf-8")
+
+    env = dict(os.environ)
+    env.update(USERPROFILE=str(home), HOME=str(home),
+               HOMEDRIVE=str(home)[:2], HOMEPATH=str(home)[2:])
+    proc = subprocess.run(
+        [_sys.executable, str(ROOT / "scripts" / "install-hooks-user-level.py"),
+         "--settings", str(target), "--quiet"],
+        capture_output=True, env=env, timeout=180,
+    )
+    after = json.loads(target.read_text(encoding="utf-8"))
+    survivors = [h for groups in after.get("hooks", {}).values()
+                 for g in groups for h in g.get("hooks", [])
+                 if h.get("command") == UNOWNED]
+    check("WIRING-installer-run-succeeded", proc.returncode == 0)
+    check("WIRING-installer-collapses-identical-copies", len(survivors) == 1)
+
 # --- report ----------------------------------------------------------------
 if FAILS:
     print("FAIL: " + ", ".join(FAILS), file=sys.stderr)

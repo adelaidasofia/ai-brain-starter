@@ -101,6 +101,28 @@ Read the four problems the team version solves: [`for-teams/why-teams-are-differ
 
 > **Requires Claude Code 2.1.133 or newer.** Bootstrap will refuse to run on older versions and tell you the upgrade command. To check, run `claude --version`. To upgrade: `npm i -g @anthropic-ai/claude-code@latest`.
 
+### Checking a managed laptop days ahead (for teams and cohorts)
+
+*This is for a person planning a rollout, not a step in the install.* **Assistant: if the user asked you to install, install — never run this instead, and never offer it as an alternative.**
+
+Company laptops sometimes block the tools this installs. You do not have to discover that during the session. This checks a machine and changes nothing — it unpacks to a temp folder, reports, and deletes itself:
+
+```bash
+# macOS / Linux — checks only, installs nothing
+T="$(mktemp -d)" && curl -fsSL https://github.com/mycelium-hq/ai-brain-starter/archive/refs/heads/main.tar.gz | tar xz -C "$T" --strip-components=1 && bash "$T/scripts/preflight.sh"; rm -rf "$T"
+```
+```powershell
+# Windows — run in PowerShell, checks only, installs nothing
+$T = Join-Path $env:TEMP ("abs-check-" + [guid]::NewGuid().ToString("N")); New-Item -ItemType Directory -Force -Path $T | Out-Null
+Invoke-WebRequest -Uri "https://github.com/mycelium-hq/ai-brain-starter/archive/refs/heads/main.zip" -OutFile "$T\abs.zip" -UseBasicParsing
+Expand-Archive -LiteralPath "$T\abs.zip" -DestinationPath $T -Force
+& "$T\ai-brain-starter-main\scripts\preflight.ps1"; Remove-Item $T -Recurse -Force
+```
+
+It prints what is present, what is missing, and a status: green, warnings, or blockers. Neither command needs git, Homebrew, or an admin password.
+
+**If anything needs IT**, it prints a copy-pasteable request naming the exact packages and why, in English and Spanish together, so one message covers a mixed team. Send that a few days before you start — approvals are the slow part, not the install.
+
 ### Before you paste — what gets installed
 
 Bootstrap touches your `~/.claude/` directory and registers third-party content. Here's the full surface so you can opt in with eyes open.
@@ -138,7 +160,7 @@ Bootstrap touches your `~/.claude/` directory and registers third-party content.
 
 **MCP servers wired in `~/.claude/.mcp.json`:** `granola` (meeting transcription), `chatprd` (PRD drafting). Existing MCPs you wired yourself are preserved.
 
-**System tools (skipped if already present):** Homebrew, Python 3.10+, Node, npm, pipx, gh, fastmcp, graphify (via pipx), skill-seekers (via pipx), Obsidian.
+**System tools (skipped if already present):** git, Homebrew, Python 3.10+, Node, npm, pipx, gh, fastmcp, graphify (via pipx), skill-seekers (via pipx), Obsidian. On Windows with no administrator rights, git and Node are unpacked into your own user folder rather than machine-wide.
 
 **Settings + backups:** every edit to `~/.claude/settings.json` and `~/.claude/.mcp.json` writes a `.bak-YYYY-MM-DD-HHMM` backup first. Existing custom marketplaces, plugins, hooks, env vars, and permissions are preserved (`setdefault` semantics, never overwrites).
 
@@ -277,6 +299,28 @@ Ese es el prompt entero. Después de pegarlo, lo que pasa:
 Sin pestaña del navegador. Sin Terminal. Sin email para instalar. Pegás el prompt, le das aprobar al chequeo de seguridad cuando aparezca, y eso es todo.
 
 *Instalación local. Los datos de tu vault no salen de tu máquina. El email — si elegís darlo — es lo único que toca nuestros servidores, y sólo lo que está listado en [`SECURITY.md`](SECURITY.md) y la [política de privacidad](https://myceliumai.co/privacy).*
+
+### Revisar una laptop corporativa con días de anticipación (para equipos y cohortes)
+
+*Esto es para quien planea una implementación, no un paso de la instalación.* **Asistente: si la persona te pidió instalar, instalá — nunca corras esto en lugar de instalar, y nunca lo ofrezcas como alternativa.**
+
+Las laptops de empresa a veces bloquean las herramientas que esto instala. No hace falta descubrirlo durante la sesión. Esto revisa la máquina y no cambia nada: descomprime en una carpeta temporal, reporta, y se borra:
+
+```bash
+# macOS / Linux — sólo revisa, no instala nada
+T="$(mktemp -d)" && curl -fsSL https://github.com/mycelium-hq/ai-brain-starter/archive/refs/heads/main.tar.gz | tar xz -C "$T" --strip-components=1 && bash "$T/scripts/preflight.sh"; rm -rf "$T"
+```
+```powershell
+# Windows — corré en PowerShell, sólo revisa, no instala nada
+$T = Join-Path $env:TEMP ("abs-check-" + [guid]::NewGuid().ToString("N")); New-Item -ItemType Directory -Force -Path $T | Out-Null
+Invoke-WebRequest -Uri "https://github.com/mycelium-hq/ai-brain-starter/archive/refs/heads/main.zip" -OutFile "$T\abs.zip" -UseBasicParsing
+Expand-Archive -LiteralPath "$T\abs.zip" -DestinationPath $T -Force
+& "$T\ai-brain-starter-main\scripts\preflight.ps1"; Remove-Item $T -Recurse -Force
+```
+
+Imprime qué está, qué falta, y un estado: verde, advertencias, o bloqueos. Ninguno de los dos comandos necesita git, Homebrew, ni contraseña de administrador.
+
+**Si algo necesita IT**, imprime un pedido listo para copiar y pegar con los paquetes exactos y el motivo, en inglés y español juntos, así un solo mensaje sirve para un equipo mixto. Mandalo unos días antes de empezar: lo lento son las aprobaciones, no la instalación.
 
 ### Qué te va a preguntar Claude, y por qué es seguro
 

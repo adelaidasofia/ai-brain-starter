@@ -48,6 +48,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 import tempfile
@@ -75,6 +76,18 @@ from pathlib import Path
 # turning a warning into a crash: a mojibake character in a diagnostic is
 # always better than losing the diagnostic.
 _TEXT_UTF8 = {"text": True, "encoding": "utf-8", "errors": "replace"}
+
+# Seconds Claude Code lets a Windows hook entry run before it kills it. The
+# OUTER of two bounds; hook_runner.py's own watchdog is the inner one, at 45 s
+# (the value subprocess.run(timeout=45) gave it for free before the hook moved
+# in-process, PR #446). Deliberately LARGER than the inner bound rather than
+# equal to it: the runner's watchdog masks a hung hook cleanly — fallback JSON,
+# exit 0, no visible error — and it only gets to do that if it fires first. An
+# equal value is a race, and the side that wins is the one that reports a killed
+# hook to the user. This bound is what still applies when the RUNNER is the
+# thing that wedged. Without it the harness default (~600 s) is the only bound
+# there is. POSIX entries keep their shell form and no timeout key, as before.
+WINDOWS_HOOK_TIMEOUT_SECONDS = 60
 
 
 # Fingerprint substrings — any hook command containing one of these is
@@ -163,6 +176,12 @@ ABS_FINGERPRINTS = [
     "ai-brain-starter/hooks/remediate-runaway-procs.py",
     # Write-time secret guard:
     "ai-brain-starter/hooks/block-secret-in-note.py",
+    # Write-time privacy guard: a `__SKIP` line is content the user told the
+    # assistant NOT to persist. MODEL-GENERAL -- any agent drafting a life
+    # record from conversation can carry the line through to the file, and a
+    # persisted line cannot be un-persisted (file + git history + any index
+    # over the vault). Blocks, because a warning that is ignored still writes.
+    "ai-brain-starter/hooks/block-skip-prefix-in-vault-write.py",
     # Handoff lifecycle guard (issue #375). Shipped since the handoff-files rule
     # existed but was never registered here, so templates/rules/handoff-files.md
     # documented an enforcement that did nothing on every install
@@ -184,9 +203,23 @@ ABS_FINGERPRINTS = [
     # Bare ~/dev hub-rot guard (read-time detection) + surfacer (MYC-1893):
     "ai-brain-starter/hooks/warn-stale-dev-checkout.py",
     "ai-brain-starter/hooks/dev-hub-refresh-on-session-start.py",
+    # NOTE: hooks/surface-sync-guard-findings.py (MYC-1133) is deliberately NOT
+    # listed here. It is not its own SessionStart hook -- SessionStart is at its
+    # fan-out budget, and buying budget to fit one more cold start would hide the
+    # cost the footprint gate exists to surface. worktree-footprint-signal.py
+    # calls its build_report() instead, so the findings reach a human at zero
+    # added fan-out. The file still ships (skill payload) and runs standalone
+    # with --self-test as a diagnostic.
     # Client-side deployed==committed drift detector (MYC-2507): surfaces when this
     # deploy step itself failed silently and settings.json fell behind hooks.json.
     "ai-brain-starter/hooks/surface-deployed-hooks-behind.py",
+    # Its sibling, for the other direction (MYC-1031 item 1 / MYC-3880): the one
+    # above catches settings.json falling BEHIND hooks.json; this one catches a
+    # SessionStart hook being pruned OUT of settings.json by a linter, a manual
+    # edit, or a parallel session -- drift hooks.json cannot see. Shipped dormant
+    # since MYC-1031 and wired here now that its identity function actually works
+    # on Windows; before that it was a guard about drift that was itself drifting.
+    "ai-brain-starter/hooks/sessionstart-hook-snapshot-guard.py",
     # Journal Step-0 context guard (2026-07-07) + its SessionStart self-heal. OWNED so
     # the installer dedups the guard (skill-path vs a ~/.claude/hooks/ copy) PER MATCHER,
     # verifies both scripts on disk, and can retire/relocate them. Registered under two
@@ -224,6 +257,7 @@ ABS_OWNED_BASENAMES = {
     "snapshot-pending-work-on-stop.py", "surface-orphan-worktree-snapshots.py",
     "remove-ended-worktree.py", "enforce-worktree-cap.py",
     "worktree-footprint-signal.py", "remediate-runaway-procs.py",
+    "sessionstart-hook-snapshot-guard.py",
     # Worktree HEAD-isolation gate (MYC-782). Basename listed so a copy wired at
     # ~/.claude/hooks/ — the hand-wired form on pre-registration machines —
     # dedups against the skill-path copy instead of double-firing.
@@ -235,7 +269,8 @@ ABS_OWNED_BASENAMES = {
     # MCP secret-leak guards (MYC-3560): same basename-dedup reasoning as the
     # two gates above.
     "block-claude-mcp-inline-secret.py", "block-mcp-config-inline-secret.py",
-    "block-secret-in-note.py", "context-budget-measure.py",
+    "block-secret-in-note.py", "block-skip-prefix-in-vault-write.py",
+    "context-budget-measure.py",
     "validate-handoff-frontmatter.py",
     "block-populated-public-skill.py",
     "warn-workflow-call-permission-elevation.py",
@@ -329,6 +364,8 @@ HOME_HOOKS_INSTALLER_DEPLOYS = {
 HOME_HOOKS_LIB_DEPS = {
     "__init__.py",     # makes _lib a package; without it the import fails
     "vault_root.py",   # vault-context.py -> vault_root_for()
+    "standing_report.py",  # dev-hub-refresh + orphan-claude-branches -> condense()
+    "session_echo.py",     # available to any per-prompt injector -> should_emit()
 }
 
 # Hooks ai-brain-starter USED TO ship and has deliberately RETIRED. The
@@ -374,6 +411,73 @@ def _owned_basenames(cmd: str) -> set[str]:
     return {os.path.basename(m) for m in _SCRIPT_RE.findall(cmd)} & ABS_OWNED_BASENAMES
 
 
+# Extracts .py script paths from a hook command. Paths are unquoted or quoted;
+# unquoted paths never contain spaces in our template. Used both to identify a
+# command's target script and to rewrite that command for Windows.
+_WIN_PY_PATH_RE = re.compile(r"(~?[^\s'\"|&;]+\.py)\b")
+
+# A token holding any of these is shell syntax, not a script argument. Reaching
+# one ENDS the argument list: everything past it belongs to the POSIX masking
+# clause (`|| true`, `2>/dev/null || echo '{...}'`, `; else ...; fi`), not to the
+# hook. Forwarding `2>/dev/null` or `true` to a hook is worse than dropping args.
+_SHELL_SYNTAX_CHARS = set("|&;<>()`$\n")
+
+
+def _hook_script_args(cmd: str) -> list[str]:
+    """The arguments a hook command passes to the LAST .py script it names.
+
+    Both command forms this installer handles put the hook's own script last —
+    POSIX `[ -f X ] && python3 X --test || true`, and the Windows runner form
+    `py -3 "hook_runner.py" --fallback silent "X" --test` — so one scan reads
+    both and a hook's identity stays the same across platforms.
+
+    Everything after that path is tokenized left to right and kept until the
+    first shell-syntax token (see _SHELL_SYNTAX_CHARS). Backslashes are literal,
+    not escapes: on Windows these tails sit next to real `C:\\...` paths.
+
+    Returns [] when there is no .py path, no arguments, or the tail does not
+    tokenize — the conservative answer in every case."""
+    matches = list(_WIN_PY_PATH_RE.finditer(cmd))
+    if not matches:
+        return []
+    m = matches[-1]
+    tail = cmd[m.end():]
+    # The path regex excludes quote characters, so a QUOTED path leaves its
+    # closing quote at the head of the tail. Drop it, or that quote opens a new
+    # string and the whole masking clause tokenizes as one bogus argument.
+    quote = cmd[m.start() - 1] if m.start() else ""
+    if quote in ("'", '"') and tail[:1] == quote:
+        tail = tail[1:]
+    lex = shlex.shlex(tail, posix=True)
+    lex.whitespace_split = True
+    lex.commenters = ""  # '#' is a legal character inside an argument
+    lex.escape = ""      # a backslash is a path separator here, not an escape
+    args: list[str] = []
+    try:
+        for token in lex:
+            if not token or _SHELL_SYNTAX_CHARS & set(token):
+                break
+            args.append(token)
+    except ValueError:  # unbalanced quote — claim no arguments rather than guess
+        return []
+    return args
+
+
+def _owned_hook_key(cmd: str) -> tuple[frozenset, tuple] | None:
+    """Dedup identity of an OWNED hook: which script, run with which arguments.
+
+    None for a command running no owned script (a user hook — never deduped).
+
+    Arguments belong in the key because one script under two argument lists is
+    two registrations. hooks.json wires lint-claude-settings.py twice on
+    SessionStart — plain, and `--test` for its self-test — and keying on the
+    basename alone collapses the pair, silently retiring the self-test."""
+    owned = frozenset(_owned_basenames(cmd))
+    if not owned:
+        return None
+    return owned, tuple(_hook_script_args(cmd))
+
+
 def find_repo_root() -> Path:
     here = Path(__file__).resolve().parent
     candidates = [
@@ -400,16 +504,49 @@ def is_abs_owned(command: str) -> bool:
     return bool(_owned_basenames(command))
 
 
+def _without_launcher(cmd: str) -> str:
+    """A Windows runner-form command with its leading interpreter token removed.
+
+    WHY. Windows commands are `<launcher> "<abs>/hook_runner.py" --fallback X
+    "<abs>/<hook>.py" [args]`, and the launcher is a fact about the MACHINE —
+    which interpreter, and how it is spelled — resolved fresh on every install
+    (MYC-3877 replaced `py -3` with the absolute path it resolves to). It is not
+    part of a hook's identity: the same runner on the same target with the same
+    arguments is the same hook however the interpreter is named.
+
+    Without this, the literal-text comparison below reads a launcher change as a
+    NEW hook, so merge_hooks() adds instead of replacing and the install grows a
+    second copy of every entry that is not covered by a fingerprint or an owned
+    basename. Measured on the real template at the moment `py -3` became an
+    absolute path: 9 of 60 commands duplicated, and they would duplicate again
+    on the next launcher change.
+
+    Non-Windows commands contain no hook_runner.py and are returned untouched."""
+    idx = cmd.find('hook_runner.py"')
+    if idx == -1:
+        return cmd.strip()
+    quote = cmd.rfind('"', 0, idx)
+    return (cmd[quote:] if quote != -1 else cmd).strip()
+
+
 def is_same_command(a: str, b: str) -> bool:
     """Two commands count as the same hook if they share an ABS fingerprint OR
     an owned script basename (so a skill-path entry and a ~/.claude/hooks/ entry
-    for the same script dedup to one), else if the literal text matches."""
+    for the same script dedup to one), else if the literal text matches once the
+    machine-specific launcher token is set aside (see _without_launcher).
+
+    The same script with DIFFERENT arguments is NOT the same hook. merge_hooks()
+    REPLACES on a match, so reading the pair as duplicates means whichever one
+    the merge happened to keep is the only one that ever runs — for the
+    lint-claude-settings.py pair that silently retired one of the two."""
+    if _hook_script_args(a) != _hook_script_args(b):
+        return False
     for fp in ABS_FINGERPRINTS:
         if fp in a and fp in b:
             return True
     if _owned_basenames(a) & _owned_basenames(b):
         return True
-    return a.strip() == b.strip()
+    return _without_launcher(a) == _without_launcher(b)
 
 
 def _hook_depends_on_vault(command: str) -> bool:
@@ -548,37 +685,229 @@ def _ascii_safe_win_path(path: str) -> str:
     return path
 
 
-def _windows_launcher() -> list[str] | None:
-    """Resolve a Python launcher that parses as a bare command in EVERY shell
-    Claude Code may use for hooks on Windows (PowerShell 5.1 / 7, cmd.exe, Git
-    Bash). Only an UNQUOTED first token parses in all of them, so the launcher
-    must be a bare PATH name — each candidate is validated by actually running
-    it, which also filters out the Microsoft Store's fake `python` alias stub.
-    Overridable for tests via ABS_WIN_LAUNCHER (space-separated tokens)."""
-    import shutil
+# A candidate interpreter must print this for us to believe it is a real
+# CPython 3 rather than the Microsoft Store's `python` alias stub (which opens
+# the Store and prints nothing) or a wrapper script.
+_PY_PROBE = ("import sys;sys.stdout.write('ABSPY%d;%s' "
+             "% (sys.version_info[0], sys.executable))")
+_PY_PROBE_OK = "ABSPY3;"
+
+
+def _probe_interpreter(argv: list[str]) -> str | None:
+    """Run `argv -c <probe>`. Returns the interpreter's OWN absolute path.
+
+    Executing the candidate is what filters the Store alias stub; requiring the
+    major version back is what keeps a python2 or a shim from passing. The
+    returned sys.executable is the thing `py -3` costs 21 ms per spawn to work
+    out (its own launcher process re-reads the PEP 514 registry every time), so
+    resolving it ONCE here is the entire point."""
     import subprocess
+
+    try:
+        probe = subprocess.run([*argv, "-c", _PY_PROBE],
+                               capture_output=True, timeout=15, **_TEXT_UTF8)
+    except Exception:  # noqa: BLE001 — a broken candidate is just skipped
+        return None
+    if probe.returncode != 0:
+        return None
+    out = (probe.stdout or "").strip()
+    if not out.startswith(_PY_PROBE_OK):
+        return None
+    return out[len(_PY_PROBE_OK):].strip() or None
+
+
+def _win_bare_token_candidates(exe: str) -> list[str]:
+    """Spellings of an absolute interpreter path that MAY work as a bare first
+    token, best first. Empty when this machine cannot produce one.
+
+    Constraints are inherited from the launcher token's position: it is written
+    UNQUOTED (a quoted first token is a string literal in PowerShell), so it
+    must carry no space and no non-ASCII — 8.3 short names give us both, and
+    are already how this installer ASCII-safes hook paths.
+
+    Separator spelling is NOT decided here. Forward slashes come first because
+    a backslash is an ESCAPE in Git Bash (unquoted `C:\\Users\\x` collapses to
+    `C:Usersx`), but whether cmd.exe accepts the forward-slash form is a fact
+    about the user's machine, so _token_parses_in_every_shell() settles it by
+    running both."""
+    if not exe:
+        return []
+    out: list[str] = []
+    for spelling in (exe.replace("\\", "/"), exe):
+        token = _ascii_safe_win_path(spelling)
+        if " " in token:
+            token = _win_short_path(token) or token
+        if not token or " " in token or not token.isascii():
+            continue
+        if token not in out:
+            out.append(token)
+    return out
+
+
+def _shell_probe_prefixes() -> list[tuple[str, list[str]]]:
+    """(label, argv-prefix) for every shell present that takes a command STRING.
+
+    Git Bash is the awkward one: `git.exe` is on PATH on a Git-for-Windows box
+    but `bash.exe` usually is not, so a plain which('bash') would silently skip
+    the shell whose parsing rules are the strictest of the four."""
+    import shutil
+
+    found: list[tuple[str, list[str]]] = []
+    for name, prefix in (
+        ("cmd.exe", ["cmd.exe", "/d", "/c"]),
+        ("powershell", ["powershell", "-NoProfile", "-NonInteractive", "-Command"]),
+        ("pwsh", ["pwsh", "-NoProfile", "-NonInteractive", "-Command"]),
+        ("bash", ["bash", "-c"]),
+    ):
+        if shutil.which(name):
+            found.append((name, prefix))
+    if not any(label == "bash" for label, _ in found):
+        git = shutil.which("git")
+        if git:
+            root = Path(git).resolve().parent.parent
+            for rel in ("bin/bash.exe", "usr/bin/bash.exe", "bin/bash"):
+                cand = root / rel
+                if cand.is_file():
+                    found.append(("bash", [str(cand), "-c"]))
+                    break
+    return found
+
+
+def _token_parses_in_every_shell(token) -> bool:
+    """Execute `<token> -V` through every shell on THIS machine. All must run it.
+
+    `token` is the first token, or the WHOLE launcher prefix as a list when it
+    carries more than one (`<abs-python> -X utf8`). The extra tokens are bare
+    ASCII flags, but "bare ASCII flags obviously parse" is exactly the kind of
+    reasoning this gate exists to replace, so a multi-token prefix is proven as
+    a unit rather than inherited from its first token's proof.
+
+    WHY THIS EXISTS AND IS NOT A COMMENT. The bare `py` being replaced was
+    chosen because it is the one token SHAPE that PowerShell 5.1, PowerShell 7,
+    cmd.exe and Git Bash parse alike. An absolute path is a different shape — it
+    carries separators, and may be an 8.3 name — so it does not inherit that
+    proof, and no amount of reasoning about four shells' quoting rules is worth
+    an install where every hook errors on every prompt. So the installer runs
+    the exact first token it is about to write, in every shell it can find,
+    before it commits to it.
+
+    A shell that is not installed is not evidence either way and is skipped;
+    if NONE is present nothing was proved, and the caller keeps the bare
+    launcher. Any failure is a hard no: this is a fail-safe gate, so the
+    ambiguous case must lose."""
+    import subprocess
+
+    tokens = [token] if isinstance(token, str) else list(token)
+    if not tokens or not all(tokens):
+        return False
+    command = " ".join(tokens)
+
+    proved = 0
+    for _label, prefix in _shell_probe_prefixes():
+        try:
+            probe = subprocess.run([*prefix, f"{command} -V"],
+                                   capture_output=True, timeout=20, **_TEXT_UTF8)
+        except Exception:  # noqa: BLE001 — an unusable shell proves nothing
+            return False
+        if probe.returncode != 0:
+            return False
+        if "Python 3" not in ((probe.stdout or "") + (probe.stderr or "")):
+            return False
+        proved += 1
+    return proved > 0
+
+
+def _with_utf8_mode(prefix: list[str]) -> list[str]:
+    """Append `-X utf8` (PEP 540) when the FULL prefix still parses everywhere.
+
+    WHY IT MOVED ONTO THE LAUNCHER (MYC-3877 + PR #446). The hook used to run in
+    a CHILD interpreter, so hook_runner.py could hand it PYTHONUTF8=1 through
+    the child's environment. The hook now runs IN the runner's own process, and
+    UTF-8 Mode is fixed at interpreter startup — an env var set after that has
+    nothing left to act on. The only place it can still be turned on is the
+    command line the installer writes.
+
+    What it costs to skip: a hook doing `open(path).read()` decodes with the
+    console code page, and cp1252 has unmapped bytes (0x81/0x8D/0x8F/0x90/0x9D
+    — the gear emoji's 0x8F among them), so the read raises UnicodeDecodeError.
+    That is a ValueError, not an OSError, so it slips past the `except OSError`
+    in two dozen shipped hooks and the guard fails open silently.
+
+    Proven, not assumed: `-X utf8` is two bare ASCII tokens after a first token
+    that already passed the gate, and the whole prefix goes back through
+    _token_parses_in_every_shell() before it is written. Unproven -> the prefix
+    without it, same fail-safe direction as everything else here.
+    ABS_WIN_UTF8_MODE=0 opts out; like ABS_WIN_ABS_INTERPRETER it can only turn
+    the improvement off."""
+    if os.environ.get("ABS_WIN_UTF8_MODE", "1") == "0":
+        return prefix
+    candidate = [*prefix, "-X", "utf8"]
+    if _token_parses_in_every_shell(candidate):
+        return candidate
+    return prefix
+
+
+def _windows_launcher() -> list[str] | None:
+    """Resolve the Python launcher baked into every Windows hook command.
+
+    Returns an absolute interpreter path when one can be PROVEN to parse as a
+    bare first token in every shell on this machine, else the bare PATH name it
+    was resolved from (`py -3` / `python` / `python3`), else None.
+
+    WHY THE ABSOLUTE PATH IS WORTH IT (MYC-3877). `py -3` is a launcher STUB:
+    py.exe starts, re-reads the PEP 514 registry to find a Python 3, and only
+    then starts the interpreter. Measured 21 ms per spawn on an Intel i5-9300H
+    / Windows 11 with live AV — about 11% of the per-hook cost, paid on every
+    hook of every tool call, to re-derive an answer that does not change between
+    installs. Resolving it once here and writing the result removes it.
+
+    BOTH GUARANTEES OF THE OLD BARE `py` ARE KEPT:
+      * bare, unquoted, space-free, ASCII first token — enforced by
+        _win_bare_token_candidates() and PROVEN per machine by
+        _token_parses_in_every_shell(), which refuses anything a present shell
+        will not run. Nothing unproven is ever written.
+      * the Microsoft Store alias stub is still filtered, and now more strictly:
+        _probe_interpreter() requires a real CPython 3 to answer back, where the
+        old probe accepted any exit-0.
+
+    `-X utf8` is appended by _with_utf8_mode() once the whole prefix is proven:
+    the hook runs IN the runner's interpreter now, so UTF-8 Mode has to be on at
+    ITS startup — there is no child env left to put PYTHONUTF8 in.
+
+    Escape hatches: ABS_WIN_LAUNCHER (space-separated tokens) overrides
+    everything verbatim, as before — including UTF-8 Mode, so anyone using it to
+    pin an exact command line still gets exactly what they wrote.
+    ABS_WIN_ABS_INTERPRETER=0 keeps the bare launcher for anyone who wants their
+    hooks to follow PATH, and ABS_WIN_UTF8_MODE=0 drops `-X utf8`; both can only
+    turn an optimization off, never gate the working default."""
+    import shutil
 
     env_override = os.environ.get("ABS_WIN_LAUNCHER")
     if env_override:
         return env_override.split()
+
+    allow_abs = os.environ.get("ABS_WIN_ABS_INTERPRETER", "1") != "0"
     for candidate, argv in (("py", ["py", "-3"]),
                             ("python", ["python"]),
                             ("python3", ["python3"])):
         if not shutil.which(candidate):
             continue
-        try:
-            probe = subprocess.run([*argv, "-c", "import sys"],
-                                   capture_output=True, timeout=15)
-            if probe.returncode == 0:
-                return argv
-        except Exception:  # noqa: BLE001 — a broken candidate is just skipped
+        exe = _probe_interpreter(argv)
+        if exe is None:
             continue
+        if allow_abs:
+            for token in _win_bare_token_candidates(exe):
+                if _token_parses_in_every_shell(token):
+                    return _with_utf8_mode([token])
+        # proven interpreter, unproven spelling: keep the bare name
+        return _with_utf8_mode(argv)
     # ASCII-safed for the same reason the hook paths are: this token is written
     # UNQUOTED, so an accented profile directory in the interpreter path breaks
     # every hook command the moment the shell's code page mangles it.
     exe = _ascii_safe_win_path(sys.executable or "")
     if exe and " " not in exe:
-        return [exe]  # unquoted absolute path parses everywhere iff space-free
+        # unquoted absolute path parses everywhere iff space-free
+        return _with_utf8_mode([exe])
     return None
 
 
@@ -646,9 +975,15 @@ def substitute_python_interpreter(template: dict) -> dict:
     return json.loads(s)
 
 
-# Extracts .py script paths from a POSIX hook command. Paths are unquoted or
-# quoted; unquoted paths never contain spaces in our template.
-_WIN_PY_PATH_RE = re.compile(r"(~?[^\s'\"|&;]+\.py)\b")
+def _win_quote_arg(arg: str) -> str:
+    """Quote a forwarded hook argument only when it needs it.
+
+    A bare token is the one shape PowerShell 5.1/7, cmd.exe and Git Bash all
+    parse identically, so flags like `--test` stay bare. Arguments come from our
+    own template, so the only case needing quotes is an embedded space; an
+    argument whose CONTENT holds a quote character has no form all four shells
+    parse alike, and none is attempted here."""
+    return f'"{arg}"' if (not arg or any(c.isspace() for c in arg)) else arg
 
 
 def _runner_path() -> str:
@@ -702,11 +1037,17 @@ def platformize_template_for_windows(template: dict) -> tuple[dict, list[str]]:
     prompt for Windows users. The one shape they all parse identically is a
     bare PATH command with quoted arguments:
 
-        py -3 "<abs>/scripts/hook_runner.py" --fallback silent "<abs>/<hook>.py"
+        <interpreter> "<abs>/scripts/hook_runner.py" --fallback silent "<abs>/<hook>.py"
+
+    <interpreter> comes from _windows_launcher(): the absolute path `py -3`
+    resolves to when that path can be PROVEN to parse bare in every shell on
+    this machine, else the bare `py -3` / `python` / `python3` it came from.
+    See that function for why the spelling is not a free choice.
 
     hook_runner.py reproduces the masking semantics of the shell forms (see
     its docstring): missing script -> fallback JSON; exit 2 -> real block
-    propagates; any other failure -> fallback JSON.
+    propagates; any other failure -> fallback JSON. It runs the hook IN ITS OWN
+    PROCESS: one interpreter per hook, never two (MYC-3877).
 
     Rules per command:
       - references a .sh script  -> OMIT (bash-only; reported to the caller)
@@ -714,8 +1055,22 @@ def platformize_template_for_windows(template: dict) -> tuple[dict, list[str]]:
         chains (`python3 vault-copy || python3 home-copy`) the LAST path wins:
         it is the ~/.claude home copy, the one guaranteed space-free and
         present on every install.
+      - the target's own ARGUMENTS follow it, forwarded through the runner
+        (whose argv contract is `[--fallback MODE] <target> [extra...]`). Only
+        real arguments survive, never the POSIX masking noise that trails every
+        template command — see _hook_script_args. Dropping them made
+        `lint-claude-settings.py --test` platformize to a byte-identical copy of
+        the plain entry, so dedup collapsed the pair and the linter's self-test
+        never ran on Windows.
       - fallback flavor: `allow` when the original masked to a PreToolUse
         permissionDecision, else `silent`.
+      - every rewritten entry carries "timeout": WINDOWS_HOOK_TIMEOUT_SECONDS.
+        The POSIX shell forms never needed one; the runner form does, because
+        `subprocess.run(..., timeout=45)` went away with the child process
+        (PR #446). hook_runner.py carries its own watchdog, and this is the
+        second, outer bound: it is the one that still applies if the runner is
+        the thing that wedged. merge_hooks() replaces the whole entry dict, so
+        an existing install picks it up on the next run with no migration.
 
     Returns (rewritten_template, skipped_labels). If no launcher can be
     resolved, returns the template unchanged with a loud warning — failing
@@ -760,7 +1115,9 @@ def platformize_template_for_windows(template: dict) -> tuple[dict, list[str]]:
                 fb = "allow" if "permissionDecision" in cmd else "silent"
                 h = dict(h)
                 h["command"] = " ".join(
-                    [*launcher, f'"{runner}"', "--fallback", fb, f'"{target}"'])
+                    [*launcher, f'"{runner}"', "--fallback", fb, f'"{target}"',
+                     *(_win_quote_arg(a) for a in _hook_script_args(cmd))])
+                h["timeout"] = WINDOWS_HOOK_TIMEOUT_SECONDS
                 new_hooks.append(h)
             if new_hooks:
                 g = dict(group)
@@ -1011,7 +1368,9 @@ def dedupe_owned_hooks(existing: dict) -> tuple[dict, int]:
     shim-safe path left two copies before this hook was owned), the replace touches only
     the first and a duplicate persists. This pass is the idempotent cleanup that self-heals
     such duplicates on the next install. Non-owned (user) hooks and DISTINCT owned hooks
-    are never touched. Groups emptied are dropped. Returns (cleaned, count_removed)."""
+    are never touched — and one script wired twice with different ARGUMENTS is two
+    distinct hooks, not a duplicate (see _owned_hook_key).
+    Groups emptied are dropped. Returns (cleaned, count_removed)."""
     cleaned = json.loads(json.dumps(existing))
     removed = 0
     if "hooks" not in cleaned:
@@ -1020,16 +1379,16 @@ def dedupe_owned_hooks(existing: dict) -> tuple[dict, int]:
         new_groups = []
         for g in groups:
             hooks = g.get("hooks", [])
-            # Last index per owned-basename set within THIS group. Only owned hooks
-            # (non-empty key) are eligible; a user hook (empty key) is always kept.
+            # Last index per owned (script, args) key within THIS group. Only owned
+            # hooks (non-None key) are eligible; a user hook (None) is always kept.
             last_idx: dict = {}
             for i, h in enumerate(hooks):
-                key = frozenset(_owned_basenames(h.get("command", "")))
+                key = _owned_hook_key(h.get("command", ""))
                 if key:
                     last_idx[key] = i
             kept = []
             for i, h in enumerate(hooks):
-                key = frozenset(_owned_basenames(h.get("command", "")))
+                key = _owned_hook_key(h.get("command", ""))
                 if key and last_idx.get(key) != i:
                     removed += 1
                     continue  # an earlier duplicate of an owned hook kept later in-group
@@ -1079,7 +1438,7 @@ def dedupe_identical_hooks(existing: dict) -> tuple[dict, int]:
     if "hooks" not in cleaned:
         return cleaned, 0
     for event, groups in list(cleaned["hooks"].items()):
-        # seen per matcher, so identical commands are collapsed both WITHIN a group
+        # seen per matcher, so identical entries are collapsed both WITHIN a group
         # and ACROSS groups that share a matcher (a later install can append a new
         # group rather than growing the existing one).
         seen: dict[str, set] = {}
@@ -1090,11 +1449,21 @@ def dedupe_identical_hooks(existing: dict) -> tuple[dict, int]:
             kept = []
             for h in g.get("hooks", []):
                 cmd = h.get("command", "")
-                if cmd and cmd in bucket:
+                # Key on the WHOLE entry, not just the command. Keying on the
+                # command alone made "byte-identical" false: two entries sharing
+                # a command but carrying `timeout: 5` and `timeout: 600` are not
+                # the same configuration, and collapsing them silently discarded
+                # the longer timeout. That breaks this function's entire warrant
+                # -- "there is no configuration in which running it twice is what
+                # the user meant" is only true when the entries really are
+                # identical -- and it would break it on UNOWNED entries, which
+                # may be the user's own.
+                key = json.dumps(h, sort_keys=True, ensure_ascii=True)
+                if cmd and key in bucket:
                     removed += 1
                     continue
                 if cmd:
-                    bucket.add(cmd)
+                    bucket.add(key)
                 kept.append(h)
             if kept:
                 ng = dict(g)
@@ -1661,10 +2030,16 @@ def main() -> int:
                 print(f"  - relocate {moved_count} moved-event stale copy(ies)")
             if deduped_count:
                 print(f"  - dedupe {deduped_count} duplicate owned hook(s)")
+            if identical_count:
+                print(f"  - collapse {identical_count} byte-identical hook(s)")
         return 0
 
+    # identical_count belongs here too: without it this branch can print
+    # "Already in sync. Nothing to write." on a run that collapsed entries and
+    # then discard the collapse -- a printed lie, and the discarded work silently
+    # reappears next run.
     if not summary["added"] and not summary["updated"] and not retired_count \
-            and not moved_count and not deduped_count:
+            and not moved_count and not deduped_count and not identical_count:
         if not args.quiet:
             print("\nAlready in sync. Nothing to write.")
         # Verify anyway. "Nothing to write" says the WIRING matches the template;

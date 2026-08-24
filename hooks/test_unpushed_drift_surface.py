@@ -35,7 +35,7 @@ sys.path.insert(0, str(HOOKS))
 
 def git(repo, *args, **kw):
     return subprocess.run(["git", "-C", str(repo), *args],
-                          capture_output=True, text=True, **kw)
+                          capture_output=True, text=True, encoding="utf-8", **kw)
 
 
 def make_repo(path: Path, *, remote: Path = None, age_days: float = 3.0) -> Path:
@@ -170,12 +170,22 @@ def main() -> int:
         # developer box has real hub state, so without pinning this the
         # assertion below passes locally and fails on a clean runner — which is
         # how it was caught.
+        # The condenser's state decides whether the hook renders the FULL
+        # section or a one-line digest, so leaving it unpinned makes this
+        # assertion a property of the machine rather than of the code (#539):
+        # green on a clean CI runner, where no prior state exists so every run
+        # is a "changed" first render, and red on a developer box, where a
+        # matching prior render collapses the section to a digest and the
+        # per-repo enumeration below is gone. Pinning it here is what makes both
+        # the full-render and digest assertions deterministic everywhere.
+        sr_state = tmp / "standing-reports"
         env = dict(os.environ, ABS_DEV_ROOT=str(dev), DEV_DRIFT_STATE=str(state),
                    DEV_HUB_REFRESH_STATE=str(tmp / "no-such-hub-state.json"),
-                   DEV_REPO_SCAN_DIR=str(HOOKS))
+                   DEV_REPO_SCAN_DIR=str(HOOKS),
+                   STANDING_REPORT_STATE_DIR=str(sr_state))
         rep = subprocess.run(
             [sys.executable, str(HOOKS.parent / "scripts" / "dev-drift-report.py"),
-             "--write-state"], capture_output=True, text=True, env=env)
+             "--write-state"], capture_output=True, text=True, encoding="utf-8", env=env)
         check(rep.returncode == 0, f"dev-drift-report failed: {rep.stderr[-400:]}")
         check(state.is_file(),
               "the daily leg wrote no state file — the SessionStart surface "
@@ -187,19 +197,45 @@ def main() -> int:
 
         hook = subprocess.run(
             [sys.executable, str(HOOKS / "dev-hub-refresh-on-session-start.py")],
-            input="{}", capture_output=True, text=True, env=env)
+            input="{}", capture_output=True, text=True, encoding="utf-8", env=env)
         rendered = json.loads(hook.stdout or "{}")
         ctx = (rendered.get("hookSpecificOutput") or {}).get("additionalContext", "")
         check("no-remote" in ctx,
               f"the SessionStart surface did not render the drift section with "
               f"NO hub state present (got {ctx[:200]!r}) — on a fresh install the "
               f"verdict would never reach a human")
+        # POSITIVE CONTROL for the pin above. If STANDING_REPORT_STATE_DIR were
+        # ignored, the condenser would have written the developer's real
+        # ~/.claude/.standing-reports instead and every assertion in this block
+        # would once again be decided by unpinned machine state — passing here
+        # while proving nothing.
+        check((sr_state / "dev-hub-refresh.json").is_file(),
+              "the condenser did not write the PINNED state dir — the override "
+              "is not binding, so this block is reading live machine state")
+
+        # The same finding-set a second time must CONDENSE, not vanish and not
+        # repeat in full. This is the behaviour that used to reach the assertion
+        # above by accident: the digest drops the per-repo enumeration, so
+        # `no-remote` (the repo NAME) disappears while the header sentence still
+        # says "no remote" with a space. Asserting it deliberately means CI now
+        # exercises the path that was previously only reachable on a dev box.
+        hook_again = subprocess.run(
+            [sys.executable, str(HOOKS / "dev-hub-refresh-on-session-start.py")],
+            input="{}", capture_output=True, text=True, encoding="utf-8", env=env)
+        ctx_d = (json.loads(hook_again.stdout or "{}").get(
+            "hookSpecificOutput") or {}).get("additionalContext", "")
+        check("LOST-WORK" in ctx_d,
+              f"an unchanged finding-set went SILENT instead of condensing — "
+              f"condensing must never trade coverage for silence (got {ctx_d[:200]!r})")
+        check(len(ctx_d) < len(ctx),
+              f"the second render did not condense (full {len(ctx)} chars vs "
+              f"{len(ctx_d)}) — the digest path is not being exercised")
 
         # An ABSENT state file must be SILENT, never reported as a clean fleet.
         state.unlink()
         hook = subprocess.run(
             [sys.executable, str(HOOKS / "dev-hub-refresh-on-session-start.py")],
-            input="{}", capture_output=True, text=True, env=env)
+            input="{}", capture_output=True, text=True, encoding="utf-8", env=env)
         ctx2 = (json.loads(hook.stdout or "{}").get("hookSpecificOutput") or {}).get(
             "additionalContext", "")
         check("no-remote" not in ctx2 and "LOST-WORK" not in ctx2,

@@ -151,7 +151,6 @@ def main() -> None:
                     "permissionDecision": "allow",
                     "permissionDecisionReason": cmsg,
                 },
-                "systemMessage": cmsg,
             }))
             sys.exit(0)
 
@@ -190,7 +189,6 @@ def main() -> None:
                 "permissionDecision": "allow",
                 "permissionDecisionReason": vmsg,
             },
-            "systemMessage": vmsg,
         }))
         sys.exit(0)
 
@@ -221,7 +219,6 @@ def main() -> None:
             "permissionDecision": "allow",
             "permissionDecisionReason": msg,
         },
-        "systemMessage": msg,
     }))
     sys.exit(0)
 

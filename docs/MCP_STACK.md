@@ -19,7 +19,7 @@ You install whichever subset you need. They work independently of each other and
 - [slack-mcp](https://github.com/adelaidasofia/slack-mcp) — multi-workspace Slack. xoxc / xoxp / xoxb auth. 18 tools spanning read, write, edit, delete, reactions, mark-read, vault export.
 - [imessage-mcp](https://github.com/adelaidasofia/imessage-mcp) — macOS-only. Direct read of `~/Library/Messages/chat.db`. Whisper transcription on voice notes. FTS5 search. AppleScript send.
 - [whatsapp-mcp](https://github.com/adelaidasofia/whatsapp-mcp) — multi-account WhatsApp via whatsmeow. Voice-note transcription. Send confirmation.
-- [google-workspace-mcp](https://github.com/adelaidasofia/google-workspace-mcp) — Gmail / Calendar / Drive / Docs / Sheets. macOS Keychain token storage. 61 tools.
+- [google-workspace-mcp](https://github.com/adelaidasofia/google-workspace-mcp) — Gmail / Calendar / Drive / Docs / Sheets. OS-native token storage via `keyring`: macOS Keychain, Windows Credential Manager, Linux Secret Service. 61 tools.
 
 ### Sales, writing, events
 

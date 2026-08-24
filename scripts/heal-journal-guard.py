@@ -175,33 +175,76 @@ def healthy_matchers(settings: dict) -> "set":
     return ok
 
 
+def _vault_candidates() -> "list[str]":
+    """Every distinct vault-shaped directory in the shallow search space.
+
+    A directory counts only if it actually holds `<meta>/scripts/` -- evidence,
+    not the "guessed ~/vault" this module has always refused to fall back to.
+
+    SEARCH SPACE. Home's immediate children, plus one level under the handful of
+    parents that in practice hold a notes vault (Documents, OneDrive, ...).
+    Bounded and shallow by construction -- never a corpus walk, because this runs
+    on every SessionStart (MYC-571).
+
+    Widening this was a CORRECTNESS fix, not a convenience one. Scanning only
+    home's immediate children made "exactly one candidate" mean "exactly one I
+    bothered to look at". Falsified on a real install: one vault sat directly
+    under home while a SECOND real Obsidian vault (~9k notes) sat one level down
+    under ~/Documents with an EMPTY meta/scripts and no preflight. The narrow
+    scan saw one candidate, called it unambiguous, and returned 'ok' for an
+    account that genuinely had a gap. A wider search does not make discovery more
+    eager -- it makes the AMBIGUITY CHECK honest, and ambiguity refuses.
+
+    Paths are canonicalised before de-duplication: one vault reachable under two
+    names (a `mklink /J` junction, a mirrored OneDrive/Dropbox folder -- all
+    normal Windows layouts) previously read as TWO candidates and disabled
+    discovery entirely.
+    """
+    roots = [Path.home()]
+    for sub in ("Documents", "OneDrive", "Notes", "Obsidian"):
+        p = Path.home() / sub
+        roots.append(p)
+        # One OneDrive level deeper: redirected Documents commonly lives there.
+        if sub == "OneDrive":
+            roots.append(p / "Documents")
+
+    seen: dict = {}
+    for root in roots:
+        try:
+            children = sorted(root.iterdir())
+        except (OSError, RuntimeError):
+            continue  # missing, unreadable, or not a directory - just skip it
+        for child in children:
+            # Per-CHILD isolation: one un-stat-able entry (a permission-denied
+            # folder, a stale network mount, a cloud placeholder) must not abort
+            # the scan and silently switch discovery off for the whole account.
+            try:
+                if not child.is_dir() or child.name.startswith("."):
+                    continue
+                if not any((child / meta / "scripts").is_dir()
+                           for meta in ("⚙️ Meta", "Meta")):
+                    continue
+                key = str(child.resolve()).casefold()
+            except (OSError, RuntimeError):
+                continue
+            seen.setdefault(key, str(child))
+    return sorted(seen.values())
+
+
 def _discover_vault() -> "str":
-    """The one unambiguous vault among home's immediate children, else "".
+    """The ONE unambiguous vault in the shallow search space, else "".
 
     Last resort, reached only when BOTH of resolve_vault's ordinary sources are
-    unavailable -- which on Windows is the normal case, not an edge case (see
-    resolve_vault). A directory is a vault candidate only if it actually holds
-    `<meta>/scripts/`, so this is evidence, not the "guessed ~/vault" the module
-    has always refused to fall back to.
+    unavailable -- which on Windows is the normal case, not an edge case.
 
-    Deliberately refuses to choose when the evidence is ambiguous: EXACTLY ONE
-    candidate returns, zero or many return "". Healing the wrong vault would
-    write a preflight into someone else's notes, which is worse than staying
-    inert. Immediate children only -- never a corpus walk (this runs on every
-    SessionStart)."""
-    try:
-        home = Path.home()
-        found = []
-        for child in sorted(home.iterdir()):
-            if not child.is_dir() or child.name.startswith("."):
-                continue
-            for meta in ("⚙️ Meta", "Meta"):
-                if (child / meta / "scripts").is_dir():
-                    found.append(str(child))
-                    break
-        return found[0] if len(found) == 1 else ""
-    except (OSError, RuntimeError):
-        return ""
+    Refuses to choose when the evidence is ambiguous: exactly one candidate
+    returns, zero or many return "". Healing the wrong vault would write a
+    preflight into someone else's notes, which is strictly worse than staying
+    inert. Callers that need to tell a user WHY nothing happened should call
+    _vault_candidates() directly -- silence about an ambiguous machine is how
+    this class of bug hides."""
+    found = _vault_candidates()
+    return found[0] if len(found) == 1 else ""
 
 
 def resolve_vault(settings: dict, explicit: "str | None" = None) -> "str":
@@ -436,9 +479,23 @@ def run_session_start() -> None:
         # the one unambiguous vault under home. Production-only: kept out of
         # resolve_vault() so the hermetic controls stay hermetic (MYC-3875).
         if report["preflight"] == "no-vault":
-            discovered = _discover_vault()
-            if discovered:
-                report = diagnose(settings, clone, discovered)
+            candidates = _vault_candidates()
+            if len(candidates) == 1:
+                report = diagnose(settings, clone, candidates[0])
+            elif len(candidates) > 1:
+                # Refusing is correct - healing the wrong vault writes a
+                # preflight into someone else's notes. But refusing SILENTLY is
+                # the original bug wearing a different hat, so say it and name
+                # the fix. Returns here: an ambiguous machine needs a human.
+                _emit_context(
+                    "[heal-journal-guard] Found "
+                    f"{len(candidates)} candidate vaults on this account, so "
+                    "the /journal Step-0 preflight check could not run and "
+                    "NOTHING was changed: "
+                    + ", ".join(candidates)
+                    + ". Set VAULT_ROOT to the one you journal in (or pass "
+                    "--vault) so this check can verify it.")
+                return
     except Exception:
         _emit_silent()
         return
