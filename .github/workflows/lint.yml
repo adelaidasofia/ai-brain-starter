@@ -301,6 +301,26 @@ jobs:
           done < <(grep -rn -E '`scripts/[A-Za-z0-9_./-]+\.(sh|ps1|py|plist)`' phases/ 2>/dev/null || true)
           [ -f /tmp/lint-ref-fail ] && exit 1 || exit 0
 
+      # Broader than the phases-only check above: every slash command and
+      # scripts/*.py path across README.md, docs/, phases/, and every
+      # skills/*/SKILL.md, plus a cheap check that a documented --flag is
+      # actually wired somewhere besides its own menu line. Built for
+      # MYC-4121 after eight of these were found by hand in one audit
+      # (/optimize-brain never shipped, /mem-search advertised after its own
+      # removal, two image scripts documented with a fabricated ship date,
+      # three graphify flags wired nowhere but their own menu, ...). See
+      # scripts/check-doc-promises.py's module docstring for what is checked
+      # and the bounded, documented exemptions for what is not. No
+      # untrusted input reaches this step -- it reads only committed
+      # tracked files already on the runner's checkout.
+      - name: doc-promises negative controls (the guard must still bite)
+        run: |
+          python3 scripts/check-doc-promises.py --self-test
+          python3 scripts/check-doc-promises.py --fixture-test
+
+      - name: every documented command, script, and flag actually exists
+        run: python3 scripts/check-doc-promises.py
+
       # Catches the bug class from the May 2026 install-UX incident: the README
       # told the installing assistant to run `bash <(curl -fsSL .../bootstrap.sh)`.
       # Piping un-reviewed remote code into a shell trips the Claude Code auto-mode
