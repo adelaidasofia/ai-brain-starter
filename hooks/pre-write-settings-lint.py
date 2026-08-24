@@ -39,7 +39,7 @@ def _project_edit(file_path: str, old: str, new: str, replace_all: bool) -> str 
     if not p.exists():
         return None
     try:
-        current = p.read_text()
+        current = p.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
     if old not in current:
@@ -81,6 +81,10 @@ def main() -> int:
          "--strict", "--content", projected, "--label", label],
         capture_output=True,
         text=True,
+        # text=True alone decodes with the LOCALE encoding, so a cp1252
+        # console turns the lint output into a crash instead of a verdict.
+        encoding="utf-8",
+        errors="replace",
     )
     if result.returncode == 2:
         print(
@@ -95,4 +99,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # A cp1252 Windows console raises UnicodeEncodeError the moment this prints a
+    # non-ASCII character, and the hook dies with no legible cause
+    # (ai-brain-starter#313). Idempotent; a no-op on an already-UTF-8 console.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())

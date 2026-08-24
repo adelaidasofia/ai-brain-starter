@@ -43,5 +43,16 @@
     <string>/path/to/your/vault/.granola_export.log</string>
     <key>RunAtLoad</key>
     <true/>
+    <!-- Scheduling priority: set BOTH on EVERY LaunchAgent you add, not just this one.
+         A background job left at normal priority competes with WindowServer for CPU
+         and disk. One is harmless; a fleet of them starves the UI and the machine
+         presents as FROZEN rather than merely busy - with memory and disk still
+         healthy, so it reads as a crash and misdirects every diagnosis at RAM.
+         ProcessType=Background => nice 10 + throttled CPU. LowPriorityIO => disk
+         reads yield to anything interactive. -->
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>LowPriorityIO</key>
+    <true/>
 </dict>
 </plist>

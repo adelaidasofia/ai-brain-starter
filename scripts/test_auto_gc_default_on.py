@@ -9,7 +9,10 @@ only the second one matters — so these controls assert ACTIVATION and COVERAGE
 never file presence:
 
   * the hook installer CALLS the scheduler (not: the scheduler exists)
-  * the daily pass covers all five reclaim legs
+  * the daily pass covers EVERY reclaim leg (REQUIRED_LEGS below), because a
+    bundle that looks complete is how a hole stays invisible: MYC-3727 found
+    that not one leg reclaimed build output from a worktree that STAYS, so
+    ~130 worktrees held 438 GB while this whole pass ran green daily
   * ABS_NO_AUTO_GC=1 turns it OFF, and nothing else does — no opt-in gates the
     value, because an opt-in default IS the bug
   * the run is gated on battery and on someone being at the keyboard, not just
@@ -40,6 +43,10 @@ REQUIRED_LEGS = [
     ("dev-worktree-prune.py", "orphaned <dev-root>/<repo>-<slug> worktrees"),
     ("dev-hub-refresh.py", "bare-hub freshness (stale-checkout reads)"),
     ("dev-drift-report.py", "un-backed-up drift -> state the SessionStart surface renders"),
+    # MYC-3727. Every leg above frees build output only by deleting a whole
+    # worktree, and only when its branch is provably merged — so a worktree that
+    # legitimately STAYS keeps its target/ and node_modules forever.
+    ("dev-build-reclaim.py", "regenerable build output in worktrees that STAY"),
 ]
 
 
@@ -77,11 +84,11 @@ def main() -> int:
           "dev-hub-refresh is invoked without --apply — it would plan forever "
           "and refresh nothing, and a fast-forward has nothing to stage")
 
-    # The two DESTRUCTIVE legs are staged: report on run 1, apply from run 2.
-    # Deleting someone's git branches on day one, before they have seen what
-    # this pass does, is a trust event even when every deletion is provably
-    # safe and reversible.
-    for label in ("dev-repo-reaper", "dev-worktree-prune"):
+    # The DESTRUCTIVE legs are staged: report on run 1, apply from run 2.
+    # Deleting someone's git branches, directories, or build caches on day one,
+    # before they have seen what this pass does, is a trust event even when
+    # every deletion is provably safe and reversible.
+    for label in ("dev-repo-reaper", "dev-worktree-prune", "dev-build-reclaim"):
         line = next((ln for ln in maint.splitlines()
                      if f'run "{label}"' in ln), "")
         check(line, f"no `run \"{label}\"` invocation in the daily pass")
@@ -181,7 +188,7 @@ def main() -> int:
         for f in failures:
             print(f"  ✗ {f}")
         return 1
-    print("OK - auto-GC: installer activates the schedule, all 5 reclaim legs "
+    print(f"OK - auto-GC: installer activates the schedule, all {len(REQUIRED_LEGS)} reclaim legs "
           "covered and applying, opt-out only, battery + user-idle + load gated "
           "with catch-up, cron path for non-macOS, opt-out verified by behavior")
     return 0

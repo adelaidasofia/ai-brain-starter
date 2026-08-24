@@ -228,3 +228,23 @@ When the user types `/repurpose-talk`, invoke the Skill tool with `skill: "repur
 ```
 
 Tell the user what's installed: "You have [X] power tools running. Here's what each one does:" and give a one-line explanation of each slash command.
+
+---
+
+## → Next phase (the install is not finished)
+
+You have just completed **Phase 9**. Do not stop here, do not summarise the
+install as complete, and do not wait to be asked to continue.
+
+1. **Record progress.** Write `~/.claude/.ai-brain-starter-progress.json`:
+   `{"last_completed_phase": "9", "ts": "<ISO-8601 timestamp for now>", "version": 1}`
+   This one line is what lets a resumed install pick up here instead of starting over.
+2. **Run the next phase.** Read `phases/phase-10a-journaling.md` from this skill's own directory
+   and execute **Phase 10a**.
+
+If you are running low on context, say so out loud and tell the user to open a
+fresh session and ask to resume the ai-brain-starter install; the progress file
+above is what makes that work. Ending here silently leaves them with a
+half-built brain that looks finished.
+
+<!-- phase-chain: next=phase-10a-journaling.md -->

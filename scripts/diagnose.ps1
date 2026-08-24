@@ -114,6 +114,54 @@ if (-not $hookFound) {
   Warn "No hooks registered" "/setup-brain Phase 5 wires them. Without them, no auto context-loading."
 }
 
+# Wired-but-absent: a hook command naming ~/.claude/hooks/<file> that is not on
+# disk. Every such command carries a `[ -f ]` guard (or hook_runner's
+# --fallback silent), so the miss is a SILENT no-op -- the hook never fires and
+# nothing says so. Checking that settings.json merely CONTAINS "hooks" (above)
+# passes even when every referenced file is gone.
+#
+# Observed on a real install: vault-context.py wired 7 times, present 0 times,
+# alongside retry-budget.py and validate-mcp-json.py -- all three are
+# phase-05 "install by default" copies that never ran. scripts/check-home-hook-deploy.py
+# does NOT cover this: it is a static REPO lint proving each hook has a
+# documented deploy route, and it cannot see whether that route ever executed here.
+#
+# Reported as a WARNING, not an error, because phase-05 documents
+# `rm ~/.claude/hooks/<name>.py` as the supported uninstall -- an absent file is
+# genuinely ambiguous between never-installed and deliberately-removed. Naming
+# the file lets the reader tell which; silence does not.
+$absHooksDir = Join-Path $env:USERPROFILE ".claude\hooks"
+$wiredNames  = New-Object System.Collections.Generic.HashSet[string]
+foreach ($f in @($settings, $localSettings)) {
+  if (-not (Test-Path -LiteralPath $f)) { continue }
+  $raw = Get-Content -LiteralPath $f -Raw -ErrorAction SilentlyContinue
+  if (-not $raw) { continue }
+  # Anchor on .claude/hooks/ so the skill's own hooks dir
+  # (.claude/skills/ai-brain-starter/hooks/) is not swept in. Separator class
+  # covers POSIX "/" and JSON-escaped Windows "\\".
+  foreach ($m in [regex]::Matches($raw, '\.claude[\\/]+hooks[\\/]+([A-Za-z0-9_.-]+\.(?:py|sh))')) {
+    [void]$wiredNames.Add($m.Groups[1].Value)
+  }
+}
+if ($wiredNames.Count -gt 0) {
+  $missingHooks = @($wiredNames | Where-Object { -not (Test-Path -LiteralPath (Join-Path $absHooksDir $_)) } | Sort-Object)
+  if ($missingHooks.Count -eq 0) {
+    Ok ("all {0} wired ~/.claude/hooks/ file(s) present on disk" -f $wiredNames.Count)
+  } else {
+    $src = Join-Path $env:USERPROFILE ".claude\skills\ai-brain-starter\hooks"
+    $restorable = @($missingHooks | Where-Object { Test-Path -LiteralPath (Join-Path $src $_) })
+    $hint = "These never fire and report no error. "
+    if ($restorable.Count -gt 0) {
+      $hint += ("Reinstall: Copy-Item '{0}\{1}' -Destination '{2}\'" -f $src, ($restorable -join "','$src\"), $absHooksDir)
+      $hint += " -- or, if you removed them on purpose, this is expected."
+    } else {
+      $hint += "No source copy found in the starter's hooks/ dir either."
+    }
+    $msg = "{0} of {1} wired ~/.claude/hooks/ file(s) MISSING: {2}" -f $missingHooks.Count, $wiredNames.Count, ($missingHooks -join ", ")
+    Warn $msg $hint
+  }
+}
+
 $gch = Join-Path $meta "scripts\graph-context-hook.sh"
 if (Test-Path -LiteralPath $gch) {
   Ok "graph-context-hook.sh present (Bash, runs in WSL/Git Bash on Windows)"
@@ -187,6 +235,18 @@ foreach ($root in $searchRoots) {
 if ($ps1Files.Count -eq 0) {
   Ok "No .ps1 files to check"
 } else {
+  # The BOM and em-dash checks stay NATIVE here on purpose, and are the one
+  # place in this repo that duplicates scripts/check-ps1-encoding.sh.
+  #
+  # This script's whole job is to run on a Windows box - `pwsh diagnose.ps1
+  # -Vault C:\path` - and such a box need not have bash at all. Delegating to a
+  # .sh would break the diagnostic on the exact platform these rules exist to
+  # protect. No .ps1 in this repo shells out to bash; the established idiom for
+  # sh/ps1 parity here is a shared data source plus a test that reads both (see
+  # sync-vault-scripts.ps1), which is what scripts/test_ps1_encoding_gate.py
+  # does: it pins these bytes - EF BB BF for the BOM, U+2014 for the em dash -
+  # to the shell implementation's, and fails if either side changes a rule alone
+  # or reintroduces a cap on the enumeration.
   $bomFail = 0; $emFail = 0; $parseFail = 0
   foreach ($f in $ps1Files) {
     $bytes = [System.IO.File]::ReadAllBytes($f.FullName)

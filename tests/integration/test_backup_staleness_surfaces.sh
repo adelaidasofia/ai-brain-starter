@@ -31,8 +31,20 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # Consumers only. Excluded on purpose:
 #   check-vault-backup.py  — the PRODUCER; it computes the age, it does not judge it.
 #   test-*                 — harnesses that fabricate the token as fixture input.
+#   __pycache__/           — COMPILED BYTECODE, not source. `grep -rl` matches
+#                            binaries too, and the token survives into a .pyc's
+#                            string table, so `check-vault-backup.cpython-*.pyc`
+#                            slipped past the exclusion above: that exclusion is
+#                            by exact filename, and the compiled twin has a
+#                            different one. Bytecode cannot be inspected for a
+#                            threshold, so it failed unconditionally. Worse, the
+#                            __pycache__ is created by THIS gate — ci.sh step (a)
+#                            py_compiles every tracked *.py before the
+#                            integration tests run — so the gate manufactured the
+#                            artifact that then failed it.
 age_consumers() {
   grep -rl 'BACKED_UP:vault-backup' "$REPO/hooks" "$REPO/scripts" 2>/dev/null \
+    | grep -v '/__pycache__/' \
     | grep -v '/check-vault-backup\.py$' \
     | grep -v '/test-'
 }

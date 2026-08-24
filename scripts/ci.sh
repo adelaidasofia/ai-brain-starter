@@ -61,6 +61,9 @@
 #                           switched off, so it never fires and nothing says so.
 #                           Same SILENT-NO-OP family as (e)/(e2)/(e3); pure stdlib.
 #   (e5) subprocess decode - scripts/check-utf8-subprocess.py is the READ half of (e).
+#   (e6) py3.9 annotation parity - scripts/check-py39-annotations.py fails `X | None`
+#        without `from __future__ import annotations`. This job pins 3.9, where that
+#        compiles fine and raises TypeError when the annotation is evaluated.
 #                           (e) fails a CLI that PRINTS non-ASCII without a UTF-8
 #                           stdout guard; this fails one that READS a child's output
 #                           with text=True and no encoding=, so the decode uses the
@@ -70,6 +73,18 @@
 #                           subprocess.run(). Shipped twice: #313 (write side) and
 #                           #430 (read side, memory stranded outside the vault).
 #                           Content-pinned in scripts/utf8-subprocess-baseline.txt.
+#   (e7) ps1 encoding     - scripts/check-ps1-encoding.sh fails a *.ps1 that does not
+#                           start with EF BB BF, or that CONTAINS an em dash.
+#                           Windows PowerShell 5.1 reads a BOM-less .ps1 as the
+#                           console ANSI code page instead of UTF-8 and dies on
+#                           the first non-ASCII byte, and U+2014 is the byte most
+#                           likely to be that one. Both rules, one scanner, one
+#                           enumeration - which is where the bugs were. lint.yml
+#                           holds the enforcing copy but used to hold the ONLY
+#                           copy, as an inline loop no local command could run -
+#                           so the class was caught one full CI round-trip AFTER
+#                           the push. Both callers now run the same script and
+#                           scripts/test_ps1_encoding_gate.py pins that.
 #   (f) Python unit tests - the scripts/test_*.py stdlib suites (the claude-router
 #                           structured-envelope gate, the graph-liveness
 #                           STAMP-GREEN-WHILE-GONE guard). Gate (a) py_compiles them,
@@ -83,12 +98,15 @@
 #                           Unlike (c)/(d)/(e) it has no dedicated CI job, so it runs
 #                           in BOTH CI and the local pre-push gate (like (a) and (b)).
 #
-# It does NOT run the OTHER pure-lint jobs (bash -n, pwsh ParseFile, BOM, em-dash,
+# It does NOT run the OTHER pure-lint jobs (bash -n, pwsh ParseFile, em-dash,
 # JSON, privacy, references, no-remote-pipe-install). Those stay as their own
-# lint.yml jobs - they are lint, not the unit/type gate. Two are exceptions,
+# lint.yml steps - they are lint, not the unit/type gate. Three are exceptions,
 # enforced pre-push because they are cross-platform CORRECTNESS gates, not style:
-# the shell static-analysis gate (the GNU-vs-BSD `stat` mtime class) and the UTF-8
-# console guard (the Windows cp1252 print-crash class).
+# the shell static-analysis gate (the GNU-vs-BSD `stat` mtime class), the UTF-8
+# console guard (the Windows cp1252 print-crash class), and the .ps1 encoding
+# gate (the Windows PS 5.1 parse-crash class: BOM required, em dash banned). Each of the three is a defect a Linux
+# runner or a Mac laptop structurally cannot observe at RUN time, so a byte/static
+# assertion is the only thing that can see it before a user does.
 #
 # Environment the integration tests need (lint.yml provides these in the `ci`
 # job; this script adds a non-invasive fallback so a fresh `bash scripts/ci.sh`
@@ -168,8 +186,11 @@ INTEGRATION_TESTS=(
   test_verify_real_hooksjson_healthy_install
   test_detect_closing_signal_worktree
   test_detect_closing_signal_repo_aware_vault
+  test_detect_closing_signal_unscaffolded_vault
+  test_detect_closing_signal_trilingual_vault_root
   test_detect_closing_signal_goal_clear
   test_close_phase_numbering_aligned
+  test_phase_chain_contract
   test_closing_claim_shared
   test_meta_resolver
   test_meta_resolution_guard
@@ -190,30 +211,56 @@ INTEGRATION_TESTS=(
   test_installer_relocates_moved_hooks
   test_installer_shim_safe_interpreter
   test_deployed_hooks_behind
+  test_sync_guard_surface
   test_windows_platformize
   test_memory_routing_guard
   test_bootstrap_omits_vault_hooks
+  test_bootstrap_archive_entry
   test_bootstrap_brew_terminal_step
   test_bootstrap_optional_packs_soft_fail
   test_bootstrap_corporate_profile
+  test_bootstrap_userspace_fallback
+  test_bootstrap_python_discovery
+  # Windows half of the same bug (#290): bootstrap.ps1 tested the single name
+  # `python`, never the `py -3.x` launcher, so a box with 3.12 read as no-Python.
+  test_bootstrap_ps1_python_discovery
+  # Windows leg of ARTIFACT-WITHOUT-ACTIVATION: bootstrap.ps1 installed the
+  # skills but never commands/*.md, so no slash command existed on Windows.
+  test_bootstrap_ps1_slash_commands
+  # Windows half of MYC-3895: bootstrap.ps1 called `git clone` itself and never
+  # installed git, so the one prerequisite a locked-down laptop cannot get was
+  # also the one nothing provided.
+  test_bootstrap_ps1_git_install
+  test_preflight_git_and_it_request
   test_remediate_runaway_procs
+  test_surface_unniced_launchagents
   test_scan_prior_single_instance
   test_scan_prior_failclosed_scrub
   test_sessionstart_freeze_class_excluded
   test_sessionstart_boundedness
+  test_decode_safe_reads
   test_orphan_branch_bounded_git
   test_footprint_sla
   test_vault_safety_guards
   test_vault_backup_conf_bom
   test_backup_staleness_surfaces
+  test_home_fingerprint_noise
   test_scheduled_task_registration
+  test_vault_backup_task_healing
   test_resource_aware_session_close
+  test_vault_lock_separated_gitdir
   test_cloud_sync_guard
   test_cloud_safe_file_walkers
   test_delegated_task_needs_source
   test_cloud_sync_offer
   test_worktree_on_vault_guard
   test_machinery_sidecar
+  test_repair_sidecar_note_deletion
+  # Refuses $HOME / a filesystem root as a relocate target, in the helpers AND
+  # the checker they share. Carries the two adversarial cases: --force must not
+  # open the home refusal, and --rollback must stay ungated so an already
+  # damaged machine can still be repaired (MYC-4028).
+  test_check_vault_target
   test_relocate_vault
   test_relocate_sweep
   test_relocate_watch
@@ -235,11 +282,14 @@ INTEGRATION_TESTS=(
   # Wired 2026-07-02 — found dormant by the gate-coverage invariant below.
   # These existed on disk, passed locally, and never ran in CI.
   test_detect_closing_signal_strict_guards
+  test_detect_closing_signal_es_guards
+  test_journal_index_localized_dir
   test_inject_meeting_workflow_truncation_flag
   test_install_path_verification
   test_meeting_todos_step0_create_if_absent
   test_meeting_workflow_trigger_hook
   test_personal_brain_not_optional
+  test_private_context_scan_merge_base
   test_phase11_writes_to_vault_rule_file
   test_post_commit_ff_worktrees
   test_write_hook_meeting_folder_i18n
@@ -287,6 +337,22 @@ INTEGRATION_TESTS=(
   # every test ran against the vault the env var already named, which makes
   # "resolve from the env" and "resolve from the target" indistinguishable.
   test_hook_vault_root_per_target
+  # That same hook's launchd pass read `launchctl list`'s exit-status column
+  # only, which reads 0 for BOTH a healthy job and one that has never run at
+  # all -- a hollow job was indistinguishable from a clean one and stayed
+  # silently unflagged. Proves the blind spot on a frozen, independent
+  # reimplementation of the old rule (not a git-history diff, which would stop
+  # meaning anything once this fix lands on main), then proves the shipped fix
+  # (a second `launchctl print` probe, only for the ambiguous status==0 case)
+  # closes it -- with regression + false-positive + probe-failure controls.
+  test_launchd_hollow_job_detection
+  # The three shipped launchd plist templates carried no PATH, so a client
+  # script that shells out to a brew-installed tool failed with "not found"
+  # under launchd while working fine in every interactive shell. Validates the
+  # added EnvironmentVariables/PATH key with two independent parsers (plutil
+  # -lint where available, portable plistlib everywhere else) against both the
+  # raw template and a simulated real installer render.
+  test_launchd_template_path_env
   # The rm -rf rule in that same hook, which MYC-3529 left alone: its regex
   # spelled the vault root `$HOME/vault` -- a SHELL string in a PYTHON regex,
   # where `$` is an end-of-line anchor, so the branch was dead and the vault
@@ -308,18 +374,71 @@ INTEGRATION_TESTS=(
   # every tool call. This static half runs on Linux CI, where the runtime
   # tripwire below cannot see the bug because HOME works there.
   test_home_sandbox_hermeticity
+  # bash-3.2 portability (2026-08-15): the guard above built its offender list
+  # with `mapfile`, a bash-4 builtin macOS /bin/bash does not have. Under
+  # `set -u` without `-e` that is non-fatal, so its primary check evaluated
+  # NOTHING on every Mac while the file still printed PASS and exited 0; the
+  # same defect left hooks/rotate-logs.sh rotating no logs at all. Neither
+  # existing gate can see the class: the bash32-syntax job is `-n` only and all
+  # of these PARSE on 3.2 (they fail at run time), and shellcheck has no
+  # bash-version model. Static, so it gives the same verdict on any runner.
+  test_bash32_portability
   # Root cause of the same incident: the runner path baked into settings.json
   # came from Path(__file__), so installing from a throwaway worktree wired ~95
   # hooks to a path that vanished with it. Pins the resolution to the INSTALLED
   # copy, with a negative control that a first install from a dev tree still
   # wires a runner that exists.
   test_hook_runner_path_stability
+  # sync-vault-scripts.sh labelled its log header with `${DRY_RUN:+ (dry-run)}`,
+  # which tests NON-EMPTY while DRY_RUN is initialised to `0` — so every REAL run
+  # was recorded as "(dry-run)". Behaviour was correct (the write-guards use
+  # `-eq 1`); only the audit trail lied, which is the half that matters when you
+  # are reading the log to find out what overwrote your files. A dry run prints
+  # to stdout and never writes the log, so a "(dry-run)" header IN the log was
+  # unreachable except as a mislabel.
+  test_sync_vault_scripts_dryrun_label
+  # At-rest leg of the sync-clobber class. test_vault_script_sync.sh section 1b
+  # PREVENTS a manifest gap; this detects vaults already damaged, plus the case
+  # closure cannot see — a committed local patch silently overwritten by the sync
+  # (file present, deps resolve, simply the wrong version). Every assertion is a
+  # negative control, including the indirect `VAR="$SCRIPT_DIR/x.sh"` form that
+  # shipped the real outage and that the first draft of the detector was blind to.
+  test_clobbered_vault_scripts
+  # vault-safe-commit.sh is the ONLY sanctioned route past the raw-git block
+  # guard, so a bare `git commit -m` there gave that guard zero real scoping
+  # while it looked fully enforced — a sibling session's staged work rode along
+  # under an unrelated message (measured: 1,191 files / 598,702 insertions from
+  # two calls that each named ONE path). Carries a negative control that re-runs
+  # the pre-fix commit line against the same fixture and asserts it DOES sweep,
+  # so a green positive proves the `--only` scoping rather than a scenario that
+  # never reproduces.
+  test_vault_safe_commit_index_scoping
   # In-flight git-operation gate (incident 2026-07-28): proves a fresh install
   # REGISTERS the guard, wires it in the block-preserving `if [ -f ]` form, and
   # that the SHIPPED command refuses a commit into a genuinely stalled rebase
   # while allowing one in a clean repo. Registration is the assertion — a guard
   # present on disk and absent from settings.json protects nobody.
   test_installer_registers_inflight_guard
+  # MCP secret-leak guards (MYC-3560): block-claude-mcp-inline-secret.py and
+  # block-mcp-config-inline-secret.py were written after three real GitHub PAT
+  # leaks and shipped as working files, referenced nowhere — never wired, so
+  # never once fired on any install. Same registration-is-the-assertion proof
+  # as the guard above, for both hooks: wired in the block-preserving form,
+  # and the shipped command actually BLOCKS a seeded secret while passing a
+  # clean payload.
+  test_installer_registers_mcp_secret_guards
+  # Skip-prefix privacy guard: a `__SKIP` line is content the user told the
+  # assistant NOT to persist, and a persisted line cannot be un-persisted (file
+  # + git history + any index over the vault). Every assertion carries a
+  # negative control, because a guard that blocks everything and one that blocks
+  # the right thing produce identical PASSes on a block-only suite.
+  test_skip_prefix_guard
+  # Journal-context guard vs Windows paths. Its patterns are forward-slash only,
+  # so a `C:\vault\Journals\...` write matched nothing and the gate never opened
+  # — silently, on a whole platform. Two layers must hold (the path gate AND the
+  # vault-root resolve); fixing only the first looks right and still fails open.
+  test_journal_guard_windows_paths
+  test_team_broadcast_install_gap
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new
@@ -398,9 +517,82 @@ WATCH_TREES = [
     claude / "skills" / "ai-brain-starter" / "hooks",
     claude / "skills" / "ai-brain-starter" / "scripts",
     claude / "hooks",
-    claude / "state",
 ]
-WATCH_GLOBS = [str(claude / "hookify.*.md"), str(claude / "settings.local.json")]
+WATCH_GLOBS = [
+    str(claude / "hookify.*.md"),
+    str(claude / "settings.local.json"),
+    # state/ as a TREE is gone (see below); this is the one durable artifact in
+    # it worth protecting -- the SessionStart snapshot the paragraph above meant.
+    str(claude / "state" / "sessionstart-hooks-snapshot.json"),
+]
+
+# WHAT THIS WATCHES, AND WHAT IT DELIBERATELY NO LONGER DOES (2026-08-05)
+#
+# The paragraph above names projects/, logs/, todos/, shell-snapshots/ and
+# statsig/ as the churn to stay out of -- but that is a list of DIRECTORIES,
+# and the churn was never confined to them. Two places leaked:
+#
+#   ~/.claude/hooks/  holds append-only logs (cwd-changed.log,
+#       sync-my-skills.log, secret-detection-log.jsonl) and runtime lock dirs
+#       (sync.*.lock/pid) sitting right beside the deployed hook CODE this
+#       tripwire exists to protect.
+#   ~/.claude/state/  is not "the SessionStart snapshot". Measured: 93 files,
+#       78 of them per-session scratch keyed by session UUID
+#       (branch-ticket-warn-<uuid>, linear-ids-seen-<uuid>), the rest last-run
+#       stamps and append-only integrity streams. It is a scratch directory,
+#       the same category as the five already excluded above.
+#
+# Measured at rest with no test running: hooks/cwd-changed.log,
+# hooks/sync-my-skills.log, two sync.*.lock/pid files and
+# state/settings-hook-integrity.jsonl all moved inside 30 seconds; a full
+# instrumented run additionally caught state/linear-ids-seen-<uuid>.txt. The
+# gate therefore failed on a DIFFERENT test every run, naming whichever test
+# happened to be executing when a background job appended a line -- a pristine
+# origin/main checkout failed identically. That is exactly the outcome the
+# paragraph above warns against: "watching those would make the gate flaky and
+# get it disabled, which is worse than not having it."
+#
+# state/ is excluded as a TREE rather than by picking off file kinds. Its
+# churn set is open-ended -- every new hook that drops a dedup marker there
+# would redden this gate again -- and a denylist against an open set always
+# loses. The one durable artifact in it is allow-listed in WATCH_GLOBS above.
+#
+# COVERAGE IS UNCHANGED for every corruption class this gate was built for,
+# each verified against a fake home so the real one is never touched:
+#   trips    settings.json rewritten (the catastrophic 2026-07-30 class,
+#            still compared by FULL CONTENT hash)
+#   trips    hook script copied into the live install (.py)
+#   trips    deployed .sh hook modified
+#   trips    installer backup left behind (.bak-*)
+#   trips    the SessionStart snapshot rewritten
+#   ignores  append-only .log / .jsonl grows, lock dir churns, per-session
+#            scratch appears, a hook runtime-state DOTFILE is rewritten
+#
+# DOTFILES, added 2026-08-13. ~/.claude/hooks/ is shared ground: this repo's
+# deployed hooks sit there alongside whatever private tooling the operator has
+# installed, and that tooling drops last-run stamps right beside them. Measured
+# on one machine: 8 dotfiles, 7 of them pure runtime state --
+# .mcp-config-secret-scan-last, .last-secret-scan, .last-secret-scan-full,
+# .secret-scan-findings.json, .pre-push-doubt-heeding.stamp,
+# .deployed-manifest.sha256, .secret-scan.lock. Only .gitignore is durable, and
+# nothing this gate protects is a dotfile.
+#
+# CHURN_SUFFIXES cannot catch them: .stamp, .sha256, .json and a bare
+# extensionless marker are four spellings of one behaviour, and the next hook
+# adds a fifth. That is the open set this file's own comment warns about ("a
+# denylist against an open set always loses"), so exclude by the PROPERTY that
+# separates them: deployed hook code is never a dotfile. Every entry in
+# install-hooks-user-level.py's HOME_HOOKS_INSTALLER_DEPLOYS and every
+# ABS-owned basename is a named *.py / *.sh.
+#
+# Caught live: a background secret-scan hook rewrote
+# hooks/.mcp-config-secret-scan-last 91 seconds into a gate run and reddened
+# test_bootstrap_dry_run -- a test that touches neither file. Re-running that
+# test alone, on that branch AND on a pristine origin/main, tripped nothing.
+# That is precisely the "reddens an unrelated test and trains a bypass" outcome
+# the quiet control below exists to prevent, arriving through a gap in the walk
+# the quiet control does not inspect.
+CHURN_SUFFIXES = (".log", ".jsonl")
 
 seen = []
 for tree in WATCH_TREES:
@@ -408,9 +600,15 @@ for tree in WATCH_TREES:
         seen.append(f"{tree.name}:ABSENT")
         continue
     for root, dirs, files in os.walk(tree):
-        dirs.sort()
+        # Prune runtime lock dirs from the walk (sync.*.lock/pid is rewritten
+        # per run), and keep the traversal order deterministic.
+        dirs[:] = sorted(d for d in dirs if not d.endswith(".lock"))
         for name in sorted(files):
             fp = Path(root) / name
+            if fp.suffix in CHURN_SUFFIXES:
+                continue
+            if name.startswith("."):
+                continue  # hook runtime state, never deployed hook code
             try:
                 st = fp.stat()
             except OSError:
@@ -424,15 +622,243 @@ for pattern in WATCH_GLOBS:
             continue
         seen.append(f"{os.path.basename(match)}:{st.st_size}:{st.st_mtime!r}")
 
-parts.append("tree=" + hashlib.sha256("\n".join(seen).encode()).hexdigest()[:16])
-parts.append("files=%d" % len(seen))
-print(" ".join(parts))
+# MANIFEST mode names the paths the digest only summarises (MYC-3721 work item
+# 1: "print WHAT changed, not just that something did"). Same walk, same trees,
+# same exclusions -- deliberately one function, because a second implementation
+# would drift from the digest it exists to explain, and would then name paths
+# the gate never actually compared.
+#
+# Emitted as one sortable line per watched entry so callers can diff two
+# manifests and print only what moved. The three settings.json components are
+# spelled out rather than hashed together, so a content rewrite, a pure mtime
+# touch and a stray .bak-* are told apart on sight.
+if os.environ.get("FINGERPRINT_MANIFEST"):
+    print("settings.json content=%s" % parts[0])
+    for extra in parts[1:]:
+        print("settings.json %s" % extra)
+    for line in seen:
+        print(line)
+else:
+    parts.append("tree=" + hashlib.sha256("\n".join(seen).encode()).hexdigest()[:16])
+    parts.append("files=%d" % len(seen))
+    print(" ".join(parts))
 PY
 }
+
+# ---- QUIET control for the tripwire ----------------------------------------
+# A guard needs TWO controls, and this repo had only ever written the first:
+#
+#   BITE   does it FIRE on the real thing?   (six such steps in lint.yml)
+#   QUIET  does it stay SILENT at rest?      (this)
+#
+# Both of the 2026-08-05 defects lived in the missing one. The tripwire watched
+# append-only logs and per-session scratch, so it reddened the gate on a
+# DIFFERENT test every run while its bite control passed the whole time; a
+# pristine origin/main checkout failed identically, which is what proved the
+# noise was ambient rather than the diff. A guard that cries wolf gets bypassed,
+# and the bypass becomes the habit -- so a noisy guard is a security problem,
+# not a nuisance.
+#
+# Asserted STRUCTURALLY, not by timing. "Sample twice and compare" would be a
+# sleep-dependent test that is itself flaky, and flaky is the disease. Instead:
+# the watched set must contain nothing whose whole purpose is to be rewritten
+# while the machine runs. That is deterministic, costs milliseconds, and goes
+# red the moment someone re-adds a churning tree.
+real_home_quiet_control() {
+  # Resolved from THIS script's own location, never cwd: a control that
+  # inspects the wrong file, or no file, must not be able to pass.
+  CI_SH_PATH="${CI_SH_PATH:-$SCRIPT_DIR/ci.sh}" python3 <<'PY'
+import os, re, sys
+from pathlib import Path
+
+# STRUCTURAL, not behavioural. The churn files legitimately EXIST in
+# ~/.claude/hooks/ — that is normal and is not the bug. The bug is the
+# fingerprint COLLECTING them. So assert the three exclusions that actually
+# regressed, against this script's own source, which is where a regression
+# lands. A behavioural walk here would either restate the exclusion (a
+# tautology) or flag reality (a false alarm).
+ci_sh = Path(os.environ.get("CI_SH_PATH", "scripts/ci.sh"))
+if not ci_sh.is_file():
+    print("::error::tripwire quiet-control cannot read %s — it would pass "
+          "vacuously. A control that inspects nothing is worse than no "
+          "control." % ci_sh)
+    sys.exit(1)
+
+body = ci_sh.read_text(encoding="utf-8", errors="replace")
+fn = re.search(r"real_home_fingerprint\(\) \{(.*?)\n\}", body, re.S)
+bad = []
+
+if not fn:
+    bad.append("real_home_fingerprint() not found — this control is looking at "
+               "the wrong file and would pass vacuously")
+else:
+    src = fn.group(1)
+    trees = re.search(r"WATCH_TREES = \[(.*?)\]", src, re.S)
+    if trees and re.search(r'claude\s*/\s*"state"\s*,', trees.group(1)):
+        bad.append('state/ is back in WATCH_TREES — ~78 of its ~93 files are '
+                   'per-session scratch keyed by session UUID, so no suffix '
+                   'rule can tame it; allow-list the one durable artifact')
+    if "CHURN_SUFFIXES" not in src or "fp.suffix in CHURN_SUFFIXES" not in src:
+        bad.append("the append-only (.log/.jsonl) exclusion is gone from the "
+                   "fingerprint walk")
+    if 'endswith(".lock")' not in src:
+        bad.append("the runtime lock-dir pruning is gone from the walk")
+    if 'name.startswith(".")' not in src:
+        bad.append('the dotfile exclusion is gone from the walk — ~/.claude/'
+                   'hooks/ is shared with the operator\'s private tooling, '
+                   'which drops last-run stamps (.stamp/.sha256/.json/no '
+                   'suffix) beside the deployed hooks; without this the gate '
+                   'reddens on whichever test happens to be running')
+
+if bad:
+    print("::error::real-home tripwire quiet-control FAILED — the watched set "
+          "is picking up churn again. It will redden this gate on an unrelated "
+          "test and train a bypass. Exclude the CLASS, never pin the file:")
+    for b in bad:
+        print("::error::  - " + b)
+    sys.exit(1)
+print("    tripwire quiet-control: fingerprint still excludes append-only "
+      "logs, lock dirs, runtime-state dotfiles and per-session scratch")
+PY
+}
+# ---- The tripwire watches a DECOY home, not the shared one ------------------
+#
+# WHY THE PER-TEST CHECK MOVED OFF THE REAL ~/.claude (2026-08-15)
+#
+# Everything above is about WHAT to watch. This is about WHOSE home, and it is
+# the half that kept failing. Fingerprinting the real ~/.claude before and after
+# each test and blaming the test that was running is attribution by WALL CLOCK,
+# not by causation. The real ~/.claude is shared ground: on a developer machine
+# the operator's own tooling writes to it continuously and asynchronously, so
+# whichever test happens to be executing when that lands is named as the
+# culprit. Three such failures were captured inside 30 minutes, each naming a
+# DIFFERENT innocent test:
+#
+#   blamed test_offmain_strand_guard   a launchd agent (StartInterval 900)
+#                                      re-derived settings.json
+#   blamed test_vault_safety_guards    a skill auto-sync ran the installer,
+#                                      which rewrote settings.json + a .bak-*
+#   blamed test_vault_root_read_guard  __pycache__/*.pyc rewritten by hooks
+#                                      firing in a concurrent session
+#
+# The third is the tell: settings.json content hash, mtime, baks count AND file
+# count were all IDENTICAL before and after — only tree= moved. No test did
+# anything. The comment block above already documents this exact shape twice
+# ("reddened test_bootstrap_dry_run — a test that touches neither file"), and
+# each time the answer was to widen the exclusions. That approach cannot finish:
+# the loudest remaining writers rewrite settings.json ITSELF, which is the one
+# file this gate exists to watch and can never exclude.
+#
+# So stop watching a resource other processes write. Point HOME and USERPROFILE
+# at a throwaway decoy for the duration of each test, and fingerprint THAT. The
+# decoy is private to one test, so nothing else on the machine can move it and a
+# mismatch is CAUSAL — no timing, no sleeps, no re-runs, no denylist.
+#
+# This also upgrades the gate from detection to PREVENTION. Previously a test
+# that escaped its sandbox really did corrupt the developer's live config and
+# the gate told you afterwards. Now that write lands in a tmpdir that is deleted
+# seconds later, and the gate still names the test.
+#
+# Coverage is unchanged: the same real_home_fingerprint() runs, with the same
+# watched trees, globs and exclusions, so real_home_quiet_control and
+# test_home_fingerprint_noise.sh keep asserting exactly what they always did.
+# Only Path.home() resolves somewhere safe.
+#
+# Verified before switching, against the whole suite: every test still passes
+# under a decoy home; ZERO change their assertion count (so nothing starts
+# passing vacuously because the deployed install is absent); and no test writes
+# any WATCHED path of the decoy — the only ~/.claude writes at all are three
+# tests creating empty dirs under projects/, which is already excluded.
+# (Measured at 106 tests, then re-swept at 111 once the suite grew; the sole
+# failure in the re-sweep was the pre-existing red the parent commit fixes.)
+#
+# The real home is still measured once around the whole suite, but ADVISORY:
+# with tests unable to reach it through "~", a change there is ambient by
+# construction, and failing on it is the bug this section fixes.
+_SANDBOX_LIB="$SCRIPT_DIR/../tests/integration/lib/sandbox_home.sh"
+if [ ! -f "$_SANDBOX_LIB" ]; then
+  # Fail loud. Without it there is no decoy, and every check below would compare
+  # an untouched empty dir against itself and pass vacuously.
+  echo "::error::missing $_SANDBOX_LIB — the integration tripwire cannot sandbox HOME without it, and would pass vacuously"
+  exit 1
+fi
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$_SANDBOX_LIB"
+
+# Fingerprint a decoy home with the real function. The subshell keeps the
+# sandbox exports from leaking into the gate itself.
+decoy_fingerprint() { ( sandbox_home "$1" >/dev/null; real_home_fingerprint ); }
+
+# The same two walks in MANIFEST mode, naming paths instead of digesting them.
+# Both run only on a mismatch, so they cost nothing at rest.
+decoy_manifest()     { ( sandbox_home "$1" >/dev/null; FINGERPRINT_MANIFEST=1 real_home_fingerprint ); }
+real_home_manifest() { FINGERPRINT_MANIFEST=1 real_home_fingerprint; }
+
+# Print only the manifest lines that differ, capped so a large drift cannot bury
+# the failure it is explaining.
+_manifest_delta() {
+  local before="$1" after="$2" delta n
+  # diff exits 1 whenever the two differ, which is the only case this is called
+  # in; set -e must not read that as an error.
+  delta="$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") || true)"
+  delta="$(printf '%s\n' "$delta" | sed -n -e 's/^> /      + /p' -e 's/^< /      - /p')"
+  [ -n "$delta" ] || { echo "      (no path-level delta — the change was in a component the manifest folds, e.g. settings.json mtime)"; return 0; }
+  n="$(printf '%s\n' "$delta" | wc -l | tr -d ' ')"
+  # `sed -n 1,20p`, never `head -20`: head closes the pipe at line 20, printf
+  # takes SIGPIPE, and under this script's `set -o pipefail` that aborts the
+  # whole gate. On the ADVISORY path that would kill a run over ambient churn —
+  # precisely the misattribution this section exists to prevent. sed reads to
+  # EOF, so it cannot SIGPIPE.
+  printf '%s\n' "$delta" | sed -n '1,20p'
+  [ "$n" -gt 20 ] && echo "      ... and $((n - 20)) more"
+  return 0
+}
+
+# Name the exact paths a test wrote into its decoy.
+#
+# The decoy's "before" state is RECONSTRUCTED rather than guessed: sandbox_home
+# only creates an empty <dir>/.claude, so a freshly-made decoy is byte-identical
+# to how this one started. Manifest lines are relative to ~/.claude (never the
+# tmpdir path) and an absent tree emits a bare "name:ABSENT" carrying no mtime,
+# so the two are directly comparable. That makes this a real diff, not a guess.
+decoy_written_paths() {
+  local fresh
+  fresh="$(mktemp -d)"
+  _manifest_delta "$(decoy_manifest "$fresh")" "$(decoy_manifest "$1")"
+  rm -rf "$fresh"
+}
+
+# BITE control for the decoy tripwire. The quiet control above proves the
+# fingerprint stays silent at rest; this proves it still SPEAKS. It runs a
+# synthetic test through the SAME run_sandboxed wrapper the real tests use, so
+# it exercises the wrapper too — a wrapper that failed to redirect HOME would
+# make every check below compare an empty decoy against itself and pass.
+decoy_tripwire_bite_control() {
+  local d before after
+  d="$(mktemp -d)"
+  before="$(decoy_fingerprint "$d")"
+  run_sandboxed "$d" bash -c 'mkdir -p "$HOME/.claude/hooks" && printf "print(1)\n" > "$HOME/.claude/hooks/escaped.py"'
+  after="$(decoy_fingerprint "$d")"
+  rm -rf "$d"
+  if [ "$before" = "$after" ]; then
+    echo "::error::decoy tripwire BITE control FAILED — a synthetic test wrote \$HOME/.claude/hooks/escaped.py and the tripwire did not see it. Every per-test check below is inert; a green run proves nothing."
+    return 1
+  fi
+  echo "    tripwire bite control: a test writing \$HOME/.claude/hooks/ is still caught"
+  return 0
+}
+
 _home_before_suite="$(real_home_fingerprint)"
+# One extra walk, once, so the advisory below can name paths instead of printing
+# two opaque digests. An advisory nobody can act on becomes background noise,
+# and this one is the ONLY remaining detector for a test that writes by absolute
+# path — the single escape a decoy home cannot intercept.
+_home_before_suite_manifest="$(real_home_manifest)"
 
 echo "==> (b) Shell integration: ${#INTEGRATION_TESTS[@]} tests"
-echo "    real-home tripwire watching: $(dirname "$REAL_SETTINGS") (settings.json, installed skill, deployed hooks, rules, state)"
+echo "    tripwire: each test runs against a throwaway decoy home (settings.json, installed skill, deployed hooks; state/ only its SessionStart snapshot)"
+real_home_quiet_control || exit 1
+decoy_tripwire_bite_control || exit 1
 for t in "${INTEGRATION_TESTS[@]}"; do
   script="tests/integration/$t.sh"
   if [ ! -f "$script" ]; then
@@ -440,20 +866,32 @@ for t in "${INTEGRATION_TESTS[@]}"; do
     exit 1
   fi
   echo "--- $t"
-  _home_before="$(real_home_fingerprint)"
-  bash "$script"
-  _home_after="$(real_home_fingerprint)"
+  _decoy="$(mktemp -d)"
+  _home_before="$(decoy_fingerprint "$_decoy")"
+  # NOT inside an `if`: set -e must still abort the gate when a test fails.
+  # Wrapping this in a condition would silently disable that.
+  run_sandboxed "$_decoy" bash "$script"
+  _home_after="$(decoy_fingerprint "$_decoy")"
   if [ "$_home_before" != "$_home_after" ]; then
-    echo "::error::$t wrote into the real $(dirname "$REAL_SETTINGS") — the suite must sandbox HOME *and* USERPROFILE (source tests/integration/lib/sandbox_home.sh and use sandbox_home/run_sandboxed). before=[$_home_before] after=[$_home_after]"
+    echo "::error::$t wrote into ~/.claude — the suite must sandbox HOME *and* USERPROFILE (source tests/integration/lib/sandbox_home.sh and use sandbox_home/run_sandboxed). It was already running under a decoy home, so the developer's real config is intact and this is the test's own write."
+    echo "::error::  it wrote these paths (relative to ~/.claude):"
+    decoy_written_paths "$_decoy"
+    echo "      digests: before=[$_home_before] after=[$_home_after]"
+    rm -rf "$_decoy"
     exit 1
   fi
+  rm -rf "$_decoy"
 done
-# Belt and braces: catches a test that restores the file itself but leaves the
-# suite as a whole having moved it (e.g. mtime churn across several tests).
+# The real home, measured once around the whole suite. ADVISORY on purpose: the
+# tests just ran against a decoy, so they could not reach this through "~", and
+# anything that moved here came from outside the suite. Reported rather than
+# swallowed, because silence would hide a test that writes by ABSOLUTE path —
+# the one escape a decoy cannot intercept.
 _home_after_suite="$(real_home_fingerprint)"
 if [ "$_home_before_suite" != "$_home_after_suite" ]; then
-  echo "::error::the integration suite wrote into the real $(dirname "$REAL_SETTINGS"). before=[$_home_before_suite] after=[$_home_after_suite]"
-  exit 1
+  echo "    note: the real $(dirname "$REAL_SETTINGS") changed while the suite ran. The tests ran against a decoy home, so this is an out-of-band writer on this machine (a settings assembler on a timer, a skill auto-sync running the installer, __pycache__ churn from a concurrent session), not the suite. Not failing the gate on it — that misattribution is what this section exists to prevent."
+  echo "    what moved (read it: an entry under skills/ai-brain-starter/ or a settings.json content= change is NOT ordinary churn, and would mean a test wrote by ABSOLUTE path, which a decoy home cannot intercept):"
+  _manifest_delta "$_home_before_suite_manifest" "$(real_home_manifest)"
 fi
 
 # ---- (c) Shell static analysis gate ----------------------------------------
@@ -522,6 +960,38 @@ else
   utf8_note="passed"
 fi
 
+# The utf8 baseline's per-tier section headers are the burn-down ledger a human
+# reads to decide whether that backlog is shrinking, and check-utf8-stdout.py
+# cannot catch a stale one: it computes its own counts and skips every '#' line.
+# Four headers across the two tiered baselines were stale at once before this
+# landed. Validated from outside the checker because check-utf8-stdout.py is
+# itself content-pinned by the cloud-safe walker ratchet (test_cloud_safe_file_walkers),
+# whose rule is that any edit obliges a safe_read migration; vault-root's own
+# checker validates its baseline inline, since only the scanner can count reads.
+echo "==> (e1b) baseline burn-down headers: $PY scripts/_baseline_sections.py --check-all scripts"
+# Quiet on success: two of its negative controls deliberately PRINT an error
+# (empty-glob, planted drift), and a gate that emits "ERROR ... checked
+# NOTHING" on every green run teaches people to skim past error lines.
+# On failure, re-run verbosely so the reason is visible.
+"$PY" scripts/_baseline_sections.py --self-test >/dev/null 2>&1 || {
+  "$PY" scripts/_baseline_sections.py --self-test
+  exit 1
+}
+# One sweep, not one line per baseline. The two explicit --check lines this
+# replaces are exactly the defect: utf8-file-io-baseline.txt needed a SECOND
+# hand-added line, and the third baseline would have needed a third. --check-all
+# globs them, so a new baseline is covered the day it lands.
+#
+# Carrying forward the note from that wiring, because it is still true and is
+# WHY the sweep reports flat files rather than silently passing them: a baseline
+# with NO section headers has no counted ledger, so there is nothing to compare
+# and checking it proves nothing. utf8-file-io-baseline.txt is deliberately
+# written with counted SEV-A/SEV-B sections instead of a flat list for that
+# reason. --check-all prints "flat ... (no tiers, no ledger to go stale)" for the
+# genuinely flat ones, so a baseline that SHOULD be sectioned and is not is
+# visible in the gate output instead of being indistinguishable from a pass.
+"$PY" scripts/_baseline_sections.py --check-all scripts
+
 # ---- (e2) Hook block-protocol ----------------------------------------------
 # scripts/check-hook-block-protocol.py fails a hook that is registered with the
 # allow-fallback wrapper (`... || echo '{...permissionDecision:allow}'`) but
@@ -582,6 +1052,58 @@ echo "==> (e5) subprocess decode: $PY scripts/check-utf8-subprocess.py"
 "$PY" scripts/check-utf8-subprocess.py --self-test >/dev/null
 "$PY" scripts/check-utf8-subprocess.py
 
+# The version-parity twin of (e5). scripts/check-py39-annotations.py fails a PEP 604
+# annotation (`X | None`) in a file without `from __future__ import annotations`. THIS
+# job pins Python 3.9, where that syntax is legal to COMPILE and raises TypeError the
+# moment the annotation is EVALUATED -- at def time, on import. So gate (a) py_compiles
+# it clean, every local check on a 3.12+ dev box passes, and the file dies here. Caught
+# exactly that way once; a static check is the only thing that can see it from a newer
+# interpreter, which is what `ci-test` runs locally. Self-test first (it must still
+# bite, INCLUDING staying quiet on plain bitwise `|`), then the fleet.
+echo "==> (e6) py3.9 annotation parity: $PY scripts/check-py39-annotations.py"
+"$PY" scripts/check-py39-annotations.py --self-test >/dev/null
+"$PY" scripts/check-py39-annotations.py
+
+# ---- (e7) *.ps1 encoding: UTF-8 BOM required, em dashes banned -----------------------------------------------
+# Windows PowerShell 5.1 reads a BOM-less .ps1 as the console ANSI code page,
+# not UTF-8, so the first non-ASCII byte decodes wrong and the parser dies on a
+# file that is valid UTF-8 everywhere else. A Linux runner cannot observe that
+# crash, which is why this is a byte assertion rather than a parse.
+#
+# lint.yml carries the ENFORCING copy, but until now that was the ONLY copy: the
+# rule was an inline shell loop in the workflow, unreachable from any local
+# command. So a BOM-less .ps1 passed a full green `bash scripts/ci.sh` and went
+# red only after a push - a whole CI round-trip per occurrence (measured
+# 2026-08-19 on tests/integration/test_bootstrap_ps1_slash_commands.ps1).
+# All callers now run scripts/check-ps1-encoding.sh, so none can drift; the
+# delegation itself is pinned by scripts/test_ps1_encoding_gate.py.
+#
+# Unlike (c)/(d)/(e) this is NOT skipped in CI. Those skip because a dedicated
+# lint.yml job owns them and double-running muddies attribution; here the cost
+# is a millisecond byte read over 14 files, and the local gate is the entire
+# point. Self-test first (proves the check still bites), then the fleet.
+echo "==> (e7) ps1 encoding (BOM + em dash): bash scripts/check-ps1-encoding.sh"
+bash scripts/check-ps1-encoding.sh --self-test >/dev/null
+bash scripts/check-ps1-encoding.sh
+
+# ---- (e8) Locale-encoded FILE I/O ------------------------------------------
+# The third edge of the cp1252 class, and the one (e) and (e5) left open: what a
+# script WRITES TO and READS FROM A FILE. open(p,"w") / write_text() / read_text()
+# in text mode with no encoding= use the LOCALE encoding, so identical source
+# produces UTF-8 artifacts on macOS and cp1252 artifacts on Windows. Shipped
+# live: this is how build-journal-index.py wrote journal-index.json as cp1252
+# while printing "Indexed N entries" and exiting 0, leaving every UTF-8 consumer
+# (/weekly, /monthly, diagnose, insight-fact-check) to die on
+# `UnicodeDecodeError: ... byte 0xed`. The READ half misbehaves more quietly
+# still: it usually does not raise at all, it decodes into mojibake and silently
+# mis-matches. PYTHONUTF8=1 masks the whole class locally, so a maintainer
+# cannot reproduce a user's report -- hence a gate rather than review. Self-test
+# first (proves the detector still bites in BOTH directions), then the fleet
+# against the content-pinned baseline. Pure stdlib, always runs here.
+echo "==> (e8) file I/O encoding: $PY scripts/check-utf8-file-io.py"
+"$PY" scripts/check-utf8-file-io.py --self-test >/dev/null
+"$PY" scripts/check-utf8-file-io.py
+
 # ---- (f) Python unit tests (scripts/ + hooks/ + tests/) --------------------
 # Every Python unit suite in the repo, run under the SAME interpreter as the rest
 # of the gate. Gate (a) py_compiles them (proves they parse); this proves their
@@ -614,12 +1136,15 @@ echo "    OK - $unit_count scripts/ unit suite(s) passed"
 PY_DIRECT=(
   hooks/test_memory_index.py
   tests/test_instinct.py
+  tests/test_entity_disambiguator_clustering.py
   hooks/test_live_session_reap.py
   hooks/test_relocation_orphan_reclaim.py
   hooks/test_secret_patterns_fp_filter.py
+  hooks/test_secret_patterns_nvidia.py
   hooks/test_check_fabricated_verification.py
   hooks/test_warn_chained_state_command.py
   hooks/test_footprint_aggregate_bloat.py
+  hooks/test_footprint_disk_floor.py
   hooks/test_unpushed_drift_surface.py
   hooks/test_claim_surface_honesty.py
   hooks/test_narrow_refspec_falsealarm.py
@@ -630,6 +1155,23 @@ PY_DIRECT=(
   # resolve a zone at module level.
   hooks/test_auto_capture_ships_tz.py
   hooks/test_git_inflight_op_guard.py
+  # The generalisation of the line above (MYC-3537). Two hooks were dead on
+  # arrival for their whole lives because NOTHING executed them: the tz
+  # placeholder, and `import fcntl` at module scope in the SessionStart secret
+  # scanner -- POSIX-only, so it crashed at import on every Windows install.
+  # Runs every hook on a minimal payload AND statically bans an unguarded
+  # platform-only import, because a Linux runner structurally cannot observe a
+  # Windows-only import crash.
+  hooks/test_hook_smoke.py
+  hooks/test_close_catchall_not_silent.py
+  # block-raw-vault-git resolved a `cd` only when it was the first token of the
+  # whole command, because it split statements on && || ; but not on a NEWLINE.
+  # `set -e` on line 1 was enough to make the cd invisible, so the hook read the
+  # harness cwd and allowed raw git straight into the vault. The control also
+  # pins the fail-open half: _targets_vault_repo allows when it cannot resolve a
+  # repo, so honouring an unresolvable `cd` (now reachable, since newlines split)
+  # would turn a blocked op into an allowed one.
+  hooks/test_block_raw_vault_git_cd.py
 )
 dormant_py=()
 while IFS= read -r -d '' f; do
@@ -657,4 +1199,4 @@ done
 echo "    OK - ${#PY_DIRECT[@]} hooks/+tests/ direct suite(s) passed; dormancy invariant clean"
 
 echo
-echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed] + home-hook deploy [passed] + subprocess decode [passed]."
+echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed] + home-hook deploy [passed] + subprocess decode [passed] + py3.9 annotation parity [passed] + ps1 encoding [passed]."

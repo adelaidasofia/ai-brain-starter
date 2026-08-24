@@ -57,8 +57,8 @@ Bypass: VAULT_WORKTREE_WARN_BYPASS=1.
 Test knobs: VAULT_WORKTREE_WARN_NODEDUP=1 (skip dedup), VAULT_WORKTREE_WARN_STATE_DIR
 (redirect the sentinel dir), GUARD_FIRES_LOG (redirect the telemetry sink).
 
-Canonical: ~/dev/adelaida-skills/hooks/ (deployed as a copy to ~/.claude/hooks/
-via install.sh). Negative-control test: warn-vault-session-in-worktree.test.sh.
+Canonical: the maintainer's private skills repo (deployed as a copy to
+~/.claude/hooks/ via install.sh). Negative-control test: warn-vault-session-in-worktree.test.sh.
 Ports to ai-brain-starter (MYC-576 -- every installed vault hits the same melt);
 guard_telemetry.py ports with it (MYC-809 -- port the rails, not just the pattern).
 """
@@ -227,11 +227,16 @@ def main() -> int:
     )
     # Telemetry on the WARN path ONLY (never the silent/plain hot path) -- MYC-1176 item 6.
     _log_fire("warn-vault-session-in-worktree", status="warned", slug=slug, event=event or "?")
-    print(json.dumps({"continue": True, "additionalContext": body}))
+    print(json.dumps({"continue": True, "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": body}}))
     return 0
 
 
 if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     try:
         sys.exit(main())
     except Exception:
