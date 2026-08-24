@@ -288,7 +288,7 @@ try:
     d = json.load(sys.stdin)
 except (ValueError, OSError):
     print(""); sys.exit(0)
-print(d.get("additionalContext", "") if isinstance(d, dict) else "")'
+print((d.get("hookSpecificOutput") or {}).get("additionalContext", "") if isinstance(d, dict) else "")'
 }
 
 VD="$ROOT/doorbell"; SD="$ROOT/sided"

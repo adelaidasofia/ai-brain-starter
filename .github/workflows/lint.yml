@@ -174,6 +174,12 @@ jobs:
       - name: no naive VAULT_ROOT reads (resolve via _resolve_vault_root)
         run: python3 scripts/check-vault-root-reads.py
 
+      - name: SessionStart emit-shape negative controls (the guard must still bite)
+        run: python3 scripts/check-sessionstart-emit-shape.py --self-test
+
+      - name: no SessionStart hook strands context on a top-level key
+        run: python3 scripts/check-sessionstart-emit-shape.py
+
       # A negative control needs a "before" source. Read it from a MOVING ref
       # (`git show origin/main:file`) and the control is guaranteed to pass in
       # the PR that adds it and guaranteed to fail forever after it lands --
