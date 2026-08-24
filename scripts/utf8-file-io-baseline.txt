@@ -63,7 +63,7 @@ a29f6c2b98ccf874e4c818e2487ce74f32248ecbbce73a11c91a738561f3aa84 SEV-A-write ski
 03d3f290e244d9ab0ae72af71ee51ed71be2e4f2aea62f6cf705d34ddcdeef69 SEV-A-write skills/graphify/scripts/graphify_stage_finish.py
 52d758fe570f834711cc82f5f0870678755325a30280625e1213b2882e036f6d SEV-A-write skills/graphify/scripts/graphify_stage_select.py
 
-# ---- SEV-B-read-only  (32 file(s)) ----
+# ---- SEV-B-read-only  (31 file(s)) ----
 b266f20ff920feeb950d48705939568f13e71e844707b90876c179c76d013da9 SEV-B-read-only hooks/_lib/dev_repo_scan.py
 3f7a1805473134ddb49cd1957cc4f94c8e84a1ccb4e8f875e6765b3dac33f289 SEV-B-read-only hooks/_lib/safe_read.py
 52c331ed8a99a90e12e347215144e6799dbe1d278024432dfc46639a4de68405 SEV-B-read-only hooks/_lib/worktree_safety.py
@@ -72,7 +72,6 @@ b647243fdf0a358d46a6a79b0bf7f817ee121f68d5d685fabe4b0ee2a93af94d SEV-B-read-only
 2050c962d8ba4b38910d207c75e786f4b4831406ba3d8e799fe9f475623c8bff SEV-B-read-only hooks/detect-secrets-in-bash-output.py
 3599a56754108272a15a2c879a23a52c0e844edf2991932118ecf16b24706af9 SEV-B-read-only hooks/dev-hub-refresh-on-session-start.py
 383b879b07fd9dce4a66c6a9beb449e2c7ec378b7f94d393b2bf486cf26531fb SEV-B-read-only hooks/observe-tool-calls.py
-226c80ed7d310efa5e94d3ed2324bbaa5f1a4503d0055295db5b0d4583393048 SEV-B-read-only hooks/surface-stale-automation-failures.py
 9ac734ab62df2f6176c7aabad09b72768fe553c93ef15a876ddae32e9a830ca4 SEV-B-read-only hooks/surface-sync-guard-findings.py
 328fa4ceb9777bf7600821fd6a31c4cfe7b97db233c59a1fa4d830f882cfd9f6 SEV-B-read-only hooks/test_check_fabricated_verification.py
 2b14fd8dbb3f827ca22270bee60bdacf598984bd28f2221856702b7791ba71b2 SEV-B-read-only hooks/test_footprint_aggregate_bloat.py
