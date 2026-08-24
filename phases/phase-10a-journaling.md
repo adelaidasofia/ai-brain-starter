@@ -529,3 +529,23 @@ Rick Rubin (creativity via presence, subtractive genius, trust the muse) · Eliz
 **No setup-time customization prompt.** Install the full roster above verbatim into the daily-journal SKILL.md. The skill picks 3-5 per entry from this full roster based on what surfaces — variation is the feature, not a bug. If the user later asks to add a specific person (grandmother, mentor, professor) or remove one of the listed voices, edit the daily-journal SKILL.md directly at that point. Never volunteer the customization question.
 
 **Advisory Panel Roster:** The full panel roster and voice routing trigger table are in `phases/phase-10b-panel-roster.md`. Read that file when you reach Step 5 of the journal skill generation.
+
+---
+
+## → Next phase (the install is not finished)
+
+You have just completed **Phase 10a**. Do not stop here, do not summarise the
+install as complete, and do not wait to be asked to continue.
+
+1. **Record progress.** Write `~/.claude/.ai-brain-starter-progress.json`:
+   `{"last_completed_phase": "10a", "ts": "<ISO-8601 timestamp for now>", "version": 1}`
+   This one line is what lets a resumed install pick up here instead of starting over.
+2. **Run the next phase.** Read `phases/phase-10b-panel-roster.md` from this skill's own directory
+   and execute **Phase 10b**.
+
+If you are running low on context, say so out loud and tell the user to open a
+fresh session and ask to resume the ai-brain-starter install; the progress file
+above is what makes that work. Ending here silently leaves them with a
+half-built brain that looks finished.
+
+<!-- phase-chain: next=phase-10b-panel-roster.md -->

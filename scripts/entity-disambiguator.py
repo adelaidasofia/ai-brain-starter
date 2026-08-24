@@ -51,6 +51,7 @@ import json
 import os
 import re
 import sys
+from bisect import bisect_right
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -152,6 +153,47 @@ def lev_ratio(a: str, b: str) -> float:
     if la == 0 or lb == 0:
         return 1.0
     return levenshtein(a, b) / max(la, lb)
+
+
+def lev_bounded(a: str, b: str, cutoff: int) -> int | None:
+    """Levenshtein distance, or None once it is known to exceed `cutoff`.
+
+    Two-row DP restricted to the diagonal band: no cell further than `cutoff`
+    from the diagonal can hold a value <= cutoff, and once every in-band cell
+    of a row exceeds the cutoff the distance cannot come back under it. Exact
+    for distances <= cutoff, which is all a threshold test needs.
+    """
+    if a == b:
+        return 0
+    la, lb = len(a), len(b)
+    if la > lb:
+        a, b = b, a
+        la, lb = lb, la
+    if lb - la > cutoff:
+        return None
+    big = cutoff + 1
+    prev = [j if j <= cutoff else big for j in range(lb + 1)]
+    for i in range(1, la + 1):
+        curr = [big] * (lb + 1)
+        lo = i - cutoff if i - cutoff > 1 else 1
+        hi = i + cutoff if i + cutoff < lb else lb
+        if lo == 1:
+            curr[0] = i if i <= cutoff else big
+        ca = a[i - 1]
+        best = big
+        for j in range(lo, hi + 1):
+            v = prev[j - 1] + (0 if ca == b[j - 1] else 1)
+            if prev[j] + 1 < v:
+                v = prev[j] + 1
+            if curr[j - 1] + 1 < v:
+                v = curr[j - 1] + 1
+            curr[j] = v
+            if v < best:
+                best = v
+        if best > cutoff:
+            return None
+        prev = curr
+    return prev[lb] if prev[lb] <= cutoff else None
 
 
 def parse_frontmatter_yaml(text: str) -> dict[str, Any]:
@@ -258,6 +300,14 @@ def cluster_mentions(counts: Counter[str]) -> dict[str, str]:
     """Group similar mentions, pick a canonical per cluster.
 
     Returns a dict mapping every observed variant to its canonical form.
+
+    Comparison is banded rather than all-pairs; see the comment on the loops
+    below for why that drops no match. Union-find yields the same partition
+    whatever order the pairs arrive in, and the canonical is chosen from a
+    cluster's members rather than its root, so the result is unchanged. On a
+    31,185-key vault the all-pairs form had burned 5.1 CPU-hours WITHOUT
+    finishing when it was killed; this one completes in 30.7 CPU-minutes
+    (`user` time, 2026-08-21, 35,806 aliases over 20,957 canonicals).
     """
     by_norm: dict[str, list[str]] = defaultdict(list)
     for mention in counts:
@@ -277,18 +327,45 @@ def cluster_mentions(counts: Counter[str]) -> dict[str, str]:
         if ra != rb:
             parent[rb] = ra
 
-    n = len(keys)
-    for i in range(n):
-        for j in range(i + 1, n):
-            ki, kj = keys[i], keys[j]
-            if not ki or not kj:
+    # Candidate generation is banded, not all-pairs. Each leg has an exact
+    # necessary condition, so a pair outside a band can never pass that leg:
+    #   jaccard(A,B) = |A n B| / |A u B| <= min(|A|,|B|) / max(|A|,|B|), so the
+    #     bigram-set sizes must be within JACCARD_THRESHOLD of each other;
+    #   lev_ratio(a,b) >= |la - lb| / max(la, lb), so the lengths must be within
+    #     LEVENSHTEIN_RATIO_THRESHOLD of each other.
+    # Bands are widened by one before slicing so no float rounding can clip a
+    # boundary pair. Bigram sets are built once per key rather than twice per
+    # pair, and the Levenshtein DP is banded with an early abort.
+    work = [k for k in keys if k]
+    grams: dict[str, set[str]] = {k: char_bigrams(k) for k in work}
+
+    by_size = sorted(work, key=lambda k: len(grams[k]))
+    sizes = [len(grams[k]) for k in by_size]
+    for i, ki in enumerate(by_size):
+        size_i = sizes[i]
+        if not size_i:
+            continue
+        gi = grams[ki]
+        stop = bisect_right(sizes, int(size_i / JACCARD_THRESHOLD) + 1)
+        for j in range(i + 1, stop):
+            kj = by_size[j]
+            inter = len(gi & grams[kj])
+            if not inter:
                 continue
-            if ki == kj:
+            if inter / (size_i + sizes[j] - inter) >= JACCARD_THRESHOLD:
                 union(ki, kj)
+
+    by_len = sorted(work, key=len)
+    lens = [len(k) for k in by_len]
+    for i, ki in enumerate(by_len):
+        stop = bisect_right(lens, int(lens[i] / (1.0 - LEVENSHTEIN_RATIO_THRESHOLD)) + 1)
+        for j in range(i + 1, stop):
+            kj = by_len[j]
+            if find(ki) == find(kj):
                 continue
-            jc = jaccard(ki, kj)
-            lr = lev_ratio(ki, kj)
-            if jc >= JACCARD_THRESHOLD or lr <= LEVENSHTEIN_RATIO_THRESHOLD:
+            max_len = lens[j]
+            dist = lev_bounded(ki, kj, int(LEVENSHTEIN_RATIO_THRESHOLD * max_len) + 1)
+            if dist is not None and dist / max_len <= LEVENSHTEIN_RATIO_THRESHOLD:
                 union(ki, kj)
 
     clusters: dict[str, list[str]] = defaultdict(list)
@@ -367,6 +444,14 @@ def main() -> int:
     parser.add_argument(
         "--vault-root",
         type=Path,
+        # vault-root-ok: CLI default for an explicit --vault-root flag on a repo-side
+        # tool that rebuilds the alias index of ANY vault by path. This script ships in
+        # the skill/repo scripts dir and never lives inside a vault, so a
+        # location-derived _resolve_vault_root() would resolve to the repo rather than
+        # to the vault being indexed. Every real caller passes --vault-root explicitly
+        # (the nightly cron does), so the env value is only the bare-invocation
+        # fallback and the caller always wins. Same shape and same reasoning as
+        # scripts/vault-schema-validator.py.
         default=Path(os.environ.get("VAULT_ROOT", Path.cwd())),
         help="Vault root containing the Meta folder.",
     )

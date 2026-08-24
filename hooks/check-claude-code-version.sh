@@ -28,7 +28,13 @@ fi
 # --------------------------------------------------------------------------
 
 CACHE_FILE="$HOME/.claude/.claude-code-version-check"
-CACHE_TTL_SEC=$((24 * 60 * 60))   # 24 hours
+# 6h, not 24h. Claude Code ships ~daily, so a 24h cache made this banner
+# SYSTEMATICALLY one release stale: every reading was up to a full release train
+# behind by the time anyone saw it. Measured stale-by-one on three consecutive
+# upstream delta audits. The cache exists to avoid hammering the API; one version
+# check every 6h costs nothing and keeps the reading current. The root cause was
+# the TTL, NOT a releases-feed-vs-npm lag (both feeds verified in agreement).
+CACHE_TTL_SEC=$((6 * 60 * 60))    # 6 hours
 WARN_VERSION_GAP=3                # warn loudly if behind by N or more patch versions
 DIFF_BULLET_LIMIT=8               # max bullets to surface from the changelog diff
 
@@ -37,7 +43,15 @@ if [[ -f "$CACHE_FILE" ]]; then
   last=$(stat -f %m "$CACHE_FILE" 2>/dev/null || stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0)
   age=$(( now - last ))
   if (( age < CACHE_TTL_SEC )); then
+    # DATE the snapshot. A cached reading is byte-identical in shape to a live
+    # one, so replaying it bare lets a stale version number read as current --
+    # the reader has no way to tell. Stamp the age whenever it is old enough to
+    # matter, so a stale answer announces itself instead of impersonating a
+    # fresh one.
     cat "$CACHE_FILE"
+    if [[ -s "$CACHE_FILE" ]] && (( age >= 3600 )); then
+      printf '[claude-code-version] (reading is %dh old; upstream ships ~daily, so the real head may already be newer)\n' "$(( age / 3600 ))"
+    fi
     exit 0
   fi
 fi

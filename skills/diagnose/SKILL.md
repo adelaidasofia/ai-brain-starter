@@ -81,7 +81,7 @@ Most "Claude is broken" reports trace to one of:
 |---|---|---|---|
 | 1 | CLAUDE.md present + has Vault Map | Re-run /setup-brain Phase 4 | Add the Vault Map section by hand |
 | 2 | ⚙️ Meta/ + scripts/ + rules/ present | Re-run /setup-brain Phase 3 | Create the missing subfolder |
-| 3 | ai-brain-starter + daily-journal skills installed | Re-run bootstrap | Install the missing skill from its phase |
+| 3 | ai-brain-starter + daily-journal skills installed | Re-run bootstrap | **A missing `daily-journal` is usually a STALLED INSTALL, not a missing skill.** That skill is built in Phase 10a, so its absence means setup stopped before Phase 10 and every later phase never ran. Do not tell them to install one skill — that leaves the rest of the install missing. Point them at `docs/RESUME_INSTALL.md` and offer to resume. Only treat it as a genuinely missing skill if the vault also shows Phase 18+ artifacts (`⚙️ Meta/journal-index.json`), which would mean the install DID get past 10 |
 | 4 | Hooks registered + graph-context-hook parses | Phase 5 wires hooks; bash -n the script | - |
 | 5 | journal-index.json valid + fresh | Delete and rebuild via build-journal-index.py | Re-run /weekly to refresh |
 | 6 | git, python3 (jq optional) on PATH | brew install / winget install | Optional tools missing |
@@ -102,6 +102,7 @@ Most "Claude is broken" reports trace to one of:
 - User says "the journal entries aren't showing up in /weekly"
 - User says "I just did a git pull and something feels off"
 - User says "my friend installed it but it's broken"
+- User says "I never got the interview" / "setup said it was done but nothing happened" / "my CLAUDE.md is empty" / "nunca llegué a la entrevista" (a STALLED INSTALL — setup stopped partway and reported success. Do not diagnose it as N separate missing pieces; send them to `docs/RESUME_INSTALL.md` and resume from where the vault says they stopped)
 - User says "Obsidian keeps crashing when I open it" / "Obsidian won't open" (likely a heavy-indexer renderer OOM on a large vault - check 13)
 - User says "my brain feels stale" / "I haven't seen any new Granola/WhatsApp/Slack/Gmail notes in a while" / "<source> stopped showing up" (likely a silently-empty connector - check 14b)
 - User says "Obsidian melted / pegged the CPU after I opened a Claude Desktop session" / "the vault doubled itself" / "there's a `.claude/worktrees` folder full of copies of my vault" (likely a worktree-on-vault checkout - check 17; relaunch PLAIN with the worktree box unchecked)

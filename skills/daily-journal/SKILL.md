@@ -295,7 +295,7 @@ Capture their answer. After saving the journal entry (Step 9), update the weekly
 **Capture must not be blocked by data pulls.** If the user opened with a full dump, write the file FIRST from their words, THEN run the Step 0 source pulls and fold them into the `## Today` section during enrichment. RescueTime / iMessage / WhatsApp / calendar latency must never delay the first save.
 
 **Write a complete, standalone entry** using the Step 7 format, with these capture-stage values:
-- **Frontmatter:** all required fields present. `floor` / `floor_level` = your best read from what they've said so far (provisional — Step 4 finalizes it). Set `entry_status: captured` now; Step 7 flips it to `enriched` if the interview or panel runs (so the insights/patterns skills can tell a quick capture from a full session and weight the provisional floor accordingly). Fill the habit fields you already know; omit the optional RescueTime and morning-pairing fields you don't have yet rather than faking them.
+- **Frontmatter:** all required fields present — starting with `type: journal` (literal English value even in localized vaults; metadata extraction classifies by `type:` and skips the entry without it). `floor` / `floor_level` = your best read from what they've said so far (provisional — Step 4 finalizes it). Set `entry_status: captured` now; Step 7 flips it to `enriched` if the interview or panel runs (so the insights/patterns skills can tell a quick capture from a full session and weight the provisional floor accordingly). Fill the habit fields you already know; omit the optional RescueTime and morning-pairing fields you don't have yet rather than faking them.
 - **`## Today`:** include it only if you already pulled that data; otherwise leave it out for now and add it at enrichment.
 - **`## Journal — [user]'s voice`:** their content so far, in their voice, lightly shaped. This is a real entry, not a stub.
 - **`### My responses to the panel (verbatim...)`:** every message they have typed this session so far, word-for-word. The verbatim-capture rule applies from message one.
@@ -607,6 +607,8 @@ One door only. Write it to frontmatter as `door:` (action + when). Tomorrow's se
 
 **File location:** Journal files go in the **monthly subfolder**, not the root. Pattern: `[VAULT_PATH]/Journals/[Month YYYY]/filename.md` (e.g. `Journals/April 2026/filename.md`). Check your vault's journal folder structure and match it.
 
+**`__SKIP` lines never land.** Before writing, strip every line whose first token is `__SKIP` — that is something the user said to you but does not want recorded. Then emit one line per dropped item so the drop is never silent: `Dropped __SKIP line 2 (token preview: <first 6 words>)`. Do not paraphrase the dropped content back into the entry, and do not copy it anywhere else. A PreToolUse hook (`block-skip-prefix-in-vault-write.py`) blocks the write if a `__SKIP` line survives, so this is enforced, not advisory. Full rule: `templates/rules/skip-prefix-convention.md`.
+
 **Always use Bash (`cat`) to read and write journal files — do NOT use the Read tool.** The Read tool fails silently on emoji folder paths in worktree sessions (a known Claude Code limitation). Use:
 - Write: `cat > "/full/path/file.md" << 'EOF' ... EOF`
 - Read/verify: `cat "/full/path/file.md"` or `ls -la "/full/path/file.md"`
@@ -622,12 +624,24 @@ If the vault's `CLAUDE.md` states a filename rule, it wins — `filename_format`
 
 ```markdown
 ---
+type: journal               # REQUIRED — metadata extraction routes every note by `type:`; an entry without it is skipped as NO_TYPE and never indexed
 creationDate: YYYY-MM-DDTHH:MM
 floor: Primary              # single floor name — where the entry LANDED (this is the EVENING floor)
 floor_level: Low | Middle | High
 # floor_arc: [FloorA, FloorB, Primary]   # OPTIONAL — ordered path through the day, last element = floor. Add ONLY when the day moved; omit on a still day.
 entry_status: captured | enriched   # captured = saved at first touch (Step 1.5); enriched = the interview/panel ran
 context_sources: [messages, rescuetime, session_captures, todays_activity, calendar, body_health]   # REQUIRED — every Step-0 source actually folded into this entry (drop any that were off/unavailable, but name what you pulled). Absent => warn-journal-saved-without-context.py fires.
+people: ["[[Full Name]]", "[[Other Name]]"]   # people who showed up today. EVERY wikilink MUST be inside double quotes.
+# ^ YAML HARD RULE: `people: [[A]], [[B]]` is INVALID YAML — the parser reads `[[A]]`
+#   as a nested flow sequence and dies on the comma. A file whose frontmatter fails to
+#   parse is INVISIBLE to Dataview, to /second-brain-mapping, and to the insight engine
+#   — silently, with no error. Observed in the field: this had broken 10 of 14 journals
+#   in one vault, and every insight section had been rendering empty for weeks as a
+#   result, with nothing surfacing the failure.
+#   Same rule for ANY key holding wikilinks (`related:`, `projects:`): quote each one.
+#   The bracketed variant is worse, because it SUCCEEDS: `related: [[[A]], [[B]]]`
+#   parses to nested lists ([[["A"]], [["B"]]]) instead of wikilink strings. No
+#   error, no unparseable file, nothing to notice — the queries simply never match.
 # Morning pairing fields — ONLY include if a /rise entry was found in Step 0h:
 # floor_morning: <Floor at sunrise from /rise frontmatter>
 # floor_morning_level: Low | Middle | High

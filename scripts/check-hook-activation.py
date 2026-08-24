@@ -7,7 +7,11 @@ structurally connected the two. "We ship guard X" kept being true at the file
 level and false at the behavior level:
 
   * MYC-1017  the fabrication-guard family, dormant.
-  * MYC-1031  sessionstart-hook-snapshot-guard.py, dormant.
+  * MYC-1031  sessionstart-hook-snapshot-guard.py, dormant ~its entire life. It
+              stayed on UNCLASSIFIED_BASELINE below until MYC-3880 found its
+              identity function fused all 19 Windows hooks into one -- a dormant
+              guard whose live logic was ALSO dead, so nothing could have noticed
+              from behavior. Fixed and wired together; both halves had to land.
   * MYC-782   check-cd-outside-worktree.py, dormant ~6 weeks while CLAUDE.md
               described it as an active guard. Fixed in #371.
 
@@ -80,6 +84,26 @@ TEMPLATE_ONLY: Dict[str, str] = {
     "check_fab_shim.py":
         "not a hook: an import shim so tests can load the hyphenated guard "
         "module (hyphens are not importable identifiers).",
+    "surface-sync-guard-findings.py":
+        "not a hook: a report BUILDER (build_report) called by "
+        "worktree-footprint-signal.py at its single emission point, plus a "
+        "standalone --self-test diagnostic. Deliberately unwired -- wiring it "
+        "as its own SessionStart entry put that event at 20/19 on the "
+        "footprint SLA gate, and buying budget to fit one more cold start "
+        "would hide the cost that gate exists to surface. Checkable: grep "
+        "surface-sync-guard-findings hooks/worktree-footprint-signal.py "
+        "(MYC-1133).",
+    "surface-unniced-launchagents.py":
+        "opt-in detector, deliberately unwired. It names LaunchAgents that run "
+        "at normal scheduling priority -- the 2026-08-19 freeze class (68 "
+        "agents, none declaring itself background, load 109 on 10 cores with "
+        "RAM healthy). Same call as surface-sync-guard-findings above: "
+        "SessionStart is at 19/19, so wiring it would breach the footprint SLA, "
+        "and raising the budget would tax every install's cold start forever "
+        "for a GROWTH failure that a default install (0 daemons wired) does not "
+        "have. Run it by hand, or wire it locally, on a machine whose agent "
+        "fleet is growing. Checkable: bash "
+        "tests/integration/test_surface_unniced_launchagents.sh (MYC-4032).",
 }
 
 # --- A: pre-existing debt (ratchet, may only shrink) -------------------------
@@ -92,8 +116,6 @@ UNCLASSIFIED_BASELINE: Set[str] = {
     "agent-briefing-check.py",
     "auto-capture-public-ships.py",
     "block-branch-switch-with-untracked-build.py",
-    "block-claude-mcp-inline-secret.py",
-    "block-mcp-config-inline-secret.py",
     "block-worktree-shared-edit.py",
     "build-runbook-check.py",
     "check-cron-paths.sh",
@@ -123,7 +145,6 @@ UNCLASSIFIED_BASELINE: Set[str] = {
     "sdd-cache-pre.sh",
     "session-lock.py",
     "session-turn-counter.py",
-    "sessionstart-hook-snapshot-guard.py",
     "sunday-review-nudge.py",
     "surface-dependabot-backlog.py",
     "surface-stale-automation-failures.py",
