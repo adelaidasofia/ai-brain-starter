@@ -24,6 +24,7 @@ auto-scrub layer were the structural fix.
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 
 
@@ -52,6 +53,18 @@ _PROVIDER = [
         regex=re.compile(r"sk-ant-api\d{2}-[\w\-]{40,}", re.ASCII),
         redaction="[REDACTED-anthropic-api-key]",
         description="Anthropic API key, format sk-ant-api{NN}-{token}.",
+    ),
+    SecretPattern(
+        # NVIDIA build-API key. Added after a real leak: a live key reached a
+        # session transcript via a process listing, then turned up in 8+ files
+        # including backups. The shape had been written into a prose checklist
+        # a human reads, never into executable code -- so every guard reported
+        # a confident CLEAN over it. If an auth path is documented as supported,
+        # its credential shape belongs here, in code, not only in a checklist.
+        name="nvidia-api-key",
+        regex=re.compile(r"nvapi-[A-Za-z0-9_\-]{40,}", re.ASCII),
+        redaction="[REDACTED-nvidia-api-key]",
+        description="NVIDIA build/NIM API key, format nvapi-{token}.",
     ),
     SecretPattern(
         # Tightened after early audits: original `{20,}` matched
@@ -408,6 +421,16 @@ def filter_tool_output_false_positives(
 
 # Self-test (run `python3 -m hooks._lib.secret_patterns`)
 if __name__ == "__main__":
+    # This module's self-test prints pattern names and redaction markers. On a
+    # Windows cp1252 console any non-ASCII byte in that output raises
+    # UnicodeEncodeError and the self-test dies with no legible cause
+    # (ai-brain-starter#313). Idempotent; a no-op on an already-UTF-8 console.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
+
     SAMPLES = {
         "anthropic-api-key": "sk-ant-api03-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
         "hubspot-pat": "pat-na1-AAAAAAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA",
@@ -415,6 +438,7 @@ if __name__ == "__main__":
         "redis-url": "rediss://:p123abc456def@redis.example.com:6379",
         "jwt": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
         "github-pat": "github_pat_AAAAAAAAAAAAAAAAAAAAAA_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN",
+        "nvidia-api-key": "nvapi-" + "Xy7Zq2Lm9Rt4Bv6Nc8Ka1Pd3Wf5Hj0Gs7Ue2Yi4Ao6Bn1Cm",
         "hex-256": "a" * 64,
         "clean": "no secrets here just regular text and code",
     }
