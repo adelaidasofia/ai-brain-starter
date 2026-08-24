@@ -289,6 +289,7 @@ INTEGRATION_TESTS=(
   test_meeting_todos_step0_create_if_absent
   test_meeting_workflow_trigger_hook
   test_personal_brain_not_optional
+  test_private_context_scan_merge_base
   test_phase11_writes_to_vault_rule_file
   test_post_commit_ff_worktrees
   test_write_hook_meeting_folder_i18n
@@ -336,6 +337,22 @@ INTEGRATION_TESTS=(
   # every test ran against the vault the env var already named, which makes
   # "resolve from the env" and "resolve from the target" indistinguishable.
   test_hook_vault_root_per_target
+  # That same hook's launchd pass read `launchctl list`'s exit-status column
+  # only, which reads 0 for BOTH a healthy job and one that has never run at
+  # all -- a hollow job was indistinguishable from a clean one and stayed
+  # silently unflagged. Proves the blind spot on a frozen, independent
+  # reimplementation of the old rule (not a git-history diff, which would stop
+  # meaning anything once this fix lands on main), then proves the shipped fix
+  # (a second `launchctl print` probe, only for the ambiguous status==0 case)
+  # closes it -- with regression + false-positive + probe-failure controls.
+  test_launchd_hollow_job_detection
+  # The three shipped launchd plist templates carried no PATH, so a client
+  # script that shells out to a brew-installed tool failed with "not found"
+  # under launchd while working fine in every interactive shell. Validates the
+  # added EnvironmentVariables/PATH key with two independent parsers (plutil
+  # -lint where available, portable plistlib everywhere else) against both the
+  # raw template and a simulated real installer render.
+  test_launchd_template_path_env
   # The rm -rf rule in that same hook, which MYC-3529 left alone: its regex
   # spelled the vault root `$HOME/vault` -- a SHELL string in a PYTHON regex,
   # where `$` is an end-of-line anchor, so the branch was dead and the vault
@@ -421,6 +438,7 @@ INTEGRATION_TESTS=(
   # — silently, on a whole platform. Two layers must hold (the path gate AND the
   # vault-root resolve); fixing only the first looks right and still fails open.
   test_journal_guard_windows_paths
+  test_team_broadcast_install_gap
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new

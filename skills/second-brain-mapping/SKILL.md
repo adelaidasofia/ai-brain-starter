@@ -85,6 +85,19 @@ fi
 
 If this check fails, stop. Do not proceed to any phase. Tell the user to run `/setup-vault-types` and offer to invoke it for them.
 
+**Precheck 2: is graph scope bounded?** A vault that also stores its own tooling will graph that tooling as knowledge. Without a `.graphifyignore`, Phase 2 indexes scripts, config backups, agent memory and exported web assets, and Phase 3's gap report fills with bundle hashes and single letters instead of entities — unsafe to apply.
+
+```bash
+VAULT_IGNORE="$(pwd)/.graphifyignore"
+if [[ ! -f "$VAULT_IGNORE" ]]; then
+  echo "No .graphifyignore at the vault root — graph scope is UNBOUNDED."
+  echo "Install the default from templates/graphifyignore.template,"
+  echo "then review it and add any generated indexes your tooling writes."
+fi
+```
+
+Install the template if it is absent, then tell the user what it excludes. Do not skip Phase 2 over this — bound the scope and continue. On the reference vault this cut wikilink gaps from 1,937 to 383 and removed every junk suggestion.
+
 Read the state file to see what was done and when:
 
 ```bash
