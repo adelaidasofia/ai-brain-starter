@@ -610,7 +610,7 @@ def resolve_todo_files(vault_root: Path, meta_dir: Path) -> list[Path]:
     config = meta_dir / "rise-config.md"
     if config.is_file():
         try:
-            text = config.read_text(encoding="utf-8")
+            text = config.read_text(encoding="utf-8", errors="replace")
         except OSError:
             text = ""
         block = re.search(r"^\s*todo_files:\s*$((?:\n\s*-\s*.+)+)",
