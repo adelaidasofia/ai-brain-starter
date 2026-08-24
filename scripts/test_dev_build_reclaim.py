@@ -354,6 +354,93 @@ def main() -> int:  # noqa: C901
         ok("[15] --min-free-gb 0 never deletes", (wt / "node_modules").is_dir())
         ok("[15] and reports the no-op", "no-op" in r.stdout)
 
+    # ---- [17] the session lock is read in its REAL shape and REAL location ---
+    # The guard that shipped probed `<wt>/.session-lock`. Measured 2026-08-06:
+    # ZERO files of that name existed anywhere under the dev root, so the guard
+    # was dead in production while reading as "no session here". These controls
+    # use the shape session-lock.py actually writes — `.claude/.session-lock.json`,
+    # a multi-session map keyed on `last_activity_at` — and the second puts it at
+    # the git-common-dir root, where a sibling worktree's lock really lives.
+    # Both would have passed silently before the fix.
+    import subprocess as _sp
+    from _lib.dev_repo_scan import has_live_session_lock as _live
+
+    def lock_payload(age_sec: float, schema: str = "v2") -> dict:
+        """A lock in the shape the WRITER actually produces.
+
+        `v2` is what session-lock.py writes today: sessions is a **dict** keyed
+        by session id. An earlier version of this control wrote a LIST, which is
+        why it passed against a reader that could only handle lists — a control
+        in the wrong shape proves nothing about the real file. The other shapes
+        are kept because the reader must still handle a lock written by an older
+        install mid-upgrade.
+        """
+        entry = {"started_at": time.time() - age_sec - 60,
+                 "last_activity_at": time.time() - age_sec,
+                 "cwd": "/tmp/x", "pid": 1234}
+        if schema == "v2":
+            return {"version": 2, "sessions": {"sid-1": entry}}
+        if schema == "legacy-list":
+            return {"version": 1, "sessions": [entry]}
+        return {"session_id": "sid-1", **entry}          # v1 flat
+
+    def write_real_lock(where: Path, age_sec: float, schema: str = "v2") -> None:
+        (where / ".claude").mkdir(parents=True, exist_ok=True)
+        (where / ".claude" / ".session-lock.json").write_text(
+            json.dumps(lock_payload(age_sec, schema)), encoding="utf-8")
+
+    # Every schema the lock has worn must read live. v2 is the load-bearing one:
+    # the shipped reader iterated `sessions` as a list, so on the real v2 dict it
+    # yielded string KEYS, failed every isinstance check, and reported "no live
+    # session" on a file holding two.
+    with tempfile.TemporaryDirectory() as td:
+        probe = Path(td)
+        for schema in ("v2", "legacy-list", "v1-flat"):
+            (probe / ".claude").mkdir(parents=True, exist_ok=True)
+            (probe / ".claude" / ".session-lock.json").write_text(
+                json.dumps(lock_payload(5, schema)), encoding="utf-8")
+            ok(f"[17] lock schema `{schema}` reads as LIVE", _live(probe))
+        # ...and the pre-fix list-only parse is proven inadequate for v2.
+        v2 = lock_payload(5, "v2")
+        listish = [s for s in v2.get("sessions", []) if isinstance(s, dict)]
+        ok("[17] a list-only parse finds ZERO entries in the real v2 lock",
+           listish == [])
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        wt = mkwt(root, "real-lock-wt")
+        backdate(wt, 30)
+        write_real_lock(wt, age_sec=5)
+        ok("[17] a REAL .session-lock.json in the worktree is detected", _live(wt))
+        # The load-bearing half: the RETIRED probe set would have found nothing,
+        # so this control fails against the pre-fix code rather than passing anyway.
+        ok("[17] and the retired `.session-lock` probe would have MISSED it",
+           not (wt / ".session-lock").exists()
+           and not (wt / ".claude" / ".session-lock").exists())
+        items, skipped = mod.plan(root, 7.0, time.time())
+        ok("[17] so the worktree is PRESERVED end-to-end", items == [])
+        ok("[17] and reported as a live session lock",
+           any("live session lock" in s for s in skipped))
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        # A sibling worktree keeps its lock at the MAIN checkout, never inside
+        # itself. This is the case that was invisible in production.
+        main = root / "mainrepo"
+        main.mkdir()
+        _sp.run(["git", "-C", str(main), "init", "-q"], check=True, capture_output=True)
+        (main / "f.txt").write_text("x", encoding="utf-8")
+        _sp.run(["git", "-C", str(main), "add", "-A"], check=True, capture_output=True)
+        _sp.run(["git", "-C", str(main), "-c", "user.email=t@t", "-c", "user.name=t",
+                 "commit", "-qm", "init"], check=True, capture_output=True)
+        wt = root / "mainrepo-slug"
+        _sp.run(["git", "-C", str(main), "worktree", "add", "-q", "--detach", str(wt)],
+                check=True, capture_output=True)
+        write_real_lock(main, age_sec=5)          # lock at the MAIN checkout only
+        ok("[17] a worktree finds the lock at its git-common-dir root", _live(wt))
+        write_real_lock(main, age_sec=99_999)     # same lock, now stale
+        ok("[17] a STALE root lock does not shield forever", not _live(wt))
+
     if FAILED:
         print(f"\nFAILED — dev-build-reclaim (MYC-3727): {len(FAILED)} control(s)")
         for f in FAILED:

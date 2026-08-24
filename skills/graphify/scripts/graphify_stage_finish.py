@@ -32,6 +32,11 @@ from pathlib import Path
 from collections import Counter
 from datetime import date
 
+# This skill ships as part of the ai-brain-starter plugin, installed as one
+# unit (single .claude-plugin/plugin.json), so hooks/ is always a sibling of
+# skills/ at the plugin root regardless of where the plugin is installed.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent / "hooks"))
+from _lib.safe_read import safe_read_bytes, safe_read_text  # noqa: E402
 
 SLASH_LABEL_RE = re.compile(r"^[\w\s\u00C0-\uFFFF]+/[\w\s\u00C0-\uFFFF]+$")
 
@@ -86,7 +91,11 @@ def main():
         if not p.exists():
             print(f"  MISSING chunk {i:02d} — aborting")
             sys.exit(1)
-        data = json.loads(p.read_text())
+        chunk_read = safe_read_text(p)
+        if not chunk_read.ok:
+            print(f"  UNREADABLE chunk {i:02d} ({chunk_read.status}) — aborting")
+            sys.exit(1)
+        data = json.loads(chunk_read.text)
         for n in data.get("nodes", []):
             old = n.get("label", "")
             new = clean_slash_label(old)
@@ -131,10 +140,14 @@ def main():
     print("Step 3: union-merging with existing graph.json...")
     ts = time.strftime("%Y%m%d_%H%M")
     backup = Path(args.graph_path + f".backup_{ts}_pre_{args.stage_name.replace(' ', '_')}_finish")
-    backup.write_bytes(Path(args.graph_path).read_bytes())
+    graph_read = safe_read_bytes(Path(args.graph_path))
+    if not graph_read.ok:
+        print(f"  ERROR: could not read existing graph.json ({graph_read.status}) — aborting")
+        sys.exit(1)
+    backup.write_bytes(graph_read.data)
     print(f"  backed up: {backup}")
 
-    existing = json.loads(open(args.graph_path).read())
+    existing = json.loads(graph_read.data.decode("utf-8"))
     existing_nodes = existing["nodes"]
     existing_edges = existing.get("links", [])
     print(f"  existing: {len(existing_nodes)} nodes, {len(existing_edges)} edges")
@@ -224,12 +237,20 @@ def main():
     print(f"  {len(communities)} communities")
     scores = score_all(G, communities)
 
-    # Build community_labels from highest-degree node per community
-    # (sidesteps API drift in graphify.report.generate)
-    community_labels = {}
-    for cid, nids in communities.items():
-        best = max(nids, key=lambda n: G.degree(n))
-        community_labels[cid] = G.nodes[best].get("label", best)
+    # Name each community after its highest-degree member, skipping labels that
+    # identify a record rather than a topic -- a daily-note or timestamp node wins on
+    # degree in journal-heavy corpora while saying nothing about the cluster. Falls
+    # back to the plain highest-degree pick if the shared module isn't importable.
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from graphify_seed_labels import anchor_label
+
+        community_labels = {cid: anchor_label(G, nids) for cid, nids in communities.items()}
+    except ImportError:
+        community_labels = {}
+        for cid, nids in communities.items():
+            best = max(nids, key=lambda n: G.degree(n))
+            community_labels[cid] = G.nodes[best].get("label", best)
 
     gn = god_nodes(G, top_n=20)
     sc = surprising_connections(G, communities, top_n=10)
@@ -252,7 +273,12 @@ def main():
     lines.append("")
     lines.append("## Top God Nodes")
     for i, n in enumerate(gn, 1):
-        lines.append(f"{i}. `{n['label']}` — {n['edges']} edges")
+        # god_nodes() returns "degree"; "edges" has never been a key on it.
+        # This raised KeyError *after* Step 3 had already written the merged
+        # graph and *before* Step 5 saved the semantic cache, so the graph
+        # looked healthy and the next --update silently re-paid full price.
+        deg = n.get("degree", n.get("edges", n.get("edge_count", 0)))
+        lines.append(f"{i}. `{n['label']}` — {deg} edges")
     lines.append("")
     lines.append("## Surprising Connections")
     for s in sc[:10]:
@@ -301,12 +327,16 @@ def main():
         cutoff = time.time() - 3600  # last hour
         upgraded = 0
         recent = 0
-        for c in cache_dir.glob("*.json"):
+        # rglob, not glob: the cache is nested (cache/semantic/, cache/ast/),
+        # so a flat glob matches nothing and reports 0 touched entries even
+        # when the run upgraded hundreds.
+        for c in cache_dir.rglob("*.json"):
             if c.stat().st_mtime < cutoff:
                 continue
             recent += 1
             try:
-                if is_llm_extraction(json.loads(c.read_text())):
+                cache_read = safe_read_text(c)
+                if cache_read.ok and is_llm_extraction(json.loads(cache_read.text)):
                     upgraded += 1
             except Exception:
                 pass
@@ -323,7 +353,7 @@ def main():
     print(f"TOP 15 GOD NODES (post-{args.stage_name})")
     print("=" * 60)
     for i, n in enumerate(gn[:15], 1):
-        print(f"  {i:2d}. {n['label']} ({n['edges']})")
+        print(f"  {i:2d}. {n['label']} ({n.get('degree', n.get('edges', 0))})")
 
     print()
     print(f"{args.stage_name.upper()} FINISH COMPLETE")

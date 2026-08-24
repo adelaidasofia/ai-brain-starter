@@ -123,20 +123,174 @@ for label, cmd, cwd, home, want in CASES:
     check(label, mut(cmd, cwd, home), want)
 
 # --- _git_mutation_target (cdir, gdir) unit checks ---
-check("gmt: -C captured as cdir, --work-tree ignored", mod._git_mutation_target(shlex.split(
-    "git -C /x --work-tree /y commit")), (True, "/x", None))
-check("gmt: --git-dir captured as gdir, --work-tree ignored", mod._git_mutation_target(shlex.split(
-    "git --work-tree /y --git-dir /z/.git commit")), (True, None, "/z/.git"))
-check("gmt: --git-dir= form -> gdir", mod._git_mutation_target(shlex.split(
-    "git --git-dir=/z/.git commit")), (True, None, "/z/.git"))
-check("gmt: GIT_DIR= env -> gdir", mod._git_mutation_target(shlex.split(
-    "GIT_DIR=/z/.git git commit")), (True, None, "/z/.git"))
-check("gmt: -C + --git-dir both captured", mod._git_mutation_target(shlex.split(
-    "git -C /x --git-dir /z/.git commit")), (True, "/x", "/z/.git"))
-check("gmt: no redirect -> (True,None,None)", mod._git_mutation_target(shlex.split(
-    "git commit -m x")), (True, None, None))
-check("gmt: read-only -> False", mod._git_mutation_target(shlex.split(
-    "git status")), False)
+# These assert the REDIRECT fields only. _git_mutation_target also carries the
+# subcommand and its remaining tokens (the scoped-commit exemption needs both), so
+# comparing the whole tuple made all six fail on a change that did not touch
+# redirect detection at all. Slicing to [:3] keeps them testing what they are named
+# for instead of tracking the tuple's width; the carried fields get their own check.
+def redirect(cmd):
+    res = mod._git_mutation_target(shlex.split(cmd))
+    return res if res is False else tuple(res[:3])
 
-print(f"\n=== {len(CASES) + 7} assertions, {len(fails)} failed ===")
+
+check("gmt: -C captured as cdir, --work-tree ignored",
+      redirect("git -C /x --work-tree /y commit"), (True, "/x", None))
+check("gmt: --git-dir captured as gdir, --work-tree ignored",
+      redirect("git --work-tree /y --git-dir /z/.git commit"), (True, None, "/z/.git"))
+check("gmt: --git-dir= form -> gdir",
+      redirect("git --git-dir=/z/.git commit"), (True, None, "/z/.git"))
+check("gmt: GIT_DIR= env -> gdir",
+      redirect("GIT_DIR=/z/.git git commit"), (True, None, "/z/.git"))
+check("gmt: -C + --git-dir both captured",
+      redirect("git -C /x --git-dir /z/.git commit"), (True, "/x", "/z/.git"))
+check("gmt: no redirect -> (True,None,None)",
+      redirect("git commit -m x"), (True, None, None))
+check("gmt: read-only -> False", redirect("git status"), False)
+check("gmt: carries the subcommand + its remaining tokens",
+      mod._git_mutation_target(shlex.split("git commit -o A.txt -m x"))[3:],
+      ("commit", ["-o", "A.txt", "-m", "x"]))
+
+# --- scoped-commit exemption: `git commit -o <literal paths>` with an empty index -
+# `-o`/`--only` commits the working-tree contents of the NAMED paths and ignores the
+# index, so it cannot sweep a sibling's staged work — the harm this gate exists to
+# stop. Everything else about commit stays blocked. The index probe is injected so
+# these stay pure; empty=False simulates a sibling having staged something.
+def blocked(cmd, empty=True, cwd=HOME):
+    return mod._is_home_repo_git_mutation(cmd, cwd, HOME, index_probe=lambda d: empty)
+
+
+SCOPED_ALLOWED = [
+    "git commit -o A.txt -m x",
+    "git commit --only A.txt -m x",
+    "git commit -o A.txt B.txt C.txt -F /tmp/msg",
+    "git commit -o -- A.txt",
+    "git commit -oq A.txt -m x",
+    'git commit -om x A.txt',                 # -om == -o -m, so x is the MESSAGE
+    "git commit -o notes/ -m x",
+    "git commit -o A.txt -uno -m x",
+]
+# Each of these would be ALLOWED by a parser that reads an option's VALUE as a
+# pathspec — the one catastrophic direction, so most of the matrix pins it.
+SCOPED_BLOCKED = [
+    "git commit -m x",                        # bare
+    "git commit -o -m x",                     # -m eats the only positional
+    "git commit -om x",                       # cluster: x is the message
+    "git commit -o -F /tmp/msg",
+    "git commit -o -C HEAD",
+    "git commit -o --message x",
+    "git commit -o --pathspec-from-file /tmp/l",
+    "git commit -o",
+    "git commit -o -a A.txt -m x",            # -a widens to the whole tree
+    "git commit -o -i A.txt -m x",            # --include ADDS the index
+    "git commit -o --amend A.txt -m x",       # measured: --amend takes the index
+    "git commit -o -p A.txt",
+    "git commit -o . -m x",                   # sweeps files you did not name
+    "git commit -o '*.md' -m x",
+    "git commit -o ':/' -m x",
+    "git commit -o A.txt . -m x",             # one bad pathspec poisons it
+    "git commit A.txt -m x",                  # pathspecs but no explicit -o
+    "git commit -o --frobnicate A.txt",       # unclassified option -> cannot prove
+    "git push -o ci.skip",                    # -o is a PUSH option, not scoping
+    "git reset --hard",                       # no other verb is ever exempt
+    'git commit -o A.txt -m "l1\nl2"',        # multi-line -m: unparseable
+]
+for _c in SCOPED_ALLOWED:
+    check(f"scoped ALLOWED: {_c!r}", blocked(_c), False)
+for _c in SCOPED_BLOCKED:
+    check(f"scoped BLOCKED: {_c!r}", blocked(_c), True)
+# the index condition, both directions on the SAME command
+check("scoped commit BLOCKED when the index is not empty",
+      blocked("git commit -o A.txt -m x", empty=False), True)
+check("scoped commit ALLOWED when the index is empty",
+      blocked("git commit -o A.txt -m x", empty=True), False)
+# an explicit git-dir withholds the exemption: the index we probe may not be the
+# one git commits against
+check("scoped commit with explicit --git-dir at home BLOCKED",
+      blocked(f"git --git-dir={HOME}/.git commit -o A.txt -m x"), True)
+check("scoped commit at ANOTHER repo still allowed",
+      blocked(f"git -C {OTHER} commit -o A.txt -m x"), False)
+
+# --- gate liveness: can the enforcement arm fire in this repo at all? ------------
+# A mirror / --separate-git-dir layout puts main_root OUTSIDE the checkout, so
+# nothing ever attributes as "this repo" and the gate is dormant while the
+# once-per-session heads-up still fires, making it look alive.
+check("gate active: in-tree .git (cwd == main_root)", mod._git_gate_active(HOME, HOME), True)
+check("gate active: cwd below main_root", mod._git_gate_active(HOME + "/src", HOME), True)
+check("gate DORMANT: git dir outside the checkout",
+      mod._git_gate_active("/home/proj", "/home/mirrors/proj"), False)
+check("gate DORMANT: sibling-prefix path is not containment",
+      mod._git_gate_active(HOME + "-other/src", HOME), False)
+check("gate active: unknown inputs never claim breakage", mod._git_gate_active("", ""), True)
+
+# ---------------------------------------------------------------------------
+# Cross-worktree SAME-BRANCH collision.
+#
+# `_live_siblings` is keyed to the WORKING TREE and says so: "two sessions
+# pushing the same branch ... OUT OF SCOPE here: per-session branch isolation
+# makes them rare." That premise assumes ONE BRANCH PER SESSION, and it stops
+# holding the moment branches are named per TICKET or per FEATURE -- two
+# sessions on one ticket then legitimately share a branch and are invisible to
+# a worktree-keyed check. Observed: two such sessions independently produced
+# the SAME upstream merge, with the same conflict resolution, and only git's
+# non-fast-forward rejection surfaced it, after both had done the work.
+#
+# The FIRST version of this guard was INERT and these controls are why that was
+# caught: it reused `_worktree_key` to exclude same-tree siblings, but that key
+# only recognises `<main>/.claude/worktrees/<slug>`, so a sibling-directory
+# checkout fell through to main_root and every sibling collapsed onto the
+# caller's own key. The positive control below failed and said so.
+_NOW = 1_000_000.0
+_MAIN, _MY, _OTH, _BR = "/x/repo", "/x/repo-a", "/x/repo-b", "feat/shared"
+
+
+def _sib(**kw):
+    e = {"last_activity_at": _NOW, "cwd": _OTH, "branch": _BR}
+    e.update(kw)
+    return e
+
+
+def _n(sessions, my_branch=_BR):
+    return len(mod._live_branch_siblings(sessions, "me", _NOW, _MAIN, _MY, my_branch))
+
+
+BRANCH_CASES = [
+    ("POSITIVE: same branch, different worktree", _n({"s": _sib()}), 1),
+    ("different branch is silent", _n({"s": _sib(branch="feat/other")}), 0),
+    ("same directory defers to _live_siblings", _n({"s": _sib(cwd=_MY)}), 0),
+    ("trailing slash is the same directory", _n({"s": _sib(cwd=_MY + "/")}), 0),
+    ("stale sibling is silent", _n({"s": _sib(last_activity_at=_NOW - 99_999)}), 0),
+    ("unknown own branch fails OPEN", _n({"s": _sib()}, ""), 0),
+    ("sibling that recorded no branch is silent", _n({"s": {"last_activity_at": _NOW, "cwd": _OTH}}), 0),
+    ("never matches myself", _n({"me": _sib()}), 0),
+    ("two siblings both counted", _n({"a": _sib(), "b": _sib(cwd=_OTH + "2")}), 2),
+]
+for _name, _got, _want in BRANCH_CASES:
+    check("branch-collision: " + _name, _got, _want)
+
+# The trigger. A git subprocess only runs for commands that touch a shared REF,
+# so an ordinary command never pays for it -- and `echo git push` must not count.
+BRANCH_TRIGGERS = [
+    ("git push origin main", True),
+    ("git commit -o a.txt -F msg", True),
+    ("git merge origin/main", True),
+    ("git rebase main", True),
+    ("git cherry-pick abc123", True),
+    ("cd /x && git push", True),
+    ("FOO=1 git push", True),
+    ("ls -la", False),
+    ("git status", False),
+    ("git log --oneline", False),
+    ("echo git push", False),
+    ("grep -r 'git push' .", False),
+]
+for _cmd, _want in BRANCH_TRIGGERS:
+    check(f"branch-trigger({_cmd!r})", bool(mod._REF_TOUCHING_RE.search(_cmd)), _want)
+
+# Branch resolution fails OPEN on every error path: an empty branch can never
+# match a sibling, so a broken git makes this quieter, never wrong.
+check("branch resolve: non-repo -> ''", mod._current_branch("/nonexistent-xyz"), "")
+check("branch resolve: empty cwd -> ''", mod._current_branch(""), "")
+
+print(f"\n=== {len(CASES) + 8 + len(SCOPED_ALLOWED) + len(SCOPED_BLOCKED) + 9 + len(BRANCH_CASES) + len(BRANCH_TRIGGERS) + 2} "
+      f"assertions, {len(fails)} failed ===")
 sys.exit(1 if fails else 0)

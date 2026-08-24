@@ -50,6 +50,78 @@ function Err($msg)  { Write-Host "  X $msg" -ForegroundColor Red; $script:Failed
 function Dry($msg)  { Write-Host "  [dry-run] $msg" -ForegroundColor Magenta }
 function Have($cmd) { return [bool](Get-Command $cmd -ErrorAction SilentlyContinue) }
 
+# Is this process running elevated (Administrator)?
+# Decides per-MACHINE vs per-USER for every runtime we install. A per-machine
+# MSI run from a normal shell needs a UAC consent it can never obtain under
+# /quiet: msiexec aborts with 1925 ("insufficient privileges ... for all users
+# of the machine") or 1603, and Start-Process -Wait without -PassThru THREW
+# THAT AWAY. Net effect on a real Windows install: Node "installed" silently,
+# `Have node` was false, and the only surviving signal was a bare
+# "node install failed" with no reason. Cached once - elevation cannot change
+# mid-run.
+$script:IsElevated = $null
+function Test-Elevated {
+    if ($null -eq $script:IsElevated) {
+        try {
+            $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+            $script:IsElevated = ([Security.Principal.WindowsPrincipal]$id).IsInRole(
+                [Security.Principal.WindowsBuiltInRole]::Administrator)
+        } catch {
+            # Non-Windows PowerShell (pwsh on macOS/Linux) has no WindowsIdentity.
+            # Treat as unelevated: the user-scoped path works everywhere.
+            $script:IsElevated = $false
+        }
+    }
+    return $script:IsElevated
+}
+
+# Run an installer and return its REAL exit code (0 when it never launched is a
+# lie, so a launch failure returns a sentinel). Start-Process -Wait alone
+# discards the exit status entirely - the bug this closes.
+# -PassThru WITHOUT -Wait, then WaitForExit() on the object we hold. `-Wait
+# -PassThru` also reports exit codes correctly (both forms verified against a
+# script exiting 0/1/3/42), but holding the object and waiting on it ourselves
+# keeps the handle open explicitly, and the $null guard below is what actually
+# matters: an exit code we could not read must never come back as 0. Returning
+# a false 0 here would rebuild, one layer up, the exact silent-success bug this
+# function exists to remove.
+function Invoke-Installer([string]$FilePath, [string[]]$ArgumentList) {
+    try {
+        $p = Start-Process -PassThru -FilePath $FilePath -ArgumentList $ArgumentList
+        if ($null -eq $p) { return -1 }
+        $p.WaitForExit()
+        # A null ExitCode means we do not know what happened. That is the exact
+        # state this function exists to stop reading as success.
+        if ($null -eq $p.ExitCode) { return -1 }
+        return $p.ExitCode
+    } catch {
+        Warn "could not launch ${FilePath}: $_"
+        return -1
+    }
+}
+
+# Prepend a directory to the PERSISTED user PATH (and this process's PATH).
+# Used by the user-scoped runtime installs, which unpack somewhere the machine
+# PATH will never mention. Idempotent: re-running never duplicates the entry.
+#
+# Known tradeoff: SetEnvironmentVariable rewrites the USER Path as a plain
+# string, so a `%VAR%` inside it is stored expanded. Accepted deliberately -
+# `setx` truncates at 1024 characters, which silently DESTROYS a long PATH, and
+# that is the worse failure. The machine PATH, where expandable entries
+# actually live, is never touched here.
+function Add-UserPathEntry([string]$Dir) {
+    $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+    if ($null -eq $userPath) { $userPath = "" }
+    $already = $userPath -split ';' | Where-Object { $_.TrimEnd('\') -ieq $Dir.TrimEnd('\') }
+    if (-not $already) {
+        $newPath = if ($userPath.Trim()) { "$Dir;$userPath" } else { $Dir }
+        [System.Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+    }
+    if (-not (($env:Path -split ';') | Where-Object { $_.TrimEnd('\') -ieq $Dir.TrimEnd('\') })) {
+        $env:Path = "$Dir;$env:Path"
+    }
+}
+
 # Run a native command without letting benign stderr kill the install.
 # Under $ErrorActionPreference = "Stop", a native command that writes ANY
 # warning to stderr (pip's routine "not on PATH" note, npm progress, git
@@ -351,12 +423,326 @@ if (Have winget) {
     $UseWinget = $false
 }
 
+# ─── git ──────────────────────────────────────────────────────────────────────
+# WHY THIS SECTION EXISTS (MYC-3895)
+# ----------------------------------
+# This installer calls git itself - `git clone` for the skill, `git fetch` /
+# `git pull` for the self-update, `git clone` for humanizer - and git was the
+# one prerequisite it never installed. A 2026-08-12 cohort install session
+# recorded the wall verbatim: "Git and Node.js CLI installs require
+# administrator rights." Several people finished a paid session un-installed,
+# because every no-admin recovery path further down this file was unreachable:
+# the script holding them could not be fetched.
+#
+# The entry command in the README already falls back to a zip, so bootstrap.ps1
+# now STARTS without git. This section is what lets the rest of the run recover:
+#   1. winget install -e --id Git.Git - correct whenever it is allowed.
+#   2. The official PortableGit self-extracting archive, unpacked under
+#      LOCALAPPDATA with the USER PATH wired. No elevation anywhere - the same
+#      shape as the Node ZIP fallback a few sections below, which exists for
+#      exactly the same reason.
+#
+# NOTHING on this path may call Err. git is NOT required for the rest of the
+# install; only auto-update depends on it. A git we cannot install DEGRADES the
+# run and is reported as Skipped, never as a red actionable failure - a scary
+# red line on a locked-down laptop is the experience this ticket exists to
+# remove. tests/integration/test_bootstrap_ps1_git_install.ps1 asserts that
+# structurally, so it cannot regress into an Err later.
+#
+# Placed BEFORE Python/Node so a git installed here is on PATH by the time the
+# clone/self-update section runs. Installing it any later cannot help the run
+# that needed it.
+
+# ai-brain:install-git:start
+# Test-WorkingGit - PRESENCE IS NOT CAPABILITY. `Get-Command git` answers true
+# for a git that cannot run: a half-removed Git for Windows leaves git.exe on
+# PATH pointing into a deleted install, and a PortableGit left behind by an
+# interrupted run sits there without a usable libexec. Same class as the macOS
+# Command Line Tools stub that bootstrap.sh's have_working_git guards against.
+# Probe by EXECUTION.
+#
+# Neutralises $ErrorActionPreference exactly as Run-Native does: under "Stop" a
+# native command writing ANY stderr can surface as a terminating
+# NativeCommandError even when it succeeded, and git is chatty on stderr.
+# Success is the exit code, never stderr.
+function Test-WorkingGit {
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return $false }
+    $eapSaved = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $global:LASTEXITCODE = 0
+    try { & git --version 2>&1 | Out-Null }
+    catch { $global:LASTEXITCODE = 1 }
+    finally { $ErrorActionPreference = $eapSaved }
+    return ($LASTEXITCODE -eq 0)
+}
+
+# Get-PortableGitUri - the official git-for-windows release asset.
+#
+# Version-pinned the way the Node fallback pins v20.18.0: a pin is reviewable,
+# reproducible, and what the corporate profile's manifest promises. ARM is a
+# real Windows laptop now and an x64 PortableGit runs only under emulation
+# there, so the architecture is read rather than assumed.
+# PROCESSOR_ARCHITEW6432 is where an x86/x64 PowerShell on an ARM64 machine
+# reports the machine's REAL architecture; PROCESSOR_ARCHITECTURE would say
+# AMD64 and quietly hand that laptop the wrong build.
+function Get-PortableGitUri {
+    param(
+        [string]$Arch    = "",
+        [string]$Tag     = "v2.55.0.windows.5",
+        [string]$Version = "2.55.0.5"
+    )
+    if (-not $Arch) { $Arch = $env:PROCESSOR_ARCHITEW6432 }
+    if (-not $Arch) { $Arch = $env:PROCESSOR_ARCHITECTURE }
+    $asset = "PortableGit-$Version-64-bit.7z.exe"
+    if ($Arch -match "ARM64") { $asset = "PortableGit-$Version-arm64.7z.exe" }
+    return "https://github.com/git-for-windows/git/releases/download/$Tag/$asset"
+}
+
+# Test-TrustedGitArchive - this fallback DOWNLOADS AND RUNS an executable, which
+# the Node fallback (a plain zip) never does, so the trust question is real and
+# gets answered before anything is executed.
+#
+# Authenticode rather than a pinned SHA-256: a hash rots at every version bump
+# and would silently disable the fallback on exactly the machines that need it,
+# while the signature keeps verifying whatever Git for Windows actually signed.
+# BOTH halves are required - Status alone accepts any validly signed binary, so
+# the publisher is checked too.
+function Test-TrustedGitArchive([string]$Path) {
+    if (-not (Get-Command Get-AuthenticodeSignature -ErrorAction SilentlyContinue)) { return $false }
+    $sig = $null
+    try { $sig = Get-AuthenticodeSignature -LiteralPath $Path } catch { return $false }
+    if ($null -eq $sig) { return $false }
+    if ($sig.Status -ne "Valid") { return $false }
+    $subject = ""
+    if ($sig.SignerCertificate) { $subject = [string]$sig.SignerCertificate.Subject }
+    return ($subject -match "Schindelin" -or $subject -match "Git for Windows")
+}
+
+# Install-PortableGit - unpack git for THIS USER, no elevation. Returns the
+# directory to put on PATH, or $null on any failure. Never throws: the caller
+# reads a $null as "git stays unavailable", which is a degraded run, not a
+# failed one.
+function Install-PortableGit {
+    param(
+        [Parameter(Mandatory=$true)][string]$Uri,
+        [Parameter(Mandatory=$true)][string]$DestDir,
+        [Parameter(Mandatory=$true)][string]$TempDir
+    )
+    $exe = Join-Path $TempDir ("PortableGit-" + [System.Guid]::NewGuid().ToString("N") + ".7z.exe")
+    try { Invoke-WebRequest -Uri $Uri -OutFile $exe -UseBasicParsing } catch { return $null }
+    if (-not (Test-TrustedGitArchive $exe)) {
+        Remove-Item -LiteralPath $exe -Force -ErrorAction SilentlyContinue
+        return $null
+    }
+    # Move an existing folder aside rather than deleting it - the same
+    # .bak-<stamp> convention the Node fallback and the rest of this installer
+    # use. We only get here because git does not work, so whatever is there is
+    # broken or stale, but it is still the user's.
+    if (Test-Path -LiteralPath $DestDir) {
+        $shelved = "$DestDir.bak-$(Get-Date -Format 'yyyy-MM-dd-HHmm')"
+        Move-Item -LiteralPath $DestDir -Destination $shelved -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $DestDir) {
+            Remove-Item -LiteralPath $exe -Force -ErrorAction SilentlyContinue
+            return $null
+        }
+    }
+    New-Item -ItemType Directory -Force -Path $DestDir | Out-Null
+    # 7-Zip self-extractor: -o<dir> -y, silent, no elevation. -ArgumentList is
+    # passed as ONE string so the quoting around a path with spaces
+    # (C:\Users\First Last\AppData\Local\...) is ours, and is not rebuilt by the
+    # array-to-command-line joiner.
+    $exitCode = 1
+    try {
+        $proc = Start-Process -FilePath $exe -ArgumentList ('-o"' + $DestDir + '" -y') `
+                              -Wait -PassThru -WindowStyle Hidden
+        $exitCode = $proc.ExitCode
+    } catch { $exitCode = 1 }
+    Remove-Item -LiteralPath $exe -Force -ErrorAction SilentlyContinue
+    if ($exitCode -ne 0) { return $null }
+    # cmd\git.exe is PortableGit's self-locating launcher - the one directory
+    # that belongs on PATH. Verify the payload actually landed rather than
+    # trusting the extractor's exit code alone.
+    $cmdDir = Join-Path $DestDir "cmd"
+    if (-not (Test-Path -LiteralPath (Join-Path $cmdDir "git.exe"))) { return $null }
+    return $cmdDir
+}
+# ai-brain:install-git:end
+
+if (-not (Test-WorkingGit) -and $CorporateProfile) {
+    Warn (T "Corporate profile: git not found - NOT auto-installing (user-space, pinned-version policy)." `
+            "Perfil corporativo: no se encontro git - NO se instala automaticamente (espacio de usuario, version fija).")
+    Warn (T "Provision git via your IT-approved channel, then re-run. Automatic updates stay off until then." `
+            "Instala git por tu canal aprobado de IT y volve a correr. Las actualizaciones automaticas quedan apagadas hasta entonces.")
+    Warn (T "The exact command for IT to approve/run: winget install -e --id Git.Git" `
+            "El comando exacto para que IT apruebe/corra: winget install -e --id Git.Git")
+} elseif (-not (Test-WorkingGit) -and $DryRun) {
+    Dry "would: winget install -e --id Git.Git (or a no-admin PortableGit unpack into LOCALAPPDATA)"
+} elseif (-not (Test-WorkingGit)) {
+    Hdr (T "Installing git" "Instalando git")
+    Log (T "git is how this install keeps itself up to date." `
+          "git es como esta instalacion se mantiene actualizada.")
+    if ($UseWinget) {
+        [void](Run-Native { winget install -e --id Git.Git --accept-source-agreements --accept-package-agreements })
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    }
+    if (-not (Test-WorkingGit)) {
+        # winget's Git package is per-machine, so an unelevated run walks into
+        # the denied-elevation wall the cohort session reported. The PortableGit
+        # archive needs no privileges at all.
+        Log (T "Installing git for this user only (no Administrator needed)." `
+              "Instalando git solo para este usuario (sin Administrador).")
+        $gitHome   = "$env:LOCALAPPDATA\Programs\PortableGit"
+        $gitCmdDir = Install-PortableGit -Uri (Get-PortableGitUri) -DestDir $gitHome -TempDir $env:TEMP
+        if ($gitCmdDir) {
+            Add-UserPathEntry $gitCmdDir
+            $script:Installed += "git (user-scoped, $gitHome)"
+            Ok (T "git installed at $gitHome (user-scoped)." `
+                  "git instalado en $gitHome (solo para este usuario).")
+        }
+    }
+}
+if (Test-WorkingGit) {
+    $gitVersion = ""
+    try { $gitVersion = ((& git --version) -join " ").Trim() } catch { $gitVersion = "" }
+    if ($gitVersion) { Ok $gitVersion } else { Ok "git available" }
+} elseif (-not $DryRun -and -not $CorporateProfile) {
+    # DELIBERATELY NOT Err - see the section header. The archive entry path
+    # means the install completes without git; only auto-update waits on it.
+    Warn (T "git isn't available yet - everything else continues, only automatic updates wait on it." `
+            "git todavia no esta disponible - todo lo demas sigue, solo las actualizaciones automaticas dependen de eso.")
+    Warn (T "  Ask IT to approve: winget install -e --id Git.Git" `
+            "  Pedile a IT que apruebe: winget install -e --id Git.Git")
+    $script:Skipped += "git (install blocked; automatic updates stay off)"
+}
+
 # ─── Python 3.10+ ─────────────────────────────────────────────────────────────
-$pythonOk = $false
-try {
-    $v = (python --version 2>&1) -replace 'Python ',''
-    if ([version]$v -ge [version]"3.10") { $pythonOk = $true }
-} catch {}
+# Windows offers three separate ways to be wrong about "is Python here?", and
+# testing the single name `python` walked into all three:
+#   1. The Python Launcher (`py -3.12`) is the canonical multi-version resolver
+#      on Windows and was never consulted, so a machine with 3.12 installed but
+#      `python` unset or shadowed read as "no Python at all".
+#   2. Windows ships a `python` STUB in WindowsApps that opens the Microsoft
+#      Store instead of running an interpreter. It IS on PATH, so a presence
+#      check passes; it prints no parseable version, so the [version] cast threw
+#      and $pythonOk stayed $false. Result: install a Python already present.
+#   3. A real but too-old `python` (3.9) can shadow a newer one later in PATH.
+#      Installing 3.12 cannot fix that, because it cannot change what the NAME
+#      `python` resolves to - the same trap fixed on the shell side in #538.
+# So resolve ONE interpreter up front by EXECUTING each candidate and letting
+# Python itself answer the >= 3.10 question, then use that exact interpreter for
+# every call below. Mirrors pick_python() in bootstrap.sh. AI_BRAIN_PYTHON names
+# one directly, for a prefix no search would guess (pyenv-win, conda).
+#
+# ai-brain:pick-python:start
+# Everything between these two markers is extracted VERBATIM and dot-sourced by
+# tests/integration/test_bootstrap_ps1_python_discovery.ps1, so it must stay
+# self-contained: no Log/Warn/T or any other bootstrap-only helper in here.
+$PythonExe             = $null
+$PythonArgs            = @()
+$PythonOverrideIgnored = $false
+
+function Test-PythonCandidate($Exe, $PrefixArgs) {
+    # Executing the candidate is the only honest test. Presence on PATH is not
+    # evidence (the Store alias is present and is not an interpreter), and
+    # parsing --version is not evidence (the alias prints no version at all).
+    # Let the interpreter decide and read the answer off its exit code.
+    if (-not $PrefixArgs) { $PrefixArgs = @() }
+    # EAP is "Stop" for the whole script, and Windows PowerShell 5.1 turns a
+    # native command's STDERR into a terminating NativeCommandError under it -
+    # the crash class that killed this installer once already (Bug 1, see
+    # windows-install.yml). A pyenv/conda shim printing a deprecation warning
+    # would then be REJECTED as "not a Python" and earn the user the redundant
+    # install this whole change exists to prevent. Exit code decides, not
+    # stderr, so neutralise EAP here exactly as Run-Native does.
+    $eapSaved = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        # Sentinel, not 0: if the process somehow never runs WITHOUT throwing,
+        # $LASTEXITCODE keeps the sentinel and the candidate is rejected. Seeding
+        # 0 here would make that same silence read as a pass.
+        $global:LASTEXITCODE = 9009
+        & $Exe @PrefixArgs -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3,10) else 1)' 2>$null | Out-Null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        # CommandNotFound, or a file that is not a valid executable image: the
+        # process never ran, so $LASTEXITCODE still holds whatever it held
+        # before this call. Never read it here - the throw IS the answer.
+        return $false
+    } finally {
+        $ErrorActionPreference = $eapSaved
+    }
+}
+
+function Resolve-Python {
+    # Generic names first, so a machine bootstrap already worked on keeps the
+    # interpreter it was already using; then the launcher newest-first.
+    # Candidates are objects, NOT nested arrays: PowerShell flattens
+    # @("py", @()) down to a 1-element array, which would silently drop every
+    # prefix argument and turn `py -3.12` back into a bare `py`.
+    $candidates = @()
+    if ($env:AI_BRAIN_PYTHON) {
+        $candidates += [pscustomobject]@{ Name = $env:AI_BRAIN_PYTHON; Prefix = @(); IsOverride = $true }
+    }
+    foreach ($n in @("python", "python3")) {
+        $candidates += [pscustomobject]@{ Name = $n; Prefix = @(); IsOverride = $false }
+    }
+    foreach ($v in @("3.14", "3.13", "3.12", "3.11", "3.10")) {
+        $candidates += [pscustomobject]@{ Name = "py"; Prefix = @("-$v"); IsOverride = $false }
+    }
+    # Bare `py` last: honours the machine's configured default and catches a
+    # version newer than anything enumerated above.
+    $candidates += [pscustomobject]@{ Name = "py"; Prefix = @(); IsOverride = $false }
+
+    foreach ($c in $candidates) {
+        $prefix = $c.Prefix
+        if (-not $prefix) { $prefix = @() }
+        $found = Get-Command $c.Name -ErrorAction SilentlyContinue
+        if (-not $found) {
+            if ($c.IsOverride) { $script:PythonOverrideIgnored = $true }
+            continue
+        }
+        $exe = $found.Source
+        if (-not $exe) { $exe = $found.Name }
+        if (-not (Test-PythonCandidate $exe $prefix)) {
+            if ($c.IsOverride) { $script:PythonOverrideIgnored = $true }
+            continue
+        }
+        # Collapse `py -3.12` to the interpreter the launcher actually selected,
+        # so every call site downstream is a plain exe. Otherwise one forgotten
+        # prefix argument silently runs the machine's DEFAULT python instead.
+        $real = $null
+        $eapSaved = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"   # same stderr-under-Stop reason as above
+        try {
+            $global:LASTEXITCODE = 9009
+            # Capture in full, THEN take the first line. Piping a native command
+            # straight into `Select-Object -First 1` stops the pipeline early, and
+            # an early-stopped pipeline never updates $LASTEXITCODE - so the check
+            # below read the seeded sentinel and threw away a good answer every
+            # single time. Measured on pwsh 7.5: -First 1 leaves LASTEXITCODE at
+            # 9009, the same call without it leaves 0.
+            $out = & $exe @prefix -c 'import sys; print(sys.executable)' 2>$null
+            if ($LASTEXITCODE -eq 0) { $real = ($out | Select-Object -First 1) }
+        } catch { $real = $null } finally { $ErrorActionPreference = $eapSaved }
+        if ($real) { $real = "$real".Trim() }
+        if ($real -and (Test-Path -LiteralPath $real)) {
+            $script:PythonExe  = $real
+            $script:PythonArgs = @()
+        } else {
+            $script:PythonExe  = $exe
+            $script:PythonArgs = @($prefix)
+        }
+        return $true
+    }
+    return $false
+}
+# ai-brain:pick-python:end
+
+$pythonOk = Resolve-Python
+if ($PythonOverrideIgnored) {
+    Warn (T "AI_BRAIN_PYTHON is set to '$env:AI_BRAIN_PYTHON' but that is not a Python 3.10+ interpreter - ignoring it and searching PATH." `
+            "AI_BRAIN_PYTHON apunta a '$env:AI_BRAIN_PYTHON' pero no es un interprete Python 3.10+ - se ignora y se busca en el PATH.")
+}
 if (-not $pythonOk -and $CorporateProfile) {
     Warn (T "Corporate profile: Python 3.10+ not found - NOT auto-installing (user-space, pinned-version policy)." `
             "Perfil corporativo: no se encontro Python 3.10+ - NO se instala automaticamente (espacio de usuario, version fija).")
@@ -373,15 +759,59 @@ if (-not $pythonOk -and $CorporateProfile) {
         $pyInstaller = "$env:TEMP\python-installer.exe"
         try {
             Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe" -OutFile $pyInstaller -UseBasicParsing
-            Start-Process -Wait -FilePath $pyInstaller -ArgumentList "/quiet","InstallAllUsers=1","PrependPath=1"
+            # InstallAllUsers=1 is a per-machine install: it needs elevation,
+            # and under /quiet there is no UAC prompt to grant it, so it just
+            # fails. python.org's installer supports a per-user install with
+            # InstallAllUsers=0 and no privileges at all - use it when this
+            # shell is not already elevated.
+            $perUser = -not (Test-Elevated)
+            if ($perUser) {
+                Log (T "Not running as Administrator - installing Python for this user only." `
+                       "No estas como Administrador - instalando Python solo para este usuario.")
+            }
+            $pyArgs = @("/quiet", "PrependPath=1", "Include_pip=1",
+                        $(if ($perUser) { "InstallAllUsers=0" } else { "InstallAllUsers=1" }))
+            $code = Invoke-Installer $pyInstaller $pyArgs
             Remove-Item $pyInstaller -Force -ErrorAction SilentlyContinue
+            # 0 = installed, 3010 = installed, reboot pending. Anything else is
+            # a failure that used to be discarded silently.
+            if ($code -ne 0 -and $code -ne 3010) {
+                Err (T "Python installer exited $code (nothing was installed)." `
+                       "El instalador de Python salio con $code (no se instalo nada).")
+                if ($code -eq 1602 -or $code -eq 1603 -or $code -eq -1) {
+                    Warn (T "That is usually a denied elevation prompt. Re-run this script from an Administrator PowerShell, or install Python yourself from python.org." `
+                            "Normalmente es un prompt de elevacion denegado. Volve a correr este script desde un PowerShell como Administrador, o instala Python vos mismo desde python.org.")
+                }
+            }
         } catch {
             Err "Python install failed: $_"
         }
     }
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 }
-if (Have python) { Ok "python $(python --version)" } else { Err "python install failed" }
+# The install branch above refreshed $env:Path, so a Python that was invisible a
+# moment ago may be resolvable now. Re-resolve rather than trusting the earlier
+# miss; when nothing was installed this is a handful of cheap Get-Command misses.
+if (-not $pythonOk) { $pythonOk = Resolve-Python }
+if ($PythonExe) {
+    $pyVerRaw = $null
+    # Capture first, select after: see the note in Resolve-Python about
+    # `Select-Object -First 1` short-circuiting a native-command pipeline.
+    $eapSaved = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"   # same stderr-under-Stop reason as in Resolve-Python
+    try { $pyVerOut = & $PythonExe @PythonArgs --version 2>$null } catch { $pyVerOut = $null } finally { $ErrorActionPreference = $eapSaved }
+    $pyVerRaw = $pyVerOut | Select-Object -First 1
+    if ($pyVerRaw) { $pyVer = "$pyVerRaw".Trim() } else { $pyVer = "(version unavailable)" }
+    # Print the resolved PATH, not just the version: "which python is this?" is
+    # the question every report about this area has turned on.
+    Ok "$pyVer  [$PythonExe]"
+} elseif ($CorporateProfile -or $DryRun) {
+    Warn (T "No Python 3.10+ resolved - steps that need python will be skipped." `
+            "No se resolvio Python 3.10+ - los pasos que necesitan python se omitiran.")
+} else {
+    Err (T "No Python 3.10+ available after install (tried python, python3, py -3.14..-3.10)." `
+           "No hay Python 3.10+ disponible despues de instalar (se probo python, python3, py -3.14..-3.10).")
+}
 
 # ─── Node.js ──────────────────────────────────────────────────────────────────
 if (-not (Have node) -and $CorporateProfile) {
@@ -395,20 +825,98 @@ if (-not (Have node) -and $CorporateProfile) {
     Dry "would: winget install OpenJS.NodeJS.LTS (or direct download fallback)"
 } elseif (-not (Have node)) {
     Hdr "Installing Node.js"
+    $nodeVersion = "v20.18.0"
+    $wingetTried = $false
+    $userScopedNode = $false
     if ($UseWinget) {
+        $wingetTried = $true
         winget install -e --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements
-    } else {
-        Log "winget unavailable, downloading Node.js LTS installer directly."
-        $nodeInstaller = "$env:TEMP\node-installer.msi"
+        # winget's Node package is per-machine too, so an unelevated run hits
+        # the same denied-elevation wall. Before this, a winget failure ended
+        # the attempt: no fallback ran, and the only trace was "node install
+        # failed" three lines later. Now it falls through to the direct path.
+        if ($LASTEXITCODE -ne 0) {
+            Warn (T "winget could not install Node.js (exit $LASTEXITCODE) - falling back to a direct download." `
+                    "winget no pudo instalar Node.js (salio $LASTEXITCODE) - probando con descarga directa.")
+        }
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    }
+    if (-not (Have node)) {
+        if ($wingetTried) { Log "Downloading Node.js LTS directly." }
+        else { Log "winget unavailable, downloading Node.js LTS directly." }
         try {
-            Invoke-WebRequest -Uri "https://nodejs.org/dist/v20.18.0/node-v20.18.0-x64.msi" -OutFile $nodeInstaller -UseBasicParsing
-            Start-Process -Wait -FilePath "msiexec" -ArgumentList "/i","$nodeInstaller","/quiet","/norestart"
-            Remove-Item $nodeInstaller -Force -ErrorAction SilentlyContinue
+            if (Test-Elevated) {
+                # Elevated: the per-machine MSI is the right install, and the
+                # UAC consent this needs is already granted.
+                $nodeInstaller = "$env:TEMP\node-installer.msi"
+                Invoke-WebRequest -Uri "https://nodejs.org/dist/$nodeVersion/node-$nodeVersion-x64.msi" -OutFile $nodeInstaller -UseBasicParsing
+                $code = Invoke-Installer "msiexec" @("/i", "`"$nodeInstaller`"", "/quiet", "/norestart")
+                Remove-Item $nodeInstaller -Force -ErrorAction SilentlyContinue
+                if ($code -ne 0 -and $code -ne 3010) {
+                    Err (T "Node.js MSI exited $code (nothing was installed)." `
+                           "El MSI de Node.js salio con $code (no se instalo nada).")
+                }
+            } else {
+                # NOT elevated. The MSI is per-machine and CANNOT be granted
+                # elevation under /quiet - it aborts with 1925/1603, and that
+                # exit code used to be thrown away, so the install looked like
+                # it worked. The official ZIP build needs no privileges at all:
+                # unpack it under LOCALAPPDATA and put it on the USER PATH.
+                Log (T "Not running as Administrator - installing Node.js for this user only (no UAC needed)." `
+                       "No estas como Administrador - instalando Node.js solo para este usuario (sin UAC).")
+                $nodeZip     = "$env:TEMP\node-$nodeVersion-win-x64.zip"
+                $stagingDir  = "$env:TEMP\node-unpack-$([System.Guid]::NewGuid().ToString('N'))"
+                $nodeHome    = "$env:LOCALAPPDATA\nodejs"
+                Invoke-WebRequest -Uri "https://nodejs.org/dist/$nodeVersion/node-$nodeVersion-win-x64.zip" -OutFile $nodeZip -UseBasicParsing
+                Expand-Archive -LiteralPath $nodeZip -DestinationPath $stagingDir -Force
+                $unpacked = Join-Path $stagingDir "node-$nodeVersion-win-x64"
+                if (-not (Test-Path (Join-Path $unpacked "node.exe"))) {
+                    throw "unpacked archive has no node.exe at $unpacked"
+                }
+                # Move an existing folder aside rather than deleting it. We only
+                # get here because node is not on PATH, so whatever is there is
+                # broken or stale - but it is still the user's, and a silent
+                # recursive delete of a folder under LOCALAPPDATA is not ours to
+                # make. Same .bak-<stamp> convention the rest of the install uses.
+                if (Test-Path $nodeHome) {
+                    $shelved = "$nodeHome.bak-$(Get-Date -Format 'yyyy-MM-dd-HHmm')"
+                    Move-Item -LiteralPath $nodeHome -Destination $shelved -ErrorAction SilentlyContinue
+                    if (Test-Path $nodeHome) { throw "could not move the existing $nodeHome aside" }
+                    Warn (T "Moved a previous $nodeHome aside to $shelved." `
+                            "Se movio el $nodeHome anterior a $shelved.")
+                }
+                Move-Item -LiteralPath $unpacked -Destination $nodeHome
+                $userScopedNode = $true
+                Remove-Item $nodeZip -Force -ErrorAction SilentlyContinue
+                Remove-Item $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+                Add-UserPathEntry $nodeHome
+                # npm's global prefix on Windows is %APPDATA%\npm. The MSI adds
+                # that to PATH; a ZIP install does not, so `npm install -g
+                # @anthropic-ai/claude-code` (the very next step) would succeed
+                # and still leave `claude` unrunnable. Put it on PATH too.
+                $npmGlobal = "$env:APPDATA\npm"
+                if (-not (Test-Path $npmGlobal)) { New-Item -ItemType Directory -Path $npmGlobal -Force | Out-Null }
+                Add-UserPathEntry $npmGlobal
+                Ok (T "Node.js installed at $nodeHome (user-scoped)." `
+                       "Node.js instalado en $nodeHome (solo para este usuario).")
+            }
         } catch {
             Err "Node install failed: $_"
         }
     }
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    # A user-scoped install lives on the USER PATH, which the line above does
+    # pick up - but only after Add-UserPathEntry persisted it. Re-assert the
+    # in-process entries so this same run can call node/npm immediately.
+    #
+    # Gated on $userScopedNode, NOT on the folder existing: a LEFTOVER
+    # %LOCALAPPDATA%\nodejs from an earlier run would otherwise be prepended
+    # ahead of a per-machine install we just made, and the stale copy would win
+    # every `node` call from here on.
+    if ($userScopedNode) {
+        Add-UserPathEntry "$env:LOCALAPPDATA\nodejs"
+        Add-UserPathEntry "$env:APPDATA\npm"
+    }
 }
 if (Have node) { Ok "node $(node --version)" } else { Err "node install failed" }
 
@@ -443,13 +951,18 @@ if (Have claude) { Ok (T "Claude Code installed" "Claude Code instalado") }
 
 # ─── pipx ─────────────────────────────────────────────────────────────────────
 if (-not (Have pipx) -and $DryRun) {
-    Dry "would: python -m pip install --user pipx"
+    Dry "would: <resolved-python> -m pip install --user pipx"
+} elseif (-not (Have pipx) -and -not $PythonExe) {
+    # Previously this ran a bare `python`, which under EAP=Stop raised
+    # CommandNotFound and killed the whole bootstrap. Name the cause instead.
+    Err (T "pipx needs Python 3.10+ and none was resolved - skipping pipx." `
+           "pipx necesita Python 3.10+ y no se resolvio ninguno - se omite pipx.")
 } elseif (-not (Have pipx)) {
     Hdr "Installing pipx"
     # Run-Native: pip's routine "scripts not on PATH" stderr warning aborted a
     # real install here under EAP=Stop. Exit code decides success, not stderr.
-    if (-not (Run-Native { python -m pip install --user pipx })) { Err "pip install pipx failed" }
-    [void](Run-Native { python -m pipx ensurepath })
+    if (-not (Run-Native { & $PythonExe @PythonArgs -m pip install --user pipx })) { Err "pip install pipx failed" }
+    [void](Run-Native { & $PythonExe @PythonArgs -m pipx ensurepath })
     $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
 }
 if (Have pipx) { Ok "pipx" } else { Err "pipx install failed" }
@@ -610,6 +1123,48 @@ if (Have graphify) { Ok "graphify" } else { Err "graphify install failed" }
 #   - Stashes local uncommitted changes before pulling
 #   - Detects DIVERGENT history (your fork has commits not on origin/main)
 #     and refuses to pull, so your fork is never silently overwritten
+# Adopt-ArchiveInstall DIR REPOURL - turn a directory that holds this repo's
+# files but no .git (the archive entry path, for a machine with no git) into a
+# real clone, so the self-update path below works on every later run. Returns
+# $true on success. A $false is NON-FATAL to the caller: archive content is
+# complete and functional, and only auto-update depends on this.
+#
+# NEVER destroys local edits. A bare `reset --hard` would silently discard a
+# hand-patched archive install, so the tree is staged and diffed against
+# origin/main first; anything that differs is copied aside under the same
+# .bak-<stamp> convention this installer already uses for Node.
+function Adopt-ArchiveInstall {
+    param([string]$Dir, [string]$RepoUrl)
+    # git writes progress/notices to stderr, which PowerShell 5.1 turns into a
+    # terminating error under Stop even with 2>$null. Same guard the self-update
+    # section below uses; $LASTEXITCODE checks are unaffected.
+    $eapAdopt = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    Push-Location $Dir
+    try {
+        Remove-Item -LiteralPath "$Dir\.adopt-backup-path" -Force -ErrorAction SilentlyContinue
+        git init -q 2>$null;                       if ($LASTEXITCODE -ne 0) { return $false }
+        git remote remove origin 2>$null | Out-Null
+        git remote add origin $RepoUrl 2>$null;    if ($LASTEXITCODE -ne 0) { return $false }
+        git fetch --quiet origin main 2>$null;     if ($LASTEXITCODE -ne 0) { return $false }
+        git add -A 2>$null | Out-Null
+        git diff --cached --quiet origin/main 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            $shelved = "$Dir.bak-$(Get-Date -Format 'yyyy-MM-dd-HHmm')"
+            Copy-Item -LiteralPath $Dir -Destination $shelved -Recurse -Force
+            if (-not (Test-Path -LiteralPath $shelved)) { return $false }
+            Set-Content -LiteralPath "$Dir\.adopt-backup-path" -Value $shelved
+        }
+        git reset --hard --quiet origin/main 2>$null; if ($LASTEXITCODE -ne 0) { return $false }
+        git branch -q -M main 2>$null | Out-Null
+        git branch -q --set-upstream-to=origin/main main 2>$null | Out-Null
+        return $true
+    } finally {
+        Pop-Location
+        $ErrorActionPreference = $eapAdopt
+    }
+}
+
 Hdr "Installing the ai-brain-starter skill"
 New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.claude\skills" | Out-Null
 if (Test-Path "$SkillDir\.git") {
@@ -675,6 +1230,36 @@ if (Test-Path "$SkillDir\.git") {
     }
     Pop-Location
     $ErrorActionPreference = $eapSelfUpdate
+} elseif (Test-Path "$SkillDir\bootstrap.ps1") {
+    # The directory holds this repo's files but has no .git: the entry command
+    # fetched a zip because git was unavailable. `git clone` into a non-empty
+    # directory FAILS, and that failure used to land in the red actionable list -
+    # trading a missing-git block for a scary-looking one. Adopt instead.
+    #
+    # Gated on Test-WorkingGit, not `Have git`: a PortableGit left half-unpacked
+    # by an interrupted earlier run answers a PRESENCE check and then fails
+    # every git call Adopt-ArchiveInstall makes. Presence is not capability.
+    if (-not (Test-WorkingGit)) {
+        Warn (T "Installed from an archive, and git isn't available yet - automatic updates stay off until git is installed." `
+                "Instalado desde un archivo, y git todavia no esta disponible - las actualizaciones automaticas quedan apagadas hasta instalar git.")
+        $script:Skipped += "ai-brain-starter clone (archive install, git unavailable)"
+    }
+    elseif ($DryRun) { Dry "would: adopt $SkillDir as a git clone of $RepoUrl" }
+    elseif (Adopt-ArchiveInstall -Dir $SkillDir -RepoUrl $RepoUrl) {
+        if (Test-Path "$SkillDir\.adopt-backup-path") {
+            Warn (T "Local changes were found in the archive install. A copy is at:" `
+                    "Se encontraron cambios locales en la instalacion por archivo. Hay una copia en:")
+            Warn ("  " + (Get-Content -LiteralPath "$SkillDir\.adopt-backup-path" -ErrorAction SilentlyContinue))
+        }
+        $script:Installed += "ai-brain-starter clone (adopted from archive install)"
+    }
+    else {
+        # Non-fatal: the archive content is complete and functional. Only
+        # auto-update needs the git wiring, so this is a Warn, never an Err.
+        Warn (T "Couldn't reconnect the archive install to the repository - automatic updates stay off. Everything else works." `
+                "No se pudo reconectar la instalacion por archivo al repositorio - las actualizaciones automaticas quedan apagadas. Todo lo demas funciona.")
+        $script:Skipped += "ai-brain-starter clone (archive install, adopt failed)"
+    }
 } else {
     if ($DryRun) { Dry "would: git clone $RepoUrl -> $SkillDir" }
     elseif (-not (Run-Native { git clone --quiet $RepoUrl $SkillDir })) { Err "ai-brain-starter clone failed (git exit $LASTEXITCODE)" }
@@ -754,6 +1339,53 @@ foreach ($sub in @("graphify", "cierre-de-llamada", "meeting-todos", "patterns",
     }
 }
 
+# ─── Slash commands ───────────────────────────────────────────────────────────
+# Install commands/*.md into ~/.claude/commands/.
+#
+# Skill folders alone do NOT register slash commands in Claude Code's palette;
+# plugin-style `commands/<name>.md` files do. bootstrap.sh has done this since
+# the 2026-05-14 install report (/second-brain-mapping installed but absent
+# from the palette) -- bootstrap.ps1 never did, so every Windows install got
+# the skills with NONE of the 16 slash commands. `/meeting-todos`,
+# `/daily-journal`, `/graphify` and the rest simply did not exist there, with
+# no error to notice: the skills still answered natural language, so the gap
+# only showed when someone typed a slash. Bug class ARTIFACT-WITHOUT-ACTIVATION,
+# Windows leg. Mirrors the bootstrap.sh step; keep the two in step.
+# ai-brain:slash-commands:start
+$commandsSrc = "$SkillDir\commands"
+$commandsDst = "$env:USERPROFILE\.claude\commands"
+if (-not (Test-Path -LiteralPath $commandsSrc)) {
+    Warn "commands/ not found at $commandsSrc - slash commands will not appear in the palette"
+} elseif ($DryRun) {
+    Dry "would install slash commands from $commandsSrc to $commandsDst (with backup-before-overwrite)"
+} else {
+    Hdr "Installing slash commands"
+    New-Item -ItemType Directory -Force -Path $commandsDst | Out-Null
+    $cmdNew = 0
+    $cmdUpdated = 0
+    Get-ChildItem -File -Filter *.md -LiteralPath $commandsSrc | ForEach-Object {
+        $dstFile = Join-Path $commandsDst $_.Name
+        if (Test-Path -LiteralPath $dstFile) {
+            if ((Get-FileHash $_.FullName).Hash -ne (Get-FileHash $dstFile).Hash) {
+                Copy-Item -LiteralPath $dstFile -Destination "$dstFile.bak-$stamp"
+                $script:Backups += "$dstFile.bak-$stamp"
+                Copy-Item -Force -LiteralPath $_.FullName -Destination $dstFile
+                $cmdUpdated++
+            }
+        } else {
+            Copy-Item -Force -LiteralPath $_.FullName -Destination $dstFile
+            $cmdNew++
+        }
+    }
+    if ($cmdNew -gt 0 -or $cmdUpdated -gt 0) {
+        Ok "commands: $cmdNew new, $cmdUpdated updated (backups preserved)"
+        $script:Updated += "slash commands ($cmdNew new, $cmdUpdated updated)"
+    } else {
+        Ok "commands: already current"
+    }
+}
+# ai-brain:slash-commands:end
+
 # ─── Humanizer ────────────────────────────────────────────────────────────────
 $humDir = "$env:USERPROFILE\.claude\skills\humanizer"
 if (-not (Test-Path $humDir) -and $DryRun) {
@@ -804,8 +1436,13 @@ if 'chatprd' not in m['mcpServers']:
     m['mcpServers']['chatprd'] = {'type': 'url', 'url': 'https://app.chatprd.ai/mcp'}
 with open(p, 'w') as f: json.dump(m, f, indent=2)
 "@
-    $pyMcp | python -
-    if ($LASTEXITCODE -eq 0) { Ok "MCPs registered: granola, chatprd (Granola needs an account to use)" } else { Err "MCP registration failed" }
+    if (-not $PythonExe) {
+        Err (T "No Python 3.10+ resolved - skipping MCP registration." `
+               "No se resolvio Python 3.10+ - se omite el registro de MCPs.")
+    } else {
+        $pyMcp | & $PythonExe @PythonArgs -
+        if ($LASTEXITCODE -eq 0) { Ok "MCPs registered: granola, chatprd (Granola needs an account to use)" } else { Err "MCP registration failed" }
+    }
 }
 }  # end corporate-profile MCP gate
 
@@ -849,8 +1486,13 @@ if corporate:
         env[k] = v
 with open(p, 'w') as f: json.dump(s, f, indent=2)
 "@
-    $pyPlugins | python -
-    if ($LASTEXITCODE -eq 0) { Ok "Marketplace + plugins registered (settings.json backed up)" } else { Err "settings.json plugin registration failed" }
+    if (-not $PythonExe) {
+        Err (T "No Python 3.10+ resolved - skipping marketplace/plugin registration." `
+               "No se resolvio Python 3.10+ - se omite el registro de marketplace/plugins.")
+    } else {
+        $pyPlugins | & $PythonExe @PythonArgs -
+        if ($LASTEXITCODE -eq 0) { Ok "Marketplace + plugins registered (settings.json backed up)" } else { Err "settings.json plugin registration failed" }
+    }
 }
 
 # ─── Verification ────────────────────────────────────────────────────────────
@@ -936,15 +1578,15 @@ if ((Test-Path $userHookInstaller) -and -not $DryRun) {
     Write-Host ("━━━ " + (T "Installing hooks at user level (so they fire inside worktrees)" `
                               "Instalando hooks a nivel de usuario (para que disparen dentro de worktrees)") + " ━━━") -ForegroundColor Cyan
 
-    # py first: the launcher is always real. A bare `python3`/`python` on PATH
-    # can be the Microsoft Store alias STUB (opens the Store instead of running),
-    # so every candidate is validated by actually executing it.
-    $pythonCmd = $null
-    foreach ($candidate in @("py", "python", "python3")) {
-        $resolved = Get-Command $candidate -ErrorAction SilentlyContinue
-        if (-not $resolved) { continue }
-        & $resolved.Source -c "import sys" 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) { $pythonCmd = $resolved.Source; break }
+    # One answer to "which Python" for the whole install: Resolve-Python already
+    # walked python/python3/py -3.x, executed each candidate, and enforced
+    # >= 3.10. This block used to repeat a weaker version of that search (no
+    # version floor), so it could pick a 3.9 the rest of the script had rejected.
+    $pythonCmd = $PythonExe
+    if ($PythonArgs -and $PythonArgs.Count) {
+        $pyCmdDisplay = "$PythonExe $($PythonArgs -join ' ')"
+    } else {
+        $pyCmdDisplay = "$PythonExe"
     }
 
     if (-not $pythonCmd) {
@@ -957,7 +1599,7 @@ if ((Test-Path $userHookInstaller) -and -not $DryRun) {
         try {
             # --fail-on-missing (parity with bootstrap.sh): verifies every wired
             # hook script exists on disk and escalates divergent-fork strands.
-            & $pythonCmd $userHookInstaller --quiet --fail-on-missing
+            & $pythonCmd @PythonArgs $userHookInstaller --quiet --fail-on-missing
             if ($LASTEXITCODE -eq 0) {
                 Write-Host ("  OK " + (T "User-level hooks installed (~/.claude/settings.json)" `
                                           "Hooks a nivel de usuario instalados (~/.claude/settings.json)")) -ForegroundColor Green
@@ -966,8 +1608,8 @@ if ((Test-Path $userHookInstaller) -and -not $DryRun) {
                                          "La instalación de hooks a nivel de usuario FALLÓ (exit $LASTEXITCODE).")) -ForegroundColor Red
                 Write-Host ("  X " + (T "The meeting trigger + 6 other UserPromptSubmit hooks will not fire." `
                                          "El trigger de meetings + 6 hooks UserPromptSubmit no van a disparar.")) -ForegroundColor Red
-                Write-Host ("  X " + (T "Re-run manually: & `"$pythonCmd`" `"$userHookInstaller`" --fail-on-missing" `
-                                         "Volvé a correr manualmente: & `"$pythonCmd`" `"$userHookInstaller`" --fail-on-missing")) -ForegroundColor Red
+                Write-Host ("  X " + (T "Re-run manually: $pyCmdDisplay `"$userHookInstaller`" --fail-on-missing" `
+                                         "Volvé a correr manualmente: $pyCmdDisplay `"$userHookInstaller`" --fail-on-missing")) -ForegroundColor Red
                 $Failed += "user-level hook install (exit $LASTEXITCODE) - meeting trigger + 6 other hooks WILL NOT FIRE"
             }
         } catch {

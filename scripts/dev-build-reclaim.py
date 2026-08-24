@@ -112,7 +112,7 @@ if not _add_lib_to_path():
 
 try:
     from _lib.dev_repo_scan import (  # noqa: E402
-        SESSION_LOCK_LIVE_WINDOW_SEC,
+        has_live_session_lock,
         resolve_dev_root,
     )
 except ImportError as exc:
@@ -130,12 +130,12 @@ CONDITIONAL = {"target": "Cargo.toml"}
 
 # Session machinery, never source — excluded from the idle reading for the same
 # reason the root dir is (defect [1]): a file the TOOLING writes must not look
-# like a human edit. A `.session-lock` is touched by every session that opens the
+# like a human edit. A session lock is touched by every session that opens the
 # worktree, so counting it would make a worktree read "active" for a full idle
 # window after the last session ended — and, since the lock is checked AFTER the
 # idle threshold, the honest "preserved: live session lock" report would never
 # print. Liveness is decided by has_live_session_lock(), on the lock's own clock.
-SKIP_SOURCE_NAMES = {".session-lock"}
+SKIP_SOURCE_NAMES = {".session-lock", ".session-lock.json"}
 
 # Free space -> idle threshold (days). Each rung's trigger is
 # max(absolute_gb, pct_of_volume), mirroring the proportional floor in
@@ -266,22 +266,12 @@ def is_link(p: Path) -> bool:
     return False
 
 
-def has_live_session_lock(wt: Path, now: float) -> bool:
-    """True when a session was active in this worktree inside the live window.
-
-    Existence alone is NOT enough: a crashed session leaves its lock behind, and
-    a permanent lock would shield a dead worktree's artifacts forever — which
-    defeats the 0-day pressure rung exactly when the disk is full. Same
-    live-window semantics as the sibling destructive tool (dev-worktree-prune).
-    """
-    for cand in (wt / ".session-lock", wt / ".claude" / ".session-lock"):
-        try:
-            if cand.exists() and (now - cand.stat().st_mtime) < SESSION_LOCK_LIVE_WINDOW_SEC:
-                return True
-        except OSError:
-            # Unreadable lock: err toward PRESERVE, this tool deletes.
-            return True
-    return False
+# Liveness is decided by _lib.has_live_session_lock, never a copy living here.
+# This file shipped with its own, which probed `<wt>/.session-lock` — a filename
+# that exists nowhere on a real machine — so the guard was dead in production
+# while reading, correctly, as "no session here". At the 0-day pressure rung
+# every worktree passes the idle gate, which makes this the ONLY protection
+# between an actively-compiling worktree and losing its `target/`.
 
 
 def find_artifacts(wt: Path):

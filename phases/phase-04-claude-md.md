@@ -167,3 +167,22 @@ Tell them: "Your memory file is created. From now on, every Claude session in th
 
 **STOP — verify before continuing.** Open the CLAUDE.md you just created and confirm the `## Vault Map` section contains the actual folder list, not the placeholder text. If it's still a placeholder, fill it in now with the real folders from Phase 3. This is the most common setup failure — a blank vault map means Claude will create duplicate folders in every future session.
 
+---
+
+## → Next phase (the install is not finished)
+
+You have just completed **Phase 4**. Do not stop here, do not summarise the
+install as complete, and do not wait to be asked to continue.
+
+1. **Record progress.** Write `~/.claude/.ai-brain-starter-progress.json`:
+   `{"last_completed_phase": "4", "ts": "<ISO-8601 timestamp for now>", "version": 1}`
+   This one line is what lets a resumed install pick up here instead of starting over.
+2. **Run the next phase.** Read `phases/phase-05-context-layer.md` from this skill's own directory
+   and execute **Phase 5**.
+
+If you are running low on context, say so out loud and tell the user to open a
+fresh session and ask to resume the ai-brain-starter install; the progress file
+above is what makes that work. Ending here silently leaves them with a
+half-built brain that looks finished.
+
+<!-- phase-chain: next=phase-05-context-layer.md -->
