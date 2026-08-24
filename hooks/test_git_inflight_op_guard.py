@@ -26,6 +26,15 @@ Legs:
   12. Ignores non-git commands and non-Bash tools
   13. Refusal message carries the required safety text (no rm -rf, --abort is
       the operation owner's call)
+  15. Honors a `cd` earlier in the command -- BOTH directions, because the
+      missing `cd` produced a false block AND a false allow
+  16. Text that only LOOKS like a command sequence -- a quoted operator, a
+      heredoc body, a comment tail -- is not one. A phantom `cd` cut out of
+      any of the three opened a hole the cwd-blind hook did not have.
+  17. The bypass leaves an audit record naming what it SUPPRESSED, and a bypass
+      that suppressed nothing leaves none
+  18. The conflict-RESOLUTION path is reachable -- the guard allowed
+      `--continue` while blocking every way to get there
 
 Stdlib only. Exit 0 = all pass.
 """
@@ -43,6 +52,10 @@ HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 PASS = 0
 FAIL = 0
+
+# Telemetry sink for this run. Pointed at a scratch file so the suite never
+# appends to ~/.claude/guard-fires.jsonl, and so leg 17 reads only its own rows.
+TELEMETRY_LOG = os.path.join(tempfile.gettempdir(), "inflight-guard-telemetry.jsonl")
 
 
 def ok(msg):
@@ -79,6 +92,7 @@ def run_hook(command, cwd, env=None, tool_name="Bash"):
     })
     e = dict(os.environ)
     e.pop("GIT_INFLIGHT_OP_BYPASS", None)
+    e["GUARD_FIRES_LOG"] = TELEMETRY_LOG
     if env:
         e.update(env)
     p = subprocess.run([sys.executable, HOOK], input=payload,
@@ -158,6 +172,32 @@ def stall_cherry_pick(repo):
     git(repo, "cherry-pick", "topic")  # conflicts -> CHERRY_PICK_HEAD
     gd = os.path.normpath(os.path.join(repo, git(repo, "rev-parse", "--git-dir").stdout.strip()))
     return os.path.exists(os.path.join(gd, "CHERRY_PICK_HEAD"))
+
+
+def stall_sequencer_mid_run(repo):
+    """A multi-commit cherry-pick stopped on a conflict, then RESOLVED AND
+    COMMITTED. That commit clears CHERRY_PICK_HEAD while the remaining picks
+    stay queued, leaving .git/sequencer as the only in-flight evidence.
+    Returns True only if that exact state was produced -- sequencer present
+    AND every per-stop marker absent -- so the leg cannot pass vacuously."""
+    base_commit(repo)
+    git(repo, "checkout", "-q", "-b", "topic")
+    write(os.path.join(repo, "f.txt"), "one\n")
+    git(repo, "commit", "-q", "-am", "pick one")
+    write(os.path.join(repo, "f.txt"), "two\n")
+    git(repo, "commit", "-q", "-am", "pick two")
+    git(repo, "checkout", "-q", "main")
+    write(os.path.join(repo, "f.txt"), "main\n")
+    git(repo, "commit", "-q", "-am", "main change")
+    git(repo, "cherry-pick", "topic~1", "topic")      # stops on the first pick
+    write(os.path.join(repo, "f.txt"), "resolved\n")  # resolve + commit it
+    git(repo, "add", "f.txt")
+    git(repo, "commit", "-q", "-m", "resolved")
+    gd = os.path.normpath(os.path.join(repo, git(repo, "rev-parse", "--git-dir").stdout.strip()))
+    per_stop = ("CHERRY_PICK_HEAD", "REVERT_HEAD", "MERGE_HEAD",
+                "rebase-merge", "rebase-apply", "BISECT_LOG")
+    return (os.path.exists(os.path.join(gd, "sequencer"))
+            and not any(os.path.exists(os.path.join(gd, m)) for m in per_stop))
 
 
 def main():
@@ -406,6 +446,325 @@ def main():
     else:
         bad("13c. resolution hint (merge)", "hint did not follow the marker")
 
+    # 14. Regression: a multi-commit cherry-pick sequence whose conflict has
+    # been RESOLVED AND COMMITTED. git clears CHERRY_PICK_HEAD at that commit
+    # but leaves the remaining picks queued in .git/sequencer, so every
+    # per-stop marker is gone while the operation is still in flight. Before
+    # `sequencer` joined IN_FLIGHT_MARKERS the guard went silent here and a
+    # commit could land inside someone else's unfinished sequence.
+    seq = init_repo(os.path.join(tmp, "sequencer"))
+    if stall_sequencer_mid_run(seq):
+        ok("14. setup: sequence mid-run, CHERRY_PICK_HEAD already cleared")
+        code, _, serr = run_hook("git commit -m x", cwd=seq)
+        if code == 2:
+            ok("14a. Guard still BLOCKS mid-sequence (sequencer alone)")
+        else:
+            bad("14a. mid-sequence", "guard went silent: exit %s" % code)
+        if "cherry-pick" in serr:
+            ok("14b. Hint names cherry-pick as the in-flight op")
+        else:
+            bad("14b. mid-sequence hint", "wrong verb: %r" % serr[-200:])
+    else:
+        bad("14. setup", "could not produce a mid-run sequencer state")
+
+
+    # ----------------------------------------------------------------- leg 15
+    # `cd <dir> && git ...` -- the single most common shape an agent emits, and
+    # until 2026-08-22 the one the hook could not see. The `cd` segment parsed
+    # as "not a git call" and was discarded, so the git segment resolved against
+    # the SESSION cwd: the wrong repository, wrong in both directions. Both are
+    # asserted here, and 15b is the negative control -- it FAILS on the
+    # pre-fix hook, which is the only reason to trust 15a's pass.
+    rc, _, err = run_hook("cd %s && git commit -m x" % clean, cwd=stalled)
+    if rc == 0:
+        ok("15a. `cd CLEAN && git commit` from a stalled cwd is ALLOWED")
+    else:
+        bad("15a. cd false block",
+            "rc=%s -- blocked on a repo the command never touches, which is what "
+            "trains reflexive GIT_INFLIGHT_OP_BYPASS=1 :: %r" % (rc, err[:200]))
+
+    rc, _, err = run_hook("cd %s && git commit -m x" % stalled, cwd=clean)
+    if rc == 2:
+        ok("15b. `cd STALLED && git commit` from a clean cwd BLOCKS (was a false allow)")
+    else:
+        bad("15b. cd false allow",
+            "rc=%s -- a commit into a PAUSED REBASE was permitted; this is the "
+            "2026-07-28 incident walking through the guard" % rc)
+
+    if "reached via" in err and "session cwd" in err:
+        ok("15c. The refusal says the repo was reached via a `cd`, not the session cwd")
+    else:
+        bad("15c. cd provenance", "message would read as being about the session repo")
+
+    # Separator semantics. `&&` pins the cd; the others do not, and guessing
+    # wrong in the permissive direction is how work gets lost.
+    rc_semi_s, _, _ = run_hook("cd %s ; git commit -m x" % stalled, cwd=clean)
+    rc_semi_c, _, _ = run_hook("cd %s ; git commit -m x" % clean, cwd=stalled)
+    if rc_semi_s == 2 and rc_semi_c == 2:
+        ok("15d. `;` is ambiguous (cd may have failed) -> both candidates checked, blocks")
+    else:
+        bad("15d. `;` handling",
+            "into-stalled rc=%s, out-of-stalled rc=%s (expected 2 and 2)"
+            % (rc_semi_s, rc_semi_c))
+
+    rc_or_s, _, _ = run_hook("cd %s || git commit -m x" % stalled, cwd=clean)
+    rc_or_c, _, _ = run_hook("cd %s || git commit -m x" % clean, cwd=stalled)
+    if rc_or_s == 0 and rc_or_c == 2:
+        ok("15e. `||` runs the git only if the cd FAILED -> cwd did not move")
+    else:
+        bad("15e. `||` handling",
+            "into-stalled rc=%s (want 0), out-of-stalled rc=%s (want 2)"
+            % (rc_or_s, rc_or_c))
+
+    # A RELATIVE cd resolves against the directory we are actually in.
+    rc, _, _ = run_hook("cd ../stalled && git commit -m x", cwd=clean)
+    if rc == 2:
+        ok("15f. A relative `cd ../stalled` resolves against the current cwd")
+    else:
+        bad("15f. relative cd", "rc=%s -- relative destination not resolved" % rc)
+
+    # Chained cds: only the last one is where git runs.
+    rc, _, _ = run_hook("cd %s && cd %s && git commit -m x" % (clean, stalled), cwd=clean)
+    if rc == 2:
+        ok("15g. The LAST cd in a chain is the one that counts")
+    else:
+        bad("15g. chained cd", "rc=%s" % rc)
+
+    # An explicit `-C` outranks the cd, exactly as git itself resolves it.
+    rc_a, _, _ = run_hook("cd %s && git -C %s commit -m x" % (clean, stalled), cwd=clean)
+    rc_b, _, _ = run_hook("cd %s && git -C %s commit -m x" % (stalled, clean), cwd=stalled)
+    if rc_a == 2 and rc_b == 0:
+        ok("15h. `-C` outranks the cd in both directions")
+    else:
+        bad("15h. -C vs cd", "cd-clean/-C-stalled rc=%s (want 2), inverse rc=%s (want 0)"
+            % (rc_a, rc_b))
+
+    # THE REGRESSION THAT WOULD SILENTLY UNDO ALL OF THE ABOVE. Subshell
+    # detection has to be quote-aware: a parenthesised commit MESSAGE is not a
+    # subshell, and if it trips the bail-out then the false block of 15a comes
+    # straight back for every commit whose message happens to contain a paren.
+    rc, _, _ = run_hook('cd %s && git commit -m "fix (bug)"' % clean, cwd=stalled)
+    if rc == 0:
+        ok("15i. A paren inside a quoted commit message is not a subshell")
+    else:
+        bad("15i. quoted paren", "rc=%s -- cd tracking abandoned on a quoted paren" % rc)
+
+    # A cd we cannot resolve must fall back to the session cwd -- the behavior
+    # this hook had before tracking existed -- and NOT be read as "cwd unchanged
+    # and therefore fine". Conservative on an unreadable shape.
+    rc, _, _ = run_hook("cd $TARGET && git commit -m x", cwd=stalled)
+    if rc == 2:
+        ok("15j. An unresolvable `cd $VAR` falls back to the session cwd, still blocks")
+    else:
+        bad("15j. unresolvable cd", "rc=%s -- guard went quiet on an unreadable cd" % rc)
+
+    # A subshell scopes its cd, so tracking is abandoned for the whole command
+    # and the session cwd decides. Pinned so the documented fallback stays the
+    # DOCUMENTED one rather than drifting into an accidental allow.
+    rc, _, _ = run_hook("(cd %s && git commit -m x) && git commit -m y" % clean, cwd=stalled)
+    if rc == 2:
+        ok("15k. A subshell abandons cd tracking and falls back to the session cwd")
+    else:
+        bad("15k. subshell fallback", "rc=%s -- subshell scoping not handled" % rc)
+
+    # 15l/15m. Both found by the pre-push doubt-pass on the cd-tracking diff
+    # itself, not by a failing test -- same provenance as 9c.
+    #
+    # 15l: `shlex` is a POSIX tokenizer, so it eats the backslashes in
+    # `cd C:\repo` and hands back `C:repo`. That is not absolute on EITHER
+    # platform, so it got joined onto the base, produced a path that does not
+    # exist, failed the isdir check, and made the hook SKIP the git call --
+    # silently converting a block into an allow on Windows.
+    rc, _, _ = run_hook("cd C:\\somewhere && git commit -m x", cwd=stalled)
+    if rc == 2:
+        ok("15l. A Windows drive-relative `cd` falls back, it does not skip the check")
+    else:
+        bad("15l. windows drive cd",
+            "rc=%s -- an unresolvable destination made the guard skip the commit" % rc)
+
+    # 15m: `cd -` is deliberately NOT resolved. Pinned so that a later attempt
+    # to "improve" it has to face the test: a wrong OLDPWD is a wrong repository.
+    rc, _, _ = run_hook("cd - && git commit -m x", cwd=stalled)
+    if rc == 2:
+        ok("15m. `cd -` is unresolved and falls back to the session cwd")
+    else:
+        bad("15m. cd -", "rc=%s -- OLDPWD was guessed instead of falling back" % rc)
+
+
+    # ----------------------------------------------------------------- leg 16
+    # Quoted operators are not shell operators. This is the regression that the
+    # cwd tracking INTRODUCED and the pre-merge doubt-pass caught: with a plain
+    # regex split, `echo "a ; cd /elsewhere" && git commit` yielded a phantom
+    # `cd /elsewhere` segment carved out of text the shell never runs. The
+    # tracker followed it, the git call was judged against a directory that does
+    # not exist, the isdir check skipped the invocation, and a commit into a
+    # PAUSED REBASE was ALLOWED -- on the very command the older, cwd-blind hook
+    # correctly blocked. 16a/16b are the negative controls for that hole.
+    rc, _, _ = run_hook('echo "a ; cd %s" && git commit -m x' % clean, cwd=stalled)
+    if rc == 2:
+        ok("16a. A `cd` hidden inside quotes is not followed (semicolon form)")
+    else:
+        bad("16a. phantom cd via quoted `;`",
+            "rc=%s -- the tracker followed text the shell never executes and "
+            "skipped the check on a stalled repo" % rc)
+
+    rc, _, _ = run_hook('echo "a && cd %s" && git commit -m x' % clean, cwd=stalled)
+    if rc == 2:
+        ok("16b. A `cd` hidden inside quotes is not followed (&& form)")
+    else:
+        bad("16b. phantom cd via quoted `&&`", "rc=%s" % rc)
+
+    # The other half: quote awareness must not become an excuse to give up. A
+    # commit MESSAGE containing an operator is ordinary, and bailing on it would
+    # bring back the false block this whole change exists to remove.
+    noisy = [
+        ('cd %s && git commit -m "a && b"' % clean, "&& in the message"),
+        ('cd %s && git commit -m "fix: a; also b"' % clean, "; in the message"),
+        ('cd %s && git commit -m "a | b"' % clean, "pipe in the message"),
+    ]
+    over_bailed = [why for cmd, why in noisy if run_hook(cmd, cwd=stalled)[0] != 0]
+    if not over_bailed:
+        ok("16c. An operator inside a commit MESSAGE does not abandon cd tracking")
+    else:
+        bad("16c. over-bailed on a quoted operator",
+            "false block returned for: " + ", ".join(over_bailed))
+
+    # 16d. The same class one layer out: a heredoc BODY is data, but it arrives
+    # in the same string and its lines look exactly like segments. The `&&`
+    # variant is the dangerous one -- a plain body line gets the ambiguous `\n`
+    # separator and unions the candidates (which happens to stay safe), while
+    # `&&` PINS the phantom and drops the real cwd. Measured 2026-08-23: the
+    # cwd-blind hook returned 2 on this and the cd-tracking one returned 0.
+    heredoc = ("cat <<EOF > note.txt\n"
+               "cd %s && echo hi\n"
+               "EOF\n"
+               "git commit -m x" % clean)
+    rc, _, _ = run_hook(heredoc, cwd=stalled)
+    if rc == 2:
+        ok("16d. A `cd` inside a heredoc BODY is not followed")
+    else:
+        bad("16d. phantom cd via heredoc body",
+            "rc=%s -- the tracker moved cwd off a line the shell only wrote to a "
+            "file, and skipped the check on a stalled repo" % rc)
+
+    # 16e. ...and `<<` inside a quoted message is still just text.
+    rc, _, _ = run_hook('cd %s && git commit -m "see doc << here"' % clean, cwd=stalled)
+    if rc == 0:
+        ok("16e. A quoted `<<` is not a heredoc and does not abandon tracking")
+    else:
+        bad("16e. over-bailed on a quoted `<<`", "rc=%s" % rc)
+
+    # 16f. Third instance of the class, and the sneakiest: `shlex` DISCARDS a
+    # comment tail by default, so a phantom `cd` parked after a `#` was invisible
+    # to the shape check while still reaching the segment splitter.
+    commented = ("git status # note ; cd %s && echo hi\n"
+                 "git commit -m x" % clean)
+    rc, _, _ = run_hook(commented, cwd=stalled)
+    if rc == 2:
+        ok("16f. A `cd` inside a COMMENT tail is not followed")
+    else:
+        bad("16f. phantom cd via comment tail",
+            "rc=%s -- tracker moved cwd off text the shell never runs" % rc)
+
+    # 16g. The matching over-bail guard. An issue number and a redirect are both
+    # ordinary; bailing on either would bring the false block back.
+    ordinary = [
+        ('cd %s && git commit -m "issue #42 fixed"' % clean, "#42 in the message"),
+        ('cd %s && git commit -m x > /dev/null' % clean, "redirect"),
+    ]
+    tripped = [why for cmd, why in ordinary if run_hook(cmd, cwd=stalled)[0] != 0]
+    if not tripped:
+        ok("16g. A quoted `#` and a redirect do not abandon cd tracking")
+    else:
+        bad("16g. over-bailed", "false block returned for: " + ", ".join(tripped))
+
+    # ----------------------------------------------------------------- leg 17
+    # MYC-3779 predicate 4: the bypass stays self-serviceable (a guard that can
+    # trap a repo with no exit is worse), but it is no longer silent. A bypass
+    # that leaves no trace is a comment, not a control -- and this leg is the
+    # control for the control: shipping the telemetry without proving it writes
+    # would be the same unfalsifiable-guard mistake one level up.
+    def _telemetry():
+        # (OSError, ValueError), not bare OSError: `open(encoding=)` raises
+        # UnicodeDecodeError and `json.loads` raises JSONDecodeError, and BOTH
+        # are ValueError subclasses that a bare OSError handler lets escape.
+        # Returning [] on a corrupt log makes the legs below FAIL loudly, which
+        # is the right direction for a control -- an exception here would abort
+        # the suite instead of reporting that the audit trail is unreadable.
+        try:
+            with open(TELEMETRY_LOG, encoding="utf-8") as fh:
+                return [json.loads(ln) for ln in fh if ln.strip()]
+        except (OSError, ValueError):
+            return []
+
+    for _p in (TELEMETRY_LOG,):
+        try:
+            os.remove(_p)
+        except OSError:
+            pass
+
+    rc, _, _ = run_hook("git commit -m x", cwd=stalled,
+                        env={"GIT_INFLIGHT_OP_BYPASS": "1"})
+    rows = [r for r in _telemetry() if r.get("status") == "bypassed"]
+    if rc == 0 and rows and rows[-1].get("marker") and rows[-1].get("workdir") == stalled:
+        ok("17a. A bypass that suppressed a real block is recorded, with the repo it let through")
+    else:
+        bad("17a. bypass audit trail",
+            "rc=%s rows=%s -- the bypass left no usable trace" % (rc, rows[-1:]))
+
+    rc, _, _ = run_hook("git commit -m x", cwd=stalled)
+    rows = [r for r in _telemetry() if r.get("status") == "blocked"]
+    if rc == 2 and rows:
+        ok("17b. A real block is recorded too (a dead guard and a quiet one differ)")
+    else:
+        bad("17b. block telemetry", "rc=%s rows=%s" % (rc, rows))
+
+    before = len(_telemetry())
+    run_hook("git commit -m x", cwd=clean, env={"GIT_INFLIGHT_OP_BYPASS": "1"})
+    if len(_telemetry()) == before:
+        ok("17c. A bypass that suppressed NOTHING writes nothing (no trail noise)")
+    else:
+        bad("17c. bypass noise",
+            "a bypass over a clean repo emitted a record; the log stops meaning "
+            "\'something was suppressed\'")
+
+    try:
+        os.remove(TELEMETRY_LOG)
+    except OSError:
+        pass
+
+    # ----------------------------------------------------------------- leg 18
+    # An escape hatch that does not reach the exit is not an escape hatch.
+    # `checkout` and `restore` are both mutating verbs, so the guard blocked
+    # `git checkout --ours <f>` -- the ONLY way to resolve the conflict an
+    # operation stopped on -- while allowing `git rebase --continue`, the step
+    # AFTER it. On a repo where the guard is RIGHT to be watching, the bypass
+    # was the only route forward. MYC-3779's fourth reporter hit exactly this
+    # on 2026-08-22, on a rebase they had started themselves seconds earlier,
+    # and bypassed three times.
+    reachable = ["git checkout --ours f.txt", "git checkout --theirs f.txt",
+                 "git restore --ours f.txt", "git add f.txt",
+                 "git rebase --continue"]
+    trapped = [c for c in reachable if run_hook(c, cwd=stalled)[0] != 0]
+    if not trapped:
+        ok("18a. Every step of the conflict-resolution path is reachable")
+    else:
+        bad("18a. resolution path trapped",
+            "blocked, leaving the bypass as the only exit: " + ", ".join(trapped))
+
+    # 18b. ...and the widening stops exactly there. The side flags are
+    # meaningless outside a conflicted path, so `--ours` cannot smuggle a branch
+    # switch; everything that could abandon the operation or land a commit on
+    # its doomed detached HEAD stays blocked.
+    still_blocked = ["git checkout main", "git checkout -b other",
+                     "git restore f.txt", "git commit -m x",
+                     "git reset --hard", "git push"]
+    leaked = [c for c in still_blocked if run_hook(c, cwd=stalled)[0] != 2]
+    if not leaked:
+        ok("18b. Bare checkout/restore/commit/reset/push are still refused")
+    else:
+        bad("18b. resolution allow-list too wide",
+            "these should still block: " + ", ".join(leaked))
     subprocess.run(["rm", "-rf", tmp], capture_output=True)
 
     print("\n%d passed, %d failed" % (PASS, FAIL))

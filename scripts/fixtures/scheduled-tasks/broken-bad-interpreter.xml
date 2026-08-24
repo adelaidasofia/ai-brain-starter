@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  MYC-3528 fixture: defect #2. The real historical bug hardcoded
+  `-Execute "pwsh"`, which is PowerShell 7 and is NOT on a stock Windows
+  install (fails 0x80070002 on the interpreter). This fixture uses a
+  deliberately fake command name instead of the literal string "pwsh" so the
+  assertion is deterministic regardless of whether pwsh happens to be
+  installed on the machine running this test suite (it is, on the CI runner
+  and on most dev boxes, which would make "pwsh" a false negative here).
+  POSITIVE CONTROL: Get-BackupTaskProblems must flag an Execute that does not
+  resolve via Get-Command, whatever its name.
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Date>2026-06-01T03:00:00</Date>
+    <Author>DESKTOP-FIXTURE\user</Author>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-06-01T03:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT72H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>ai-brain-starter-fixture-nonexistent-interpreter</Command>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -File "__EXISTING_FILE__" run -Vault "C:\Users\test\Brain"</Arguments>
+    </Exec>
+  </Actions>
+</Task>

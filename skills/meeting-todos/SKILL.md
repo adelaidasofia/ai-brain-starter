@@ -47,7 +47,16 @@ Cache the resolved to-do path mentally for Step 5 — don't re-search the filesy
 ## Step 1 — Find the meeting note
 
 Check these locations for the most recent (or matching) meeting note:
-- `[VAULT]/Meeting Notes/` (or wherever meeting notes live in this vault)
+- `$AI_BRAIN_MEETING_NOTES_DIR` if it is set — a colon-separated list of folder
+  names the user has already told the substrate about. When it is set it is
+  AUTHORITATIVE: `scripts/write-hook.sh` matches on exactly these and ignores the
+  English defaults, so honoring it here keeps the two halves of the cascade
+  pointed at the same folder.
+- `[VAULT]/Meeting Notes/` or `[VAULT]/Meeting-Notes/` (the English defaults)
+- The same folder in the user's own language — `Reuniones/`, `Réunions/`,
+  `会議/`. Do NOT search only the English names: a Spanish or French vault keeps
+  meetings under its own word, and matching English-only is a silent no-op that
+  looks identical to "you have no meetings".
 - Any team vault meeting notes folder if configured
 
 If the user specified a date or title, find the matching file. If no argument, use the most recently modified file.

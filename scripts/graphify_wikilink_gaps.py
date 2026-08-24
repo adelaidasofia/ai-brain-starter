@@ -94,8 +94,9 @@ def is_wikilink_candidate(label: str, ntype: str) -> bool:
     if '"' in label or "\u201c" in label or "\u201d" in label:
         return False
 
-    # Parenthetical disambiguation added by LLM: "Onde (startup)", "Onde (Company)"
-    # These are graph artifacts — the real wikilink target is just "Onde"
+    # Parenthetical disambiguation added by LLM: "Lighthouse (startup)",
+    # "Lighthouse (Company)". These are graph artifacts — the real wikilink
+    # target is just "Lighthouse".
     if "(" in label:
         return False
 

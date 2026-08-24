@@ -23,8 +23,19 @@ MAX_BYTES="${MAX_BYTES:-512000}"
 KEEP="${KEEP:-30}"
 
 # Auto-collect all .log files in LOG_DIR, or override by setting LOGS explicitly.
+#
+# NUL-delimited read loop, not `mapfile`: this script's shebang is /bin/bash,
+# which on macOS is bash 3.2, where `mapfile` does not exist. It used to be one,
+# and the builtin's absence (under `set +e`, and with `exit 0` at the bottom)
+# left LOGS empty on every Mac -- so this hook ran at every SessionStart, rotated
+# nothing, and reported success. Logs grew without bound and nothing said so.
+# See scripts/PORTABILITY.md section 4; enforced by
+# tests/integration/test_bash32_portability.sh.
 if [ ${#LOGS[@]:-0} -eq 0 ]; then
-  mapfile -t LOGS < <(find "$LOG_DIR" -maxdepth 1 -name "*.log" 2>/dev/null)
+  LOGS=()
+  while IFS= read -r -d '' f; do
+    LOGS+=("$f")
+  done < <(find "$LOG_DIR" -maxdepth 1 -name "*.log" -print0 2>/dev/null)
 fi
 
 rotate() {

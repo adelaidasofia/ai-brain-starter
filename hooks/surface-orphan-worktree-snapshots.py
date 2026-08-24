@@ -179,10 +179,21 @@ def main() -> int:
     body = "\n".join(lines)
     print(json.dumps({
         "continue": True,
-        "additionalContext": body,
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": body,
+        },
     }))
     return 0
 
 
 if __name__ == "__main__":
+    # This CLI carries non-ASCII source and writes to the console, so on a
+    # Windows cp1252 codepage the write itself would raise and the warning
+    # would be LOST -- the one message that must never go quiet.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())

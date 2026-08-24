@@ -242,3 +242,23 @@ Register-ScheduledTask -TaskName "AI Brain Monthly Insights" -Action $MonthlyAct
 ```
 
 Tell the user which option was set up and confirm the schedule: "Your weekly insight will generate automatically every Monday at [time] and your monthly on the 2nd at [time]. You can also run /weekly or /monthly manually anytime. Check the log at `⚙️ Meta/scripts/.insights-cron.log` if you ever want to verify it ran."
+
+---
+
+## → Next phase (the install is not finished)
+
+You have just completed **Phase 18**. Do not stop here, do not summarise the
+install as complete, and do not wait to be asked to continue.
+
+1. **Record progress.** Write `~/.claude/.ai-brain-starter-progress.json`:
+   `{"last_completed_phase": "18", "ts": "<ISO-8601 timestamp for now>", "version": 1}`
+   This one line is what lets a resumed install pick up here instead of starting over.
+2. **Run the next phase.** Read `phases/phase-19-23-finish.md` from this skill's own directory
+   and execute **Phase 19-24.5**.
+
+If you are running low on context, say so out loud and tell the user to open a
+fresh session and ask to resume the ai-brain-starter install; the progress file
+above is what makes that work. Ending here silently leaves them with a
+half-built brain that looks finished.
+
+<!-- phase-chain: next=phase-19-23-finish.md -->

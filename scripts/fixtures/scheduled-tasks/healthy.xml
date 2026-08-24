@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  MYC-3528 fixture: a healthy registration - matches what Register-BackupTask
+  writes today. NEGATIVE CONTROL for
+  scripts/test-vault-backup-task-healing.ps1: Get-BackupTaskProblems must
+  return ZERO problems for this shape, and Cmd-Setup must leave a task in
+  this state untouched (no needless re-registration).
+
+  __EXISTING_FILE__ is substituted by the test with a real temp file it
+  creates, so the "-File path exists" check has something real to find.
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Date>2026-07-30T03:00:00</Date>
+    <Author>DESKTOP-FIXTURE\user</Author>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-07-30T03:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT72H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>pwsh</Command>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -File "__EXISTING_FILE__" run -Vault "C:\Users\test\Brain"</Arguments>
+    </Exec>
+  </Actions>
+</Task>

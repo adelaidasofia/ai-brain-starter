@@ -115,6 +115,21 @@ expect_block() {  # <label> <command> <cwd>
   fi
 }
 
+# Like expect_block, but for rules whose severity is `nudge` rather than
+# `block`. Both exit 2; only the tag on the message differs (NUDGE vs BLOCKED),
+# so asserting on "BLOCKED" would fail a nudge rule that fired perfectly well.
+# The tag is still asserted -- just the right one -- so this cannot degrade into
+# "exit 2 for any reason at all".
+expect_fire() {  # <label> <command> <cwd>
+  run_rm "$2" "$3"
+  if [ "$RC" -eq 2 ] && grep -qE "BLOCKED|NUDGE" "$ERR"; then
+    pass "$1"
+  else
+    fail "$1 -- expected the rule to fire, got rc=$RC"
+    sed 's/^/  /' "$ERR" >&2
+  fi
+}
+
 expect_allow() {  # <label> <command> <cwd>
   run_rm "$2" "$3"
   if [ "$RC" -eq 0 ]; then
@@ -199,6 +214,37 @@ expect_block "a newline-separated rm blocks (prefilter and decider agree on ^)" 
 rm -rf \"$VAULT\"" "$CODEREPO"
 
 # --------------------------------------------------------------------------
+# 1c. a vault reached through a SYMLINKED ancestor is still a vault
+#
+#     vault_root_for() hands back a RESOLVED root, while cwd and the command's
+#     path tokens arrive spelled exactly as written. _is_under compared the two
+#     LEXICALLY only, so one symlink anywhere above the vault made it weigh
+#     /var/... against /private/var/... and answer False. Every namespace-scoped
+#     rule (grep, find) then silently un-scoped itself: no match, no message,
+#     exit 0 -- inert in the one place it is supposed to speak.
+#
+#     That is not a corner case on a Mac: /var -> /private/var is where macOS
+#     puts TMPDIR, so the whole class was live on every Mac while Linux CI
+#     stayed green. The sibling helper _same_dir already carried the lexical-OR-
+#     realpath pair, with macOS named in its docstring; _is_under was the half
+#     of that fix that never landed, which is why `rm -rf` fired here and the
+#     nudges did not.
+#
+#     Asserted through an EXPLICIT symlink, not by leaning on whatever the
+#     platform's tmpdir happens to be, so it is proven on Linux and macOS
+#     alike. Skipped only where the OS refuses to make one (unprivileged
+#     Windows), which is reported rather than passed over in silence.
+# --------------------------------------------------------------------------
+if ln -s "$VAULT" "$TMP/link-to-brain" 2>/dev/null && [ -d "$TMP/link-to-brain" ]; then
+  expect_fire "a namespace rule fires from a cwd reached via a symlink to the vault" \
+    'grep foo note.md' "$TMP/link-to-brain"
+  expect_fire "a namespace rule fires on a symlinked vault path named in the command" \
+    "find \"$TMP/link-to-brain\" -name '*.md'" "$CODEREPO"
+else
+  echo "SKIP: symlinks unavailable on this host, so the symlinked-vault case is unproven here" >&2
+fi
+
+# --------------------------------------------------------------------------
 # 2. negatives: the guard must stay out of everything that is not a vault
 # --------------------------------------------------------------------------
 # Widening the boundary above must not decay into "any command containing the
@@ -261,7 +307,18 @@ fi
 #    LOOKS like a path in a code review and is an end-of-line anchor followed
 #    by dead literal text -- it type-checks, lints, compiles, and never fires.
 # --------------------------------------------------------------------------
-dollar_hits="$(python3 - "$HOOK" <<'PY'
+# The scanner goes to a FILE, then runs -- rather than being piped through a
+# heredoc nested inside "$(...)". bash 3.2 (macOS's /bin/bash, and the only bash
+# on a stock Mac) parses a nested heredoc BODY as shell text while hunting for
+# the closing paren, ignoring the <<'PY' quoting that makes the body literal
+# everywhere else. The `["\']` class below carries an ODD number of ' chars, so
+# that scan opened a quote it never closed and took down the WHOLE FILE with
+# "unexpected EOF while looking for matching `)'" -- every assertion in it, not
+# just this one. bash 4+ treats the body as opaque and never saw it, so Linux CI
+# stayed green while the suite was unrunnable on any unmodified Mac.
+# Keep this heredoc unnested; do not inline it back into a substitution.
+SCAN_PY="$TMP/dollar_scan.py"
+cat > "$SCAN_PY" <<'PY'
 import ast, re, sys
 from pathlib import Path
 
@@ -282,7 +339,7 @@ for node in ast.walk(ast.parse(src)):
         bad.append(f"line {node.lineno}: {hit.group(0)}")
 print("; ".join(bad))
 PY
-)"
+dollar_hits="$(python3 "$SCAN_PY" "$HOOK")"
 if [ -z "$dollar_hits" ]; then
   pass "no unescaped shell \$VAR survives inside a regex literal in this hook"
 else

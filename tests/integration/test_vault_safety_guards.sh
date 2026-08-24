@@ -13,10 +13,12 @@
 #   - scripts/test-sync-folder-machinery-guard.sh (machinery-in-synced-folder + Drive Mirror roots, MYC-705)
 #   - scripts/test-vault-backup-guard.sh         (no-off-machine-backup detector)
 #   - scripts/test-vault-backup-roundtrip.sh     (one-command backup: real restore loop)
+#   - scripts/test-vault-backup-schedule.sh      (daily schedule actually installed, MYC-3528)
 #
 # CI-safe: every guard test is hermetic (temp dirs, isolated config via env),
 # needs no network, and the round-trip test skips its encrypted leg when neither
-# gpg nor openssl is present.
+# gpg nor openssl is present. The schedule test stubs launchctl/crontab on PATH
+# and overrides HOME, so it never touches the runner's real launchd or crontab.
 set -u
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 fails=0
@@ -39,6 +41,7 @@ run_guard "scripts/test-detect-cloud-sync-mirror.sh"
 run_guard "scripts/test-sync-folder-machinery-guard.sh"
 run_guard "scripts/test-vault-backup-guard.sh"
 run_guard "scripts/test-vault-backup-roundtrip.sh"
+run_guard "scripts/test-vault-backup-schedule.sh"
 
 echo
 if [ "$fails" -gt 0 ]; then
