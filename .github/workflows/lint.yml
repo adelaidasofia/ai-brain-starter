@@ -434,46 +434,24 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: git fetch origin "$BASE_REF" --depth=50
+        # NO --depth here. checkout above uses fetch-depth: 0, and a depth-limited
+        # fetch re-introduces a shallow boundary: on a PR older than that many
+        # commits the merge base falls outside it and `git diff BASE...HEAD`
+        # cannot be computed at all.
+        run: git fetch origin "$BASE_REF"
+
+      # The scan itself lives in scripts/check-private-context.sh so this
+      # enforcing gate and a local run cannot drift, and so its negative control
+      # is runnable. Same reasoning as check-ps1-encoding.sh above.
+      - name: private-context negative controls (the guard must still bite)
+        if: github.event_name == 'pull_request'
+        run: bash scripts/check-private-context.sh --self-test
 
       - name: private-context tokens (PR-scoped)
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: |
-          set -e
-          P='\b[A]delaida\b|\b[O]nde\b|\b[D]iaz.Roa\b|\b[B]ogot[aá]\b|\b[S]ergio Perez\b|\b[N]atalia\b|\b[P]aola\b|\b[A]ccenture\b|\b[H]igh.Rise Series\b|\b[S]hark Tank\b'
-          BASE="origin/$BASE_REF"
-          fail=0
-          while IFS= read -r f; do
-            [ -z "$f" ] && continue
-            [ ! -f "$f" ] && continue
-            case "$f" in
-              */.venv/*|*/node_modules/*|*/__pycache__/*) continue ;;
-            esac
-            case "$f" in
-              *.md|*.sh|*.ps1|*.py|*.json|*.yml|*.yaml|*.txt|.env.example) ;;
-              *) continue ;;
-            esac
-            # Scan ONLY lines this PR adds (diff lines starting with `+`,
-            # excluding the `+++ b/path` file header). Pre-existing committed
-            # content is intentionally ignored: CI gates net-new private-context
-            # additions, not legacy text in files this PR happens to touch.
-            added_lines=$(git diff "$BASE"..HEAD -- "$f" | grep -E '^\+' | grep -vE '^\+\+\+' || true)
-            if [ -z "$added_lines" ]; then
-              continue
-            fi
-            if matches=$(echo "$added_lines" | grep -nE "$P" 2>/dev/null); then
-              echo "::error file=$f::private-context token added in this PR"
-              echo "$matches" | head -3 | sed 's|^|  |'
-              fail=1
-            fi
-          done < <(git diff --name-only "$BASE"..HEAD)
-          if [ "$fail" = "1" ]; then
-            echo "::error::Private-context scan failed. Use placeholders or fictional names instead."
-            exit 1
-          fi
-          echo "Private-context scan passed (added lines only)."
+        run: bash scripts/check-private-context.sh "origin/$BASE_REF"
 
       # ---- last: the only step that installs anything ------------------------
 

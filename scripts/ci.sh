@@ -289,6 +289,7 @@ INTEGRATION_TESTS=(
   test_meeting_todos_step0_create_if_absent
   test_meeting_workflow_trigger_hook
   test_personal_brain_not_optional
+  test_private_context_scan_merge_base
   test_phase11_writes_to_vault_rule_file
   test_post_commit_ff_worktrees
   test_write_hook_meeting_folder_i18n
