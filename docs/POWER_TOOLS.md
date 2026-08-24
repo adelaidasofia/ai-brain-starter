@@ -86,23 +86,9 @@ git clone https://github.com/adelaidasofia/humanizer.git ~/.claude/skills/humani
 python scripts/generate_image.py "Clean black-and-white logo with text 'Acme', sans-serif, minimalist" logo.png --aspect 1:1
 python scripts/generate_image.py "Studio-lit product photo on polished concrete, 3-point softbox" hero.png --aspect 16:9 --size 4K
 python scripts/edit_image.py photo.png "Add a sunset to the background" edited.png
-
-# Two helper scripts added 2026-05-24 (cherry-picked from MIT-licensed
-# Open-Generative-AI + SamurAIGPT/Generative-Media-Skills audits):
-
-# cinema_prompt_builder.py — semantic + technical cinematic vocab
-# Two composable layers: intent (semantic feeling-to-directive) + technical (camera/lens/focal/aperture)
-python scripts/cinema_prompt_builder.py "founder portrait at golden hour" --intent introspective --focal-length 85mm --aperture f/1.4
-python scripts/cinema_prompt_builder.py "a lone samurai in a blizzard" --intent epic --generate samurai.png
-python scripts/cinema_prompt_builder.py --list  # show all intents + camera/lens/focal/aperture vocab
-
-# blog_header.py — Substack/blog/OG header with structured deliverable
-# Returns image + alt-text + title-placement guidance; auto-strips banned keyword-soup
-python scripts/blog_header.py "10 productivity hacks for remote founders" --aspect 16:9 --out hacks.png
-python scripts/blog_header.py "essay on the loop" --style "warm amber, editorial" --aspect 21:9 --out loop.png
 ```
 
-**Companion patterns (cherry-picked from MIT audits):** before any image-gen call, check the 8 sharp edges — anti-keyword-soup (`8k`/`masterpiece`/`ultra-detailed` degrade output, strip them), anti-text-in-prompt (text rendering is unreliable; use Canva for overlays; short literal in double quotes only), positive framing not negatives ("ensure sharp focus" not "no blurry"), describe physical relationships not isolated tokens, character continuity requires verbatim repetition (no cross-image memory), Perfect Prompt formula assembles six layers (Subject + Action + Context + Composition + Lighting + Style), intent → framing+movement+lighting (use `cinema_prompt_builder.py --intent`), multi-output deliverable for blog/OG/thumbnail (image + alt-text + title-placement, use `blog_header.py`). Codify these in your own vault patterns folder once you've audited the source repos.
+**Companion patterns:** before any image-gen call, check the 8 sharp edges — anti-keyword-soup (`8k`/`masterpiece`/`ultra-detailed` degrade output, strip them), anti-text-in-prompt (text rendering is unreliable; use Canva for overlays; short literal in double quotes only), positive framing not negatives ("ensure sharp focus" not "no blurry"), describe physical relationships not isolated tokens, character continuity requires verbatim repetition (no cross-image memory), Perfect Prompt formula assembles six layers (Subject + Action + Context + Composition + Lighting + Style). Codify these in your own vault patterns folder once you've audited the source repos.
 
 **Install:** Adds to Claude Code via the [devon-claude-skills marketplace](https://github.com/devonjones/devon-claude-skills):
 ```bash
