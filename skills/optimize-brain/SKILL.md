@@ -7,6 +7,8 @@ trigger: /optimize-brain
 
 # Optimize Brain — Deep Vault Optimization
 
+> **`{SKILL_DIR}`** = this skill's own folder (locally: the directory this SKILL.md lives in; a served brain substitutes the real absolute path before you read this). Shared starter files live at the repo root two levels up: `{SKILL_DIR}/../..`. If a path does not resolve, name the missing file and stop — never guess another location.
+
 You are running a deep optimization on an existing Obsidian vault. The user has already set up the basics (folder structure, CLAUDE.md, context layer) — either through `/setup-brain` or manually. Now they want the full treatment.
 
 This is a weekend project, not an afternoon one. Set expectations upfront and let them choose which phases to run.
@@ -482,18 +484,16 @@ last_updated: [today]
 "Let me make sure all your skills are working and your CLAUDE.md has the right routing entries."
 
 ### Step 1: Verify skill paths
-Check that every skill file referenced in CLAUDE.md actually exists:
+Check that every skill file referenced in CLAUDE.md actually exists.
+
+Skills install as sibling folders of this one, so list what is actually on disk rather than guessing at a fixed set of names:
 
 ```bash
-# Check each skill directory
-ls ~/.claude/skills/daily-journal/SKILL.md
-ls ~/.claude/skills/humanizer/SKILL.md
-ls ~/.claude/skills/graphify/SKILL.md
-ls ~/.claude/skills/insights/SKILL.md
-ls ~/.claude/skills/ai-brain-starter/SKILL.md
+# Every installed skill's SKILL.md, whatever the install shape
+ls "{SKILL_DIR}"/../*/SKILL.md
 ```
 
-For any missing skill, offer to reinstall it.
+Now read the routing entries in their CLAUDE.md and compare the two lists. Any skill CLAUDE.md routes to that is missing from the listing is a dead routing entry — name it and offer to reinstall it. The reverse case (installed but unrouted) is Step 3, not this one.
 
 ### Step 2: Verify save paths in skills
 Read each skill file and check that any file paths it references (journal save path, insight save path, etc.) resolve to real folders. Common bug: double "Desktop" in paths, missing emoji prefixes on folders.
@@ -514,11 +514,11 @@ Check that the user's CLAUDE.md has routing entries for all installed skills:
 - `/humanizer` → humanizer skill
 - `/setup-brain` → ai-brain-starter skill
 
-For any missing routing, add it:
+For any missing routing, add it. Route by skill NAME, not by install path — the Skill tool resolves the name, and a hardcoded path goes stale the moment the brain is read on another machine or by another tool:
 
 ```markdown
 # [skill name]
-- **[skill-name]** (`~/.claude/skills/[skill-name]/SKILL.md`) — [description]. Trigger: `/[command]`
+- **[skill-name]** — [description]. Trigger: `/[command]`
 When the user types `/[command]`, invoke the Skill tool with `skill: "[skill-name]"` before doing anything else.
 ```
 
