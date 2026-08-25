@@ -190,7 +190,7 @@ def _self_test() -> int:
 
         # 4. a different operation shape is also caught
         (gd / "rebase-merge").rmdir()
-        (gd / "MERGE_HEAD").write_text("x")
+        (gd / "MERGE_HEAD").write_text("x", encoding="utf-8")
         os.utime(gd / "MERGE_HEAD", (old, old))
         if build_report(td) is None:
             failures.append("a stale MERGE_HEAD was not caught")
