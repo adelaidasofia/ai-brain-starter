@@ -225,4 +225,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # This file carries non-ASCII source (the vault's Meta dir name) and prints
+    # to the console. A Windows console defaults to cp1252 and dies mid-write
+    # without this (ai-brain-starter#313). Previously carried as a baseline
+    # exemption; paid down here rather than re-pinned.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())
