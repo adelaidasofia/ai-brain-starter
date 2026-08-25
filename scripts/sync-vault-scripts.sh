@@ -90,6 +90,7 @@ done
 VAULT_SCRIPTS=(
   "_meta_resolver.py"          # shared meta-folder resolver (deterministic keystone)
   "_project_key.py"            # shared project-key resolver (dep of check-rule-conflicts.py)
+  "_floors.py"                 # shared floor vocabulary (dep of build-journal-index.py)
   "_session_close_guard.sh"    # shared git-dir/index-lock resolver — sourced by BOTH
                                # vault-safe-commit.sh and session-end-hook.sh. Omitting
                                # it shipped the consumers without their dependency: the

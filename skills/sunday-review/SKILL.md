@@ -30,6 +30,25 @@ python3 "{SKILL_DIR}/../../scripts/vault-hygiene.py" --quiet
 
 It writes a fresh report to `⚙️ Meta/Vault Hygiene.md`. Capture: how many broken wikilinks, empty notes, stale notes, duplicate concepts.
 
+### Step 3b — Backup restore drill (NO SKIP)
+
+Run:
+```bash
+bash "{SKILL_DIR}/../../scripts/vault-backup.sh" verify --vault "$VAULT_ROOT"
+```
+
+`verify` decrypts the newest snapshot into a temp dir, extracts it, and counts the files. It is the only backup check that opens the archive. Three outcomes, three different reports:
+
+- **Exit 0** — capture the file count restored and the snapshot's date. A count far below the vault's real file count is a FAIL, not a pass.
+- **Exit non-zero saying `vault not configured` or `no snapshot found`** — there is no backup at all. That is the week's one thing to do; give the setup command: `bash "{SKILL_DIR}/../../scripts/vault-backup.sh" setup --vault "$VAULT_ROOT"`.
+- **Any other non-zero** — an archive exists and does not restore. FAIL.
+
+⛔ **`vault-backup.sh status` does not substitute for this, and neither does the backup check in `/diagnose`.** Both assert that an archive file exists and read its mtime — nothing about its contents. One real vault, moved inside a cloud-sync folder the scheduled job had no OS permission to read, wrote 32 consecutive nights of 10 KB archives against an 18 MB vault (`tar` failed, its stderr went to `/dev/null`). Every one of those nights was reported as "OK, 0.7 days old". `verify` caught it in 4 seconds.
+
+Cheap corroborating signal, no decryption needed: list the snapshot directory with sizes. Two consecutive snapshots identical to the byte means the job is writing the same failure over and over.
+
+Report a failure as a FAIL, never as a WARN, and carry it into Step 7 under "Vault state". Bug class `STAMP-GREEN-WHILE-ARTIFACT-GONE`: a check that probes the proxy (the file, the timestamp) instead of the leaf (the restorable content) stays green for exactly as long as the artifact is broken. Background: [`docs/BACKUP.md`](../../docs/BACKUP.md).
+
 ### Step 4 — CLAUDE.md drift
 
 Run:
@@ -147,11 +166,11 @@ After the script lands the report, inline a 5-minute Claude pass answering the 6
 5. Has the threat landscape shifted since last check? (Read 2-3 CISA + OWASP + vendor advisories — does any layer need a new pattern?)
 6. Any new public repo / endpoint / agentic surface shipped this week not classified into the 4-layer detection model? (CI-publish workflow-injection / post-publish Dependabot / outbound SSRF / endpoint-installed-state inventory)
 
-The Claude pass surfaces signals INTO the /sunday-review synthesis under a "Security cadence" subsection. If any question's answer is non-trivial → escalate to `/code-security` as event-driven, NOT calendar-driven. The three-layer cadence model:
+The Claude pass surfaces signals INTO the /sunday-review synthesis under a "Security cadence" subsection. If any question's answer is non-trivial → escalate to a full code-security review as event-driven, NOT calendar-driven. The three-layer cadence model:
 
 - **Layer 1** — daily cron (gh-harden + workflow-injection scan + endpoint inventory + Dependabot + hookify family). Auto, no skill invocation.
 - **Layer 2** — weekly meta-audit (this Step 4g via security-cadence-report.py).
-- **Layer 3** — event-driven `/code-security` (new endpoint, new agentic surface, new CVE class, drift escalation from Layer 2). Not calendar.
+- **Layer 3** — event-driven full code-security review (new endpoint, new agentic surface, new CVE class, drift escalation from Layer 2). Not calendar. Not shipped here: `/security-snapshot` is passive and external-only, `/secret-warn` is edit-time guardrails, and both disclaim deep review. Bring your own reviewer.
 
 Source: panel synthesis (Schneier + Charity Majors + Patrick Collison + DHH-dissent, 2026-05-27) on cadence-vs-event-driven security. Bug class prevented: `ARTIFACT-WITH-OVER-STRICT-VERIFICATION` applied to time — over-scheduled verification trains a bypass habit; real fires get ignored. Skip silently if the script is missing.
 
@@ -196,6 +215,7 @@ week_of: {YYYY-MM-DD}
 
 ## Vault state
 - Hygiene: [link to Meta/Vault Hygiene.md] · {broken wikilinks count}, {empty notes count}, {stale notes count}
+- Backup restore drill: {PASS — N files restored from {snapshot date} | FAIL — what broke | NOT CONFIGURED}
 - CLAUDE.md drift: [link to Meta/CLAUDE-md drift.md] · {N signals flagged}
 - Stale decisions: [link to Meta/Decision Retrospective.md] · {N candidates for outcome backfill}
 

@@ -1,6 +1,8 @@
 ---
+type: skill
 name: optimize-brain
 description: Deep optimization for an existing Obsidian vault. Compress archives into summaries, standardize contacts, tag journals, clean up the graph, build dashboards, and create domain summaries. The weekend version of /setup-brain.
+trigger: /optimize-brain
 ---
 
 # Optimize Brain — Deep Vault Optimization

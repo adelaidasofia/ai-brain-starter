@@ -62,6 +62,7 @@ from _meta_resolver import find_meta_dir  # noqa: E402
 # reach the ONE audited primitive, or the guarantee is only as good as the copy.
 # safe_read.py is stdlib-only, so mirroring it costs the vault nothing.
 from _lib.safe_read import safe_read_text  # noqa: E402
+from _floors import Floors  # noqa: E402
 
 # Read bounds for the shared safe_read primitive. Journal frontmatter sits in
 # the first lines; safe_read hands back the whole (size-capped) file. 1 MB is
@@ -177,6 +178,12 @@ def main():
     entries = []
     skipped = []
 
+    # Floor vocabulary comes from the vault's own floor notes. When there are
+    # none there is nothing to check against, and the skip is announced below
+    # rather than passing silently.
+    floors = Floors(vault)
+    inconsistencies = []
+
     # Recursive walk: indexes journals nested under year-month subfolders
     # (e.g. Journals/2026-04/2026-04-15.md), not just top-level files.
     for root, _dirs, files in os.walk(journal_dir):
@@ -207,6 +214,23 @@ def main():
                         meta[k.strip()] = v.strip().strip("'\"")
                 if i > 15:
                     break
+            # A typed non-journal note living under the journal folder is not an
+            # entry. The recursive walk picks up the insight reports that
+            # /weekly and /monthly write into "Weekly Insights/" and
+            # "Monthly Insights/" subfolders, and those carry a creationDate,
+            # so the creationDate gate alone let them in — on one real vault,
+            # 29 indexed "entries" for 27 lived days. /patterns reads the last 7
+            # from this index, so the machine was re-reading its own summaries
+            # as if they were new material.
+            #
+            # Only a type that is present AND not "journal" disqualifies a file.
+            # An absent type still indexes: entries written before the daily-journal
+            # template gained `type: journal` (#379) have no field at all, and
+            # excluding those would empty the index on exactly the vaults that
+            # fix targets.
+            entry_type = meta.get("type")
+            if entry_type is not None and entry_type != "journal":
+                continue
             if "creationDate" in meta:
                 # Store path relative to journal_dir so subfoldered entries
                 # with colliding basenames stay distinct.
@@ -221,6 +245,8 @@ def main():
                 if "floor_arc" in meta:
                     entry["floor_arc"] = _parse_inline_list(meta["floor_arc"])
                 entries.append(entry)
+                inconsistencies.extend(
+                    floors.check(meta, label=os.path.relpath(fpath, journal_dir)))
 
     if skipped:
         preview = ", ".join(f"{f} [{s}]" for f, s in skipped[:5])
@@ -248,6 +274,18 @@ def main():
     print(f"Indexed {len(entries)} entries → {output_path}")
     if entries:
         print(f"  date range: {entries[0]['date']} → {entries[-1]['date']}")
+
+    if not floors:
+        print("  note: no floor notes found — frontmatter consistency check skipped",
+              file=sys.stderr)
+    elif not floors.has_tiers:
+        print("  note: floor notes declare no tiers — tier consistency check skipped",
+              file=sys.stderr)
+    if inconsistencies:
+        print("  {} frontmatter inconsistency(ies):".format(len(inconsistencies)),
+              file=sys.stderr)
+        for issue in inconsistencies:
+            print("    - {}".format(issue), file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ The everyday rituals — the surface you touch most.
 - **daily-journal** — daily journal interview with a live advisory panel that meets your draft and pushes back where the thinking is soft.
 - **coaching** — multi-pass coaching session for a hard conversation, a decision you are second-guessing, or accumulated tension that will not fit in a daily entry.
 - **insights** — weekly and monthly journal insight reports: Floor trends, avoidance flags, wins, life-coach and therapist observations.
-- **sunday-review** — weekly meta-review that orchestrates the weekly insight, pattern scan, vault hygiene, and decision retrospective in one flow.
+- **sunday-review** — weekly meta-review that orchestrates the weekly insight, pattern scan, vault hygiene, backup restore drill, and decision retrospective in one flow.
 - **patterns** — the Instinct Engine. Scans recent sessions, journals, and decisions for recurring patterns and turns them into concrete captures.
 - **deconstruct** — first-principles analyst. Surfaces hidden assumptions, finds the foundational truths, rebuilds from scratch, names the high-leverage move.
 
