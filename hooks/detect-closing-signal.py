@@ -1251,6 +1251,13 @@ def main() -> int:
             "verify-session-close-cascade",
             "verify-discoverability-on-close",
             "verify-cascade",
+            # Codified 2026-08-02: automated events are not user speech.
+            # A background-agent task-notification carried result text
+            # containing "ya fue corregido", which matched the es-pack
+            # high_confidence pattern and fired a full cascade mid-session.
+            "[SYSTEM NOTIFICATION",
+            "<task-notification>",
+            "automated background-task event",
         )
         if any(m in prefix for m in feedback_markers):
             log_debug("Stop-hook-feedback prompt, skipping close detection")
@@ -1273,6 +1280,8 @@ def main() -> int:
             if x.strip()
         ]
         packs = load_language_packs(langs)
+
+
         custom = load_user_custom_signals(vault_root)
         suppress = load_user_suppress_signals(vault_root)
         custom_only = load_user_custom_only(vault_root)
