@@ -81,6 +81,15 @@ ABS_SHIPPED_RE = re.compile(r"ai-brain-starter/(?:hooks|scripts)/([\w.-]+\.py)")
 # fine" -- an entry whose reason you cannot verify belongs in the baseline
 # below, honestly labelled, not here.
 TEMPLATE_ONLY: Dict[str, str] = {
+    "surface-stalled-git-operation.py":
+        "not a hook: a report BUILDER (build_report) called by "
+        "surface-stranded-session-artifacts.py, plus a standalone --test "
+        "carrying its own negative control. Deliberately unwired for the same "
+        "reason as surface-sync-guard-findings.py below -- its own SessionStart "
+        "entry put that event at 20/19 on the footprint SLA gate, and buying "
+        "budget to fit one more cold start hides the cost that gate exists to "
+        "surface. Checkable: grep surface-stalled-git-operation "
+        "hooks/surface-stranded-session-artifacts.py",
     "check_fab_shim.py":
         "not a hook: an import shim so tests can load the hyphenated guard "
         "module (hyphens are not importable identifiers).",

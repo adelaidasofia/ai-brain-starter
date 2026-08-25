@@ -32,10 +32,14 @@ Do NOT use for:
 3. For each video, call `yt-dlp --list-subs <url>` to enumerate available subtitles.
 4. Subtitle priority: manual subs > auto-generated > Whisper fallback. Manual subs preserve creator-provided punctuation and speaker labels; auto-gen is uppercase + no punctuation; Whisper is the floor.
 5. Download the highest-priority subtitle as VTT via `yt-dlp --write-sub --sub-lang <lang> --skip-download`. Default language preference: `en,es` (so non-English content is captured in its original language without forcing English).
+
+   **Gotcha:** `en,es` picks whichever of those two is *available*, including YouTube's auto-*translated* captions. For a video whose original language is neither English nor Spanish, `en` in the auto-caption list is a translation, not the source audio, and will outrank the real original-language transcript under the default preference. Always run `yt-dlp --list-subs <url>` first: if an `<xx>-orig` code exists (e.g. `es-orig`), that's the untranslated auto-caption in the actual source language — pass `--lang <xx>-orig,<xx>` explicitly to prefer it over the default.
 6. Strip VTT timing markers and merge into clean prose paragraphs. Preserve speaker labels if the source had them.
 7. Pull video metadata (title, channel, upload date, duration, video_id, URL) via `yt-dlp --print-json --skip-download`.
 8. Slugify the channel name and video title. Write to `External Inputs/YouTube/<channel-slug>/<YYYY-MM-DD>-<video-slug>.md`.
 9. Scan transcript for trigger keywords (decision, framework, model, principle, "the lesson is", playbook, anti-pattern, case study). For each match, create a writing-seed stub at `⚙️ Meta/Captures/<YYYY-MM-DD>-youtube-<channel-slug>-<video-id>.md` so the seed lands in the captures aggregator.
+
+   **Gotcha:** keyword matching is a plain substring check, not word-boundary-aware, so it also fires inside unrelated words in other languages — e.g. Spanish "decisiones" contains "decision", "modelo" contains "model". Non-English ingests routinely produce false-positive seed stubs; treat any stub from a non-English transcript as unverified until a human confirms it, and delete it if it's noise.
 10. Print summary: file path, transcript word count, language, seeds detected.
 
 ## Voice rules

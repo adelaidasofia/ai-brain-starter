@@ -24,6 +24,7 @@ Look for `Meta/rise-config.md` (or `⚙️ Meta/rise-config.md` for emoji-prefix
 - `calendar: on | off` + `calendar_accounts: [list]`
 - `health_mcp: on | off`
 - `save_path: "Journals"` — where to save morning entries
+- `carry_forward: { sessions, monitor, decisions, calendar_lookback }` — sources swept at Step 4.7 so work done since the last Rise arrives on its own. Omitted keys default to on.
 
 **If the file doesn't exist:** copy `templates/rise-config.md` into the vault, then ask the user once:
 
@@ -44,6 +45,7 @@ Write their answers into the YAML in the file. Continue with those settings enab
 6. **Morning anchors = step 1.** Skill asks "have you done [anchor 1] and [anchor 2] yet?" using the config list. If no, pause and wait. If user says skip-today, log the skip and continue. If `morning_anchors: []`, skip the step entirely.
 7. **Memory durability.** Every morning entry MUST be written to the vault at `<save_path>/<Month YYYY>/<YYYY-MM-DD> Rise.md`. `/journal` reads the vault file at night for pairing.
 8. **Zero hallucination.** Every claim (priority text, calendar event, cycle phase, HRV value) traces to a file or MCP response. No invented data.
+9. **The to-do file is never assumed complete.** Step 4.7 sweeps last night's session notes, monitor alerts and yesterday's calendar BEFORE ranking, and writes anything missing into the to-do file. The user must never have to remember a pending item from memory: if it happened in a session, it arrives in the morning on its own. Skipping 4.7 because "the to-do file looks full" is the exact failure this step exists to prevent.
 
 ---
 
@@ -172,6 +174,50 @@ Ask if not already clear from Step 2:
 > Move when ready. Tap back when done."
 
 Wait for the signal that the user is done. Mark `body_movement_done: true` in frontmatter. If skipped: `body_movement_done: false, skip_reason: <their words>`.
+
+### Step 4.7: Carry-forward sweep (mandatory, runs before ranking)
+
+Codified 2026-08-07, after a night session filed four pendings into its session note and the next morning's Rise never saw them: the user had to reconstruct them from memory. The to-do file is a destination, not a guarantee. This step closes the gap from the read side, so a missed session close never costs a pending again.
+
+**Find the waterline first.** The previous Rise entry in `<save_path>` gives the cutoff timestamp. If none exists, use the last 24 hours.
+
+Then read, in parallel, everything the vault produced after that waterline:
+
+1. **Session notes** — `Meta/Sessions/*.md` (or `⚙️ Meta/Sessions/`), any file whose `session_date` or filename timestamp is at or after the waterline. Pull the `## To-dos filed`, `## Pending / incomplete` and `## Delegations` sections verbatim. These are the highest-value source: they are what the user actually worked on last.
+2. **Monitor / alert output** — any `Meta/monitor/<date>-*.md` or equivalent automated report dated today or yesterday. An overnight alert is a pending nobody typed.
+3. **Decisions** — files under the decisions folder modified after the waterline. Read their "next step" / "pending" / "what happens now" sections, in whatever language the vault is written in. A decision written last night usually carries the actions it implies.
+4. **Yesterday's calendar** — if `calendar: on`, list yesterday's events too (`calendar_lookback`, default 1 day). A block that existed for a task ("Ship the migration, 14:00") is a commitment; ask in one line whether it happened. A block that was scheduled and skipped is a pending, not a nothing.
+
+**Reconcile against the to-do file before writing anything.** Match by substance, not by wording. Three outcomes per item:
+
+- Already in the to-do file, still open → leave it, but let it enter the ranking with its real age.
+- Already in the to-do file and the sweep shows it was resolved → check it off with a one-line note on what resolved it and the source path.
+- Not in the to-do file → append it.
+
+**Write the appends into the to-do file now**, before the ranking, under a dated heading:
+
+```
+## 📋 From last night's session — YYYY-MM-DD
+
+*Source: `<path to session note>`.*
+
+- [ ] 🔴 **<task>** — <one line of why it matters / what it blocks> → `<source path>`
+```
+
+Write the heading in the vault's own language, matching the headings already in the to-do file.
+
+Each line self-contained: it must make sense to someone who was not in that session. Keep the user's own wording where it exists.
+
+**Then report the sweep in one short block** before moving to Step 5:
+
+> "N pendings from last night weren't on the list. I've added them:
+> 1. <task> (from the 23:29 session)
+> 2. ...
+> Yesterday's calendar had '<event>' at HH:MM — did that happen?"
+
+Only ask about calendar blocks that look like commitments, and cap at two questions. Everything else goes in silently and shows up in the ranking.
+
+If `carry_forward` is off, or no sources exist, say "Nothing new since the last Rise" in one line and continue.
 
 ### Step 5: Priorities — recommend top 3 from configured to-do files
 
@@ -313,6 +359,10 @@ intention: "<derived sentence>"
 - Movement prescribed: <flow name + scaling note>
 - Done: <yes | no | skipped (reason)>
 
+## Viene de anoche (only if Step 4.7 found anything)
+
+- <carry-forward item> → `<source path>`
+
 ## Today's focus
 
 1. <priority 1>
@@ -400,9 +450,13 @@ If no morning `/rise` entry exists for today: `/journal` runs its normal flow wi
 | Body movement HRV critically low (>30% below baseline) | Scale to mobility-only regardless of cycle phase. Note in frontmatter |
 | Priority recommendation returns no high-scoring tasks (all <2.0) | Surface: "Your queue is light today. Top 3 by recency:" — fall through to date-sorted recommendation |
 | Config file missing | Copy template, ask 3 setup questions, write answers into the file, continue |
+| Sessions folder missing, or no session since the last Rise | Step 4.7 says "Nothing new since the last Rise" in one line and continues. Never invent carry-forward items |
+| A session note says a to-do was filed but the to-do file has no trace of it | The close failed. Append it at Step 4.7 and tell the user in one line that the close missed it, so the gap is visible instead of silent |
 
 ---
 
 ## Version
+
+v0.2 — 2026-08-07. Added Step 4.7 (carry-forward sweep): the morning reads session notes, monitor alerts, decisions touched since the last Rise, and yesterday's calendar, reconciles them against the to-do file and appends what is missing before ranking. Paired with the session-close cascade, which now gets the to-do file path pre-resolved and must append to-dos there, not only to the session note. Two independent paths, so one failing does not cost a pending.
 
 v0.1 — initial public substrate release 2026-05-13. Gender-neutral by default; cycle scaling is opt-in via `cycle_phase_aware: on` in `rise-config.md`. Morning anchors fully configurable. To-do file paths configurable. Floor framework inherited from `daily-journal` (no separate floor data). Pairs with `/journal` for evening accountability via `floor_morning` + `priorities_landed` + `intention_held` fields. Floor inference pattern borrowed from `daily-journal` skill.

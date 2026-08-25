@@ -227,7 +227,7 @@ def main() -> int:
     )
     # Telemetry on the WARN path ONLY (never the silent/plain hot path) -- MYC-1176 item 6.
     _log_fire("warn-vault-session-in-worktree", status="warned", slug=slug, event=event or "?")
-    print(json.dumps({"continue": True, "additionalContext": body}))
+    print(json.dumps({"continue": True, "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": body}}))
     return 0
 
 

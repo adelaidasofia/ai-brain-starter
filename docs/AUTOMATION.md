@@ -106,18 +106,13 @@ Run `/health doctor` to see the freshness of every source, last prescription + c
 
 ## How to install
 
-`/health-setup` ends with an auto-wire step. Default: yes. The wizard:
+The default wired set lives in `hooks.json` at the repo root — that's the file `scripts/install-hooks-user-level.py` reads to write entries into `~/.claude/settings.json` during bootstrap, and it's what `services/health-mcp/tests/test_v05_hooks.py` tests against. By default it wires one entry:
 
-1. Verifies `~/.claude/settings.json` exists.
-2. Adds entries for:
-   - SessionStart → `health-auto-sync.py`
-   - Stop (matcher: `mcp__.*journal|daily-journal|journal`) → `coach-auto-prescribe-on-journal.py`
-3. Validates the JSON parses cleanly before saving.
-4. Reports "auto-trigger wired" with the rough trigger points.
+- Stop (matcher: `mcp__.*journal|daily-journal|journal`) → `coach-auto-prescribe-on-journal.py`
 
-If you said no during setup and want to wire them later, just say `/health-setup` again and pick the auto-wire step.
+`health-auto-sync.py` (SessionStart) is opt-in, not part of this default wiring — see "The opt-in SessionStart sync" above. Add it to your own `~/.claude/settings.json` SessionStart block if you want per-session wearable refresh.
 
-To remove the auto-trigger: edit `~/.claude/settings.json` and drop the two entries. Skills and tools keep working manually.
+To remove the default auto-trigger: edit `~/.claude/settings.json` and drop the Stop entry above. Skills and tools keep working manually.
 
 ## Opt-in: scheduled tasks instead of hooks
 
