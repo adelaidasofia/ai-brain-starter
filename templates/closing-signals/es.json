@@ -114,6 +114,10 @@
     {
       "_comment": "INTERROGATIVE 'ya está/estuvo/fue/quedó + more content + ?' — the reported false positive: '¿Ya está en el prompt o no está creado?' fired the full cascade mid-explanation. Requires trailing content before the '?', so a bare '¿ya está?' is not caught here.",
       "pattern": "\\bya\\s+(est[áa]|estuvo|fue|qued[óo])\\s+[^?\\n]{2,60}\\?"
+    },
+    {
+      "_comment": "'estoy listo/a' is READINESS ('estoy listo para el día', 'estoy lista, arranquemos'), never a goodbye. Strict because the bare word `listo` is a high_confidence sign-off and the weak-tier 'listo para X' guard cannot override it.",
+      "pattern": "\\bestoy\\s+list[oa]\\b"
     }
   ]
 }
