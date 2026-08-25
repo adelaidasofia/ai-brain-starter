@@ -141,7 +141,7 @@ def main() -> int:
     # ---- gate 2: static platform-only imports ---------------------------
     for path in hooks:
         try:
-            hits = unguarded_platform_imports(path.read_text(encoding="utf-8"))
+            hits = unguarded_platform_imports(path.read_text(encoding="utf-8", errors="replace"))
         except SyntaxError:
             continue  # ci.sh gate (a) owns syntax
         for mod, line in hits:

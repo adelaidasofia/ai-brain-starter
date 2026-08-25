@@ -123,6 +123,12 @@ machinery_excludes = [
     "⚙️ Meta/Worktree Snapshots/",
     "⚙️ Meta/Sessions/",
     "⚙️ Meta/logs/",
+    # graphify-out/ is the single heaviest one: a multi-MB graph.json, its rotating
+    # backups, and a GRAPH_REPORT.md whose community-hub section links one note per
+    # detected community. Indexed, those links render as thousands of unresolved grey
+    # nodes and the report becomes the biggest hub in the user's graph view.
+    "graphify-out/",
+    "graphify-input/",
 ]
 existing_filters = app_settings.get("userIgnoreFilters") or []
 app_settings["userIgnoreFilters"] = list(dict.fromkeys(existing_filters + machinery_excludes))

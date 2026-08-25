@@ -63,7 +63,7 @@ def load_state() -> dict:
     if not STATE_FILE.is_file():
         return {}
     try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return json.loads(STATE_FILE.read_text(encoding="utf-8", errors="replace"))
     except (json.JSONDecodeError, OSError):
         return {}
 
@@ -90,7 +90,8 @@ def derive_install_date() -> datetime | None:
         try:
             result = subprocess.run(
                 ["git", "-C", str(SKILL_DIR), "log", "--reverse", "--format=%aI", "--max-count=1"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
                 date_str = result.stdout.strip().split("\n")[0]
@@ -105,7 +106,7 @@ def opted_out(cwd: Path) -> bool:
     if not claude_md.is_file():
         return False
     try:
-        text = claude_md.read_text(encoding="utf-8")
+        text = claude_md.read_text(encoding="utf-8", errors="replace")
         if re.search(r"firstWeekCheckin\s*:\s*false", text, re.IGNORECASE):
             return True
     except OSError:
@@ -120,7 +121,7 @@ def used_skills() -> set[str]:
     if not log_file.is_file():
         return skills
     try:
-        with log_file.open("r", encoding="utf-8") as f:
+        with log_file.open("r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -281,6 +282,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # A cp1252 Windows console raises UnicodeEncodeError the moment this prints a
+    # non-ASCII character, and the hook dies with no legible cause
+    # (ai-brain-starter#313). Idempotent; a no-op on an already-UTF-8 console.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     try:
         main()
     except Exception:

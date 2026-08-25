@@ -9,6 +9,81 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-24: on Windows, "your backup is not a supported format" was the opener, not the backup
+
+**Who this affects:** Windows users who set their backup up with the `bash ... vault-backup.sh setup` command — which is the one the install walks you through.
+
+There are two halves to the backup feature, one written in bash and one in PowerShell, and they share a settings file and a destination folder. What they do not share is the kind of file they write: the bash half writes `.tar.gz`, the PowerShell half writes `.zip`. That was fine as long as nobody crossed the streams.
+
+They cross on Windows, routinely. The install hands you the bash command, and it runs perfectly well there under Git Bash. But the reminder that appears at the start of a session — the one that says *prove your backup restores* — hands Windows users the PowerShell command. Run it, and you got this:
+
+```
+.gpg is not a supported archive file format. .zip is the only supported archive file format.
+```
+
+Which reads like the backup is corrupt. It was not. Every one of those snapshots was fine and would have restored perfectly. The tool that was supposed to reassure you was holding the wrong opener and blaming the file.
+
+That is the part worth fixing carefully, because of *when* it happens. Nobody runs a restore drill on a good day. You run it the morning you are worried, and that morning it told you the one thing you did not want to hear, incorrectly.
+
+**Now `verify` looks at what the file actually is** and picks the matching opener — `.zip` or `.tar.gz`, encrypted or not. Everything that already worked keeps working, and a file that is genuinely neither now says so in a sentence you can read, instead of an exception about a `.zip` you never had.
+
+**One related trap, also closed.** The two halves store the encryption passphrase in files with the *same name* and different formats. When the PowerShell half met the bash half's passphrase, it threw a raw cryptography error that reads as a damaged secret. It now recognises the situation and hands you the bash command that works.
+
+**What you should do:** nothing. If you ever saw that "not a supported archive file format" message, your backups were never the problem — check them once more after updating and you should see the file count come back.
+
+## 2026-08-19: the privacy checker no longer publishes the private word list it checks for
+
+**Who this affects:** anyone who publishes repos with this starter installed, and anyone who forked one of ours.
+
+Every public repo managed by this project runs a check on each change: does this change accidentally include a private name, a client, a home folder path, an email? Useful check. One problem, found in an audit: the list of private words it looked for was written out, in plain text, inside the checker itself — which is a public file. A privacy guard that carries a neatly labelled list of everything it protects is not a guard, it is a directory.
+
+Now the private part of that list lives in a sealed repo setting (a GitHub Actions secret named `PII_PRIVATE_PATTERNS`) that only the repo's own checks can read. The public file keeps only words that were already public on purpose. Nothing about what the check catches changes when the secret is in place — same words, same matching, and the check still proves on every run that each word on the list can actually be caught.
+
+Three situations to know about:
+
+- **A managed repo missing its secret fails the check loudly** instead of quietly checking nothing. That is deliberate: a silently disarmed guard looks exactly like a clean repo.
+- **Changes proposed from a fork** cannot read secrets (GitHub's rule, a good one), so they get checked against the public words only, with a visible note saying so. The full check runs the moment the change lands.
+- **Your own install:** if you copied this repo and never set the secret, the check now tells you how to add your own private list instead of checking ours. One command, shown in the check's output.
+
+## 2026-08-18: everything felt slower on Windows, and now it is about twice as fast
+
+**Who this affects:** Windows users, most of all anyone on a work laptop with antivirus running. Mac and Linux are unaffected.
+
+Before Claude runs a tool for you, it runs a set of small background checks. They are the guards that keep a secret out of a config file, stop a command being run in the middle of a git operation, and so on. Each one is quick. There are a lot of them, and they all run before you see anything happen.
+
+On Windows they were costing twice what they should have. The reason turned out to be embarrassing and easy to miss: the small program that runs each check was itself a Python program, and it started a *second* Python program to do the actual check. Starting Python is the expensive part, especially with antivirus watching every file it opens, so every check paid that price twice. Measured on a four-core Windows 11 laptop with two antivirus products running: 97 milliseconds to run a check directly, 189 through the wrapper. Multiplied across every check, that was about 1.6 seconds of waiting before every single tool call, and roughly 3 seconds at the start of a session.
+
+Two things were fixed.
+
+**The wrapper now does the work itself** instead of handing it to a second copy of Python. That is the bigger half. Nothing about what the checks can do has changed: one that blocks a dangerous action still blocks it, one that crashes is still ignored quietly instead of shouting at you, and what each one prints still comes back on the same channel it always did. That is not a claim, it is tested: 28 different situations are run through both the old and the new version and the results have to come out identical, down to the byte.
+
+**And the Python it starts is now worked out once, when you install, instead of on every check.** Windows ships a small helper called `py` whose whole job is to look up where Python actually lives. Looking that up takes about 21 milliseconds, and it was being looked up again for every check, forever, to get the same answer. The installer now works it out once and writes the real answer down.
+
+That second change had to be careful, because Windows may hand these commands to any of four different shells, and they disagree about what a file path looks like. Git Bash, for instance, silently eats the backslashes. So the installer does not guess: it runs the exact command it is about to write, in every shell it can find on your machine, and if any of them will not run it, it keeps the old safe version and skips the optimization. You get the speed when it is provably safe and the status quo when it is not.
+
+**Together: roughly half the waiting, gone.** The wrapper change on its own, measured on a Mac over 40 runs, took the per-check cost from 34 ms to 19 ms, which is one Python start exactly as intended. A Mac starts Python in about a sixth of the time an antivirus-laden Windows laptop does, so on the machines this was reported from the same change is worth far more, and the second fix takes another 21 ms per check on top of it.
+
+**What you should do:** update once and re-run the installer, so your settings pick up the resolved path. Tell Claude "update the ai-brain-starter skill". Nothing else changes, and re-running is safe as many times as you like.
+
+### Follow-up the same day: six ways a check could have gone quiet, closed
+
+Two reviews went looking for what the speed-up above might have broken, and found six things. All six are fixed. None of them ever made a check say the wrong thing; the failure was always that a check's answer went missing, which looks exactly like everything being fine.
+
+When each check was its own separate program, the operating system kept it walled off. Running it in the same program is what made it fast, and it also removed that wall. These are the six places the wall turned out to be doing work nobody had noticed.
+
+- **A check that tidies up after itself could take its own answer with it.** A common cleanup step closes file handles a program is no longer using, and two of those handles were now the only way the wrapper had of talking back. The answer went into a scratch file nobody reads and you saw nothing at all. Those handles are now kept somewhere a cleanup step will not reach.
+- **Anything a check scheduled for "on my way out" landed after its answer had already been sent**, tacking stray text onto the end of it. The wrapper now finishes the check's shutdown while it is still listening, then stops the moment the answer is out.
+- **A check that splits itself in two reported twice.** Two answers arrive glued together and neither can be read. The copy now stops instead of reporting.
+- **A check that asked to be told about shutdown made the whole thing unstoppable.** Not a hostile check: an ordinary "let me save my work first" one was enough. It now gets to save its work, and then things shut down exactly as they used to.
+- **A stumble while the wrapper put things back could replace a real answer with "carry on".** Every step of that tidy-up is now independent, so one of them tripping cannot overwrite what a check decided.
+- **Two protections from a separate fix were carried over.** Checks read your files as UTF-8 again rather than whatever your console happens to use, which on Windows is the difference between working and a crash that was being swallowed as "carry on". And a check that hangs is bounded again: it gives up cleanly after 45 seconds instead of stalling the tool call until the harness gives up minutes later.
+
+The speed is unchanged. The test suite that stayed green through all six of these now has a section aimed squarely at them, and every new test was confirmed to fail against the morning's version before it was allowed to pass against this one.
+
+**What you should do:** nothing beyond the update and re-install above. Same instruction, same one time.
+
+---
+
 ## 2026-08-16: on a Spanish vault, people never met your journal and floors never became numbers
 
 **Who this affects:** anyone journaling in Spanish (or in any vault whose journal folder is not literally `📓 Journals`), plus everyone who tags a journal entry with one of the 16 floors added when the framework grew from 16 to 34 — Trust, Frustration, Loneliness, Gratitude and the rest.
@@ -27,6 +102,23 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-15: your Sunday review now opens the backup instead of trusting it
+
+**Who this affects:** everyone who runs `/sunday-review`, and especially anyone whose vault sits inside iCloud, Dropbox, OneDrive, or any other sync folder.
+
+This one came out of a real vault. Someone asked a routine question about vault maintenance and found that their nightly backup had been producing an empty archive for 32 nights straight — 10 KB of nothing, against an 18 MB vault. The vault had been moved inside iCloud a month earlier, the scheduled job did not have macOS permission to read that folder, `tar` failed, and its complaint went to `/dev/null`. Nothing was lost, but for a month the safety net was a file that could not be opened.
+
+The part worth learning from is why nobody noticed. There were two checks running the whole time, and both said "OK, 0.7 days old" every single night. They were reading the archive's name and its timestamp — which were perfectly fine. A backup that fails this way keeps producing a fresh, correctly-named, recent file. Only opening it tells you anything.
+
+So `/sunday-review` now has a step that opens it: once a week, it decrypts the newest snapshot into a temp folder, restores it, and counts the files that came out. If the count is zero or absurdly low, that is a FAIL, in your review, in writing. If you have no backup configured at all, it says that too and hands you the setup command. The result now appears on its own line in the "Vault state" section of your Sunday note, next to the hygiene numbers.
+
+**What you should do:** nothing — the next `/sunday-review` runs it. If you would rather not wait for Sunday, the same drill is one command:
+
+```
+bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh verify
+```
+
+It takes a few seconds and either prints how many files it restored, or tells you your backup does not work.
 ## 2026-08-15: the setup could stop halfway and tell you it was finished
 
 **Who this affects:** anyone whose install ended early, especially if you never reached the journaling interview or your CLAUDE.md came out mostly empty.
@@ -72,6 +164,18 @@ python3 ~/.claude/skills/ai-brain-starter/scripts/install-hooks-user-level.py
 If your session start mentions "background helpers not active", this is what it was pointing at. Nothing else changes, and re-running is safe: anything you edited by hand is backed up to `<file>.bak-YYYY-MM-DD-HHMM` before it is replaced.
 
 ---
+
+## 2026-08-10: a missing team-broadcast install looked exactly like a healthy one
+
+**Who this affects:** anyone using the team-broadcast skill (Slack session-close recaps) across more than one machine.
+
+**The silent-failure watchdog (`surface-stale-automation-failures.py`) couldn't tell "never installed" from "installed and fine."** It works by scanning a log file for recent failures — no recent failures, no warning. But a machine that never had `auto-send.py` installed also has no log file, for the same reason: nothing ever ran there. Both cases produced exactly zero signal, on every session, forever. That's a stricter silence than an outright failure would have been — a broken install eventually leaves an error in the log; a missing install leaves nothing to ever go wrong. The watchdog now checks installation directly (the script's presence, then whether the daily launchd job is registered) before it ever looks at the log, and says so specifically instead of staying quiet. The launchd job is matched by its name ending, so it is found whatever reverse-DNS namespace you installed it under.
+
+**If you never set up team-broadcast, you will not hear about this at all.** This starter does not install that skill, so a missing one is the normal state for most people, and a warning about a component you never asked for is just noise that teaches you to ignore the rest. The check only speaks up when there is evidence you did set it up here and it since broke: a scheduled job that refers to it, a log from a previous run, or a half-present skill folder.
+
+**And a scheduled job that exists but has never actually run now gets caught too.** macOS reports the same status for a job that ran and finished cleanly as for one that was registered and never fired, so "the schedule is there" was being read as "it is working". The daily summary is the one job where that distinction is the entire point: the failure people actually hit is a broadcast that has never been sent. It now says so and gives you the two commands that reload it.
+
+**Also:** this file's non-ASCII console output (the warning emoji, some em dashes) was carried over from before the UTF-8 console-crash lint was widened to cover `hooks/`. It's provably safe — the only print is `json.dumps(...)`, which escapes non-ASCII before it reaches stdout — so it's now marked `# utf8-stdout-ok` and dropped from the legacy pin list instead of staying silently grandfathered in.
 
 ## 2026-08-05: on Mac and Linux, "daily backup scheduled" now means it really is
 

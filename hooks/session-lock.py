@@ -102,6 +102,17 @@ IDLE_EXPIRE_SEC = 1800      # prune entries idle > 30 min (stale-lock safety val
 CACHE_TTL_SEC = 604_800     # prune per-session cache pointers older than 7 days
 GIT_TIMEOUT_SEC = 6
 SCHEMA_VERSION = 2
+# Env for _index_is_empty's internal `git -C dirpath diff --cached` probe: the
+# GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE family override `-C` and would redirect
+# this diagnostic call at whatever repo the CALLER's environment points to,
+# defeating the explicit `-C dirpath` and misreading a different repo's index
+# as this one's -- the same GIT_DIR-confusion class this file exists to catch
+# in sibling commands, just self-inflicted here instead. Referenced but never
+# defined since #478 (2026-08-12); every call site passed `_GIT_CLEAN_ENV` and
+# it silently NameError'd -- caught by ruff --select F821, which nothing in
+# this repo's own CI runs over hooks/*.py (only the phase-doc Python blocks).
+_GIT_ENV_STRIP = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
+_GIT_CLEAN_ENV = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_STRIP}
 FLOCK_RETRIES = 20          # 20 * 10ms = 200ms max wait, then fail-open (unlocked)
 FLOCK_SLEEP_SEC = 0.01
 # Test-only determinism knob. When set, acquire the sidecar lock with a BLOCKING
@@ -328,6 +339,97 @@ def _worktree_key(cwd, main_root):
     return os.path.normpath(cwd) if cwd else ""
 
 
+# A command that will touch a shared REF, not just the working tree. Branch
+# collisions only matter for these, so everything else stays off this path and
+# the extra `git rev-parse` never lands on the hot path for an ordinary command.
+_REF_TOUCHING_RE = re.compile(
+    r"(?:^|[\n;|&]\s*)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*git\b[^|;&\n]*"
+    r"\b(push|commit|merge|rebase|cherry-pick)\b"
+)
+
+
+def _current_branch(cwd):
+    """Short branch name for `cwd`, or '' when detached / not a repo / git slow.
+
+    Fail-open by construction: every failure path returns '', and an empty
+    branch never matches another session's branch, so a broken git can only
+    make this guard quieter, never louder or wrong.
+    """
+    if not cwd:
+        return ""
+    try:
+        out = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, timeout=2, check=False,
+            # NOT `text=True`. That decodes the child's bytes with the LOCALE
+            # encoding, which raises UnicodeDecodeError on a non-UTF-8 Windows
+            # console the moment a path holds a non-ASCII character -- and this
+            # brain ships cross-platform with emoji-named vault folders. Caught
+            # by scripts/check-utf8-subprocess.py, not by review.
+            encoding="utf-8", errors="replace",
+        )
+    except Exception:
+        return ""
+    if out.returncode != 0:
+        return ""
+    b = (out.stdout or "").strip()
+    return "" if b in ("", "HEAD") else b
+
+
+def _same_dir(a, b):
+    """True when two cwds are the same directory.
+
+    Deliberately NOT `_worktree_key`. That key only recognises the
+    `<main>/.claude/worktrees/<slug>` layout; a checkout laid out as a sibling
+    directory (`<repo>-<slug>`, which several worktree helpers produce) falls
+    through to main_root instead. Reusing it here made every sibling collapse
+    onto the caller's own key, so the guard matched nothing at all — caught by
+    its own positive control before it shipped, not in review.
+    """
+    if not a or not b:
+        return False
+    return os.path.normpath(a) == os.path.normpath(b)
+
+
+def _live_branch_siblings(sessions, my_id, now, main_root, my_cwd, my_branch):
+    """Live sessions on the SAME BRANCH but a DIFFERENT working tree.
+
+    This is the gap `_live_siblings` documents and deliberately leaves open:
+    "two sessions pushing the same branch ... OUT OF SCOPE here: per-session
+    branch isolation makes them rare." That premise assumes ONE BRANCH PER
+    SESSION. It stops holding the moment branches are named per TICKET or per
+    FEATURE, because then two sessions working the same ticket legitimately
+    share one branch and are invisible to a worktree-keyed check.
+
+    Measured: two sessions on one shared branch, in separate worktrees,
+    independently produced the same upstream merge with the same conflict
+    resolution. Nothing warned either of them. Git's non-fast-forward rejection
+    is what finally surfaced it, at push time, after both had done the work.
+
+    Deliberately a WARNING and never a block: a branch is a shared REF, not a
+    shared working tree, so the catastrophic HEAD/index stomp is not available
+    here and git already refuses the unsafe push. The recoverable cost of this
+    collision is DUPLICATED EFFORT, and the only way to recover that is to say
+    so BEFORE the work rather than at push time.
+    """
+    if not my_branch:
+        return []
+    out = []
+    for sid, e in sessions.items():
+        if sid == my_id:
+            continue
+        la = e.get("last_activity_at")
+        if not (isinstance(la, (int, float)) and (now - la) < WARN_WINDOW_SEC):
+            continue
+        if e.get("branch") != my_branch:
+            continue
+        if _same_dir(e.get("cwd") or "", my_cwd):
+            continue  # same directory -> already covered by _live_siblings
+        out.append((sid, e))
+    out.sort(key=lambda kv: kv[1].get("last_activity_at") or 0, reverse=True)
+    return out
+
+
 def _live_siblings(sessions, my_id, now, main_root, my_cwd):
     """Entries that are NOT me, were active within WARN_WINDOW_SEC, AND share my
     working tree (same worktree-key), newest first.
@@ -356,7 +458,7 @@ def _live_siblings(sessions, my_id, now, main_root, my_cwd):
     return live
 
 
-def _upsert_self(sessions, my_id, cwd, now):
+def _upsert_self(sessions, my_id, cwd, now, branch=""):
     """Insert/refresh my own entry, preserving started_at + a known cwd.
 
     `pid` is recorded for human debugging only (it is the hook pid, not the
@@ -368,6 +470,8 @@ def _upsert_self(sessions, my_id, cwd, now):
         e["started_at"] = now
     if cwd:
         e["cwd"] = cwd
+    if branch:
+        e["branch"] = branch
     e["pid"] = os.getpid()  # informational only
     sessions[my_id] = e
     return sessions
@@ -395,7 +499,7 @@ def _flock(lock_path):
     try:
         try:
             os.makedirs(os.path.dirname(sidecar), exist_ok=True)
-            f = open(sidecar, "a+")
+            f = open(sidecar, "ab+")
         except OSError:
             yield
             return
@@ -995,7 +1099,7 @@ def _lock_path_from_cache(session_id):
     if not session_id:
         return ""
     try:
-        with open(_cache_path(session_id), "r", encoding="utf-8") as f:
+        with open(_cache_path(session_id), "r", encoding="utf-8", errors="replace") as f:
             return f.read().strip()
     except OSError:
         return ""
@@ -1044,15 +1148,46 @@ def _pretooluse(payload):
 
     now = time.time()
     captured = {}
+    command = (payload.get("tool_input", {}) or {}).get("command", "") or ""
+
+    # Resolve the branch ONLY for commands that touch a shared ref, so an
+    # ordinary `ls` never pays for a git subprocess.
+    my_branch = _current_branch(cwd) if _REF_TOUCHING_RE.search(command) else ""
 
     # refresh my heartbeat on every Bash call (keep the slot warm), capturing live
     # siblings from the same consistent, flock-protected snapshot.
     def mutate(sessions):
         captured["live"] = _live_siblings(sessions, session_id, now, main_root, cwd)
-        return _upsert_self(sessions, session_id, payload.get("cwd"), now)
+        captured["branch_live"] = _live_branch_siblings(
+            sessions, session_id, now, main_root, cwd, my_branch
+        )
+        return _upsert_self(sessions, session_id, payload.get("cwd"), now, my_branch)
 
     _update_sessions(lock_path, mutate, now)
     live = captured.get("live", [])
+    branch_live = captured.get("branch_live", [])
+
+    # Cross-worktree, SAME-branch collision. Warn, never block: git's own
+    # non-fast-forward rejection already prevents the data loss, so the only
+    # thing left to save is the duplicated work — and that is saved by saying so
+    # BEFORE the work, not at push time.
+    if branch_live and not live:
+        _emit({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": (
+                f"[session-lock] ANOTHER LIVE SESSION IS ON THIS BRANCH ({my_branch}).\n"
+                + _sibling_summary(branch_live, now, main_root)
+                + "\nDifferent worktrees, so HEAD and the index are safe and this is NOT "
+                "blocked. The risk here is duplicated work: two sessions sharing one "
+                "branch have independently produced the same upstream merge, with the "
+                "same conflict resolution, and only git's non-fast-forward rejection "
+                "surfaced it — after both had done it.\n"
+                "Before you commit or push: `git fetch origin && git log --oneline "
+                "HEAD..origin/<branch>` to see whether they already did this.\n"
+                f"Bypass: {BYPASS_ENV}=1"
+            ),
+        }})
+        return -1  # emitted our own continue-with-context; main must not double-emit
 
     if not live:
         return 0
@@ -1086,7 +1221,11 @@ def _pretooluse(payload):
     if not os.path.exists(marker):
         try:
             os.makedirs(CACHE_DIR, exist_ok=True)
-            open(marker, "w").close()
+            # `encoding=` on a file that receives ZERO bytes looks pointless and is
+            # not: text mode with no encoding resolves the LOCALE codec at open
+            # time, so the categorical rule holds even for an empty sentinel.
+            # check-utf8-file-io.py is right to refuse the judgement call.
+            open(marker, "w", encoding="utf-8").close()
         except OSError:
             pass
         sys.stderr.write(
@@ -1124,6 +1263,8 @@ def main() -> int:
             rc = _pretooluse(payload)
             if rc == 0:
                 _emit_continue()
+            if rc < 0:
+                return 0  # _pretooluse already emitted its own continue-with-context
             return rc
         if event == "SessionEnd":
             _session_end(payload.get("session_id") or "")
