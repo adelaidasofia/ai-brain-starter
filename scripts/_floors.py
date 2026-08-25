@@ -22,12 +22,27 @@ from pathlib import Path
 
 # Folders that may hold floor notes, relative to the vault root. Every one that
 # exists is read and merged — a vault may carry more than one layout.
+#
+# This list alone was not enough. It carried the emoji + Spanish spelling
+# ("📝 Notas/Floors") but not the emoji + English one — and "📝 Notes/Floors" is
+# exactly what phase-02-03 creates and what phase-10a writes the 34 floor notes
+# into on a default English install. Those vaults read as having no floor
+# vocabulary at all, so build-journal-index.py printed "no floor notes found —
+# frontmatter consistency check skipped" and the check silently never ran.
+#
+# The named layouts stay for clarity; discovery below is what makes the module
+# live up to its own docstring ("Any vault works, in any language").
 FLOOR_NOTE_DIRS = (
     ("floors",),
     ("Notes", "Floors"),
     ("Notas", "Floors"),
     ("📝 Notas", "Floors"),
+    ("📝 Notes", "Floors"),
 )
+
+# Folder names that mean "notes" / "floors", compared without emoji or accents.
+NOTES_FOLDER_NAMES = ("notes", "notas")
+FLOORS_FOLDER_NAMES = ("floors", "pisos")
 
 # Tier vocabulary normalises onto these three. Keys are accent-stripped
 # lowercase. This is not a floor list: it is the three-way tier split, which
@@ -54,6 +69,53 @@ def normalise_name(s):
     if s is None:
         return ""
     return strip_accents(str(s).strip().lower())
+
+
+def folder_key(name):
+    """Folder names compare without emoji, punctuation, accents or case.
+
+    '📝 Notes' -> 'notes'. Vault folders are user-facing and routinely carry an
+    emoji prefix, so an exact-string match is the wrong tool for finding them.
+    """
+    # Accents come off FIRST. strip_accents decomposes and drops every
+    # nonspacing mark, which is also where a variation selector (U+FE0F, the
+    # invisible half of "🗂️") lives. Dropping it later leaves the space it was
+    # glued to and the key comes back as " floors" instead of "floors".
+    text = strip_accents(str(name))
+    cleaned = "".join(c for c in text
+                      if not unicodedata.category(c).startswith(("S", "P", "C")))
+    return cleaned.strip().lower()
+
+
+def discover_floor_dirs(root):
+    """Folders under `root` that hold floor notes, whatever they are called.
+
+    Looks one level down only: a root-level floors/pisos folder, or a
+    notes/notas folder containing one. Cheap, and covers the emoji-prefixed
+    spellings in any language without enumerating them.
+    """
+    found = []
+    try:
+        children = sorted(root.iterdir())
+    except OSError:
+        return found
+    for child in children:
+        if not child.is_dir():
+            continue
+        key = folder_key(child.name)
+        if key in FLOORS_FOLDER_NAMES:
+            found.append(child)
+            continue
+        if key not in NOTES_FOLDER_NAMES:
+            continue
+        try:
+            inner = sorted(child.iterdir())
+        except OSError:
+            continue
+        for sub in inner:
+            if sub.is_dir() and folder_key(sub.name) in FLOORS_FOLDER_NAMES:
+                found.append(sub)
+    return found
 
 
 def normalise_tier(value):
@@ -120,10 +182,21 @@ class Floors:
         self._names = {}   # normalised name -> floor number
         self._tiers = {}   # floor number -> canonical tier
         root = Path(vault_root)
-        for parts in FLOOR_NOTE_DIRS:
-            folder = root.joinpath(*parts)
+        candidates = [root.joinpath(*parts) for parts in FLOOR_NOTE_DIRS]
+        candidates.extend(discover_floor_dirs(root))
+        seen = set()
+        for folder in candidates:
             if not folder.is_dir():
                 continue
+            # The named list and discovery overlap by design; absorb each
+            # folder once so a note is never counted twice.
+            try:
+                key = folder.resolve()
+            except OSError:
+                key = folder
+            if key in seen:
+                continue
+            seen.add(key)
             for path in sorted(folder.glob("*.md")):
                 self._absorb(path)
 
