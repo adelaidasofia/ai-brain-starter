@@ -216,4 +216,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # A Windows console defaults to cp1252; a hook that prints anything outside
+    # it dies mid-write. Fleet-linted, so every hooks/ CLI carries this.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())
