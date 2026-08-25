@@ -102,6 +102,17 @@ IDLE_EXPIRE_SEC = 1800      # prune entries idle > 30 min (stale-lock safety val
 CACHE_TTL_SEC = 604_800     # prune per-session cache pointers older than 7 days
 GIT_TIMEOUT_SEC = 6
 SCHEMA_VERSION = 2
+# Env for _index_is_empty's internal `git -C dirpath diff --cached` probe: the
+# GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE family override `-C` and would redirect
+# this diagnostic call at whatever repo the CALLER's environment points to,
+# defeating the explicit `-C dirpath` and misreading a different repo's index
+# as this one's -- the same GIT_DIR-confusion class this file exists to catch
+# in sibling commands, just self-inflicted here instead. Referenced but never
+# defined since #478 (2026-08-12); every call site passed `_GIT_CLEAN_ENV` and
+# it silently NameError'd -- caught by ruff --select F821, which nothing in
+# this repo's own CI runs over hooks/*.py (only the phase-doc Python blocks).
+_GIT_ENV_STRIP = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
+_GIT_CLEAN_ENV = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_STRIP}
 FLOCK_RETRIES = 20          # 20 * 10ms = 200ms max wait, then fail-open (unlocked)
 FLOCK_SLEEP_SEC = 0.01
 # Test-only determinism knob. When set, acquire the sidecar lock with a BLOCKING
@@ -136,6 +147,20 @@ ALWAYS_MUTATING = {
 }
 # git global options that consume the FOLLOWING token as their value.
 GIT_GLOBAL_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+
+# Ambient env vars that override an explicit `-C <path>` argument (GIT_DIR wins
+# over -C; GIT_WORK_TREE / GIT_INDEX_FILE / the object-dir pair follow the same
+# way). _index_is_empty's `git -C dirpath diff --cached --quiet` must always
+# read dirpath's OWN index -- never a repo an inherited env var points at --
+# stripped once at import so no subprocess call in this file can be silently
+# retargeted by the calling shell's environment.
+_GIT_CLEAN_ENV = {
+    k: v for k, v in os.environ.items()
+    if k not in (
+        "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR",
+    )
+}
 
 # ---- `git commit` option tables (for the scoped-commit exemption) -----------
 # The parse has ONE catastrophic failure mode: mistaking an option's VALUE for a

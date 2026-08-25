@@ -36,6 +36,7 @@ Examples:
 import argparse
 import json
 import hashlib
+import re
 import os
 import sys
 from pathlib import Path
@@ -43,6 +44,84 @@ from datetime import datetime
 
 DEFAULT_VAULT = Path.cwd()  # default to current working directory; override via --vault-root
 CACHE_DIR = DEFAULT_VAULT / "⚙️ Meta" / "graphify-out" / "cache"
+
+
+# ── Cache key ────────────────────────────────────────────────────────────────
+#
+# ⚠️ This key MUST be byte-identical to graphify.cache.file_hash(). Hand-rolled
+# variants have drifted from it four ways at once, and the symptom is silent:
+# the sizer reports 0 cache hits against a perfectly good cache and bills the
+# operator again for work already paid for. The four:
+#   1. entries live under cache/semantic/ (and, for newer ones, one level
+#      deeper under a p{fingerprint}/ directory) — a flat cache/ lookup misses
+#   2. the digest takes the path RELATIVE to the vault root, lowercased, so a
+#      cache survives the vault being moved or shared between machines
+#   3. for .md the library hashes only the body BELOW the YAML frontmatter, so
+#      a metadata-only rewrite does not invalidate an expensive extraction
+#   4. swallowing errors into the miss pile hides all of the above
+#
+# ALWAYS prefer the library function. The local reimplementation exists for the
+# common case where this script runs under a python without graphify installed
+# (graphify usually lives in a virtualenv the wrapper scripts do not share).
+
+try:
+    from graphify.cache import file_hash as _lib_file_hash
+except Exception:
+    _lib_file_hash = None
+
+_FRONTMATTER_DELIM = re.compile(r"^---[ \t]*\r?$", re.MULTILINE)
+
+
+def _body_content(content: bytes) -> bytes:
+    """Strip YAML frontmatter. Mirrors graphify.cache._body_content."""
+    text = content.decode(errors="replace")
+    opener = _FRONTMATTER_DELIM.match(text)
+    if opener is None:
+        return content
+    closer = _FRONTMATTER_DELIM.search(text, opener.end())
+    if closer is None:
+        return content
+    return text[closer.start() + 3:].encode()
+
+
+def cache_key(path: Path, root: Path) -> str:
+    """Cache key for a file. Delegates to the library when it is importable."""
+    if _lib_file_hash is not None:
+        return _lib_file_hash(path, root=root)
+    raw = path.read_bytes()
+    content = _body_content(raw) if path.suffix.lower() == ".md" else raw
+    resolved = path.resolve()
+    try:
+        salt = resolved.relative_to(Path(root).resolve()).as_posix().lower()
+    except ValueError:
+        salt = resolved.as_posix().lower()
+    h = hashlib.sha256()
+    h.update(content)
+    h.update(b"\x00")
+    h.update(salt.encode())
+    return h.hexdigest()
+
+
+def find_cache_entry(cache_base: Path, key: str):
+    """Find a cache entry under any layout this repo has shipped.
+
+    Deliberately permissive: checks the base directory, the semantic/
+    subdirectory, and one level of p{fingerprint}/ nesting under either. It can
+    only ever find more than a flat lookup, never fewer, so it is safe across
+    the personal and team cache layouts without needing to know which is active.
+    """
+    for base in (cache_base, cache_base / "semantic"):
+        if not base.is_dir():
+            continue
+        flat = base / f"{key}.json"
+        if flat.exists():
+            return flat
+        for sub in base.iterdir():
+            if sub.is_dir():
+                cand = sub / f"{key}.json"
+                if cand.exists():
+                    return cand
+    return None
 
 
 def is_llm_extraction(cache_data: dict) -> bool:
@@ -177,7 +256,7 @@ def main():
             skipped_ai += 1
             continue
         try:
-            text = f.read_text(errors="ignore")
+            text = f.read_text(encoding="utf-8", errors="ignore")
         except Exception:
             continue
         wc = len(text.split())
@@ -200,7 +279,7 @@ def main():
     manifest = {}
     if manifest_path.exists():
         try:
-            manifest = json.loads(manifest_path.read_text()).get("entries", {})
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8")).get("entries", {})
         except Exception:
             manifest = {}
 
@@ -208,6 +287,7 @@ def main():
     preflight_only_hits = 0
     mtime_hits = 0
     real_misses = []
+    errors = []
     for f in eligible:
         try:
             abs_path = str(f.resolve())
@@ -226,23 +306,9 @@ def main():
             # Lesson #94: graphify.cache hashes content + \x00 + relative_to(root).
             # Try both relative-to-vault and absolute path; the lib falls back
             # to absolute when relative_to raises ValueError.
-            content = f.read_bytes()
-            cache_file = None
-            # Relative path variants to try for cache lookup
-            candidate_paths = []
-            try:
-                candidate_paths.append(str(f.resolve().relative_to(vault.resolve())).encode())
-            except ValueError:
-                pass
-            candidate_paths.append(abs_path.encode())
-            for cp in candidate_paths:
-                h = hashlib.sha256(content + b"\x00" + cp).hexdigest()
-                cf = cache_dir / f"{h}.json"
-                if cf.exists():
-                    cache_file = cf
-                    break
+            cache_file = find_cache_entry(cache_dir, cache_key(f, vault))
             if cache_file is not None:
-                data = json.loads(cache_file.read_text())
+                data = json.loads(cache_file.read_text(encoding="utf-8"))
                 if is_llm_extraction(data):
                     llm_hits += 1
                 else:
@@ -250,8 +316,16 @@ def main():
                     real_misses.append(f)
             else:
                 real_misses.append(f)
-        except Exception:
+        except Exception as exc:
+            # NEVER silently: an error is not a cache miss, and counting it as
+            # one inflates the cost estimate with nothing in the output to say so.
+            errors.append((f, exc))
             real_misses.append(f)
+
+    if errors:
+        print(f"  ⚠️  {len(errors)} file(s) could not be checked against the cache:")
+        for f, exc in errors[:5]:
+            print(f"      {f}: {type(exc).__name__}: {exc}")
 
     print()
     print(f"Cache breakdown (preflight-aware):")
@@ -291,7 +365,9 @@ def main():
         old.unlink()
 
     for i, (b, w) in enumerate(zip(bins, bin_w), 1):
-        Path(f"{out_prefix}{i:02d}_files.txt").write_text("\n".join(str(f) for f in b))
+        Path(f"{out_prefix}{i:02d}_files.txt").write_text(
+            "\n".join(str(f) for f in b), encoding="utf-8"
+        )
         print(f"  chunk_{i:02d}: {len(b)} files, {w:,} words")
 
     print()

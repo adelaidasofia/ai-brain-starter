@@ -9,22 +9,12 @@ Emits: smart_excerpt, concepts_extracted, people_mentioned, word_count,
 import glob
 import os
 import re
-import sys
-from pathlib import Path
 
 from _base import (
-    VAULT, extract_first_prose_sentence, extract_section, match_people,
+    extract_first_prose_sentence, extract_section, match_people,
     count_words, iso_date_from, wikilinks_in, ExtractionResult,
 )
-
-# hooks/_lib/safe_read.py is the one audited bounded-read primitive every
-# recursive walker must reach (scripts/check-cloud-safe-file-walkers.py) --
-# a hand-rolled open().read() is not trusted even if it looks equivalent.
-# journal.py sits at scripts/extractors/, one level below the scripts/ files
-# that do `parent.parent`, so this needs the extra `.parent` to land on
-# <repo>/hooks (see scripts/build-journal-index.py for the sibling pattern).
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "hooks"))
-from _lib.safe_read import safe_read_text  # noqa: E402
+from _floors import floor_num_from_name
 
 # Auto-written fields, in render order. First one is the idempotency marker.
 AUTO_FIELDS = (
@@ -32,33 +22,37 @@ AUTO_FIELDS = (
     "word_count", "floor_num", "date_iso",
 )
 
-# Hawkins Map of Consciousness (Shame=1 → Enlightenment=17)
-FLOOR_MAP = {
-    "Shame": 1, "Guilt": 2, "Apathy": 3, "Grief": 4, "Fear": 5,
-    "Desire": 6, "Anger": 7, "Pride": 8, "Courage": 9, "Hope": 9,
-    "Neutrality": 10, "Willingness": 11, "Acceptance": 12, "Reason": 13,
-    "Love": 14, "Joy": 15, "Excitement": 15, "Peace": 16, "Enlightenment": 17,
-}
-
 SKIP_FILENAME_PATTERNS = (
     "[AI Extract]", "Weekly", "Monthly Summary",
     "Knowledge Graph Report", "knowledge-graph",
 )
 
 
+# Vault-defined floors: the canonical map above is a fixed 34-floor scale, and
+# its own contract says an unknown name "simply stays out of floor-based
+# findings". A vault that defines its own Floors notes (custom names, or
+# aliases in another language) therefore scored nothing. Read those notes as a
+# FALLBACK so a custom name resolves, while the canonical map stays primary.
+#
+# Read with a plain bounded open(), NOT the shared hooks/_lib primitive: the
+# extractors are copied/symlinked into a vault standalone, without hooks/, so
+# importing from there makes the whole extractor fail to load — and the
+# dispatcher swallows that into silently-missing fields rather than an error.
 _FLOOR_INDEX = None
+_FLOOR_NOTE_MAX_BYTES = 64 * 1024
 
 
 def _load_floor_index():
-    """Map floor name/alias (lowercased) -> floor_number, read from the vault's own
-    Floors notes. Vaults define their own scale and vocabulary; FLOOR_MAP below is
-    only a fallback for vaults that ship no Floors folder."""
+    """Map floor name/alias (lowercased) -> floor_number from the vault's own Floors notes."""
     index = {}
     for fp in glob.glob(os.path.join(VAULT, "**", "Floors", "*.md"), recursive=True):
-        result = safe_read_text(fp, encoding="utf-8", errors="ignore")
-        if not result.ok:
+        try:
+            if os.path.getsize(fp) > _FLOOR_NOTE_MAX_BYTES:
+                continue
+            with open(fp, "r", encoding="utf-8", errors="ignore") as fh:
+                content = fh.read(_FLOOR_NOTE_MAX_BYTES)
+        except OSError:
             continue
-        content = result.text
         num = re.search(r"^floor_number:\s*(\d+)", content, re.MULTILINE)
         if not num:
             continue
@@ -74,17 +68,27 @@ def _load_floor_index():
 
 
 def _floor_num(fm):
+    """`floor_num` on the 34-floor High-Rise scale, from the entry's `floor` NAME.
+
+    Reads the name only (never a stale `floor_num` from an earlier run): this
+    extractor OWNS floor_num, so it must always be re-derived from what the
+    person wrote. Names resolve in English and Spanish, case-insensitively,
+    through the one canonical map in _floors (which mirrors vendor/high-rise/
+    floors.md). A list of floors scores as the lowest one, as before.
+    """
     global _FLOOR_INDEX
     raw = fm.get("floor")
-    if not raw:
+    num = floor_num_from_name(raw)
+    if num is not None:
+        return num
+    # Canonical map did not know this name: fall back to the vault's own Floors.
+    if raw is None:
         return None
     if _FLOOR_INDEX is None:
         _FLOOR_INDEX = _load_floor_index()
     vals = raw if isinstance(raw, list) else [raw]
     nums = [_FLOOR_INDEX[str(v).strip().lower()]
             for v in vals if str(v).strip().lower() in _FLOOR_INDEX]
-    if not nums:
-        nums = [FLOOR_MAP[str(v)] for v in vals if str(v) in FLOOR_MAP]
     return min(nums) if nums else None
 
 
