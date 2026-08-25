@@ -203,6 +203,7 @@ INTEGRATION_TESTS=(
   test_stranded_session_artifacts_watchdog
   test_offmain_strand_guard
   test_session_coordination_guards
+  test_gh_safe_session_coordination
   test_cd_worktree_guard_wiring
   test_trust_prompt_preframing
   test_onboarding_wrong_surface_and_nudge
@@ -243,6 +244,7 @@ INTEGRATION_TESTS=(
   test_footprint_sla
   test_vault_safety_guards
   test_vault_backup_conf_bom
+  test_vault_backup_ps1_archive_dispatch
   test_backup_staleness_surfaces
   test_home_fingerprint_noise
   test_scheduled_task_registration
@@ -438,6 +440,13 @@ INTEGRATION_TESTS=(
   # — silently, on a whole platform. Two layers must hold (the path gate AND the
   # vault-root resolve); fixing only the first looks right and still fails open.
   test_journal_guard_windows_paths
+  # Close detector, whole-message anchoring + length gate (2026-08-16): the
+  # shared pack tiers ran under re.MULTILINE, so every `$`-anchored sign-off
+  # matched the end of ANY line and a 60-line handoff whose third line read
+  # "Borrador listo" fired the full cascade. Every must-not-fire assertion has a
+  # must-fire twin (same words, last line / short prompt), so a change that
+  # mutes the detector cannot pass; 13 assertions fail on the pre-fix hook.
+  test_detect_closing_signal_length_gate
   test_team_broadcast_install_gap
 )
 # ---- Gate-coverage invariant -------------------------------------------------
@@ -1138,6 +1147,7 @@ PY_DIRECT=(
   hooks/test_memory_index.py
   tests/test_instinct.py
   tests/test_entity_disambiguator_clustering.py
+  tests/test_graphify_stage_select_cache_key.py
   hooks/test_live_session_reap.py
   hooks/test_relocation_orphan_reclaim.py
   hooks/test_secret_patterns_fp_filter.py
@@ -1149,6 +1159,11 @@ PY_DIRECT=(
   hooks/test_unpushed_drift_surface.py
   hooks/test_claim_surface_honesty.py
   hooks/test_narrow_refspec_falsealarm.py
+  # The frontmatter gate's own delimiter pattern stayed LF-only after #409/#431
+  # fixed the validator behind it, so CRLF content was still denied one layer
+  # out. The hook is fail-open, so an allow-only suite would pass against a
+  # completely inert hook: every ALLOW leg here is paired with a DENY leg.
+  hooks/test_lint_frontmatter_crlf.py
   # auto-capture-public-ships shipped `ZoneInfo("America/user-local-tz")`, an
   # unsubstituted placeholder that raised at IMPORT, so the SessionEnd hook
   # exited 1 on every machine and captured nothing for its entire life. Nothing
@@ -1164,6 +1179,13 @@ PY_DIRECT=(
   # platform-only import, because a Linux runner structurally cannot observe a
   # Windows-only import crash.
   hooks/test_hook_smoke.py
+  # vault-context shipped a hardcoded English trigger list, a third of it one
+  # person's vocabulary. On a Spanish vault it resolved the vault, matched
+  # nothing, and exited 0 — the MYC-3529 silent no-op reached by a different
+  # road. Negative control: the exact sentence that measured zero matches must
+  # fire, ordinary prompts must stay quiet, and no shipped pack may carry
+  # personal vocabulary again.
+  hooks/test_vault_context_signals.py
   hooks/test_close_catchall_not_silent.py
   # block-raw-vault-git resolved a `cd` only when it was the first token of the
   # whole command, because it split statements on && || ; but not on a NEWLINE.
