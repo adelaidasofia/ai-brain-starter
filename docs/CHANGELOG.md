@@ -9,6 +9,28 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-24: on Windows, "your backup is not a supported format" was the opener, not the backup
+
+**Who this affects:** Windows users who set their backup up with the `bash ... vault-backup.sh setup` command — which is the one the install walks you through.
+
+There are two halves to the backup feature, one written in bash and one in PowerShell, and they share a settings file and a destination folder. What they do not share is the kind of file they write: the bash half writes `.tar.gz`, the PowerShell half writes `.zip`. That was fine as long as nobody crossed the streams.
+
+They cross on Windows, routinely. The install hands you the bash command, and it runs perfectly well there under Git Bash. But the reminder that appears at the start of a session — the one that says *prove your backup restores* — hands Windows users the PowerShell command. Run it, and you got this:
+
+```
+.gpg is not a supported archive file format. .zip is the only supported archive file format.
+```
+
+Which reads like the backup is corrupt. It was not. Every one of those snapshots was fine and would have restored perfectly. The tool that was supposed to reassure you was holding the wrong opener and blaming the file.
+
+That is the part worth fixing carefully, because of *when* it happens. Nobody runs a restore drill on a good day. You run it the morning you are worried, and that morning it told you the one thing you did not want to hear, incorrectly.
+
+**Now `verify` looks at what the file actually is** and picks the matching opener — `.zip` or `.tar.gz`, encrypted or not. Everything that already worked keeps working, and a file that is genuinely neither now says so in a sentence you can read, instead of an exception about a `.zip` you never had.
+
+**One related trap, also closed.** The two halves store the encryption passphrase in files with the *same name* and different formats. When the PowerShell half met the bash half's passphrase, it threw a raw cryptography error that reads as a damaged secret. It now recognises the situation and hands you the bash command that works.
+
+**What you should do:** nothing. If you ever saw that "not a supported archive file format" message, your backups were never the problem — check them once more after updating and you should see the file count come back.
+
 ## 2026-08-19: the privacy checker no longer publishes the private word list it checks for
 
 **Who this affects:** anyone who publishes repos with this starter installed, and anyone who forked one of ours.
