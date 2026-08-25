@@ -9,11 +9,22 @@ Emits: smart_excerpt, concepts_extracted, people_mentioned, word_count,
 import glob
 import os
 import re
+import sys
+from pathlib import Path
 
 from _base import (
     VAULT, extract_first_prose_sentence, extract_section, match_people,
     count_words, iso_date_from, wikilinks_in, ExtractionResult,
 )
+
+# hooks/_lib/safe_read.py is the one audited bounded-read primitive every
+# recursive walker must reach (scripts/check-cloud-safe-file-walkers.py) --
+# a hand-rolled open().read() is not trusted even if it looks equivalent.
+# journal.py sits at scripts/extractors/, one level below the scripts/ files
+# that do `parent.parent`, so this needs the extra `.parent` to land on
+# <repo>/hooks (see scripts/build-journal-index.py for the sibling pattern).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "hooks"))
+from _lib.safe_read import safe_read_text  # noqa: E402
 
 # Auto-written fields, in render order. First one is the idempotency marker.
 AUTO_FIELDS = (
@@ -44,10 +55,10 @@ def _load_floor_index():
     only a fallback for vaults that ship no Floors folder."""
     index = {}
     for fp in glob.glob(os.path.join(VAULT, "**", "Floors", "*.md"), recursive=True):
-        try:
-            content = open(fp, encoding="utf-8", errors="ignore").read()
-        except OSError:
+        result = safe_read_text(fp, encoding="utf-8", errors="ignore")
+        if not result.ok:
             continue
+        content = result.text
         num = re.search(r"^floor_number:\s*(\d+)", content, re.MULTILINE)
         if not num:
             continue
