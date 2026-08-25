@@ -137,6 +137,20 @@ ALWAYS_MUTATING = {
 # git global options that consume the FOLLOWING token as their value.
 GIT_GLOBAL_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
 
+# Ambient env vars that override an explicit `-C <path>` argument (GIT_DIR wins
+# over -C; GIT_WORK_TREE / GIT_INDEX_FILE / the object-dir pair follow the same
+# way). _index_is_empty's `git -C dirpath diff --cached --quiet` must always
+# read dirpath's OWN index -- never a repo an inherited env var points at --
+# stripped once at import so no subprocess call in this file can be silently
+# retargeted by the calling shell's environment.
+_GIT_CLEAN_ENV = {
+    k: v for k, v in os.environ.items()
+    if k not in (
+        "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR",
+    )
+}
+
 # ---- `git commit` option tables (for the scoped-commit exemption) -----------
 # The parse has ONE catastrophic failure mode: mistaking an option's VALUE for a
 # pathspec. `git commit -o -m msg` would then look like "-o plus the pathspec
