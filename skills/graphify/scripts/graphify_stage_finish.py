@@ -140,7 +140,11 @@ def main():
     print("Step 3: union-merging with existing graph.json...")
     ts = time.strftime("%Y%m%d_%H%M")
     backup = Path(args.graph_path + f".backup_{ts}_pre_{args.stage_name.replace(' ', '_')}_finish")
-    graph_read = safe_read_bytes(Path(args.graph_path))
+    # A real vault's graph.json is far past safe_read's 1 MB DEFAULT_MAX_BYTES
+    # (2.5 MB at 2,696 nodes on the vault this was found on). Without raising the
+    # ceiling this script aborts at Step 3 on ANY mid-sized vault and the merge
+    # never happens.
+    graph_read = safe_read_bytes(Path(args.graph_path), max_bytes=512_000_000)
     if not graph_read.ok:
         print(f"  ERROR: could not read existing graph.json ({graph_read.status}) — aborting")
         sys.exit(1)
@@ -299,7 +303,7 @@ def main():
         lines.append(f"  {', '.join(sample)}{f' (+{more} more)' if more else ''}")
         lines.append("")
 
-    Path("graphify-out/GRAPH_REPORT.md").write_text("\n".join(lines))
+    Path("graphify-out/GRAPH_REPORT.md").write_text("\n".join(lines), encoding="utf-8")
     print(f"  wrote graphify-out/GRAPH_REPORT.md")
 
     # === Step 5: cache save ===

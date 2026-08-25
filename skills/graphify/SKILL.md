@@ -512,6 +512,7 @@ from graphify_seed_labels import seed_labels
 # Provisional names from each community's highest-degree member ('Money', 'Fear'),
 # never 'Community 412'. Step 5 replaces these with semantic labels.
 labels = seed_labels(G, communities)
+# Placeholder questions - regenerated with real labels in Step 5
 questions = suggest_questions(G, communities, labels)
 
 report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, 'INPUT_PATH', suggested_questions=questions)
