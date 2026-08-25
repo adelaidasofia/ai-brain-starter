@@ -40,13 +40,38 @@ import os
 from datetime import date
 from pathlib import Path
 
-STATE_DIR = Path.home() / ".claude" / ".standing-reports"
 BYPASS_ENV = "STANDING_REPORT_BYPASS"
+STATE_DIR_ENV = "STANDING_REPORT_STATE_DIR"
+
+
+def _state_dir() -> Path:
+    """Where the condenser remembers what it already said.
+
+    Overridable, and resolved at CALL time rather than import time, because this
+    state decides what a hook RENDERS. A test that drives a condensing surfacer
+    otherwise reads and WRITES the developer's real ~/.claude/.standing-reports,
+    so its result turns on whether that machine happened to render the same
+    finding-set before - which is not a property of the code under test.
+
+    That is exactly how #539 behaved: green on a clean CI runner, where no prior
+    state exists so every run is a "changed" first render and the FULL section
+    comes back; red on a developer box, where prior state makes the digest fire
+    and the per-item enumeration the assertion looks for is gone. Same code,
+    opposite verdicts, decided entirely by unpinned machine state.
+
+    Sandboxing HOME is NOT a substitute. On Windows, Python's
+    ntpath.expanduser() reads USERPROFILE and ignores HOME (MYC-3536), so
+    Path.home() walks straight back out to the real profile.
+    """
+    return Path(
+        os.environ.get(STATE_DIR_ENV)
+        or (Path.home() / ".claude" / ".standing-reports")
+    )
 
 
 def _state_file(key: str) -> Path:
     safe = "".join(c for c in key if c.isalnum() or c in "-_")[:60] or "unknown"
-    return STATE_DIR / f"{safe}.json"
+    return _state_dir() / f"{safe}.json"
 
 
 def _age_phrase(first_seen: str, n: int, exact: bool) -> str:
@@ -170,7 +195,7 @@ def set_detail_path(key: str, path: str) -> None:
 
 
 def _write(path: Path, data: dict) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data), encoding="utf-8")
     os.replace(tmp, path)

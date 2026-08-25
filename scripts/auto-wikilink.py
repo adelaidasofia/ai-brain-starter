@@ -13,9 +13,11 @@ wikilinks. Replaces the v1 script which had three critical bugs:
      became "Curiosities/CountryBigCo]]").
 
 v2 fixes all three:
-  - Vault-scope-aware: a file inside `🚀 Onde Team/` only links to terms
-    whose source files are also inside `🚀 Onde Team/`. Personal context is
-    invisible to team files. ONE-WAY FIREWALL.
+  - Vault-scope-aware: a file inside the team vault only links to terms
+    whose source files are also inside the team vault. Personal context is
+    invisible to team files. ONE-WAY FIREWALL. (The team folder is named by
+    whoever set the vault up — see _detect_team_vault; nothing here assumes
+    a particular name.)
   - Bare filenames or alias syntax only. The script REFUSES to write any
     wikilink that contains '/' in the target. Hard guard.
   - Region-tracking substitution: builds a list of [[...]] regions in the
@@ -90,12 +92,11 @@ EXCLUDED_DIR_NAMES = EXCLUDED_TERM_DIRS
 def _detect_team_vault(vault_path: str) -> str:
     """Find the team vault (if any).
 
-    Priority:
+    The team folder is named by whoever set the vault up, so no name is
+    hardcoded here. Resolution order:
       1. AI_BRAIN_TEAM_VAULT env var (relative subfolder name within the vault)
       2. Any symlinked directory at the vault root (the convention multi-vault
          setups use to mount a shared team vault into the personal vault)
-      3. Legacy hardcoded '🚀 Onde Team' fallback (kept so existing Onde team
-         vault setups keep working without reconfiguring)
 
     Returns an absolute path to the team vault, or "" if none exists.
     """
@@ -108,8 +109,7 @@ def _detect_team_vault(vault_path: str) -> str:
             p = os.path.join(vault_path, name)
             if os.path.islink(p) and os.path.isdir(p):
                 return p
-    legacy = os.path.join(vault_path, "🚀 Onde Team")
-    return legacy if os.path.isdir(legacy) else ""
+    return ""
 
 
 def _find_journal_dir(vault_path: str) -> str:

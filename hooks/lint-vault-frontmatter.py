@@ -83,7 +83,7 @@ def project_post_edit_content(tool_name: str, tool_input: dict) -> str | None:
 
     if tool_name == "Edit":
         try:
-            existing = Path(file_path).read_text(encoding="utf-8")
+            existing = Path(file_path).read_text(encoding="utf-8", errors="replace")
         except (OSError, FileNotFoundError):
             existing = ""
         old = tool_input.get("old_string", "")
@@ -94,7 +94,7 @@ def project_post_edit_content(tool_name: str, tool_input: dict) -> str | None:
 
     if tool_name == "MultiEdit":
         try:
-            content = Path(file_path).read_text(encoding="utf-8")
+            content = Path(file_path).read_text(encoding="utf-8", errors="replace")
         except (OSError, FileNotFoundError):
             content = ""
         for edit in tool_input.get("edits", []):
@@ -167,7 +167,16 @@ def main() -> int:
         emit_allow()
         return 0
 
-    m = re.match(r"^---\n(.*?)\n---\s*", projected, re.DOTALL)
+    # \r?\n, for the same reason scripts/vault-schema-validator.py carries it
+    # (#409, locked by #431): projected content can reach here with CRLF intact.
+    # On the Write path `projected` IS tool_input["content"] verbatim -- nothing
+    # on that path applies universal-newline translation -- so a client that
+    # emits CRLF meets an LF-only delimiter pattern and gets "not properly
+    # closed", denying a perfectly valid vault write. This gate runs BEFORE the
+    # validator subprocess, so the validator's own \r?\n fix is never reached to
+    # cover it. (The Edit/MultiEdit path reads through Path.read_text(), which
+    # does translate, so this is specifically the Write hole.)
+    m = re.match(r"^---\r?\n(.*?)\r?\n---\s*", projected, re.DOTALL)
     if not m:
         emit_deny(
             f"Vault frontmatter linter: '---' delimiter not properly closed in {Path(file_path).name}. "
@@ -230,7 +239,8 @@ def main() -> int:
         # validator reads --type explicitly, so we just pass it.
         result = subprocess.run(
             [sys.executable, str(validator), "--file", tmp_path, "--type", type_name, "--strict", "--quiet"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=10,
         )
     except Exception as e:
         log_debug(f"validator subprocess failed: {e}")
@@ -258,6 +268,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # A cp1252 Windows console raises UnicodeEncodeError the moment this prints a
+    # non-ASCII character, and the hook dies with no legible cause
+    # (ai-brain-starter#313). Idempotent; a no-op on an already-UTF-8 console.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     try:
         main()
     except Exception as e:  # never block on unexpected errors

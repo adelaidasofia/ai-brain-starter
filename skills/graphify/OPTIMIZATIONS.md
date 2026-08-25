@@ -159,7 +159,8 @@ import json
 from pathlib import Path
 
 extraction = json.loads(Path("graphify-out/.graphify_extract.json").read_text())
-G = build_from_json(extraction)
+# directed=IS_DIRECTED: True if --directed was given in the original invocation, else False.
+G = build_from_json(extraction, directed=IS_DIRECTED)
 communities = cluster(G)
 to_json(G, communities, "graphify-out/graph.json")
 to_html(G, communities, "graphify-out/graph.html")

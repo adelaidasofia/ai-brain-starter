@@ -60,7 +60,8 @@ def run_hook(cwd: Path, home: Path, **env_overrides) -> subprocess.CompletedProc
     return subprocess.run(
         [sys.executable, str(HOOK)],
         cwd=str(cwd), env=env, input="{}",
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=60,
     )
 
 
@@ -163,7 +164,7 @@ def main() -> int:
         # -- 5. CLASS guard: no import-time ZoneInfo() in any hook -----------
         for path in sorted(HOOKS.glob("*.py")):
             try:
-                lines = zoneinfo_calls_at_module_level(path.read_text(encoding="utf-8"))
+                lines = zoneinfo_calls_at_module_level(path.read_text(encoding="utf-8", errors="replace"))
             except SyntaxError:
                 continue  # gate (a) py_compile owns syntax
             check(not lines,

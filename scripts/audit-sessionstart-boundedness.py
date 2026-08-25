@@ -46,11 +46,14 @@ or runs a bounded subprocess - needs none of this. It is bounded by construction
 and passes clean.
 
 Modes:
-  --all [--hooks-json P] [--hooks-dir D]
+  --all [--hooks-json P] [--hooks-dir D [D ...]]
                     Audit the canonical SessionStart set (default: the SessionStart
-                    block of <repo>/hooks.json, resolved against <repo>/hooks/).
-                    Exit 1 if any wired hook is an unguarded, unexempt corpus
-                    walker. This is the CI gate.
+                    block of <repo>/hooks.json, resolved against <repo>/hooks/ AND
+                    <repo>/scripts/ — a SessionStart hook may ship in either, and
+                    heal-journal-guard.py ships in scripts/, so a hooks/-only
+                    resolver skipped it silently). Exit 1 if any wired hook is an
+                    unguarded, unexempt corpus walker; exit 2 if any wired hook
+                    could not be resolved and read. This is the CI gate.
   --check FILE      Add-time gate for ONE candidate SessionStart hook script: exit
                     1 if it recursive-walks without the guards or the exemption.
                     Advisory - fails OPEN (exit 0) on its own read error. Used by
@@ -69,7 +72,22 @@ Stdlib only. Reads are bounded (1 MB cap, binary skip) - cloud-safe-walk
 compliant. --all / --selftest fail LOUD (exit 2) on an internal error so a broken
 detector can never silently pass CI; --check fails OPEN (it is advisory).
 
-Provenance: MYC-571 (parent incident MYC-570, the 2026-06-05 Mac-freeze).
+Exit codes (--all / --settings):
+  0  every wired SessionStart hook was READ and is bounded or declared-bounded
+  1  at least one hook is an unguarded, unexempt corpus walker
+  2  UNEVALUATED - a hook was skipped (unresolvable command, missing file,
+     unreadable source), or an internal error. NEVER 0: an audit is only as
+     strong as the fraction of the set it actually opened, and "6 of 25 read,
+     0 unguarded" is not "the fleet is bounded". This mirrors
+     scripts/audit-guard-activation-roots.py, which already refuses to call an
+     empty comparison a pass ("Nothing was compared - that is not the same as
+     everything matching"). MYC-3879: run against a live settings.json this
+     printed "6 resolved - 6 clean, 0 unguarded; 19 unresolved" followed by a
+     bare OK and exit 0. Nineteen wired commands were never opened and the
+     verdict said PASS.
+
+Provenance: MYC-571 (parent incident MYC-570, the 2026-06-05 Mac-freeze);
+verdict + resolution-root fixes MYC-3879.
 Canonical guarded example: hooks/scan-prior-sessions-for-secrets.py.
 """
 from __future__ import annotations
@@ -308,15 +326,35 @@ def _cite() -> str:
 
 
 # ---- modes --------------------------------------------------------------------
-def cmd_all(hooks_json: Path, hooks_dir: Path, as_json: bool) -> int:
+def _resolve_in_dirs(bn: str, dirs: list[Path]) -> Path | None:
+    """First existing <dir>/<basename> across the resolution roots, else None.
+
+    Why a LIST and not one hooks/ directory (MYC-3879): SessionStart hooks ship
+    from two places. heal-journal-guard.py is wired on SessionStart and lives in
+    <repo>/scripts, so a hooks/-only resolver could not open it and dropped it
+    into the "not found - skipped" bucket, where the old verdict ignored it."""
+    for d in dirs:
+        f = d / bn
+        if f.exists():
+            return f
+    return None
+
+
+def cmd_all(hooks_json: Path, hooks_dirs: list[Path], as_json: bool) -> int:
     names = sessionstart_basenames(hooks_json)
     rows, reds, exempts, unresolved = [], [], [], []
     for bn in names:
-        f = hooks_dir / bn
-        if not f.exists():
+        f = _resolve_in_dirs(bn, hooks_dirs)
+        if f is None:
             unresolved.append(bn)
             continue
         src = _read_bounded(f)
+        if not src:
+            # Unreadable / binary / oversize. Previously indistinguishable from
+            # "clean" because evaluate("") returns ok=True with no walk. An
+            # unread file is UNEVALUATED, not bounded.
+            unresolved.append(bn)
+            continue
         v = evaluate(src, _detect_lang(bn, src))
         rows.append((bn, v))
         if v["walk"] and not v["ok"] and not v["exempt"]:
@@ -327,19 +365,23 @@ def cmd_all(hooks_json: Path, hooks_dir: Path, as_json: bool) -> int:
     if as_json:
         print(json.dumps(dict(
             hooks_json=str(hooks_json),
+            hooks_dirs=[str(d) for d in hooks_dirs],
             audited=[bn for bn, _ in rows],
             unresolved=unresolved,
+            verdict=("FAIL" if reds else "UNEVALUATED" if unresolved else "PASS"),
             red=[dict(hook=bn, walks=v["walks"], missing=v["missing"]) for bn, v in reds],
             exempt=[dict(hook=bn, reason=v["exempt_reason"]) for bn, v in exempts],
         ), indent=2))
-        return 1 if reds else 0
+        return 1 if reds else (2 if unresolved else 0)
 
     print("=" * 78)
     print("SessionStart boundedness audit (MYC-571) - corpus walks need the 3 guards")
     print("=" * 78)
     print(f"hooks.json: {hooks_json}")
-    print(f"{len(rows)} SessionStart hook(s) audited; "
-          f"{len(reds)} unguarded corpus walk(s); {len(exempts)} declared-bounded.\n")
+    print(f"resolution roots: {', '.join(str(d) for d in hooks_dirs)}")
+    print(f"{len(rows)} of {len(names)} SessionStart hook(s) audited; "
+          f"{len(reds)} unguarded corpus walk(s); {len(exempts)} declared-bounded; "
+          f"{len(unresolved)} NOT EVALUATED.\n")
     for bn, v in rows:
         if v["walk"] and not v["ok"] and not v["exempt"]:
             mark = "RED "
@@ -357,12 +399,22 @@ def cmd_all(hooks_json: Path, hooks_dir: Path, as_json: bool) -> int:
         if v["walk"] and not v["ok"] and not v["exempt"]:
             detail += f"  MISSING: {', '.join(v['missing'])}"
         print(f"  [{mark}] {bn}{detail}")
-    if unresolved:
-        print(f"\n  (note: {len(unresolved)} wired hook(s) not found under {hooks_dir} - "
-              f"user-level only, skipped: {', '.join(unresolved)})")
     if reds:
         print("\n" + _cite())
         return 1
+    if unresolved:
+        # NOT a note, and NOT exit 0. This used to print "user-level only,
+        # skipped" and pass — an assumption about hooks nothing had opened.
+        print(f"\nUNEVALUATED: {len(unresolved)} wired SessionStart hook(s) could not be "
+              f"resolved and read under {', '.join(str(d) for d in hooks_dirs)}:")
+        for bn in unresolved:
+            print(f"    - {bn}")
+        print("Nothing was checked for those - that is not the same as them being\n"
+              "bounded. Ship the hook into a resolution root, or pass the root that\n"
+              "holds it with --hooks-dir. (heal-journal-guard.py is exactly this\n"
+              "class: SessionStart-wired, shipped in scripts/, invisible to a\n"
+              "hooks/-only audit that then reported OK.)")
+        return 2
     print("\nAll SessionStart corpus walks are guarded or declared-bounded. OK.")
     return 0
 
@@ -490,8 +542,16 @@ def cmd_settings(settings_path: Path, porcelain: bool) -> int:
     template that --all checks (MYC-1113). Resolves each hook by its full command
     path.
 
-    Exit: 0 = every resolved hook is bounded/declared; 1 = >=1 unguarded corpus
-    walker; 2 = settings.json missing / unparseable (fail LOUD, never silent)."""
+    Exit: 0 = every wired command was READ and is bounded/declared; 1 = >=1
+    unguarded corpus walker; 2 = UNEVALUATED — settings.json missing /
+    unparseable, OR at least one wired command was never opened (MYC-3879).
+
+    That last case used to exit 0. On a live Windows settings.json it printed
+    "6 resolved hook(s) — 6 clean, 0 unguarded; 19 unresolved" and then "OK."
+    Nineteen SessionStart commands went unread and the verdict was PASS, so a
+    freeze-class hook among them could never have been reported. The skip count
+    was already on screen; only the EXIT CODE decides what CI and diagnose.sh
+    believe, and it said everything was fine."""
     p = Path(settings_path)
     if not p.exists():
         print("ERROR:not-found" if porcelain else f"ERROR: settings.json not found: {p}")
@@ -501,22 +561,26 @@ def cmd_settings(settings_path: Path, porcelain: bool) -> int:
     except Exception as e:
         print("ERROR:unparseable" if porcelain else f"ERROR: settings.json unparseable: {e}")
         return 2
-    reds, exempts, clean, unresolved = [], 0, 0, 0
+    reds, exempts, clean = [], 0, 0
+    # (why-it-was-skipped, what-was-skipped). Kept as a list, not a bare count:
+    # "19 unresolved" is unactionable, and an unactionable number is what let
+    # this stay at 19 for months.
+    skipped: list[tuple[str, str]] = []
     seen: set[str] = set()
     for c in sessionstart_commands(p):
         rp = resolve_command_path(c)
         if rp is None:
-            unresolved += 1
+            skipped.append(("no absolute script path in the command", c[:96]))
             continue
         if str(rp) in seen:
             continue
         seen.add(str(rp))
         if not rp.exists():
-            unresolved += 1
+            skipped.append(("script not on disk", str(rp)))
             continue
         src = _read_bounded(rp)
         if not src:
-            unresolved += 1
+            skipped.append(("source unreadable / binary / over 1 MB", str(rp)))
             continue
         v = evaluate(src, _detect_lang(rp.name, src))
         if v["walk"] and not v["ok"] and not v["exempt"]:
@@ -526,20 +590,35 @@ def cmd_settings(settings_path: Path, porcelain: bool) -> int:
         else:
             clean += 1
     if porcelain:
+        # A found freeze-class hook outranks an incomplete audit: UNGUARDED is
+        # a fact, PARTIAL is an absence of facts.
         if reds:
             print("UNGUARDED:" + str(len(reds)) + ":" + ",".join(n for n, _ in reds))
             return 1
-        print(f"OK:{clean}:{exempts}:{unresolved}")
+        if skipped:
+            print(f"PARTIAL:{clean}:{exempts}:{len(skipped)}")
+            return 2
+        print(f"OK:{clean}:{exempts}:0")
         return 0
     total = clean + exempts + len(reds)
     print(f"Effective SessionStart set ({p}): {total} resolved hook(s) — "
           f"{clean} clean, {exempts} declared-bounded, {len(reds)} unguarded; "
-          f"{unresolved} unresolved.")
+          f"{len(skipped)} NOT EVALUATED.")
     for n, v in reds:
         print(f"  RED  {n}: walk={'+'.join(v['walks'])}  MISSING: {', '.join(v['missing'])}")
     if reds:
         print("\n" + _cite())
         return 1
+    if skipped:
+        print(f"\nUNEVALUATED: {len(skipped)} wired SessionStart command(s) were never "
+              f"opened, so nothing is known about them:")
+        for why, what in skipped:
+            print(f"    - {what}\n        ({why})")
+        print("A verdict over the fraction that happened to resolve is not a verdict\n"
+              "over the fleet. Every line above could be a corpus walker and this\n"
+              "audit would look identical. Fix the wiring (absolute paths), install\n"
+              "the missing scripts, then re-run - do NOT read this as bounded.")
+        return 2
     print("All resolved SessionStart corpus walks are guarded or declared-bounded. OK.")
     return 0
 
@@ -749,7 +828,15 @@ def main() -> int:
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--porcelain", action="store_true", help="one-line verdict (with --settings)")
     ap.add_argument("--hooks-json", default=str(repo / "hooks.json"))
-    ap.add_argument("--hooks-dir", default=str(repo / "hooks"))
+    # nargs="+": a SessionStart hook may ship from hooks/ OR scripts/, so the
+    # default is BOTH. A single-value `--hooks-dir X` still parses exactly as
+    # before (existing callers and tests are unaffected) and REPLACES the
+    # default pair, which keeps a hermetic fixture run from silently reaching
+    # into the real repo.
+    ap.add_argument("--hooks-dir", nargs="+", default=[str(repo / "hooks"),
+                                                       str(repo / "scripts")],
+                    help="one or more roots to resolve wired hook basenames "
+                         "against (default: <repo>/hooks <repo>/scripts)")
     a = ap.parse_args()
 
     # --check is advisory: fail OPEN on its own error.
@@ -768,7 +855,8 @@ def main() -> int:
         if a.settings:
             return cmd_settings(Path(a.settings), a.porcelain)
         if a.all:
-            return cmd_all(Path(a.hooks_json), Path(a.hooks_dir), a.json)
+            dirs = [a.hooks_dir] if isinstance(a.hooks_dir, str) else list(a.hooks_dir)
+            return cmd_all(Path(a.hooks_json), [Path(d) for d in dirs], a.json)
     except Exception as e:
         print(f"[sessionstart-boundedness] FATAL: {e}", file=sys.stderr)
         return 2
