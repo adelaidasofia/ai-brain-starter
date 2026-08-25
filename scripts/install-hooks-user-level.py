@@ -164,6 +164,10 @@ ABS_FINGERPRINTS = [
     # commit into a stalled rebase — so it belongs in the substrate and is
     # ACTIVATED here, not left in one machine's ~/.claude (MYC-1017).
     "ai-brain-starter/hooks/block-git-mutation-mid-operation.py",
+    # Its SessionStart counterpart. The gate above BLOCKS mutations while an
+    # operation is paused but never says one exists, so a stalled rebase freezes
+    # every session silently (5 measured: MYC-3777/3451/3982/3781 + 2026-08-24).
+    "ai-brain-starter/hooks/surface-stalled-git-operation.py",
     # MCP secret-leak guards (MYC-3560). Written after three real GitHub PAT
     # leaks, shipped as working files, and never once registered -- the
     # protection everyone believed was in place did not exist. Same
@@ -266,6 +270,7 @@ ABS_OWNED_BASENAMES = {
     # above: a hand-wired ~/.claude/hooks/ copy must dedup against the
     # skill-path copy, or the block fires twice on every git command.
     "block-git-mutation-mid-operation.py",
+    "surface-stalled-git-operation.py",
     # MCP secret-leak guards (MYC-3560): same basename-dedup reasoning as the
     # two gates above.
     "block-claude-mcp-inline-secret.py", "block-mcp-config-inline-secret.py",
