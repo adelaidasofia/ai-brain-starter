@@ -49,6 +49,7 @@ skills/longitudinal                        # personal
 skills/meeting-todos                       # teaching
 skills/nano-banana                         # teaching
 skills/note-todos                          # teaching
+skills/optimize-brain                      # teaching
 skills/patterns                            # teaching
 skills/repurpose-talk                      # teaching
 skills/resolver-query                      # teaching

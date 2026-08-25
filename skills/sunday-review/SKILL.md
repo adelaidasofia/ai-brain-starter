@@ -166,11 +166,11 @@ After the script lands the report, inline a 5-minute Claude pass answering the 6
 5. Has the threat landscape shifted since last check? (Read 2-3 CISA + OWASP + vendor advisories — does any layer need a new pattern?)
 6. Any new public repo / endpoint / agentic surface shipped this week not classified into the 4-layer detection model? (CI-publish workflow-injection / post-publish Dependabot / outbound SSRF / endpoint-installed-state inventory)
 
-The Claude pass surfaces signals INTO the /sunday-review synthesis under a "Security cadence" subsection. If any question's answer is non-trivial → escalate to `/code-security` as event-driven, NOT calendar-driven. The three-layer cadence model:
+The Claude pass surfaces signals INTO the /sunday-review synthesis under a "Security cadence" subsection. If any question's answer is non-trivial → escalate to a full code-security review as event-driven, NOT calendar-driven. The three-layer cadence model:
 
 - **Layer 1** — daily cron (gh-harden + workflow-injection scan + endpoint inventory + Dependabot + hookify family). Auto, no skill invocation.
 - **Layer 2** — weekly meta-audit (this Step 4g via security-cadence-report.py).
-- **Layer 3** — event-driven `/code-security` (new endpoint, new agentic surface, new CVE class, drift escalation from Layer 2). Not calendar.
+- **Layer 3** — event-driven full code-security review (new endpoint, new agentic surface, new CVE class, drift escalation from Layer 2). Not calendar. Not shipped here: `/security-snapshot` is passive and external-only, `/secret-warn` is edit-time guardrails, and both disclaim deep review. Bring your own reviewer.
 
 Source: panel synthesis (Schneier + Charity Majors + Patrick Collison + DHH-dissent, 2026-05-27) on cadence-vs-event-driven security. Bug class prevented: `ARTIFACT-WITH-OVER-STRICT-VERIFICATION` applied to time — over-scheduled verification trains a bypass habit; real fires get ignored. Skip silently if the script is missing.
 

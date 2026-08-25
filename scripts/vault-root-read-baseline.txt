@@ -76,10 +76,9 @@ a826003cdacfbeefdfe8019947632e71fb369ae9a5905d7dcce5a947b94b60ee SEV-B-cwd scrip
 c27dc2a06172b75ca4ed910c9da19b8e45761fd44908161a1fb42afdfd65fcd7 SEV-B-cwd scripts/undo-last-close.py
 8a1bf7b92664f946386b6af0e61b03042422f132d8f0f79b830aecd314385b17 SEV-B-cwd scripts/vault-hygiene.py
 
-# ---- SEV-C-script-loc  (6 file(s), 6 read(s)) ----
+# ---- SEV-C-script-loc  (5 file(s), 5 read(s)) ----
 f874491253a72291559c34c46187adf5b74c2ea305ef8ae59343debc784410ee SEV-C-script-loc scripts/compress-vault-doc.py
 c608cc6897ce3366e45301acd6c6bfe46eac6c4bfa2a1d066b1fa931eef97e6e SEV-C-script-loc scripts/context-audit.py
-d89c7a148f7598591627863187f12938ce56ff5c41c5db6805559f3b1f29d499 SEV-C-script-loc scripts/monthly-baseline.py
 fd7dcaf462d1fe6a8a3d350573c2b63c896ca4089a02b7888048b70e9807b459 SEV-C-script-loc scripts/rotate-meta-archives.py
 3c1a5e886fc162733d9f2c3a7575b17e4dd7a3591c45aefaf03882179d97ee09 SEV-C-script-loc scripts/token-usage-report.py
 6f3b4bf43bfe2f4edd00db13a4892399cded87e0b3cf02fb84f5f7f925d2ae50 SEV-C-script-loc scripts/worktree-archive-prep.py
