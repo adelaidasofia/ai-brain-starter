@@ -162,4 +162,9 @@ def main():
 
 
 if __name__ == "__main__":
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            _s.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
     main()
