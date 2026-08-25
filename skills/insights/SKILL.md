@@ -28,7 +28,7 @@ Read `[VAULT_PATH]/⚙️ Meta/journal-index.json` (or `[VAULT_PATH]/Meta/journa
 
 `floor_arc` is present only on entries that moved, and `build-journal-index.py` already stores it as a **real list** (e.g. `["Fear", "Frustration", "Courage"]`) — read it straight from the index for the section 0e movement report instead of re-grepping frontmatter. If no entry in the period carries it, the field is genuinely absent from those entries; do not infer arcs.
 
-If the index doesn't exist or is more than 7 days old, rebuild it first:
+If the index doesn't exist or is more than 7 days old, rebuild it first. **Note this check measures age, not completeness** — a freshly built index can still be missing entries written after it. The daily-journal skill rebuilds the index every time it writes an entry, which is what keeps this guard honest; if entries are missing here, that step is the first thing to check:
 ```bash
 /usr/bin/python3 "[VAULT_PATH]/Meta/scripts/build-journal-index.py"
 ```
