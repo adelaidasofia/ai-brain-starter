@@ -434,9 +434,9 @@ Leave graphify **off by default**. User decides when.
 
 ### Step 6: Weekly cadence
 
-If they use `/plan week`, their week-plan already checks graph freshness and proposes a run if stale (>7 days).
+Recommend a Monday 10am calendar block for `/second-brain-mapping --metadata-only`. Takes under a minute. Zero tokens. Keeps Claude's context layer fresh.
 
-If not: recommend a Monday 10am calendar block for `/second-brain-mapping --metadata-only`. Takes under a minute. Zero tokens. Keeps Claude's context layer fresh.
+Skip the block only if they already run a weekly planning routine of their own that checks graph freshness and proposes a run when the graph is stale.
 
 ### Step 7: Confirm CRM auto-log
 
