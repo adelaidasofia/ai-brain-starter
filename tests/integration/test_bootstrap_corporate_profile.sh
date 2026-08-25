@@ -57,9 +57,15 @@ run_bootstrap() {
   ln -s "$REPO_ROOT" "$h/.claude/skills/ai-brain-starter"
   touch "$h/.claude/.ai-brain-starter-email-on-file"
   set +e
+  # BOOTSTRAP_LANG pins detect_lang()'s output — the variable it actually
+  # reads (BOOTSTRAP_LANG > LC_ALL > LANG > AppleLocale). LANG_HINT does NOT
+  # reach it (it only feeds QM_LANG, the quick-mint API payload), so on a
+  # Spanish-locale Mac the t()-translated lines came out in Spanish and the
+  # English greps below failed. Green on linux CI (no AppleLocale fallback),
+  # red on any es_* Mac.
   ( sandbox_home "$h"
     # shellcheck disable=SC2086
-    env $extra_env EMAIL="ci@example.com" NAME="CI Test" LANG_HINT="en" \
+    env $extra_env EMAIL="ci@example.com" NAME="CI Test" LANG_HINT="en" BOOTSTRAP_LANG="en" \
       bash "$BOOTSTRAP" "$@" ) > "$out" 2>&1
   LAST_CODE=$?
   set -e

@@ -17,6 +17,7 @@ import yaml
 from _base import (
     VAULT, iso_date_from, count_words, ExtractionResult,
 )
+from _floors import floor_num_from_fm
 
 _HOOKS_DIR = Path(__file__).resolve().parent.parent.parent / "hooks"
 sys.path.insert(0, str(_HOOKS_DIR))
@@ -39,23 +40,30 @@ PUBLIC_FIGURE_RELATIONSHIP_HINTS = {
     "teacher", "public intellectual", "academic",
 }
 
-# Journals folder: override with JOURNALS_FOLDER env var, else auto-detect.
-# Same pattern as CRM_ROOT in _base.py. This used to be a bare
-# os.path.join(VAULT, "📓 Journals"): any vault that names the folder in another
-# language (e.g. "📓 Diarios") made the glob below match nothing, so EVERY person
-# got person_journal_mention_count: 0 — silently, with no error. That empties the
-# people sections of the insight engine (lucky-charm, drag people, contacts going
-# cold) no matter how many journals exist. Found 2026-08-20.
-JOURNALS_ROOT = os.environ.get("JOURNALS_FOLDER")
-if not JOURNALS_ROOT:
-    for _candidate in ("📓 Journals", "📓 Diarios", "Journals", "Diarios",
-                       "📔 Journal", "Journal", "Daily"):
-        _p = os.path.join(VAULT, _candidate)
-        if os.path.isdir(_p):
-            JOURNALS_ROOT = _p
-            break
-    if not JOURNALS_ROOT:
-        JOURNALS_ROOT = os.path.join(VAULT, "📓 Journals")
+# Journals folder: self-locating, the same candidate list (and order) that
+# scripts/build-journal-index.py uses for /weekly and /monthly. The setup
+# interview creates a LOCALIZED folder on a non-English install ("📓 Diarios"
+# on Spanish, "📓 Diário" on Portuguese), and a hardcoded "📓 Journals" here
+# scanned a path that did not exist — silently: every person got
+# person_journal_mention_count = 0 and an empty person_floor_cooccurrence,
+# which in turn switched off the lucky-charm / drag-people / stale-relationship
+# sections of the insight engine for the whole vault. Pick the first candidate
+# that exists; fall back to the English default so the glob below still yields
+# nothing (rather than crashing) on a vault with no journal folder at all.
+_JOURNAL_CANDIDATES = (
+    "📓 Journals", "Journals",       # en (Phase 3 default)
+    "📔 Journal", "Journal",
+    "📓 Diarios", "Diarios",         # es (what Phase 1 tells the installer to create)
+    "📓 Diario", "Diario",           # es, singular variant
+    "📓 Diário", "Diário",           # pt
+)
+# JOURNALS_FOLDER (kept from this branch): an operator whose folder name is
+# outside the candidate list can point at it directly, without editing code.
+JOURNALS_ROOT = os.environ.get("JOURNALS_FOLDER") or next(
+    (os.path.join(VAULT, c) for c in _JOURNAL_CANDIDATES
+     if os.path.isdir(os.path.join(VAULT, c))),
+    os.path.join(VAULT, _JOURNAL_CANDIDATES[0]),
+)
 
 # Per-run cache: person_name → [(journal_iso, floor_num), ...]
 _JOURNAL_INDEX = None
@@ -86,7 +94,13 @@ def _build_journal_index():
             continue
 
         date_iso = fm.get("date_iso") or iso_date_from(fm.get("creationDate"))
-        floor_num = fm.get("floor_num")
+        # The journal writes the floor's NAME (`floor: Hope` / `floor: Esperanza`);
+        # `floor_num` only exists once the journal extractor has run, and on an
+        # older scale if it ran long ago. Translate the name first, then fall
+        # back to the stored number — otherwise co-occurrence is empty on every
+        # vault whose journals were never extracted, and the insight sections
+        # built on it never fire.
+        floor_num = floor_num_from_fm(fm)
         if not date_iso:
             continue
         # Normalize to str. PyYAML parses an unquoted `date_iso: 2026-08-12` into

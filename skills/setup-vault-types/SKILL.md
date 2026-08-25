@@ -116,8 +116,9 @@ STARTER="{SKILL_DIR}/../.."  # the starter repo root, two levels above this skil
 for type in ${SELECTED_TYPES[@]}; do
   ln -sf "$STARTER/scripts/extractors/$type.py" "$VAULT/scripts/extractors/$type.py"
 done
-# Always install base + dispatcher
+# Always install base + floors + dispatcher
 ln -sf "$STARTER/scripts/extractors/_base.py" "$VAULT/scripts/extractors/_base.py"
+ln -sf "$STARTER/scripts/extractors/_floors.py" "$VAULT/scripts/extractors/_floors.py"
 ln -sf "$STARTER/scripts/extractors/_dispatcher.py" "$VAULT/scripts/extractors/_dispatcher.py"
 ln -sf "$STARTER/scripts/extractors/schemas.yaml" "$VAULT/scripts/extractors/schemas.yaml"
 ```
