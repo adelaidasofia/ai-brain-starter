@@ -94,6 +94,7 @@ def run(vault, *args):
     p = subprocess.run(
         [sys.executable, str(BASELINE), "--vault-root", str(vault)] + list(args),
         capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
     )
     if p.returncode != 0:
         raise AssertionError("monthly-baseline failed ({}):\n{}".format(

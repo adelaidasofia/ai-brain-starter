@@ -49,6 +49,10 @@ from _floors import (  # noqa: E402
     parse_frontmatter, parse_inline_list, strip_accents,
 )
 
+HOOKS_DIR = Path(__file__).resolve().parent.parent / "hooks"
+sys.path.insert(0, str(HOOKS_DIR))
+from _lib.safe_read import safe_read_text  # noqa: E402
+
 # Reports live inside the journal folder and carry creationDate like entries do.
 NON_JOURNAL_TYPES = {"insight", "insights", "monthly-insights", "weekly-insights",
                      "summary", "report"}
@@ -246,10 +250,10 @@ def load_entries(journal_dir):
             if not fn.endswith(".md"):
                 continue
             p = os.path.join(root, fn)
-            try:
-                body = Path(p).read_text(encoding="utf-8", errors="replace")
-            except OSError:
+            result = safe_read_text(p, timeout=5.0, max_bytes=4_000_000, errors="replace")
+            if not result.ok:
                 continue
+            body = result.text
             meta = parse_frontmatter(body)
             if meta.get("type", "").strip().lower() in NON_JOURNAL_TYPES:
                 continue
@@ -281,10 +285,8 @@ def load_people(vault):
         for f in sorted(crm.glob("*.md")):
             name = f.stem
             names = {name}
-            try:
-                meta = parse_frontmatter(f.read_text(encoding="utf-8", errors="replace"))
-            except OSError:
-                meta = {}
+            result = safe_read_text(f, timeout=5.0, max_bytes=4_000_000, errors="replace")
+            meta = parse_frontmatter(result.text) if result.ok else {}
             for a in parse_inline_list(meta.get("aliases")):
                 if len(a) >= 4:
                     names.add(a)
