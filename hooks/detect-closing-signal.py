@@ -1281,22 +1281,6 @@ def main() -> int:
         ]
         packs = load_language_packs(langs)
 
-        # Long-prompt guard (codified 2026-08-02): a genuine sign-off is
-        # short. Scheduled-task prompts and injected notification bodies
-        # routinely exceed this and can contain pack phrases mid-prose
-        # ("ya fue procesado manualmente" inside a task SKILL.md — recurrent
-        # false positive documented 2026-08-01; agent-result text on
-        # 2026-08-02). For prompts over 600 chars, only the explicit tier
-        # (slash commands) and the user's custom phrases participate.
-        if len(prompt) > 600:
-            packs = {
-                "explicit": packs.get("explicit", []),
-                "high_confidence": [],
-                "ambiguous": [],
-                "emoji_only": [],
-                "false_positive_guards": packs.get("false_positive_guards", []),
-                "strict_guards": packs.get("strict_guards", []),
-            }
 
         custom = load_user_custom_signals(vault_root)
         suppress = load_user_suppress_signals(vault_root)
