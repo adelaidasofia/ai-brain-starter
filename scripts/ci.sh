@@ -1173,6 +1173,8 @@ PY_DIRECT=(
   # repo, so honouring an unresolvable `cd` (now reachable, since newlines split)
   # would turn a blocked op into an allowed one.
   hooks/test_block_raw_vault_git_cd.py
+  # Where _floors.py looks for a vault's floor notes (emoji-prefixed folder names).
+  tests/test_floors_folder_discovery.py
 )
 dormant_py=()
 while IFS= read -r -d '' f; do
