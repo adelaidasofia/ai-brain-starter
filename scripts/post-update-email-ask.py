@@ -62,7 +62,7 @@ def _passthrough() -> int:
 
 def _load_state() -> dict:
     try:
-        with open(ASK_STATE) as f:
+        with open(ASK_STATE, encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
@@ -72,7 +72,7 @@ def _load_state() -> dict:
 def _save_state(state: dict) -> None:
     try:
         os.makedirs(os.path.dirname(ASK_STATE), exist_ok=True)
-        with open(ASK_STATE, "w") as f:
+        with open(ASK_STATE, "w", encoding="utf-8") as f:
             json.dump(state, f)
     except OSError:
         pass
