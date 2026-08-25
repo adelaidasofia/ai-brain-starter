@@ -10,7 +10,7 @@
 # the Meta folder next to it WAS auto-detected (find_meta_dir handles "⚙️ Meta").
 #
 # Asserts:
-#   1. es vault ("📓 Diario")   -> index built
+#   1. es vault ("📓 Diarios", the folder Phase 1 creates; and "📓 Diario") -> index built
 #   2. pt vault ("📓 Diário")   -> index built
 #   3. en vault ("📓 Journals") -> index built (no regression)
 #   4. en vault ("Journals")    -> index built (plain, no emoji)
@@ -76,6 +76,7 @@ assert_fails_loud() {
 }
 
 echo "==> build-journal-index localized journal-dir detection"
+assert_builds "es vault: 📓 Diarios"   "📓 Diarios"
 assert_builds "es vault: 📓 Diario"    "📓 Diario"
 assert_builds "pt vault: 📓 Diário"    "📓 Diário"
 assert_builds "en vault: 📓 Journals"  "📓 Journals"
@@ -87,4 +88,4 @@ if [ "$failed" -gt 0 ]; then
   echo "journal-index-localized-dir: $failed failed" >&2
   exit 1
 fi
-echo "journal-index-localized-dir: 6 passed, 0 failed"
+echo "journal-index-localized-dir: 7 passed, 0 failed"

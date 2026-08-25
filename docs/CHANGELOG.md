@@ -136,6 +136,24 @@ That file is also the fix for an older piece of advice. The original release tol
 
 ---
 
+## 2026-08-16: on a Spanish vault, people never met your journal and floors never became numbers
+
+**Who this affects:** anyone journaling in Spanish (or in any vault whose journal folder is not literally `📓 Journals`), plus everyone who tags a journal entry with one of the 16 floors added when the framework grew from 16 to 34 — Trust, Frustration, Loneliness, Gratitude and the rest.
+
+**The bug, in three parts, all silent:**
+
+1. **The wrong journal folder.** The CRM extractor counts how often each person appears in your journals and on which floors. It looked for those journals in a folder hardcoded as `📓 Journals`. A Spanish install creates `📓 Diarios` (that is what the setup interview says to create), so the scan found nothing: every person got zero mentions and an empty floor list, and the insight engine's lucky-charm / drag-people / stale-relationship sections, which are built on those, never fired. Everything ran green. (`/weekly` and `/monthly` had the same problem in July and were fixed for `📓 Diario`, singular; the plural the installer actually creates is now recognised there too.)
+2. **Names, not numbers.** The journal tags each entry with the floor's *name* (`floor: Esperanza`, `floor: Hope`); every floor-based computation wants its *number*. The only translation table lived inside the journal extractor and was the pre-expansion 17-level English list — Fear was 5, Peace was 16, Excitement was 15, and Trust, Frustration, Loneliness, Gratitude and a dozen more did not exist. Spanish names never resolved. So floor co-occurrence was empty and the engine's floor baseline was `None`, which switches off four of its sections.
+3. **Note types with nowhere to go.** A Spanish vault types its notes in Spanish — `reunion`, `nota`, `estrategia`, `proyecto` — and a couple of this repo's own skills write types no extractor claimed (`/rise` writes `type: rise`, About Me is `type: profile`). Those notes dropped out of the metadata index with no message.
+
+**The fix:** one floor table, `scripts/extractors/_floors.py`, mirrored from the canonical 34-floor list in `vendor/high-rise/floors.md` with English and Spanish names (accents optional), used by the journal extractor, the CRM extractor and the insight engine alike — the name on the entry always wins over a stored number, so an old `floor_num` from the 17-level days cannot skew anything. A CI check fails if that table and the canonical one ever disagree. The CRM extractor now finds the journal folder the same way `/weekly` does (`📓 Journals`, `📓 Diarios`, `📓 Diário`, plain or with the emoji). And the type-alias map learned Spanish plus `rise`, `profile`, `meeting_prep`, `plan`, `brief`, `index` and the `content_*` family — while an extractor you wrote yourself for a type always beats an alias.
+
+**What changes for you:** journal entries extracted from now on carry `floor_num` on the 34-floor scale (Hope is 20, not 9). Entries extracted earlier keep their old number in the file until you re-run extraction with `--force`; nothing that reads floors uses that stored number anymore when the name is there, so your insights are right either way. `/setup-vault-types` now also links `_floors.py` into your vault; existing installs pick it up automatically without re-running it.
+
+**New tests:** `tests/integration/test_floor_name_map_canonical.sh` (the table matches the vendored canon, with a planted drift as negative control) and `tests/integration/test_extractors_localized_vault.sh` (a Spanish vault, end to end: 11 of its assertions fail on the previous code). Both wired into `scripts/ci.sh`, which now installs PyYAML on the CI runner (and only there) so the extractors can actually run in CI.
+
+---
+
 ## 2026-08-16: on Windows, a goodbye with an accent in it never closed the session
 
 **Who this affects:** anyone on Windows who ends sessions in a language whose closing phrase carries an accent — Spanish, Portuguese, French, German.
@@ -149,6 +167,7 @@ It appeared healthy on any machine that happened to have a particular Python set
 The hook now reads your message as raw data and decodes it itself, identically on every operating system and every language setting.
 
 **What you should do:** nothing beyond updating. If you had worked around this by typing English goodbyes to force a close, you can stop.
+
 
 ---
 
@@ -170,6 +189,23 @@ bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh verify
 ```
 
 It takes a few seconds and either prints how many files it restored, or tells you your backup does not work.
+
+---
+
+## 2026-08-16: pasting a long note no longer closes your session because one line ended in "listo" or "done"
+
+**Who this affects:** anyone who pastes multi-line text into a session — a brief, a spec, a handoff, meeting notes. Spanish and Portuguese users saw it most, but the cause was language-independent.
+
+**The bug:** the session-close detector decides whether your message is a goodbye by matching it against sign-off patterns like `listo`, `ya está`, `bye`, `done for today`. Many of those patterns are anchored to the *end of the message* — that is what makes "listo, gracias" a close and "listo el borrador, sigamos" not one. But the matcher ran in a mode where "end of the message" meant "end of any line". So a 60-line handoff whose third line happened to read `Borrador listo` was treated as a farewell, and the whole close cascade ran in the middle of your work. Three real cases in nine days on one vault, all the same shape: a sign-off word ending an inner line of something long. Length was never considered either — a wave and a pasted document were scored the same way.
+
+**The fix:** the shared sign-off patterns now match against the whole message (so "end" means the real end) and against its last line alone (so a goodbye on the last line — "All good.\nbye" — still counts). A sign-off word ending an inner line satisfies neither. And the natural-language tiers only look at short messages, up to 300 characters; a sign-off is a few words, and anything longer is work being pasted in. Two things deliberately keep their old reach: slash commands (`/close`, `/cerrar`, `/wrap-up`) fire at any length because typing a command is deliberate, and your own `closingSignals.custom` phrases keep their original semantics for the same reason.
+
+**Also fixed, Spanish pack:** "estoy listo" / "estoy lista" ("I'm ready") is a statement of readiness — "estoy listo para el día" after a morning routine — never a goodbye. It now sits in the strict guard tier of `es.json`, because the bare word `listo` is a high-confidence sign-off and the weaker guards cannot override that.
+
+**New test:** `tests/integration/test_detect_closing_signal_length_gate.sh` — every "must not fire" case has a "must fire" twin, so a change that mutes the detector outright cannot pass it. Against the previous code, thirteen of its assertions fail.
+
+---
+
 ## 2026-08-15: the setup could stop halfway and tell you it was finished
 
 **Who this affects:** anyone whose install ended early, especially if you never reached the journaling interview or your CLAUDE.md came out mostly empty.
@@ -345,6 +381,21 @@ Now it does. When a session set a goal that was never cleared, the close ends by
 **The fix:** the entry template now opens with `type: journal`, and the capture-first save names it as a required field. Nothing else about the entry changed.
 
 **What you should do:** nothing for new entries. If you journaled before this fix, ask Claude to backfill `type: journal` into your existing entries' frontmatter so extraction sees them too.
+
+## 2026-07-16: the test gate now runs green on Spanish-locale Macs
+
+**Who this affects:** anyone contributing (or just running `bash scripts/ci.sh`) from a Mac whose system language is Spanish — until now the gate failed on two tests and, because it stops at the first failure, hid every test wired after them. On linux CI everything was green, so the breakage was invisible upstream.
+
+**The bug:** two integration tests assumed English output but ran on machines where the code under test auto-detects the system language:
+
+- `test_post_update_email_ask` greps English copy ("optional", "Never a token"), but the email-ask hook picks its language from `AppleLocale` on macOS — and there was **no way to force English**: the env check only short-circuited toward Spanish, never toward English, so even `LANG=en_US` couldn't pin it.
+- `test_bootstrap_corporate_profile` pinned the wrong knob: it exported `LANG_HINT=en`, which only feeds the install-funnel API payload — the bilingual `t()` helper reads `BOOTSTRAP_LANG`/`LC_ALL`/`LANG`/`AppleLocale`, so on a Spanish Mac one hardening message came out in Spanish and the English grep missed it.
+
+**The fix:** the email-ask hook now honors an explicit env locale in **both** directions (`LANG=en_*` wins over AppleLocale, same as `es_*` always did — no change when the env is unset); its test pins the language per case and gains a new case exercising the **Spanish** ask block, which previously had zero coverage anywhere (linux CI always falls through to English). The corporate-profile test now pins `BOOTSTRAP_LANG=en`, the knob `detect_lang()` actually reads.
+
+**Verified:** full `scripts/ci.sh` green (81 integration tests) plus repo-wide shellcheck on an `es_CO` Mac — the machine class that reproduced both failures.
+
+---
 
 ## 2026-07-16: the Spanish close detector stopped firing mid-conversation and started hearing "cierra esta sesión"
 

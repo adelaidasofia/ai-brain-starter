@@ -25,8 +25,16 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "extractors"))
+# If this script runs from a vault whose extractors/ is a set of per-file
+# symlinks (see /setup-vault-types), a newer shared module beside the real
+# files (e.g. _floors.py) is not visible there. Add the RESOLVED location as a
+# fallback, after the vault's own dir, so the vault's copies still win.
+_REAL_EXTRACTORS = os.path.join(os.path.dirname(os.path.realpath(__file__)), "extractors")
+if _REAL_EXTRACTORS not in sys.path:
+    sys.path.insert(1, _REAL_EXTRACTORS)
 
 from _base import VAULT, SKIP_PARTS, iso_date_from  # noqa: E402
+from _floors import floor_num_from_fm  # noqa: E402
 
 # Insight report location: override with INSIGHTS_OUTPUT env var.
 # Default: picks the first folder that exists: ⚙️ Meta, Meta, else vault root.
@@ -184,6 +192,17 @@ def load_vault_index():
         doc_type = (fm.get("type") or "").strip().lower().replace("-", "_")
         if not doc_type:
             continue
+        # Every floor-based finding below reads `floor_num`, but the journal
+        # writes the floor's NAME (`floor: Hope`, `floor: Esperanza`) and the
+        # number only appears once the journal extractor has run — and then on
+        # whatever scale that extractor used at the time. Normalize here, once:
+        # the name wins (translated through the one canonical map), a stored
+        # number is the fallback. Without this, journal_floor_mean is None on
+        # every vault whose journals were never extracted, and the lucky-charm,
+        # drag-people, deep-processing and floor-baseline sections return early.
+        n = floor_num_from_fm(fm)
+        if n is not None:
+            fm["floor_num"] = n
         index.append({"path": fp, "type": doc_type, "fm": fm, "in_scope": True})
     return index
 
