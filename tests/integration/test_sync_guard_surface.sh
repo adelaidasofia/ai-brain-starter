@@ -68,7 +68,13 @@ PY
 }
 
 run_host() { OUT="$(python3 "$HOST" <<<'{}' 2>/dev/null)"; }
-ctx()      { printf '%s' "$OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("additionalContext",""))' 2>/dev/null; }
+# Read the ONLY channel SessionStart actually delivers to the model. This used
+# to read a TOP-LEVEL "additionalContext" -- the key the harness DISCARDS -- so
+# the test went green exactly when the hook was mute. It pinned the defect, not
+# the defence, which is why nobody noticed. NO fallback to the top-level key: a
+# fallback would let the old shape pass again.
+ctx()      { printf '%s' "$OUT" | python3 -c 'import json,sys; print((json.load(sys.stdin).get("hookSpecificOutput") or {}).get("additionalContext",""))' 2>/dev/null; }
+stranded() { printf '%s' "$OUT" | python3 -c 'import json,sys; print("YES" if "additionalContext" in json.load(sys.stdin) else "NO")' 2>/dev/null; }
 mentions() { ctx | grep -q "$1"; }
 
 HIGH='[{"severity":"high","provider":"iCloud","path":"/planted/repo/.git","reason":"machinery dir '"'"'.git'"'"' inside synced folder"}]'
@@ -76,6 +82,8 @@ HIGH='[{"severity":"high","provider":"iCloud","path":"/planted/repo/.git","reaso
 echo "=== 1. FIRES: a planted finding reaches SessionStart ==="
 write_snap 60 "$HIGH" '[]'
 run_host
+if [ "$(stranded)" = "NO" ]; then ok "[neg] nothing stranded on a top-level additionalContext key"
+else bad "[neg] nothing stranded on a top-level additionalContext key" "the harness drops that key on SessionStart"; fi
 if mentions "/planted/repo/.git"; then ok "planted finding reaches additionalContext"
 else bad "planted finding reaches additionalContext" "not in output"; fi
 

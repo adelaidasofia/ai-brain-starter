@@ -146,7 +146,7 @@ def _emit(ctx: str | None) -> int:
     if extra:
         ctx = f"{ctx}\n\n{extra}" if ctx else extra
     if ctx:
-        print(json.dumps({"continue": True, "additionalContext": ctx}))
+        print(json.dumps({"continue": True, "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": ctx}}))
     else:
         print(json.dumps({"continue": True, "suppressOutput": True}))
     return 0
