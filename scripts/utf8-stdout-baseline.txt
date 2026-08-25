@@ -99,7 +99,7 @@
 ed1d68dba02ab76c99907e8efc27ac0aac8c98a14dad261da73fa5d8e1610369 SEV-3-doc-only hooks/_lib/template_purity.py
 8dea18caf79e387a2fbeddca90403ef8af0d0ff1e6395e3b1f00e1b396491a4b SEV-3-doc-only hooks/inject-instinct-context.py
 
-# ---- SEV-4-json-encoded  (23 file(s)) ----
+# ---- SEV-4-json-encoded  (25 file(s)) ----
 02627cdfcde451edc91149f9092154b2b846cb1a19d30f1f5ca01d66258791b2 SEV-4-json-encoded hooks/block-branch-switch-with-untracked-build.py
 e943857ef9482c097b4357ee8abf2e4ede3ffcab3b9bae3a1a0687b0ae371e2b SEV-4-json-encoded hooks/block-populated-public-skill.py
 73ec7598cd563971fcafc2542818e297df5ed045714d7b66263de949f4619093 SEV-4-json-encoded hooks/block-secret-in-note.py
