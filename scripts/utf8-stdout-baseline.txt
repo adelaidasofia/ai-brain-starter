@@ -99,12 +99,11 @@
 ed1d68dba02ab76c99907e8efc27ac0aac8c98a14dad261da73fa5d8e1610369 SEV-3-doc-only hooks/_lib/template_purity.py
 8dea18caf79e387a2fbeddca90403ef8af0d0ff1e6395e3b1f00e1b396491a4b SEV-3-doc-only hooks/inject-instinct-context.py
 
-# ---- SEV-4-json-encoded  (25 file(s)) ----
+# ---- SEV-4-json-encoded  (24 file(s)) ----
 02627cdfcde451edc91149f9092154b2b846cb1a19d30f1f5ca01d66258791b2 SEV-4-json-encoded hooks/block-branch-switch-with-untracked-build.py
 e943857ef9482c097b4357ee8abf2e4ede3ffcab3b9bae3a1a0687b0ae371e2b SEV-4-json-encoded hooks/block-populated-public-skill.py
 73ec7598cd563971fcafc2542818e297df5ed045714d7b66263de949f4619093 SEV-4-json-encoded hooks/block-secret-in-note.py
 b647243fdf0a358d46a6a79b0bf7f817ee121f68d5d685fabe4b0ee2a93af94d SEV-4-json-encoded hooks/check-fabricated-hook-attribution.py
-9384c96d288eb31a5f59cc7e985ec4b79e723309595d48a09a87e30d7907c5eb SEV-4-json-encoded hooks/check-fabricated-verification.py
 25d963d25e1e2e6844a35133bbad1d0aad8d03de424e29d4a406a67cb1d4c1cb SEV-4-json-encoded hooks/check-rule-conflicts-on-write.py
 85006d7e25f42ba787b2ce616bd1c71590c3990f89f3153a6f958156c93029ed SEV-4-json-encoded hooks/coach-auto-prescribe-on-journal.py
 a04ec6c84be6756813f4cde517ff379338b57ec9bf4c9c4172172951e62f91c3 SEV-4-json-encoded hooks/imessage-mcp-auto-export.py
