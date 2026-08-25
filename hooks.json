@@ -343,11 +343,6 @@
             "type": "command",
             "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/scripts/heal-journal-guard.py 2>/dev/null || echo '{\"continue\":true,\"suppressOutput\":true}'",
             "statusMessage": "Self-healing the /journal Step-0 context guard (registration + vault preflight)..."
-          },
-          {
-            "type": "command",
-            "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/surface-stalled-git-operation.py 2>/dev/null || echo '{\"continue\":true,\"suppressOutput\":true}'",
-            "statusMessage": "Checking for a stalled git operation"
           }
         ]
       }
