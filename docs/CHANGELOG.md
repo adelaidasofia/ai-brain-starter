@@ -31,6 +31,27 @@ That is the part worth fixing carefully, because of *when* it happens. Nobody ru
 
 **What you should do:** nothing. If you ever saw that "not a supported archive file format" message, your backups were never the problem — check them once more after updating and you should see the file count come back.
 
+---
+
+## 2026-08-24: the graphify sizer was under-counting its own cache, and the merge step could not open a real graph
+
+**Who this affects:** anyone who runs `/graphify` on a vault big enough to need the staged pipeline — which is anyone past a few hundred files.
+
+Two separate things, both in the wrapper scripts, both with the same shape: the tool kept working, told you nothing was wrong, and quietly cost you money.
+
+**The sizer said your cache was empty when it wasn't.** `graphify_stage_select.py` is the script that decides which files still need a paid extraction and prints the estimate you approve before spending. It ships twice — once for each supported vault layout — and *both* copies had grown their own hand-rolled version of graphify's cache key instead of asking the library. Between them they were wrong in four ways: it looked in the wrong directory, it fed the absolute file path into the digest where the library uses the path relative to your vault root, it hashed the whole Markdown file where the library deliberately hashes only the body below the frontmatter, and it swallowed any error into the "needs re-extraction" pile. On a 437-file vault with 1,113 perfectly good cache entries, it reported **zero** hits in every folder and sized the job at 185 files and roughly 401,000 tokens. The honest numbers were 74 files and 250,000. You would have paid twice for a third of the corpus and never known.
+
+The frontmatter part matters more than it sounds. A nightly metadata pass that stamps fields like `reviewed` or a word count onto your notes changes those files without changing a word of what they say. The library ignores frontmatter for exactly that reason. The sizer did not, so a metadata sweep across a folder made every file in it look like new work.
+
+**The merge step could not open a graph bigger than one megabyte.** `graphify_stage_finish.py` read your existing `graph.json` through a helper whose default size ceiling is 1 MB, and never raised it. A vault with a couple of thousand nodes is well past that, so the script aborted at the merge step with a "too-large" error, every time. It aborted rather than writing something broken, which is the right instinct — but it meant the one script the runbook tells you to always use for post-dispatch could not finish on any vault of realistic size.
+
+While in there, the eight text reads and writes these three scripts perform now pass `encoding="utf-8"` explicitly. Without it Python uses the machine's locale — cp1252 on a stock Windows box — which mangles accented characters and emoji folder names *without raising an error*. Vaults whose folders are named `📓 Diarios` or `⚙️ Meta` are exactly the ones this silently corrupts, so all three files came off the encoding backlog rather than being re-pinned.
+
+Both are fixed, in both copies of the sizer. It now calls `graphify.cache.file_hash()` when graphify is importable and falls back to a faithful local copy of the same rule when it is not (the common case — graphify usually lives in a virtualenv the wrapper scripts don't share). Cache lookup checks every layout this repo has shipped, so it can only ever find more entries than before, never fewer. Errors are reported instead of being counted as misses. And there are five regression tests at `tests/test_graphify_stage_select_cache_key.py`, each of which runs against *both* copies — the two drifted apart precisely because nothing was holding them to the same answer.
+
+---
+
+
 ## 2026-08-19: the privacy checker no longer publishes the private word list it checks for
 
 **Who this affects:** anyone who publishes repos with this starter installed, and anyone who forked one of ours.
@@ -84,6 +105,37 @@ The speed is unchanged. The test suite that stayed green through all six of thes
 
 ---
 
+## 2026-08-15: the hook that reads your priorities only understood English
+
+**Who this affects:** everyone who does not work in English. Also everyone who ever customized this hook by hand.
+
+`vault-context.py` is the helper that notices you asked a strategic question and quietly puts your priorities and open loops in front of Claude before it answers. The 2026-08-13 update fixed the reason it was doing nothing on every machine. This is the second reason, and it only showed up once the first was gone.
+
+The list of words that make it fire was written in English, in the file itself. Ask *"what should I prioritize this week"* and you got your priorities. Ask the same thing in Spanish — *"qué prioridades tengo esta semana"* — and nothing matched, so the hook exited quietly, exactly as if you had asked it something unimportant. Measured on a real Spanish vault: zero matches for the Spanish sentence, full injection for the English one.
+
+About a third of that list was also one person's vocabulary: the name of their company, their city, their newsletter, plus a second list pointing at file paths that exist in one vault on earth. Harmless-looking, but it meant the file could never quite be yours.
+
+**Both are fixed the same way.** The trigger words now live in language packs — `templates/vault-context/en.json` and `es.json` — the same shape the closing-signal detector already uses, and both load by default. Spanish patterns accept the version without accents, because that is how people actually type in a terminal. Everything personal moved out of the shipped code and into a file of your own:
+
+```
+~/.claude/.vault-context-signals.json
+```
+
+```json
+{
+  "strategic_signals": ["\\bacme corp\\b", "\\bproject atlas\\b"],
+  "topic_map": [
+    { "signals": ["\\bproject atlas\\b"], "files": ["Business/Atlas Brief.md"] }
+  ]
+}
+```
+
+That file is also the fix for an older piece of advice. The original release told you to add your own keywords by editing `~/.claude/hooks/vault-context.py` directly — but that file is redeployed on update, so every customization was silently reverted the next time you updated. Anything in the override file survives.
+
+**What you should do:** nothing. `en` and `es` both load by default; set `VAULT_CONTEXT_LANGS` if you want only one. Another language is one JSON file in `templates/vault-context/` — the loader takes any language name you give it.
+
+---
+
 ## 2026-08-16: on a Spanish vault, people never met your journal and floors never became numbers
 
 **Who this affects:** anyone journaling in Spanish (or in any vault whose journal folder is not literally `📓 Journals`), plus everyone who tags a journal entry with one of the 16 floors added when the framework grew from 16 to 34 — Trust, Frustration, Loneliness, Gratitude and the rest.
@@ -101,6 +153,7 @@ The speed is unchanged. The test suite that stayed green through all six of thes
 **New tests:** `tests/integration/test_floor_name_map_canonical.sh` (the table matches the vendored canon, with a planted drift as negative control) and `tests/integration/test_extractors_localized_vault.sh` (a Spanish vault, end to end: 11 of its assertions fail on the previous code). Both wired into `scripts/ci.sh`, which now installs PyYAML on the CI runner (and only there) so the extractors can actually run in CI.
 
 ---
+
 
 ## 2026-08-15: your Sunday review now opens the backup instead of trusting it
 

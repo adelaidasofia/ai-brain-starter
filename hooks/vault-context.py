@@ -16,6 +16,28 @@ place.
 Now: resolve per invocation from the session's cwd (vault_root_for — detection
 from the target first, $VAULT_ROOT as fallback). No vault identified → inject
 nothing, which is the honest answer.
+
+SIGNALS (2026-08-15): the trigger list used to be hardcoded English, and half of
+it was one person's vocabulary — `accenture`, `substack`, `nyc`, `high-rise`,
+`after the shock`, plus a TOPIC_MAP pointing at `🚀 team-vault/…` paths that
+exist in exactly one vault. Two separate defects wearing one coat:
+
+  * A vault kept in Spanish (or any non-English language) never matched a single
+    signal. The hook resolved the vault correctly, read nothing, and exited 0 —
+    the same silent no-op the vault-resolution fix above was written to kill,
+    reached by a different road. Measured on a real Spanish vault: "qué
+    prioridades tengo esta semana y cómo va la estrategia" → zero matches; the
+    same sentence in English → full injection.
+  * Personal terms shipped as defaults are dead weight in every other install,
+    and worse, they teach the reader that this file is not theirs to hold.
+
+Signals now come from `templates/vault-context/<lang>.json` (same pack shape
+detect-closing-signal.py uses), merged across VAULT_CONTEXT_LANGS (default
+`en,es`), plus an optional per-user override at
+`~/.claude/.vault-context-signals.json` for personal vocabulary and topic→file
+maps — which is where anything naming YOUR company, city, or vault paths goes.
+BUILTIN_STRATEGIC_SIGNALS remains as a floor so a partial install (hook copied
+without templates/) still fires on the obvious English cases.
 """
 # MYC-3529: REQUIRED, not cosmetic. This module annotates with PEP-604
 # `X | None`, which is evaluated at def-time and is a TypeError on Python
@@ -39,6 +61,7 @@ except Exception:  # fail-open: a context-injector must never break a prompt
         return None
 
 MAX_CHARS = 4000  # per file truncation limit
+DEFAULT_LANGS = "en,es"  # override with VAULT_CONTEXT_LANGS
 
 # Always load these for strategic questions
 CORE_FILES = [
@@ -46,46 +69,95 @@ CORE_FILES = [
     "⚙️ Meta/Open Loops.md",
 ]
 
-# Load for raise/investor/pitch topics
-RAISE_FILES = [
-    "🚀 team-vault/💰 Raise/Raise Dashboard.md",
-    "🚀 team-vault/💰 Raise/Raise Sprint - Apr 2026.md",
-]
-
-# Load for the user's primary org product/strategy topics
-ONDE_STRATEGY_FILES = [
-    "🚀 team-vault/📋 Strategy/the user's primary org.md",
-    "🚀 team-vault/📋 Strategy/Strategy Index.md",
-]
-
-# Signals → which extra files to load
-TOPIC_MAP = [
-    (
-        [r"\braise\b", r"\binvestor", r"\bpitch\b", r"\bseed\b", r"\bangel\b",
-         r"\bvaluation\b", r"\bterm sheet\b", r"\bnyc trip\b", r"\bapr(il)? 24\b",
-         r"\bapr(il)? 30\b", r"\bdata room\b"],
-        RAISE_FILES,
-    ),
-    (
-        [r"\bonde\b", r"\bproduct\b", r"\baccenture\b", r"\bclient\b",
-         r"\bvenue tool\b", r"\bcorporate structure\b", r"\bsales\b",
-         r"\bgo.to.market\b", r"\bgtm\b"],
-        ONDE_STRATEGY_FILES,
-    ),
-]
-
-# Broad strategic signals — if any match, inject CORE_FILES
-STRATEGIC_SIGNALS = [
-    r"\bstrateg", r"\bonde\b", r"\braise\b", r"\binvestor", r"\bpitch\b",
-    r"\bdecision\b", r"\bprioritiz", r"\bpriorities\b", r"\bnyc\b",
+# Floor, used ONLY when no language pack loads (hook copied without templates/).
+# Deliberately English and deliberately small: a fallback that pretends to be a
+# full signal set is how the hardcoded list survived this long.
+BUILTIN_STRATEGIC_SIGNALS = [
+    r"\bstrateg", r"\bdecision\b", r"\bprioritiz", r"\bpriorities\b",
     r"\bplan\b", r"\bfocus\b", r"\bnext step", r"\bopen loop",
-    r"\bwhat should (i|we)\b", r"\bhow (should|do) (i|we)\b",
-    r"\bwhat.s (my|our|the) (plan|status|situation)\b",
-    r"\bwhere (am|are) (i|we)\b", r"\bpending\b", r"\bwhat (am|are) (i|we) (doing|working)\b",
-    r"\brevenue\b", r"\bclient\b", r"\bproduct\b", r"\baccenture\b",
-    r"\bseed\b", r"\bangel\b", r"\bsales\b", r"\bconsulting\b",
-    r"\bwriting\b", r"\bsubstack\b", r"\bhigh.rise\b", r"\bafter the shock\b",
+    r"\bwhat should (i|we)\b", r"\bpending\b",
 ]
+
+# Where a user's OWN vocabulary and topic→file map live. Personal by nature:
+# company names, city names, vault-specific paths. Never shipped in a pack.
+USER_SIGNALS_FILE = os.environ.get(
+    "VAULT_CONTEXT_SIGNALS_FILE",
+    str(Path.home() / ".claude" / ".vault-context-signals.json"),
+)
+
+
+def find_repo_root() -> Path:
+    """Locate the repo root that owns templates/vault-context.
+
+    UNLIKE detect-closing-signal.py, which runs from inside the clone, THIS
+    hook is DEPLOYED — install-hooks-user-level.py copies it to
+    ~/.claude/hooks/, where walking up finds ~/.claude and no templates/ at
+    all. Without the canonical-clone fallback below, every deployed copy would
+    silently fall back to the English floor and the Spanish packs would ship to
+    everyone and load for no one: the same defect this change exists to fix,
+    one directory to the left. The clone path is the one other deployed hooks
+    already key on (inject-meeting-workflow-on-trigger.py).
+    """
+    here = Path(__file__).resolve().parent
+    candidate = here.parent  # hooks/ is 1 level deep inside the clone
+    if (candidate / "templates" / "vault-context").is_dir():
+        return candidate
+    for ancestor in here.parents:
+        if (ancestor / "templates" / "vault-context").is_dir():
+            return ancestor
+    clone = Path.home() / ".claude" / "skills" / "ai-brain-starter"
+    if (clone / "templates" / "vault-context").is_dir():
+        return clone
+    return candidate
+
+
+def _read_json(path: Path) -> dict:
+    """Fail-open: an unreadable or malformed pack contributes nothing."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError, ValueError):
+        return {}
+
+
+def load_signals(langs: list[str], user_file: str = USER_SIGNALS_FILE):
+    """Merge language packs + the per-user override into (signals, topic_map).
+
+    Returns the BUILTIN floor only when zero packs AND no user signals loaded,
+    so a hook deployed without templates/ still fires on the obvious cases
+    instead of going silent — the failure mode this whole file is about.
+    """
+    pack_dir = find_repo_root() / "templates" / "vault-context"
+    signals: list[str] = []
+    topic_map: list[tuple[list[str], list[str]]] = []
+
+    for lang in langs:
+        lang = lang.strip()
+        if not lang:
+            continue
+        path = pack_dir / f"{lang}.json"
+        if path.is_file():
+            signals.extend(_read_json(path).get("strategic_signals", []))
+
+    user = _read_json(Path(user_file)) if user_file else {}
+    signals.extend(user.get("strategic_signals", []))
+    for entry in user.get("topic_map", []):
+        if isinstance(entry, dict) and entry.get("signals") and entry.get("files"):
+            topic_map.append((list(entry["signals"]), list(entry["files"])))
+
+    if not signals:
+        signals = list(BUILTIN_STRATEGIC_SIGNALS)
+
+    # Drop patterns that do not compile rather than letting one bad line in a
+    # hand-edited override take the whole hook down.
+    valid = []
+    for pat in signals:
+        try:
+            re.compile(pat)
+            valid.append(pat)
+        except re.error:
+            continue
+    return valid, topic_map
 
 
 def read_file(vault: Path, rel_path: str) -> str | None:
@@ -109,7 +181,10 @@ def main():
     prompt = payload.get("prompt", "") or ""
     p = prompt.lower().strip()
 
-    if not any(re.search(sig, p) for sig in STRATEGIC_SIGNALS):
+    langs = os.environ.get("VAULT_CONTEXT_LANGS", DEFAULT_LANGS).split(",")
+    strategic_signals, topic_map = load_signals(langs)
+
+    if not any(re.search(sig, p) for sig in strategic_signals):
         sys.exit(0)
 
     # Resolve the vault from THIS session's cwd before doing any I/O. None means
@@ -121,7 +196,7 @@ def main():
         sys.exit(0)
 
     files_to_load = list(CORE_FILES)
-    for signals, extra_files in TOPIC_MAP:
+    for signals, extra_files in topic_map:
         if any(re.search(sig, p) for sig in signals):
             files_to_load.extend(extra_files)
 
@@ -153,4 +228,14 @@ def main():
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (ai-brain-starter#313; hooks/ sweep #314).
+    # This hook now carries non-ASCII in its own source AND injects vault file
+    # contents verbatim, so a Spanish/emoji-path vault printing through a
+    # cp1252 console would raise UnicodeEncodeError and take the prompt with
+    # it. Idempotent; a no-op on an already-UTF-8 console.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     main()

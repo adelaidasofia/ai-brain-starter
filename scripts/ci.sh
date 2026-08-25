@@ -1166,6 +1166,7 @@ PY_DIRECT=(
   hooks/test_memory_index.py
   tests/test_instinct.py
   tests/test_entity_disambiguator_clustering.py
+  tests/test_graphify_stage_select_cache_key.py
   hooks/test_live_session_reap.py
   hooks/test_relocation_orphan_reclaim.py
   hooks/test_secret_patterns_fp_filter.py
@@ -1197,6 +1198,13 @@ PY_DIRECT=(
   # platform-only import, because a Linux runner structurally cannot observe a
   # Windows-only import crash.
   hooks/test_hook_smoke.py
+  # vault-context shipped a hardcoded English trigger list, a third of it one
+  # person's vocabulary. On a Spanish vault it resolved the vault, matched
+  # nothing, and exited 0 — the MYC-3529 silent no-op reached by a different
+  # road. Negative control: the exact sentence that measured zero matches must
+  # fire, ordinary prompts must stay quiet, and no shipped pack may carry
+  # personal vocabulary again.
+  hooks/test_vault_context_signals.py
   hooks/test_close_catchall_not_silent.py
   # block-raw-vault-git resolved a `cd` only when it was the first token of the
   # whole command, because it split statements on && || ; but not on a NEWLINE.
