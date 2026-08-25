@@ -101,25 +101,43 @@ followed by quoted arguments.** Rules that follow from this:
 
 1. **hooks.json stays POSIX** — the installer (`install-hooks-user-level.py`)
    rewrites every command at install time on Windows into
-   `py -3 "<abs>/scripts/hook_runner.py" --fallback <silent|allow> "<abs>/<hook>.py"`.
+   `<interpreter> "<abs>/scripts/hook_runner.py" --fallback <silent|allow> "<abs>/<hook>.py"`.
    `hook_runner.py` reproduces the shell forms' failure-masking (missing script
    -> fallback JSON; exit 2 blocks propagate; other failures -> fallback JSON).
    New hooks need NO Windows-specific wiring as long as they are plain
    `python3 <script> 2>/dev/null || echo '<json>'` template commands.
-2. **bash-only hooks are omitted on Windows** by the installer (reported in its
+
+   `<interpreter>` is resolved ONCE at install (MYC-3877). `py -3` is a launcher
+   STUB that re-reads the PEP 514 registry on every spawn (+21 ms per hook), so
+   the installer resolves what it points at and writes that absolute path — but
+   only after PROVING it: the path must be space-free (8.3-shortened if needed)
+   and ASCII, and `_token_parses_in_every_shell()` executes it in every shell
+   present on that machine before it is written. Anything unproven keeps the
+   bare `py -3`. Forward slashes, never backslashes: a backslash is an ESCAPE in
+   Git Bash, which turns `C:\PROGRA~1\PY~1\python.exe` into `C:PROGRA~1PY~1python.exe`.
+
+2. **ONE interpreter per hook, never two.** `hook_runner.py` COMPILES AND RUNS
+   the hook in its own process, as `__main__`. It must never spawn the hook as
+   a child: that cost a second CPython startup on every single tool call (~92 ms
+   on a 2019-class Windows laptop with live AV). `scripts/test_hook_runner_single_interpreter.py`
+   fails on any `subprocess` / `sys.executable` / `os.exec*` / `os.spawn*` in
+   that file, and on a hook that reports a different pid than the runner.
+   Exec-replacing is not the alternative: it throws away the masking code, which
+   is the only reason the wrapper exists.
+3. **bash-only hooks are omitted on Windows** by the installer (reported in its
    summary). A hook that must reach Windows needs a Python implementation.
-3. **In hook Python code**: never hardcode `/tmp` (use `tempfile.gettempdir()`;
+4. **In hook Python code**: never hardcode `/tmp` (use `tempfile.gettempdir()`;
    exception: a path a POSIX-only bash producer writes literally), never spawn
    `python3`/`/usr/bin/python3` (use `sys.executable`), never call `ps`, `kill`,
    `launchctl`, `pbcopy`, `osascript` without an `os.name != "posix"` early
    silent exit, and normalize `str(path).replace("\\", "/")` before matching
    markers like `/.claude/worktrees/`.
-4. **User-facing fix commands** must be per-platform: `py -3 ...` /
+5. **User-facing fix commands** must be per-platform: `py -3 ...` /
    `powershell -ExecutionPolicy Bypass -File "<abs>.ps1"` on Windows (absolute
    paths — `~`, `$HOME`, `%USERPROFILE%` each expand in only SOME shells),
    `python3` / `bash ...` elsewhere. References: `surface-deployed-hooks-behind.py`
    (`FIX_CMD`), `surface-backup-status.py` (`_BACKUP_PREFIX`).
-5. **.ps1 counterparts** exist for the user-run machinery: bootstrap,
+6. **.ps1 counterparts** exist for the user-run machinery: bootstrap,
    vault-backup, relocate-vault, relocate-machinery-sidecar, drift-check,
    update-check, preflight, diagnose. The auto-update pipeline
    (`ai-brain-auto-update.py`, `sync-skills.py`, `install-hooks-user-level.py`,

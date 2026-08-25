@@ -91,7 +91,7 @@ def test_auto_scrub_redacts_secret_backs_up_preserves_v2_key():
         assert ok, f"_auto_scrub did not scrub: {msg}"
         backups = list(d.glob("sess.jsonl.bak.*-secret-scrub"))
         assert backups, "no backup written before scrub"
-        scrubbed = j.read_text()
+        scrubbed = j.read_text(encoding="utf-8", errors="replace")
         assert "[REDACTED-hex-256bit]" in scrubbed, "real secret not redacted"
         assert f"v2:{HEXV}" in scrubbed, "v2 cache key was corrupted by the scrub"
         assert f"API_KEY={HEXV}" not in scrubbed, "bare secret survived the scrub"
@@ -128,4 +128,12 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # A cp1252 Windows console raises UnicodeEncodeError the moment this prints a
+    # non-ASCII character, and the hook dies with no legible cause
+    # (ai-brain-starter#313). Idempotent; a no-op on an already-UTF-8 console.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     main()

@@ -45,6 +45,8 @@ If `code_only` is True: print `[graphify update] Code-only changes detected - sk
 
 If `code_only` is False (any changed file is a doc/paper/image): run the full Steps 3A-3C pipeline as normal.
 
+**Note `IS_DIRECTED`:** every `build_from_json(...)` call below takes `directed=IS_DIRECTED` - `True` if `--directed` was given on this invocation, else `False`. Pass the same value the graph was originally built with; a mismatched value here silently rebuilds the new slice as undirected and collapses reciprocal A<->B edges when it merges into the existing (directed) graph.
+
 Then:
 
 ```bash
@@ -62,7 +64,7 @@ G_existing = json_graph.node_link_graph(existing_data, edges='links')
 
 # Load new extraction
 new_extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text())
-G_new = build_from_json(new_extraction)
+G_new = build_from_json(new_extraction, directed=IS_DIRECTED)
 
 # Prune nodes from deleted files
 incremental = json.loads(Path('graphify-out/.graphify_incremental.json').read_text())
@@ -94,7 +96,7 @@ from pathlib import Path
 # Load old graph (before update) from backup written before merge
 old_data = json.loads(Path('graphify-out/.graphify_old.json').read_text()) if Path('graphify-out/.graphify_old.json').exists() else None
 new_extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text())
-G_new = build_from_json(new_extract)
+G_new = build_from_json(new_extract, directed=IS_DIRECTED)
 
 if old_data:
     G_old = json_graph.node_link_graph(old_data, edges='links')

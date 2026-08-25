@@ -32,7 +32,7 @@ The open-core boundary guard (`scripts/check-open-core-boundary.sh`) is now **al
 
 v1.3.0 advertised "vertical-healthcare completion" but only landed 4 of the 9 files the pack needs. Without `README.md` and `SKILL.md`, skill discovery did not register the pack, so `/vertical-healthcare init` was inert. v1.3.1 lands the 5 missing files: README, SKILL, the Epic and Cerner FHIR connectors, and the typed-memory schema. The pack is now functionally installable.
 
-If you tried `/vertical-healthcare init` on v1.3.0 and got nothing, `git pull` to v1.3.1 and try again. Clean install, no action needed.
+If you tried `/vertical-healthcare init` on v1.3.0 and got nothing, `git pull` to v1.3.1 and try again. Clean install, no action needed. (This pack was itself removed in v1.5.0 as a paid-tier capability — see [`CHANGELOG.md`](CHANGELOG.md), "removed the vertical packs." On v1.5.0+, `git pull` will not bring it back.)
 
 ---
 
@@ -56,8 +56,8 @@ Also new: **`docs/RECOMMENDED_SKILL_OVERRIDES.md`** — a portable starter recip
 
 Two vertical skill packs are now bundled with AI Brain Starter:
 
-- **`vertical-finance`** — Pre-configured for CFOs, finance ops, and internal audit teams. Typed-memory categories for SOX 404 controls and board-pack trails, retention defaults aligned with SOX + SEC 17a-4, connectors for Workday / NetSuite / SAP Finance, and decision-audit patterns for evidence stamping. Trigger: `/vertical-finance init`.
-- **`vertical-legal`** — Pre-configured for law firms, in-house legal, and legal-ops teams. Typed-memory for matter management and privilege handling, retention aligned with ABA Model Rule 1.15, connectors for Clio / NetDocuments / iManage, conflicts-check and privilege-handling decision audits. Trigger: `/vertical-legal init`.
+- **`vertical-finance`** — Pre-configured for CFOs, finance ops, and internal audit teams. Typed-memory categories for SOX 404 controls and board-pack trails, retention defaults aligned with SOX + SEC 17a-4, connectors for Workday / NetSuite / SAP Finance, and decision-audit patterns for evidence stamping. Trigger: `/vertical-finance init`. (Removed in v1.5.0 as a paid-tier capability; it is not part of the free substrate.)
+- **`vertical-legal`** — Pre-configured for law firms, in-house legal, and legal-ops teams. Typed-memory for matter management and privilege handling, retention aligned with ABA Model Rule 1.15, connectors for Clio / NetDocuments / iManage, conflicts-check and privilege-handling decision audits. Trigger: `/vertical-legal init`. (Removed in v1.5.0 as a paid-tier capability; it is not part of the free substrate.)
 
 Both are additive — installing them doesn't change behavior for users outside those verticals. Use when onboarding a CFO organization or law firm that needs the substrate to come pre-shaped to their work rather than starting from a blank vault.
 

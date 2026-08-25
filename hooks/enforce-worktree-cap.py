@@ -85,7 +85,7 @@ def _log(main_repo: Path, msg: str) -> None:
 
 def _emit(ctx: str | None) -> int:
     if ctx:
-        print(json.dumps({"continue": True, "additionalContext": ctx}))
+        print(json.dumps({"continue": True, "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": ctx}}))
     else:
         print(json.dumps({"continue": True, "suppressOutput": True}))
     return 0

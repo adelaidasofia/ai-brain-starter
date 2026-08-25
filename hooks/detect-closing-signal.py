@@ -78,15 +78,17 @@ from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
-    from _lib.vault_root import resolve_vault_root  # noqa: E402
+    from _lib.vault_root import collapse_worktree, resolve_vault_root  # noqa: E402
 except Exception:  # fail-open: if the lib cannot load, behave as before
-    def resolve_vault_root(cwd: Path, env_vault_root: str | None) -> Path:  # type: ignore
-        text = str(Path(env_vault_root) if env_vault_root else cwd)
-        norm = text.replace("\\", "/")  # marker must match Windows paths too
+    def collapse_worktree(path: Path) -> Path:  # type: ignore
+        norm = str(path).replace("\\", "/")  # marker must match Windows paths too
         marker = "/.claude/worktrees/"
         if marker in norm:
             return Path(norm.split(marker, 1)[0])
-        return Path(text)
+        return Path(path)
+
+    def resolve_vault_root(cwd: Path, env_vault_root: str | None) -> Path:  # type: ignore
+        return collapse_worktree(Path(env_vault_root) if env_vault_root else cwd)
 
 
 def log_debug(msg: str) -> None:
@@ -182,7 +184,7 @@ def load_language_packs(langs: list[str]) -> dict:
             log_debug(f"language pack not found: {path}")
             continue
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
         except (json.JSONDecodeError, OSError) as e:
             log_debug(f"failed to load {path}: {e}")
             continue
@@ -217,7 +219,7 @@ def load_user_custom_signals(vault_root: Path) -> list[str]:
     if not claude_md.is_file():
         return []
     try:
-        text = claude_md.read_text(encoding="utf-8")
+        text = claude_md.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
     # Look for either YAML frontmatter array or inline list
@@ -246,7 +248,7 @@ def load_user_suppress_signals(vault_root: Path) -> list[str]:
     if not claude_md.is_file():
         return []
     try:
-        text = claude_md.read_text(encoding="utf-8")
+        text = claude_md.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
     match = re.search(
@@ -278,7 +280,7 @@ def load_user_custom_only(vault_root: Path) -> bool:
     if not claude_md.is_file():
         return False
     try:
-        text = claude_md.read_text(encoding="utf-8")
+        text = claude_md.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
     match = re.search(
@@ -449,7 +451,7 @@ def derive_worktree(cwd: Path) -> str:
     git_file = cwd / ".git"
     if git_file.is_file():
         try:
-            text = git_file.read_text(encoding="utf-8")
+            text = git_file.read_text(encoding="utf-8", errors="replace")
             m2 = re.search(r"worktrees/([^/\s]+)", text)
             if m2:
                 return m2.group(1).strip()
@@ -523,7 +525,7 @@ def count_user_messages(transcript_path: str | None) -> int:
         return 99
     count = 0
     try:
-        with p.open("r", encoding="utf-8") as f:
+        with p.open("r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -590,7 +592,7 @@ def active_session_goal(transcript_path: str | None) -> str | None:
         return None
     goal: str | None = None
     try:
-        with p.open("r", encoding="utf-8") as f:
+        with p.open("r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 if _GOAL_CMD not in line:
                     continue
@@ -614,6 +616,46 @@ def active_session_goal(transcript_path: str | None) -> str | None:
     return goal
 
 
+def resolve_todo_files(vault_root: Path, meta_dir: Path) -> list[Path]:
+    """Return the vault's canonical to-do file(s), most-specific first.
+
+    Codified 2026-08-07 after a session's to-dos landed only in the session
+    file and never reached the to-do list, so the next morning's /rise could
+    not see them. The cascade now gets the destination path pre-resolved
+    instead of leaving the model to guess where to-dos live.
+
+    Source of truth is `todo_files:` in rise-config.md (the same list /rise
+    ranks from), so close and morning always agree. Falls back to the common
+    filenames when there is no config.
+    """
+    found: list[Path] = []
+    config = meta_dir / "rise-config.md"
+    if config.is_file():
+        try:
+            text = config.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        block = re.search(r"^\s*todo_files:\s*$((?:\n\s*-\s*.+)+)",
+                          text, re.MULTILINE)
+        if block:
+            for line in block.group(1).splitlines():
+                item = line.strip().lstrip("-").strip().strip('"').strip("'")
+                if not item:
+                    continue
+                candidate = vault_root / item
+                if candidate.is_file():
+                    found.append(candidate)
+    if not found:
+        for name in ("Por hacer.md", "To do.md", "Get to-do.md",
+                     "Team to-do.md", "Current Priorities.md",
+                     "Prioridades Actuales.md"):
+            for base in (vault_root, meta_dir):
+                candidate = base / name
+                if candidate.is_file() and candidate not in found:
+                    found.append(candidate)
+    return found[:4]
+
+
 def list_decisions_with_empty_outcome(meta_dir: Path) -> list[str]:
     """Return relative paths of Decisions/ files where Outcome: is blank."""
     decisions_dir = meta_dir / "Decisions"
@@ -622,7 +664,7 @@ def list_decisions_with_empty_outcome(meta_dir: Path) -> list[str]:
     out = []
     for path in sorted(decisions_dir.glob("*.md")):
         try:
-            text = path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         # Match `Outcome:` followed only by whitespace or a placeholder marker
@@ -707,6 +749,119 @@ def write_marker(
     return marker
 
 
+def path_contains(parent: Path, child: Path) -> bool:
+    """True iff `child` is `parent` or sits underneath it.
+
+    Deliberately string/parts based rather than Path.is_relative_to (3.9+) or
+    os.path.commonpath (raises on mixed drives): a hook must not crash on an
+    exotic path, and a False here only costs an advisory line.
+    """
+    try:
+        pp = os.path.normcase(os.path.abspath(str(parent))).replace("\\", "/")
+        cp = os.path.normcase(os.path.abspath(str(child))).replace("\\", "/")
+    except (OSError, ValueError):
+        return False
+    if pp == cp:
+        return True
+    return cp.startswith(pp.rstrip("/") + "/")
+
+
+def offsite_vault_warning(vault_root: Path, cwd: Path) -> str:
+    """Advisory line when the cascade will write OUTSIDE the working folder.
+
+    resolve_vault_root falls back to $VAULT_ROOT (then cwd) when the current
+    folder does not declare its own cascade. That fallback is intended, but it
+    is silent: with a global VAULT_ROOT configured, a session in an unrelated
+    folder pre-builds its session file inside that other vault, and the model
+    is told a "Vault root:" that reads perfectly normal. Naming the mismatch is
+    what lets the model stop before it files one project's work in another's.
+
+    Returns "" when the resolution is in-scope (the common case).
+    """
+    base = collapse_worktree(cwd)
+    if path_contains(vault_root, base):
+        return ""
+    return (
+        "\n  ⚠ HETEROTOPIC RESOLUTION — the vault root above is NOT this session's\n"
+        f"    working folder ({base}).\n"
+        "    This folder does not declare its own cascade, so resolution fell back\n"
+        "    to $VAULT_ROOT. Every artifact below will be written into the OTHER\n"
+        "    vault. Before writing anything: confirm with the user that this\n"
+        "    session's notes belong there. If they do not, STOP and offer to\n"
+        "    scaffold this folder (Meta/ + a `## Session End` section in its own\n"
+        "    CLAUDE.md) so it owns its cascade — do not silently cross vaults."
+    )
+
+
+def build_crashed_after_signal_notice(matched: str, err: str) -> str:
+    """Fail LOUD when the hook dies AFTER deciding the user is closing.
+
+    The catch-all below exists so a hook bug never blocks the user, and that is
+    right. But it returned a passthrough, and a passthrough after a matched
+    close signal is indistinguishable from a healthy close: the user says
+    "bye", the cascade never runs, and nothing anywhere says why. That is the
+    same defect #534 fixed for the KNOWN refusal, left open for the UNKNOWN
+    one — and it is not theoretical. A NameError introduced while writing #534
+    took exactly this path, and every scenario looked quiet and fine until a
+    negative control caught it.
+
+    Only fires once a signal has matched. No signal means the hook has no
+    business speaking, and the passthrough stays.
+    """
+    return (
+        f"SESSION CLOSE detected (signal: {matched!r}) — but the close hook "
+        f"CRASHED before it could emit the cascade, so NOTHING has been "
+        f"written.\n\n"
+        f"  Error: {err}\n\n"
+        f"This is a bug in the hook itself, not in the vault. TELL THE USER "
+        f"PLAINLY that the automatic close did not run — do not report a "
+        f"normal close.\n\n"
+        f"Then close the session MANUALLY: write the session file, decisions "
+        f"and captures by hand per the vault's own close rule, and report the "
+        f"error above so it can be fixed. Re-running with "
+        f"CLOSING_SIGNAL_DEBUG=1 prints the full trace."
+    )
+
+
+def build_unscaffolded_vault_notice(
+    matched: str,
+    confidence: str,
+    vault_root: Path,
+    meta_dir: Path,
+    reason: str,
+) -> str:
+    """Fail LOUD when the resolved vault has nowhere to write.
+
+    Previously this path logged to stderr behind CLOSING_SIGNAL_DEBUG and
+    emitted a passthrough: the user said "bye", the cascade did nothing, and
+    nothing anywhere said why. A silent no-op and a healthy close are
+    indistinguishable from the outside, which is the failure mode this
+    codebase treats as the worst one.
+    """
+    return (
+        f"SESSION CLOSE detected (signal: {matched!r}, confidence: {confidence}) — "
+        f"but the cascade CANNOT RUN here, so NOTHING has been written.\n\n"
+        f"  Resolved vault root: {vault_root}\n"
+        f"  Expected Meta dir:   {meta_dir}\n"
+        f"  Reason:              {reason}\n\n"
+        f"This folder is not scaffolded as a vault, so there is no Sessions/ or\n"
+        f"Decisions/ directory to write session artifacts into.\n\n"
+        f"TELL THE USER THIS PLAINLY in your closing message — do not report a\n"
+        f"normal close, and do not invent somewhere else to write. Then offer\n"
+        f"the fix:\n"
+        f"  1. Make this folder own its cascade — create {meta_dir}/Sessions/ and\n"
+        f"     {meta_dir}/Decisions/, AND add a `## Session End` (or\n"
+        f"     `## Session Close`) section to a CLAUDE.md at {vault_root}.\n"
+        f"     BOTH are required: the Meta dir alone gives the cascade somewhere\n"
+        f"     to write, but only the CLAUDE.md heading makes this folder resolve\n"
+        f"     to ITSELF instead of falling back to $VAULT_ROOT.\n"
+        f"  2. Or, if these notes belong to an existing vault, point VAULT_ROOT\n"
+        f"     at it for this project.\n\n"
+        f"Still give the user a normal verbal wrap-up. Just do not claim the\n"
+        f"cascade ran."
+    )
+
+
 def build_injected_context(
     confidence: str,
     matched: str,
@@ -722,6 +877,8 @@ def build_injected_context(
     is_trivial: bool,
     is_ambiguous: bool,
     goal_condition: str | None = None,
+    todo_files: list[Path] | None = None,
+    offsite_warning: str = "",
 ) -> str:
     """Compose the system block injected into the model's context.
 
@@ -751,7 +908,8 @@ def build_injected_context(
             + _full_cascade_block(
                 timestamp_human, timestamp_file, worktree, vault_root,
                 meta_dir, session_file, decisions_dir, captures_file,
-                pending_outcomes,
+                pending_outcomes, goal_condition=None, todo_files=todo_files,
+                offsite_warning=offsite_warning,
             )
         )
 
@@ -761,7 +919,8 @@ def build_injected_context(
         + _full_cascade_block(
             timestamp_human, timestamp_file, worktree, vault_root,
             meta_dir, session_file, decisions_dir, captures_file,
-            pending_outcomes, goal_condition,
+            pending_outcomes, goal_condition, todo_files=todo_files,
+            offsite_warning=offsite_warning,
         )
     )
 
@@ -814,9 +973,29 @@ def _full_cascade_block(
     captures_file: Path,
     pending_outcomes: list[str],
     goal_condition: str | None = None,
+    todo_files: list[Path] | None = None,
+    offsite_warning: str = "",
 ) -> str:
     """The reusable cascade-instruction block."""
     pending = ", ".join(pending_outcomes) if pending_outcomes else "(none)"
+    # Pre-resolve the to-do destination the same way the Time Tracking surface
+    # is resolved: the model trusts the injected path instead of inferring it.
+    if todo_files:
+        todo_line = "  To-do file(s):    " + "\n                    ".join(
+            str(p) for p in todo_files
+        )
+        todo_phase2 = f"""  • APPEND every new to-do to the to-do file(s) resolved above, under a
+    dated heading ("## <source> — YYYY-MM-DD"). Writing a to-do ONLY into
+    the session file does not count as filing it: /rise ranks from the
+    to-do file, so anything that stops at the session file is invisible
+    the next morning. Each line self-contained (context prefix in
+    brackets + wikilink or path) and marked 🔴 if it blocks something.
+    Deferred/incomplete items from Phase 0b go here too, with their reason."""
+    else:
+        todo_line = ("  To-do file(s):    (none found — create one at the vault root "
+                     "and list it under todo_files: in rise-config.md)")
+        todo_phase2 = ("""  • No to-do file resolved. Write the to-dos into the session file AND
+    tell the user their to-dos have nowhere durable to land.""")
     # Pre-resolve the Time Tracking surface (codified 2026-05-14). The Phase 1
     # bullet used to say "if vault uses it" and require the model to infer
     # presence; that produced a false-negative when the model checked the
@@ -862,10 +1041,11 @@ Then walk Phases 0b -> 1 -> 2 -> 2b -> 3 below."""
 
   Timestamp:        {timestamp_human}
   Worktree:         {worktree}
-  Vault root:       {vault_root}
+  Vault root:       {vault_root}{offsite_warning}
   Session file:     {session_file}  (already pre-built with frontmatter + headers; fill in the body)
   Decisions dir:    {decisions_dir}  (write per-decision files here, slug-named)
   Captures file:    {captures_file}
+{todo_line}
 {tt_line}
   Decisions with empty Outcome (review for backfill): {pending}
 
@@ -913,6 +1093,7 @@ PHASE 1 — Single-pass conversation scan (compose all in memory before writing)
 
 PHASE 2 — Batch writes (one tool-call block, append never overwrite):
   • Fill in the pre-built session file (paths above).
+{todo_phase2}
   • Create per-decision files in Decisions/ as needed.
   • Append journal seeds to Captures.
   • Personal vs team firewall: never let personal content leak to a team vault.
@@ -1007,6 +1188,7 @@ narration.{_goal_clear_block(goal_condition)}"""
 
 def main() -> int:
     start = time.time()
+    signal_seen: dict[str, str | None] = {"matched": None}
     try:
         hook_input = read_hook_input()
         prompt = (hook_input.get("prompt") or "").strip()
@@ -1077,6 +1259,9 @@ def main() -> int:
         confidence, matched = classify_signal(
             prompt, packs, custom, suppress, custom_only
         )
+        # Visible to the catch-all below: once a signal matches, going silent
+        # on an unexpected error is itself a failure the user must see.
+        signal_seen["matched"] = matched
 
         # Hybrid: ambiguous matches OR no match get a Haiku second look
         if confidence in (None, "ambiguous"):
@@ -1095,12 +1280,20 @@ def main() -> int:
         meta_dir = find_meta_dir(vault_root)
         ok, reason = verify_meta_dir(meta_dir)
         if not ok:
-            log_debug(f"meta_dir verification failed, skipping cascade: {reason}")
-            emit_passthrough()
+            # Fail LOUD. Skipping the WRITE is right (a phantom meta_dir would
+            # swallow the model's writes); skipping in SILENCE is not — the user
+            # signalled close and would otherwise get a clean-looking goodbye
+            # with no cascade behind it, indistinguishable from a healthy one.
+            log_debug(f"meta_dir verification failed, cascade cannot run: {reason}")
+            emit_context(build_unscaffolded_vault_notice(
+                matched=matched or "", confidence=confidence,
+                vault_root=vault_root, meta_dir=meta_dir, reason=reason,
+            ))
             return 0
         sessions_dir = meta_dir / "Sessions"
         decisions_dir = meta_dir / "Decisions"
         captures_file = meta_dir / "Session Captures.md"
+        todo_files = resolve_todo_files(vault_root, meta_dir)
 
         worktree = derive_worktree(cwd)
         now = datetime.now()
@@ -1156,12 +1349,23 @@ def main() -> int:
             is_trivial=is_trivial,
             is_ambiguous=is_ambiguous,
             goal_condition=active_session_goal(transcript_path),
+            todo_files=todo_files,
+            offsite_warning=offsite_vault_warning(vault_root, cwd),
         )
         emit_context(context)
         log_debug(f"injected context for {confidence} signal in {int((time.time() - start) * 1000)}ms")
         return 0
     except Exception as e:  # never block the user on hook errors
         log_debug(f"unexpected error: {e!r}")
+        # Never block — but never go SILENT once a close signal has matched.
+        if signal_seen["matched"] is not None:
+            try:
+                emit_context(build_crashed_after_signal_notice(
+                    signal_seen["matched"], f"{type(e).__name__}: {e}"
+                ))
+                return 0
+            except Exception:  # notice itself failed — fall through, still never block
+                log_debug("failed to emit crash notice")
         emit_passthrough()
         return 0
 

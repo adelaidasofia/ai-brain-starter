@@ -63,6 +63,7 @@ Your message when this rule triggers.
 | `dangerous-rm` | block | `rm -rf` commands without confirmation |
 | `warn-filesystem-walk-without-bounded-read` | warn | Recursive Python content walkers missing the shared bounded read |
 | `warn-delegated-task-needs-source` | warn | Delegated to-do (`[owner:: …]`) with no `[[link]]` or URL to its brief/source. **Auto-activated on install** (see [Automatic activation](#automatic-activation)). |
+| `warn-bare-gh-pr-mutation` | warn | Bare `gh pr create`/`gh pr merge` outside `scripts/gh-safe.py` (no session attribution, no read-before-write, no repo+branch lock — see `docs/SESSION_COORDINATION.md`) |
 
 ## Authoring guide and regression harness
 

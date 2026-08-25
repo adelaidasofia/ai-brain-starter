@@ -45,7 +45,24 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 from _meta_resolver import find_meta_dir  # noqa: E402
+
+# `_lib` is a PACKAGE at hooks/_lib/ in the repo checkout, and this script is ALSO
+# synced into a live vault at <meta>/scripts/ (VAULT_SCRIPTS in
+# scripts/sync-vault-scripts.sh). ../hooks does not exist there, so this import
+# used to die with `ModuleNotFoundError: No module named '_lib'`. insights/SKILL.md
+# invokes the VAULT copy, so /weekly and /monthly rebuilt no index at all and the
+# stale (usually empty) journal-index.json just sat there looking fine.
+#
+# Fixed by SYNCING THE REAL PRIMITIVE, not by degrading to a local one: the sync
+# now mirrors hooks/_lib/{__init__,safe_read}.py into <meta>/scripts/_lib/, which
+# the first sys.path entry above resolves. Deliberately NOT a try/except fallback
+# with a hand-rolled reader -- scripts/check-cloud-safe-file-walkers.py refuses to
+# trust a locally-defined safe_read_text (its own negative control is "bogus
+# safe_read module is not trusted"), and it is right to: a recursive walker must
+# reach the ONE audited primitive, or the guarantee is only as good as the copy.
+# safe_read.py is stdlib-only, so mirroring it costs the vault nothing.
 from _lib.safe_read import safe_read_text  # noqa: E402
+from _floors import Floors  # noqa: E402
 
 # Read bounds for the shared safe_read primitive. Journal frontmatter sits in
 # the first lines; safe_read hands back the whole (size-capped) file. 1 MB is
@@ -161,6 +178,12 @@ def main():
     entries = []
     skipped = []
 
+    # Floor vocabulary comes from the vault's own floor notes. When there are
+    # none there is nothing to check against, and the skip is announced below
+    # rather than passing silently.
+    floors = Floors(vault)
+    inconsistencies = []
+
     # Recursive walk: indexes journals nested under year-month subfolders
     # (e.g. Journals/2026-04/2026-04-15.md), not just top-level files.
     for root, _dirs, files in os.walk(journal_dir):
@@ -191,6 +214,23 @@ def main():
                         meta[k.strip()] = v.strip().strip("'\"")
                 if i > 15:
                     break
+            # A typed non-journal note living under the journal folder is not an
+            # entry. The recursive walk picks up the insight reports that
+            # /weekly and /monthly write into "Weekly Insights/" and
+            # "Monthly Insights/" subfolders, and those carry a creationDate,
+            # so the creationDate gate alone let them in — on one real vault,
+            # 29 indexed "entries" for 27 lived days. /patterns reads the last 7
+            # from this index, so the machine was re-reading its own summaries
+            # as if they were new material.
+            #
+            # Only a type that is present AND not "journal" disqualifies a file.
+            # An absent type still indexes: entries written before the daily-journal
+            # template gained `type: journal` (#379) have no field at all, and
+            # excluding those would empty the index on exactly the vaults that
+            # fix targets.
+            entry_type = meta.get("type")
+            if entry_type is not None and entry_type != "journal":
+                continue
             if "creationDate" in meta:
                 # Store path relative to journal_dir so subfoldered entries
                 # with colliding basenames stay distinct.
@@ -205,6 +245,8 @@ def main():
                 if "floor_arc" in meta:
                     entry["floor_arc"] = _parse_inline_list(meta["floor_arc"])
                 entries.append(entry)
+                inconsistencies.extend(
+                    floors.check(meta, label=os.path.relpath(fpath, journal_dir)))
 
     if skipped:
         preview = ", ".join(f"{f} [{s}]" for f, s in skipped[:5])
@@ -217,12 +259,33 @@ def main():
         "last_updated": datetime.now().strftime("%Y-%m-%dT%H:%M"),
         "entries": entries,
     }
-    with open(output_path, "w") as f:
+    # encoding="utf-8" is LOAD-BEARING, not decoration. Text mode without it uses
+    # locale.getpreferredencoding(), which is cp1252 on a stock Windows box. Paired
+    # with ensure_ascii=False below, a single accented title ("Reunión", "día") is
+    # then written as cp1252 bytes into a file every consumer opens as UTF-8 —
+    # /weekly, /monthly, diagnose, insight-fact-check — which die on
+    # `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xed`. The write itself
+    # raises nothing, so the corruption is silent at the point it is created.
+    # Not reproducible on a box with PYTHONUTF8=1 set, which is exactly why this
+    # survived: it is invisible to the maintainer and fatal to a fresh install.
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
 
     print(f"Indexed {len(entries)} entries → {output_path}")
     if entries:
         print(f"  date range: {entries[0]['date']} → {entries[-1]['date']}")
+
+    if not floors:
+        print("  note: no floor notes found — frontmatter consistency check skipped",
+              file=sys.stderr)
+    elif not floors.has_tiers:
+        print("  note: floor notes declare no tiers — tier consistency check skipped",
+              file=sys.stderr)
+    if inconsistencies:
+        print("  {} frontmatter inconsistency(ies):".format(len(inconsistencies)),
+              file=sys.stderr)
+        for issue in inconsistencies:
+            print("    - {}".format(issue), file=sys.stderr)
 
 
 if __name__ == "__main__":
