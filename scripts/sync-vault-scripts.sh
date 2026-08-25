@@ -90,6 +90,15 @@ done
 VAULT_SCRIPTS=(
   "_meta_resolver.py"          # shared meta-folder resolver (deterministic keystone)
   "_project_key.py"            # shared project-key resolver (dep of check-rule-conflicts.py)
+  "_floors.py"                 # shared floor vocabulary (dep of build-journal-index.py)
+  "_session_close_guard.sh"    # shared git-dir/index-lock resolver — sourced by BOTH
+                               # vault-safe-commit.sh and session-end-hook.sh. Omitting
+                               # it shipped the consumers without their dependency: the
+                               # commit wrapper fell to a fail-closed stub and EVERY vault
+                               # commit refused (it is the only route past the raw-git
+                               # block guard), while session-end-hook fell to "defer" and
+                               # silently no-opped every session-end snapshot. Section 1b
+                               # of test_vault_script_sync.sh now fails on this class.
   "aggregate-sessions.py"      # session-close: Last Session.md index
   "aggregate-decisions.py"     # session-close: Decision Log index
   "session-close-runner.sh"    # session-close: deterministic aggregation runner (#173)
@@ -214,8 +223,12 @@ fi
 # --- Sync one script: backup-on-diff, then copy (mirrors sync-skills.sh). ------
 sync_one() {
   local name="$1"
-  local src="$STARTER_DIR/scripts/$name"
-  local dest="$DEST_DIR/$name"
+  # Optional $2/$3 override the default scripts/<name> -> <meta>/scripts/<name>
+  # mapping so the _lib package deps below travel through the SAME backup /
+  # dry-run / symlink-skip semantics, instead of getting a second, weaker copy
+  # path that would drift from this one.
+  local src="${2:-$STARTER_DIR/scripts/$name}"
+  local dest="${3:-$DEST_DIR/$name}"
 
   if [ ! -f "$src" ]; then
     ABSENT+=("$name (not on this checkout yet)")
@@ -266,10 +279,47 @@ for s in "${VAULT_SCRIPTS[@]}"; do
   sync_one "$s"
 done
 
+# --- Package deps: hooks/_lib/ -> <meta>/scripts/_lib/ ------------------------
+# The manifest above is a flat list of scripts/ FILENAMES, so it structurally
+# cannot express a PACKAGE dependency. build-journal-index.py imports
+# `_lib.safe_read` (the one audited bounded-read primitive), and because that
+# package only ever existed at hooks/_lib/, the synced vault copy died at import
+# with `ModuleNotFoundError: No module named '_lib'` — silently, since the
+# insights skill runs the vault copy and nothing surfaced its exit code. The
+# import-closure self-test could not see it either: it resolved deps only as
+# scripts/<mod>.py, and a package directory is not a file.
+#
+# Mirroring the real module is the honest fix. The alternative — a try/except
+# fallback with a hand-rolled reader — is explicitly refused by
+# scripts/check-cloud-safe-file-walkers.py, whose negative control is "bogus
+# safe_read module is not trusted": a recursive walker must reach the ONE
+# audited primitive. safe_read.py is stdlib-only, so this costs the vault
+# nothing. Every entry must likewise be stdlib-only or listed here.
+VAULT_LIB_MODULES=(
+  "__init__.py"     # makes _lib an importable package
+  "safe_read.py"    # bounded, symlink-refusing read (dep of build-journal-index.py)
+)
+if [ "$DRY_RUN" -eq 0 ]; then
+  mkdir -p "$DEST_DIR/_lib" 2>/dev/null || {
+    echo "sync-vault-scripts: cannot create $DEST_DIR/_lib" >&2; exit 2; }
+fi
+for m in "${VAULT_LIB_MODULES[@]}"; do
+  sync_one "_lib/$m" "$STARTER_DIR/hooks/_lib/$m" "$DEST_DIR/_lib/$m"
+done
+
 # --- Summary (to stdout + a discoverable vault-side log) ----------------------
 LOG_FILE="$DEST_DIR/.vault-script-sync.log"
 summary() {
-  echo "=== sync-vault-scripts.sh @ $STAMP${DRY_RUN:+ (dry-run)} ==="
+  # NOT ${DRY_RUN:+...}: that expands when the var is merely SET AND NON-EMPTY,
+  # and the default is the STRING "0" — non-empty — so this banner said
+  # "(dry-run)" on every REAL run too, including the one that had just rewritten
+  # files and left .bak copies behind. A sync that mutates a vault while
+  # announcing itself as a dry run is the worst direction for this to fail: the
+  # operator reads "(dry-run)", believes nothing happened, and re-runs or walks
+  # away. Every other DRY_RUN site in this file tests `-eq 1`; match them.
+  local dry_label=""
+  [ "$DRY_RUN" -eq 1 ] && dry_label=" (dry-run)"
+  echo "=== sync-vault-scripts.sh @ $STAMP$dry_label ==="
   echo "vault: $VAULT"
   echo "meta:  $META"
   echo "Created:   ${#CREATED[@]}";   for f in "${CREATED[@]:-}"; do [ -n "$f" ] && echo "  + $f"; done

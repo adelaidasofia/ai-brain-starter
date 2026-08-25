@@ -46,11 +46,14 @@ or runs a bounded subprocess - needs none of this. It is bounded by construction
 and passes clean.
 
 Modes:
-  --all [--hooks-json P] [--hooks-dir D]
+  --all [--hooks-json P] [--hooks-dir D [D ...]]
                     Audit the canonical SessionStart set (default: the SessionStart
-                    block of <repo>/hooks.json, resolved against <repo>/hooks/).
-                    Exit 1 if any wired hook is an unguarded, unexempt corpus
-                    walker. This is the CI gate.
+                    block of <repo>/hooks.json, resolved against <repo>/hooks/ AND
+                    <repo>/scripts/ — a SessionStart hook may ship in either, and
+                    heal-journal-guard.py ships in scripts/, so a hooks/-only
+                    resolver skipped it silently). Exit 1 if any wired hook is an
+                    unguarded, unexempt corpus walker; exit 2 if any wired hook
+                    could not be resolved and read. This is the CI gate.
   --check FILE      Add-time gate for ONE candidate SessionStart hook script: exit
                     1 if it recursive-walks without the guards or the exemption.
                     Advisory - fails OPEN (exit 0) on its own read error. Used by
@@ -58,15 +61,33 @@ Modes:
   --selftest        Positive + negative controls: a corpus walk with no guards
                     BITES; one stamping AFTER the walk BITES; one with all three
                     guards PASSES; one carrying the exemption annotation PASSES; a
-                    no-walk hook PASSES; a shell walk with no timeout BITES. Exit 1
-                    on any wrong verdict.
+                    no-walk hook PASSES; a shell walk with no timeout BITES. Plus
+                    resolver controls: the Windows launcher-shim command form
+                    resolves to the TARGET hook (not to hook_runner.py), and an
+                    unresolvable command still resolves to None (skipped, never
+                    counted bounded). Exit 1 on any wrong verdict.
   --json            machine-readable output (with --all).
 
 Stdlib only. Reads are bounded (1 MB cap, binary skip) - cloud-safe-walk
 compliant. --all / --selftest fail LOUD (exit 2) on an internal error so a broken
 detector can never silently pass CI; --check fails OPEN (it is advisory).
 
-Provenance: MYC-571 (parent incident MYC-570, the 2026-06-05 Mac-freeze).
+Exit codes (--all / --settings):
+  0  every wired SessionStart hook was READ and is bounded or declared-bounded
+  1  at least one hook is an unguarded, unexempt corpus walker
+  2  UNEVALUATED - a hook was skipped (unresolvable command, missing file,
+     unreadable source), or an internal error. NEVER 0: an audit is only as
+     strong as the fraction of the set it actually opened, and "6 of 25 read,
+     0 unguarded" is not "the fleet is bounded". This mirrors
+     scripts/audit-guard-activation-roots.py, which already refuses to call an
+     empty comparison a pass ("Nothing was compared - that is not the same as
+     everything matching"). MYC-3879: run against a live settings.json this
+     printed "6 resolved - 6 clean, 0 unguarded; 19 unresolved" followed by a
+     bare OK and exit 0. Nineteen wired commands were never opened and the
+     verdict said PASS.
+
+Provenance: MYC-571 (parent incident MYC-570, the 2026-06-05 Mac-freeze);
+verdict + resolution-root fixes MYC-3879.
 Canonical guarded example: hooks/scan-prior-sessions-for-secrets.py.
 """
 from __future__ import annotations
@@ -262,9 +283,24 @@ def evaluate(src: str, lang: str = "py") -> dict:
 
 
 # ---- SessionStart set resolution ----------------------------------------------
+# hook_runner.py is the Windows installer's launcher shim, never a hook itself —
+# see resolve_command_path() for the full why. Both resolvers in this file have to
+# skip it, or a platformized hooks.json resolves EVERY entry to the launcher.
+_RUNNER_SHIM_RE = re.compile(r"(?:^|[\\/])hook_runner\.py$", re.IGNORECASE)
+
+
 def _basename(cmd: str) -> str | None:
-    m = re.search(r"([\w.\-]+\.(?:py|sh|bash))", cmd)
-    return m.group(1) if m else None
+    """The hook script's basename — the launcher's, only when it launches nothing.
+
+    --all reads a hooks.json, which ships in POSIX form, so the shim skip is
+    latent there today. It is still wrong to leave: pointed at a platformized
+    file, EVERY entry would resolve to hook_runner.py, none would be found under
+    --hooks-dir, and the gate would report an empty fleet and exit 0 — the silent
+    pass this whole script exists to prevent."""
+    names = re.findall(r"([\w.\-]+\.(?:py|sh|bash))", cmd)
+    if not names:
+        return None
+    return next((n for n in names if not _RUNNER_SHIM_RE.search(n)), names[0])
 
 
 def sessionstart_basenames(hooks_json: Path) -> list[str]:
@@ -290,15 +326,35 @@ def _cite() -> str:
 
 
 # ---- modes --------------------------------------------------------------------
-def cmd_all(hooks_json: Path, hooks_dir: Path, as_json: bool) -> int:
+def _resolve_in_dirs(bn: str, dirs: list[Path]) -> Path | None:
+    """First existing <dir>/<basename> across the resolution roots, else None.
+
+    Why a LIST and not one hooks/ directory (MYC-3879): SessionStart hooks ship
+    from two places. heal-journal-guard.py is wired on SessionStart and lives in
+    <repo>/scripts, so a hooks/-only resolver could not open it and dropped it
+    into the "not found - skipped" bucket, where the old verdict ignored it."""
+    for d in dirs:
+        f = d / bn
+        if f.exists():
+            return f
+    return None
+
+
+def cmd_all(hooks_json: Path, hooks_dirs: list[Path], as_json: bool) -> int:
     names = sessionstart_basenames(hooks_json)
     rows, reds, exempts, unresolved = [], [], [], []
     for bn in names:
-        f = hooks_dir / bn
-        if not f.exists():
+        f = _resolve_in_dirs(bn, hooks_dirs)
+        if f is None:
             unresolved.append(bn)
             continue
         src = _read_bounded(f)
+        if not src:
+            # Unreadable / binary / oversize. Previously indistinguishable from
+            # "clean" because evaluate("") returns ok=True with no walk. An
+            # unread file is UNEVALUATED, not bounded.
+            unresolved.append(bn)
+            continue
         v = evaluate(src, _detect_lang(bn, src))
         rows.append((bn, v))
         if v["walk"] and not v["ok"] and not v["exempt"]:
@@ -309,19 +365,23 @@ def cmd_all(hooks_json: Path, hooks_dir: Path, as_json: bool) -> int:
     if as_json:
         print(json.dumps(dict(
             hooks_json=str(hooks_json),
+            hooks_dirs=[str(d) for d in hooks_dirs],
             audited=[bn for bn, _ in rows],
             unresolved=unresolved,
+            verdict=("FAIL" if reds else "UNEVALUATED" if unresolved else "PASS"),
             red=[dict(hook=bn, walks=v["walks"], missing=v["missing"]) for bn, v in reds],
             exempt=[dict(hook=bn, reason=v["exempt_reason"]) for bn, v in exempts],
         ), indent=2))
-        return 1 if reds else 0
+        return 1 if reds else (2 if unresolved else 0)
 
     print("=" * 78)
     print("SessionStart boundedness audit (MYC-571) - corpus walks need the 3 guards")
     print("=" * 78)
     print(f"hooks.json: {hooks_json}")
-    print(f"{len(rows)} SessionStart hook(s) audited; "
-          f"{len(reds)} unguarded corpus walk(s); {len(exempts)} declared-bounded.\n")
+    print(f"resolution roots: {', '.join(str(d) for d in hooks_dirs)}")
+    print(f"{len(rows)} of {len(names)} SessionStart hook(s) audited; "
+          f"{len(reds)} unguarded corpus walk(s); {len(exempts)} declared-bounded; "
+          f"{len(unresolved)} NOT EVALUATED.\n")
     for bn, v in rows:
         if v["walk"] and not v["ok"] and not v["exempt"]:
             mark = "RED "
@@ -339,12 +399,22 @@ def cmd_all(hooks_json: Path, hooks_dir: Path, as_json: bool) -> int:
         if v["walk"] and not v["ok"] and not v["exempt"]:
             detail += f"  MISSING: {', '.join(v['missing'])}"
         print(f"  [{mark}] {bn}{detail}")
-    if unresolved:
-        print(f"\n  (note: {len(unresolved)} wired hook(s) not found under {hooks_dir} - "
-              f"user-level only, skipped: {', '.join(unresolved)})")
     if reds:
         print("\n" + _cite())
         return 1
+    if unresolved:
+        # NOT a note, and NOT exit 0. This used to print "user-level only,
+        # skipped" and pass — an assumption about hooks nothing had opened.
+        print(f"\nUNEVALUATED: {len(unresolved)} wired SessionStart hook(s) could not be "
+              f"resolved and read under {', '.join(str(d) for d in hooks_dirs)}:")
+        for bn in unresolved:
+            print(f"    - {bn}")
+        print("Nothing was checked for those - that is not the same as them being\n"
+              "bounded. Ship the hook into a resolution root, or pass the root that\n"
+              "holds it with --hooks-dir. (heal-journal-guard.py is exactly this\n"
+              "class: SessionStart-wired, shipped in scripts/, invisible to a\n"
+              "hooks/-only audit that then reported OK.)")
+        return 2
     print("\nAll SessionStart corpus walks are guarded or declared-bounded. OK.")
     return 0
 
@@ -380,24 +450,90 @@ def sessionstart_commands(settings_path: Path) -> list[str]:
     return out
 
 
+# Every script path a command names, quoted or bare, in command order. THREE path
+# forms have to parse, because the Windows leg of the installer
+# (install-hooks-user-level.py) rewrites every hook command into a launcher shim:
+#
+#   POSIX bare      python3 ~/.claude/hooks/x.py 2>/dev/null || echo '{...}'
+#   POSIX guarded   [ -f ~/.claude/hooks/x.sh ] && bash ~/.claude/hooks/x.sh
+#   Windows shim    py -3 "C:\...\scripts\hook_runner.py" --fallback silent "C:\...\hooks\x.py"
+#
+# The pre-fix matcher required a literal `python`/`python3`/`bash`/`sh`/`zsh`
+# token, OR a forward slash inside the quotes, OR a `~`/`/` first character. The
+# Windows form has none of the three (`py -3` is the launcher, paths are
+# backslashed drive letters), so resolve_command_path() returned None for it and
+# the EFFECTIVE-set audit evaluated essentially nothing on every Windows install:
+# measured on a real box, 19 of 25 wired SessionStart commands resolved to
+# nothing. Same silent-no-op class as issues #370/#375/#485 (MYC-3879).
+#
+# Kept structurally parallel to _GUARD_PATH_RE in scripts/heal-journal-guard.py:
+# quoted alternatives first (a Windows home MAY contain a space), bare last (an
+# unquoted path ends at whitespace or a shell operator). Roots accepted: `~`,
+# POSIX `/`, a UNC `\\share`, a drive letter. Over-matching stays harmless — the
+# caller still stats the path — but a BARE path may only start where a token can,
+# else `./hooks/x.py` would match at its inner `/` and a cwd-relative command
+# would resolve to a bogus absolute `/hooks/x.py`.
+_SCRIPT_TOKEN_RE = re.compile(
+    r"\"([^\"\n]+\.(?:py|sh|bash))\""
+    r"|'([^'\n]+\.(?:py|sh|bash))'"
+    r"|(?<![^\s'\"|&;(=])((?:~|/|\\\\|[A-Za-z]:[\\/])[^\s'\"|&;]*\.(?:py|sh|bash))"
+)
+_DRIVE_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")  # _RUNNER_SHIM_RE: see _basename above
+
+
+def _script_tokens(cmd: str) -> list[str]:
+    """Script-looking paths in `cmd`, in command order."""
+    return [next(g for g in m.groups() if g) for m in _SCRIPT_TOKEN_RE.finditer(cmd)]
+
+
+def _absolute_or_none(raw: str) -> Path | None:
+    """Expand `~` and accept a path that is absolute in EITHER flavour.
+
+    Path.is_absolute() is flavour-BOUND: on Windows `/a/b` is not absolute (no
+    drive) and on POSIX `C:\\a\\b` is not absolute (no root). Leaning on it alone
+    would make this verdict depend on which OS runs the auditor; judging the
+    string keeps resolution platform-independent and unit-testable from POSIX CI.
+    A path that does not exist on THIS host is still counted unresolved by the
+    caller, which stats it.
+
+    Anything relative / cwd-dependent stays None: reported as unresolved, NEVER
+    silently treated as bounded."""
+    p = raw.strip()
+    if p.startswith("~"):
+        p = str(Path.home()) + p[1:]
+    if _DRIVE_ABS_RE.match(p) or p.startswith(("/", "\\\\")):
+        return Path(p)
+    return Path(p) if Path(p).is_absolute() else None
+
+
 def resolve_command_path(cmd: str) -> Path | None:
     """Best-effort resolve the script a SessionStart command runs, to an ABSOLUTE
-    path. Handles `python3 ~/.claude/hooks/x.py --flag`, quoted paths, and a
-    leading `[ -f X ] && ...` guard. Returns None when no path is found OR it is
-    not absolute after expanduser — a relative/cwd-dependent command is reported
-    as unresolved, NEVER silently treated as bounded."""
-    for rx in (r"(?:python3?|bash|sh|zsh)\s+(?:-\w+\s+)*['\"]([^'\"]+\.(?:py|sh|bash))['\"]",
-               r"(?:python3?|bash|sh|zsh)\s+(?:-\w+\s+)*([^\s'\"]+\.(?:py|sh|bash))",
-               r"['\"]([^'\"]*?/[^'\"]+\.(?:py|sh|bash))['\"]",
-               r"([~/][^\s'\"]*\.(?:py|sh|bash))"):
-        m = re.search(rx, cmd)
-        if m:
-            p = m.group(1)
-            if p.startswith("~"):
-                p = str(Path.home()) + p[1:]
-            pp = Path(p)
-            return pp if pp.is_absolute() else None
-    return None
+    path. Handles `python3 ~/.claude/hooks/x.py --flag`, quoted paths, a leading
+    `[ -f X ] && ...` guard, Windows drive-letter paths, and the Windows launcher
+    shim. Returns None when no path is found OR it is not absolute after
+    expanduser — a relative/cwd-dependent command is reported as unresolved,
+    NEVER silently treated as bounded.
+
+    hook_runner.py is a LAUNCHER, not a hook: on Windows every command reads
+    `py -3 "<abs>/scripts/hook_runner.py" --fallback silent "<abs>/hooks/x.py"`,
+    and the shim only re-execs the target with the payload on stdin. So a command
+    that goes through the shim resolves to its TARGET — the first script path
+    AFTER the shim, matching hook_runner's own argv handling
+    (`[--fallback MODE] <target> [extra...]`). Resolving to the shim instead
+    would be WORSE than not resolving at all: the launcher is walk-free and
+    identical for all 19 hooks, so the audit would read one trivially-clean file
+    19 times and report a clean fleet having never opened a hook. That is not
+    hypothetical — the installer's launcher is `python`/`python3` where `py` is
+    absent, and the pre-fix matcher DID resolve that form, straight to the shim."""
+    toks = _script_tokens(cmd)
+    if not toks:
+        return None
+    shim = next((i for i, t in enumerate(toks) if _RUNNER_SHIM_RE.search(t)), None)
+    if shim is not None:
+        target = next((t for t in toks[shim + 1:] if not _RUNNER_SHIM_RE.search(t)), None)
+        if target:  # no target at all -> the shim IS what runs; fall through
+            return _absolute_or_none(target)
+    return _absolute_or_none(toks[0])
 
 
 def cmd_settings(settings_path: Path, porcelain: bool) -> int:
@@ -406,8 +542,16 @@ def cmd_settings(settings_path: Path, porcelain: bool) -> int:
     template that --all checks (MYC-1113). Resolves each hook by its full command
     path.
 
-    Exit: 0 = every resolved hook is bounded/declared; 1 = >=1 unguarded corpus
-    walker; 2 = settings.json missing / unparseable (fail LOUD, never silent)."""
+    Exit: 0 = every wired command was READ and is bounded/declared; 1 = >=1
+    unguarded corpus walker; 2 = UNEVALUATED — settings.json missing /
+    unparseable, OR at least one wired command was never opened (MYC-3879).
+
+    That last case used to exit 0. On a live Windows settings.json it printed
+    "6 resolved hook(s) — 6 clean, 0 unguarded; 19 unresolved" and then "OK."
+    Nineteen SessionStart commands went unread and the verdict was PASS, so a
+    freeze-class hook among them could never have been reported. The skip count
+    was already on screen; only the EXIT CODE decides what CI and diagnose.sh
+    believe, and it said everything was fine."""
     p = Path(settings_path)
     if not p.exists():
         print("ERROR:not-found" if porcelain else f"ERROR: settings.json not found: {p}")
@@ -417,22 +561,26 @@ def cmd_settings(settings_path: Path, porcelain: bool) -> int:
     except Exception as e:
         print("ERROR:unparseable" if porcelain else f"ERROR: settings.json unparseable: {e}")
         return 2
-    reds, exempts, clean, unresolved = [], 0, 0, 0
+    reds, exempts, clean = [], 0, 0
+    # (why-it-was-skipped, what-was-skipped). Kept as a list, not a bare count:
+    # "19 unresolved" is unactionable, and an unactionable number is what let
+    # this stay at 19 for months.
+    skipped: list[tuple[str, str]] = []
     seen: set[str] = set()
     for c in sessionstart_commands(p):
         rp = resolve_command_path(c)
         if rp is None:
-            unresolved += 1
+            skipped.append(("no absolute script path in the command", c[:96]))
             continue
         if str(rp) in seen:
             continue
         seen.add(str(rp))
         if not rp.exists():
-            unresolved += 1
+            skipped.append(("script not on disk", str(rp)))
             continue
         src = _read_bounded(rp)
         if not src:
-            unresolved += 1
+            skipped.append(("source unreadable / binary / over 1 MB", str(rp)))
             continue
         v = evaluate(src, _detect_lang(rp.name, src))
         if v["walk"] and not v["ok"] and not v["exempt"]:
@@ -442,20 +590,35 @@ def cmd_settings(settings_path: Path, porcelain: bool) -> int:
         else:
             clean += 1
     if porcelain:
+        # A found freeze-class hook outranks an incomplete audit: UNGUARDED is
+        # a fact, PARTIAL is an absence of facts.
         if reds:
             print("UNGUARDED:" + str(len(reds)) + ":" + ",".join(n for n, _ in reds))
             return 1
-        print(f"OK:{clean}:{exempts}:{unresolved}")
+        if skipped:
+            print(f"PARTIAL:{clean}:{exempts}:{len(skipped)}")
+            return 2
+        print(f"OK:{clean}:{exempts}:0")
         return 0
     total = clean + exempts + len(reds)
     print(f"Effective SessionStart set ({p}): {total} resolved hook(s) — "
           f"{clean} clean, {exempts} declared-bounded, {len(reds)} unguarded; "
-          f"{unresolved} unresolved.")
+          f"{len(skipped)} NOT EVALUATED.")
     for n, v in reds:
         print(f"  RED  {n}: walk={'+'.join(v['walks'])}  MISSING: {', '.join(v['missing'])}")
     if reds:
         print("\n" + _cite())
         return 1
+    if skipped:
+        print(f"\nUNEVALUATED: {len(skipped)} wired SessionStart command(s) were never "
+              f"opened, so nothing is known about them:")
+        for why, what in skipped:
+            print(f"    - {what}\n        ({why})")
+        print("A verdict over the fraction that happened to resolve is not a verdict\n"
+              "over the fleet. Every line above could be a corpus walker and this\n"
+              "audit would look identical. Fix the wiring (absolute paths), install\n"
+              "the missing scripts, then re-run - do NOT read this as bounded.")
+        return 2
     print("All resolved SessionStart corpus walks are guarded or declared-bounded. OK.")
     return 0
 
@@ -525,6 +688,97 @@ _FX_SH_MAXDEPTH2 = """#!/usr/bin/env bash
 find ~/x -maxdepth 2 -name '.draft' -type f   # depth-bounded, not the corpus-walk freeze class
 """
 
+# ---- resolver fixtures (the Windows launcher-shim form, MYC-3879) -------------
+# EXACTLY the shape install-hooks-user-level.py emits on Windows:
+#     " ".join([*launcher, f'"{runner}"', "--fallback", fb, f'"{target}"'])
+# Hermetic absolute paths — never this machine's home — so the controls assert the
+# same thing on Windows and in POSIX CI. The win-* cases all resolve to None on
+# the pre-fix matcher: they are the negative control for that bug.
+_RX_RUNNER = r"C:\Users\dev\.claude\skills\ai-brain-starter\scripts\hook_runner.py"
+_RX_TARGET = r"C:\Users\dev\.claude\skills\ai-brain-starter\hooks\session-start-context.py"
+_RX_TARGET_SPACED = r"C:\Users\dev user\.claude\skills\ai-brain-starter\hooks\inject-instinct-context.py"
+_FX_WIN_SHIM = f'py -3 "{_RX_RUNNER}" --fallback silent "{_RX_TARGET}"'
+_FX_WIN_SHIM_SPACED = f'py -3 "{_RX_RUNNER}" --fallback allow "{_RX_TARGET_SPACED}"'
+_FX_WIN_SHIM_PY3 = f'python3 "{_RX_RUNNER}" --fallback silent "{_RX_TARGET}"'
+_FX_POSIX_CHAIN = ("python3 ~/.claude/skills/ai-brain-starter/hooks/surface-backup-status.py "
+                   "2>/dev/null || echo '{\"continue\":true,\"suppressOutput\":true}'")
+_FX_POSIX_GUARD = ("[ -f ~/.claude/hooks/check-claude-code-version.sh ] && "
+                   "bash ~/.claude/hooks/check-claude-code-version.sh || true")
+
+
+def _selftest_resolver() -> list[str]:
+    """Controls for resolve_command_path(). Returns failure lines (empty == pass).
+
+    Every case is an EQUALITY assertion, so a resolver that resolves NOTHING
+    cannot pass one by accident — the shape this guards against is precisely the
+    MYC-3879 bug, where 19 of 25 wired Windows commands silently resolved to None
+    and the effective-set audit evaluated an empty fleet while still printing OK."""
+    fails: list[str] = []
+
+    # --- premise guards: fixtures that rot into proving nothing must fail LOUD --
+    if _RX_RUNNER == _RX_TARGET or not _RX_RUNNER.endswith("hook_runner.py"):
+        fails.append("premise: the shim fixtures must name hook_runner.py AND a "
+                     "DIFFERENT target, else 'resolves to the target' is vacuous")
+    for lbl, fx, tgt in (("silent", _FX_WIN_SHIM, _RX_TARGET),
+                         ("allow+space", _FX_WIN_SHIM_SPACED, _RX_TARGET_SPACED),
+                         ("python3-launcher", _FX_WIN_SHIM_PY3, _RX_TARGET)):
+        if not (_RX_RUNNER in fx and tgt in fx and fx.index(_RX_RUNNER) < fx.index(tgt)):
+            fails.append(f"premise[{lbl}]: fixture must carry the launcher BEFORE a "
+                         f"different target: {fx!r}")
+        if "--fallback" not in fx or '"' not in fx:
+            fails.append(f"premise[{lbl}]: fixture is not the installer's quoted "
+                         f"`--fallback` launcher form: {fx!r}")
+    # Parity with the EMITTER. These fixtures only mean something while the Windows
+    # installer still wraps hooks in hook_runner.py with --fallback; if it stops,
+    # the shim rule above is stale and this must fail rather than keep asserting a
+    # shape nobody writes. An ABSENT installer is a standalone deployed copy of
+    # this script — the structural guards above still hold, so that is not a fail.
+    installer = Path(__file__).resolve().parent / "install-hooks-user-level.py"
+    if installer.exists():
+        isrc = _read_bounded(installer)
+        if not ("hook_runner" in isrc and "--fallback" in isrc):
+            fails.append("premise: install-hooks-user-level.py no longer emits the "
+                         "hook_runner `--fallback` launcher form — the shim rule in "
+                         "resolve_command_path() is stale")
+
+    home = str(Path.home())
+    cases = [
+        # Windows: must resolve to the TARGET hook, never to the launcher shim.
+        ("win shim -> target, not launcher", _FX_WIN_SHIM, Path(_RX_TARGET)),
+        ("win shim, space in home", _FX_WIN_SHIM_SPACED, Path(_RX_TARGET_SPACED)),
+        ("win shim, python3 launcher", _FX_WIN_SHIM_PY3, Path(_RX_TARGET)),
+        ("win bare drive-letter path", r"py -3 C:\Users\dev\.claude\hooks\x.py",
+         Path(r"C:\Users\dev\.claude\hooks\x.py")),
+        ("win shim, no target -> the shim", f'py -3 "{_RX_RUNNER}"', Path(_RX_RUNNER)),
+        # POSIX forms that already worked: regression controls.
+        ("posix tilde + fallback chain", _FX_POSIX_CHAIN,
+         Path(home + "/.claude/skills/ai-brain-starter/hooks/surface-backup-status.py")),
+        ("posix [ -f ] && guard form", _FX_POSIX_GUARD,
+         Path(home + "/.claude/hooks/check-claude-code-version.sh")),
+        ("posix absolute path", "python3 /Users/d/.claude/hooks/x.py",
+         Path("/Users/d/.claude/hooks/x.py")),
+        # Unresolvable stays unresolvable — reported as SKIPPED, never as bounded.
+        ("relative -> unresolved", "python3 hooks/x.py", None),
+        ("dot-relative -> unresolved", "python3 ./hooks/x.py", None),
+        ("no script named -> unresolved", "echo hello", None),
+    ]
+    for label, cmd, want in cases:
+        got = resolve_command_path(cmd)
+        if got != want:
+            fails.append(f"resolve[{label}]: wanted {want!r}, got {got!r}  cmd={cmd!r}")
+
+    # _basename() is the OTHER resolver (--all): it must skip the shim too, or a
+    # platformized hooks.json resolves every entry to the launcher and --all
+    # audits an empty fleet.
+    for label, cmd, want in (("win shim", _FX_WIN_SHIM, "session-start-context.py"),
+                             ("posix chain", _FX_POSIX_CHAIN, "surface-backup-status.py"),
+                             ("shim only", f'py -3 "{_RX_RUNNER}"', "hook_runner.py"),
+                             ("no script", "echo hello", None)):
+        got = _basename(cmd)
+        if got != want:
+            fails.append(f"basename[{label}]: wanted {want!r}, got {got!r}")
+    return fails
+
 
 def cmd_selftest() -> int:
     cases = [
@@ -547,13 +801,16 @@ def cmd_selftest() -> int:
             fails.append(f"{label}: wanted {'BITE' if want_bite else 'PASS'}, "
                          f"got {'BITE' if bites else 'PASS'} (walks={v['walks']}, "
                          f"missing={v['missing']}, exempt={v['exempt']})")
+    fails += _selftest_resolver()
     if fails:
         print("SELFTEST FAIL:")
         for f in fails:
             print("  - " + f)
         return 1
     print("SELFTEST PASS: detector bites unguarded + stamp-after corpus walks, "
-          "passes 3-guard / exempt / no-walk hooks (py + sh).")
+          "passes 3-guard / exempt / no-walk hooks (py + sh); resolver reaches the "
+          "TARGET hook through the Windows launcher shim and still skips "
+          "unresolvable commands.")
     return 0
 
 
@@ -571,7 +828,15 @@ def main() -> int:
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--porcelain", action="store_true", help="one-line verdict (with --settings)")
     ap.add_argument("--hooks-json", default=str(repo / "hooks.json"))
-    ap.add_argument("--hooks-dir", default=str(repo / "hooks"))
+    # nargs="+": a SessionStart hook may ship from hooks/ OR scripts/, so the
+    # default is BOTH. A single-value `--hooks-dir X` still parses exactly as
+    # before (existing callers and tests are unaffected) and REPLACES the
+    # default pair, which keeps a hermetic fixture run from silently reaching
+    # into the real repo.
+    ap.add_argument("--hooks-dir", nargs="+", default=[str(repo / "hooks"),
+                                                       str(repo / "scripts")],
+                    help="one or more roots to resolve wired hook basenames "
+                         "against (default: <repo>/hooks <repo>/scripts)")
     a = ap.parse_args()
 
     # --check is advisory: fail OPEN on its own error.
@@ -590,7 +855,8 @@ def main() -> int:
         if a.settings:
             return cmd_settings(Path(a.settings), a.porcelain)
         if a.all:
-            return cmd_all(Path(a.hooks_json), Path(a.hooks_dir), a.json)
+            dirs = [a.hooks_dir] if isinstance(a.hooks_dir, str) else list(a.hooks_dir)
+            return cmd_all(Path(a.hooks_json), [Path(d) for d in dirs], a.json)
     except Exception as e:
         print(f"[sessionstart-boundedness] FATAL: {e}", file=sys.stderr)
         return 2

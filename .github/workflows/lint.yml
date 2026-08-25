@@ -85,35 +85,24 @@ jobs:
           done < <(find . \( -name 'hooks.json' -o -name '*.mcp.json' \) -not -path './.git/*')
           exit $fail
 
-      - name: UTF-8 BOM on .ps1 (Windows PS 5.1 fix)
-        run: |
-          set -e
-          fail=0
-          while IFS= read -r f; do
-            head=$(head -c 3 "$f" | od -An -tx1 | tr -d ' \n')
-            if [ "$head" != "efbbbf" ]; then
-              echo "::error file=$f::missing UTF-8 BOM (Windows PowerShell 5.1 will crash on non-ASCII bytes). Fix: prepend the bytes EF BB BF to the file."
-              fail=1
-            fi
-          done < <(find . -name '*.ps1' -not -path './.git/*')
-          exit $fail
+      # BOTH .ps1 byte rules (UTF-8 BOM required, U+2014 banned) live in
+      # scripts/check-ps1-encoding.sh, NOT inline here, so this enforcing gate
+      # and the locally-runnable one (scripts/ci.sh, which the pre-push hook
+      # requires) cannot drift. As inline loops they were unreachable locally:
+      # a BOM-less .ps1 passed a full green `bash scripts/ci.sh` and failed only
+      # after a push, costing a whole CI round-trip each time (measured
+      # 2026-08-19 on tests/integration/test_bootstrap_ps1_slash_commands.ps1).
+      # ONE scanner rather than two because both rules read the same file list,
+      # and the enumeration is where the bugs have been (#559). The annotations
+      # still name the file and which rule it broke, so collapsing the two steps
+      # loses no attribution.
+      # scripts/test_ps1_encoding_gate.py fails if any caller stops delegating
+      # or re-inlines a private copy of either byte comparison.
+      - name: .ps1 encoding negative controls (the guard must still bite)
+        run: bash scripts/check-ps1-encoding.sh --self-test
 
-      # Em dashes in bash are stylistic. Em dashes in .ps1 are technical: they were the
-      # exact byte that crashed the Windows PowerShell 5.1 parser before the BOM fix.
-      # Even with BOM, keeping .ps1 ASCII-clean is defense-in-depth against the next
-      # time someone saves a file without BOM.
-      - name: no em dashes in .ps1 (Windows PS 5.1 hazard)
-        run: |
-          set -e
-          fail=0
-          while IFS= read -r f; do
-            if grep -n $'\xe2\x80\x94' "$f" >/dev/null 2>&1; then
-              echo "::error file=$f::contains em dash. Replace with ASCII hyphen or comma. Em dashes break Windows PowerShell 5.1 parsing if the BOM is ever lost."
-              grep -n $'\xe2\x80\x94' "$f" | head -5 | sed "s|^|  |"
-              fail=1
-            fi
-          done < <(find . -name '*.ps1' -not -path './.git/*')
-          exit $fail
+      - name: .ps1 encoding (UTF-8 BOM + no em dashes, Windows PS 5.1)
+        run: bash scripts/check-ps1-encoding.sh
 
       # NOTE: ubuntu-latest ships bash 5.x, so this proves MODERN-bash syntax
       # only. It is structurally blind to constructs that parse on 5.x and fail
@@ -158,12 +147,38 @@ jobs:
       - name: unstarted-worktree staleness negative controls (the guard must still bite)
         run: python3 hooks/warn-stale-dev-checkout.py --self-test
 
+      # Both SHA-pinned baselines publish a per-tier burn-down count in their
+      # section headers, and every checker skips `#` lines - so a header that no
+      # longer matches its rows breaks nothing and fails nothing. Four were stale
+      # simultaneously before this landed (SEV-4 claiming 42 files over 26 rows).
+      # A backlog nobody can trust the size of is not a ratchet.
+      - name: baseline section-header negative controls (the guard must still bite)
+        run: python3 scripts/_baseline_sections.py --self-test
+
+      # Every tiered baseline, DISCOVERED BY GLOB rather than named here. Naming
+      # them would be the original bug one level up: a hand-maintained list of
+      # what to check goes stale exactly as silently as a hand-maintained count,
+      # and a baseline added later would simply never be looked at. Flat
+      # baselines have no ledger and are skipped; matching NOTHING is an error,
+      # never a pass. (utf8's checker cannot host this itself - it is content-
+      # pinned by the cloud-safe walker ratchet, where any edit obliges a
+      # safe_read migration. vault-root's checker also validates its own
+      # baseline inline, since only the scanner can count reads.)
+      - name: baseline burn-down counts match their rows (all tiered baselines)
+        run: python3 scripts/_baseline_sections.py --check-all scripts
+
       # Self-test first (cheap, and proves the guard still bites), then the tree.
       - name: naive VAULT_ROOT read negative controls (the guard must still bite)
         run: python3 scripts/check-vault-root-reads.py --self-test
 
       - name: no naive VAULT_ROOT reads (resolve via _resolve_vault_root)
         run: python3 scripts/check-vault-root-reads.py
+
+      - name: SessionStart emit-shape negative controls (the guard must still bite)
+        run: python3 scripts/check-sessionstart-emit-shape.py --self-test
+
+      - name: no SessionStart hook strands context on a top-level key
+        run: python3 scripts/check-sessionstart-emit-shape.py
 
       # A negative control needs a "before" source. Read it from a MOVING ref
       # (`git show origin/main:file`) and the control is guaranteed to pass in
@@ -217,6 +232,33 @@ jobs:
       - name: no shipped hook lacks a test surface
         run: python3 scripts/check-hook-negative-control.py
 
+      # The check above asks whether a hook is wired AT ALL. This asks whether it
+      # is wired on BOTH PLATFORMS - a question nothing in this repo used to ask.
+      #
+      # hooks.json is POSIX shell. On native Windows the installer rewrites every
+      # command through hook_runner.py, and anything it cannot rewrite - anything
+      # that runs `bash` - is DROPPED. Four hooks are dropped today and three of
+      # them (write-hook.sh, session-end-hook.sh, graph-context-hook.sh) have NO
+      # Windows equivalent, so meeting-todos extraction, the session-close
+      # finalizer and graph-context routing are POSIX-only features. Every existing
+      # check stayed green through that: the installer exits 0 because it installed
+      # what it could, --verify verifies what is WIRED (not what went missing), and
+      # CI asserts the install SUCCEEDS. A Windows job and a macOS job could differ
+      # by three whole features and both pass.
+      #
+      # The gate diffs the two legs by running the installer's OWN pipeline twice
+      # (never a private copy of the drop rule, which would agree today and drift
+      # silently), and fails on any difference not carrying a written reason in
+      # scripts/hook-parity-allowlist.json. The allowlist is the deliverable: it
+      # turns a silent drop into a reviewed decision, and a stale entry fails too,
+      # so it cannot rot into excuses for problems already fixed.
+      # Self-test first (cheap, and proves the gate bites a synthetic mismatch).
+      - name: hook-parity negative controls (a silent platform drop must go RED)
+        run: python3 scripts/check-hook-parity.py --self-test
+
+      - name: every hook is wired on both POSIX and Windows, or reviewed as not
+        run: python3 scripts/check-hook-parity.py
+
       # The READ half of the UTF-8 console guard below. That one fails a CLI that
       # PRINTS non-ASCII without reconfiguring stdout; this fails one that READS a
       # child's output with text=True and no encoding=, so the decode uses the
@@ -258,6 +300,26 @@ jobs:
             done
           done < <(grep -rn -E '`scripts/[A-Za-z0-9_./-]+\.(sh|ps1|py|plist)`' phases/ 2>/dev/null || true)
           [ -f /tmp/lint-ref-fail ] && exit 1 || exit 0
+
+      # Broader than the phases-only check above: every slash command and
+      # scripts/*.py path across README.md, docs/, phases/, and every
+      # skills/*/SKILL.md, plus a cheap check that a documented --flag is
+      # actually wired somewhere besides its own menu line. Built for
+      # MYC-4121 after eight of these were found by hand in one audit
+      # (/optimize-brain never shipped, /mem-search advertised after its own
+      # removal, two image scripts documented with a fabricated ship date,
+      # three graphify flags wired nowhere but their own menu, ...). See
+      # scripts/check-doc-promises.py's module docstring for what is checked
+      # and the bounded, documented exemptions for what is not. No
+      # untrusted input reaches this step -- it reads only committed
+      # tracked files already on the runner's checkout.
+      - name: doc-promises negative controls (the guard must still bite)
+        run: |
+          python3 scripts/check-doc-promises.py --self-test
+          python3 scripts/check-doc-promises.py --fixture-test
+
+      - name: every documented command, script, and flag actually exists
+        run: python3 scripts/check-doc-promises.py
 
       # Catches the bug class from the May 2026 install-UX incident: the README
       # told the installing assistant to run `bash <(curl -fsSL .../bootstrap.sh)`.
@@ -398,46 +460,24 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: git fetch origin "$BASE_REF" --depth=50
+        # NO --depth here. checkout above uses fetch-depth: 0, and a depth-limited
+        # fetch re-introduces a shallow boundary: on a PR older than that many
+        # commits the merge base falls outside it and `git diff BASE...HEAD`
+        # cannot be computed at all.
+        run: git fetch origin "$BASE_REF"
+
+      # The scan itself lives in scripts/check-private-context.sh so this
+      # enforcing gate and a local run cannot drift, and so its negative control
+      # is runnable. Same reasoning as check-ps1-encoding.sh above.
+      - name: private-context negative controls (the guard must still bite)
+        if: github.event_name == 'pull_request'
+        run: bash scripts/check-private-context.sh --self-test
 
       - name: private-context tokens (PR-scoped)
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: |
-          set -e
-          P='\b[A]delaida\b|\b[O]nde\b|\b[D]iaz.Roa\b|\b[B]ogot[aá]\b|\b[S]ergio Perez\b|\b[N]atalia\b|\b[P]aola\b|\b[A]ccenture\b|\b[H]igh.Rise Series\b|\b[S]hark Tank\b'
-          BASE="origin/$BASE_REF"
-          fail=0
-          while IFS= read -r f; do
-            [ -z "$f" ] && continue
-            [ ! -f "$f" ] && continue
-            case "$f" in
-              */.venv/*|*/node_modules/*|*/__pycache__/*) continue ;;
-            esac
-            case "$f" in
-              *.md|*.sh|*.ps1|*.py|*.json|*.yml|*.yaml|*.txt|.env.example) ;;
-              *) continue ;;
-            esac
-            # Scan ONLY lines this PR adds (diff lines starting with `+`,
-            # excluding the `+++ b/path` file header). Pre-existing committed
-            # content is intentionally ignored: CI gates net-new private-context
-            # additions, not legacy text in files this PR happens to touch.
-            added_lines=$(git diff "$BASE"..HEAD -- "$f" | grep -E '^\+' | grep -vE '^\+\+\+' || true)
-            if [ -z "$added_lines" ]; then
-              continue
-            fi
-            if matches=$(echo "$added_lines" | grep -nE "$P" 2>/dev/null); then
-              echo "::error file=$f::private-context token added in this PR"
-              echo "$matches" | head -3 | sed 's|^|  |'
-              fail=1
-            fi
-          done < <(git diff --name-only "$BASE"..HEAD)
-          if [ "$fail" = "1" ]; then
-            echo "::error::Private-context scan failed. Use placeholders or fictional names instead."
-            exit 1
-          fi
-          echo "Private-context scan passed (added lines only)."
+        run: bash scripts/check-private-context.sh "origin/$BASE_REF"
 
       # ---- last: the only step that installs anything ------------------------
 

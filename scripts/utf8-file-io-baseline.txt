@@ -1,0 +1,96 @@
+# utf8-file-io-baseline.txt - the legacy population under
+# scripts/check-utf8-file-io.py, pinned by SHA-256 of NEWLINE-NORMALIZED content.
+#
+# THIS FILE IS A BACKLOG, NOT A SET OF PARDONS.
+#
+# Every row is a tracked file doing text-mode file I/O with no explicit
+# encoding=, so it uses locale.getpreferredencoding() - cp1252 on a stock
+# Windows box, UTF-8 on macOS/Linux. The same source therefore produces
+# differently-encoded artifacts depending on whose machine ran it, and all three
+# measured failure modes are SILENT (see the lint header): a write that corrupts
+# without raising, a read that decodes into mojibake without raising, and a read
+# that raises on the five bytes undefined in cp1252 and gets swallowed by a bare
+# `except`. PYTHONUTF8=1 hides the entire class from whoever is maintaining it.
+#
+# Rows here predate the guard. Pinning them lets the CLASS-level gate land
+# without a 71-file rewrite, while still failing the build for anything new:
+#   - a file NOT listed here has NO grace period;
+#   - EDITING a listed file changes its hash and fails until it is fixed.
+# Fix a row by passing encoding="utf-8" and DELETING its line - the lint reports
+# leftover rows as stale.
+#
+# Regenerate with: python3 scripts/check-utf8-file-io.py --emit-baseline
+#
+# <sha256-of-normalized-content> <tag> <repo-relative-path>
+
+# ---- SEV-A-write  (38 file(s)) ----
+b87ac14c241be51fb2427ac9a86ab8de4a5b161549f2ee0d445b6e9ca4f65550 SEV-A-write hooks/_lib/session_echo.test.py
+62adfe6bbcfecc12d8e6bbad292ab40215e9f15c8812ec91f53dfe42156e7886 SEV-A-write hooks/_lib/standing_report.test.py
+987aca2ae82229a42d29a8c89fed690e9de7e6fad4182dea564bc92557a81922 SEV-A-write hooks/auto-capture-public-ships.py
+9cbf3bb52c04fd00a41852d12baf7640f9212db9b5a34aaac2247ee6abb4312f SEV-A-write hooks/check-py-import-precommit.py
+fa31be94c34f90a59be61d732555563dad22c492d1c8d1bd735a09c56289a0cd SEV-A-write hooks/check-sync-folder-machinery.py
+a04ec6c84be6756813f4cde517ff379338b57ec9bf4c9c4172172951e62f91c3 SEV-A-write hooks/imessage-mcp-auto-export.py
+d293427274a02ef33d15ec50b17860aa305405adc9f372fde46a46454267becd SEV-A-write hooks/relocate-watch-surface.py
+95e98712d44f2ee71cdfb8ba3aa7a1fe21967160cd5b2bdaab20bd3d6869c10d SEV-A-write hooks/retry-budget.py
+34080a9b9cb9df80eafcde6e16e182a41680ec612e11bf3586f165d533ae6bcd SEV-A-write hooks/scan-prior-sessions-for-secrets.py
+158e67c4d1f8718bf12faf3b9d984347c8062ec1f66242e04f60719aca356ef1 SEV-A-write hooks/scrub-session-jsonl-secrets.py
+28e5213af92f1d0e68a80ddd122d2793ac9db2e7d665f2270e5a08fdcbfb360f SEV-A-write hooks/test_live_session_reap.py
+79944fad14fe10762e356a505764960ab8c5ad8942656376a465dba19d5d7cd0 SEV-A-write hooks/test_relocation_orphan_reclaim.py
+295a88e709680eccae5cc81cb21b3f8fb872b6b8418a795b98f881748b3e3bb4 SEV-A-write hooks/test_scan_prior_sessions.py
+02c4531a12185a5a529f3e90e3f9dd820a47116ac9adeb956acd4ef1dc98f41e SEV-A-write hooks/warn-recreate-deleted-file.test.py
+b290d1f3ae5391676c6c8ad1761346ff64a367d69396f1e9b685dad40644b62a SEV-A-write hooks/warn-stale-dev-checkout.py
+dfba549e5cd609ddde59d63aac175d884d0224a6703265e0b04c1a0eac315b20 SEV-A-write hooks/whatsapp-mcp-auto-export.py
+376761410a0275fef52d6c4afd51e9026adb4362eff5ed88d0a2f42542969a00 SEV-A-write scripts/claude_performance_digest.py
+2dd361cb0076fa0c385c38948fa28deadec4653d78f4945ee10093dd9bd40d6c SEV-A-write scripts/closed-loop-daemon.py
+4f5e4266daa8443e8583c196a87d0aa1107c7ced4b06fbb3eb049f5a7ecbdd5d SEV-A-write scripts/graphify_chunk.py
+3ccff027531794bd7467dacde500599156465a8840d277ab306d14c571ff15f6 SEV-A-write scripts/graphify_coverage_audit.py
+9c2b94c22cb78ad78aa2a3e9b464518a1f5912642ed26575b7007957e31eda43 SEV-A-write scripts/graphify_minimax_preprocess.py
+09030282864a31f53a406d134fdaf19efc7e3b36b3a493746652dd98da2f5485 SEV-A-write scripts/graphify_prep.py
+f2c8a6e4561fe4ecb6b0bb6e060501ac5fe3fff65d35d9fd3726ab76db790ad4 SEV-A-write scripts/graphify_stage_select.py
+52ccd8dd4950e60db4695a88b258bbeb5e62c68fbd399dbc2a26ab9a80023e71 SEV-A-write scripts/measure-plugin-load.py
+1480b6939ee271300bea0fc015a83945ae48605daf9ffaedf64e3d9abccc94db SEV-A-write scripts/post-update-email-ask.py
+ec8a23a1974b53b36a4b75c130be1dd96a5844a2a7bb2f6242fc47d038af6769 SEV-A-write scripts/relocate-sweep.py
+094e856feb69cd63ac7602b4d763d2067201d9b88c79aa7edc6f50fca9f7038a SEV-A-write scripts/security-snapshot.py
+e52050614b0dd74b8cd278689707747921073b05da3acb90f8c0b6e9dda10914 SEV-A-write scripts/stub_audit.py
+f363924aeb716ab903c3903204d4bd432973a2d0af92dd6e40960d05b8ab9e63 SEV-A-write scripts/test-relocate-sweep.py
+015ab78efb862035f1d73e367e649987f4d6d6604c707f636c0efa9403abb16e SEV-A-write scripts/test-relocate-watch.py
+93e073dede317c9a08d5a27481bf9ad1e5dcf18790fa20b3356425b1a1e45590 SEV-A-write scripts/test_graph_liveness_check.py
+a711143474788ad1d943bfd47e679116dcf5e4dddb17be9454842d45fd7d1579 SEV-A-write scripts/test_stale_git_lock_reclaim.py
+bf2aa37b1fc14be871ed01920e719d1f71d87052e536d4c435ed2fff227ca8ec SEV-A-write scripts/test_stale_pull_surface.py
+1bc37b829f0ad1c3a92a45030f30a92349a49352a71d272680f869a2974c9d14 SEV-A-write scripts/vault-nested-repos.py
+a29f6c2b98ccf874e4c818e2487ce74f32248ecbbce73a11c91a738561f3aa84 SEV-A-write skills/graphify/scripts/graphify_chunk.py
+8397e371e756c7cff96453d8f8f2c895e1e8ac0762edc8538c573c059e07d19d SEV-A-write skills/graphify/scripts/graphify_prep.py
+03d3f290e244d9ab0ae72af71ee51ed71be2e4f2aea62f6cf705d34ddcdeef69 SEV-A-write skills/graphify/scripts/graphify_stage_finish.py
+52d758fe570f834711cc82f5f0870678755325a30280625e1213b2882e036f6d SEV-A-write skills/graphify/scripts/graphify_stage_select.py
+
+# ---- SEV-B-read-only  (29 file(s)) ----
+b266f20ff920feeb950d48705939568f13e71e844707b90876c179c76d013da9 SEV-B-read-only hooks/_lib/dev_repo_scan.py
+3f7a1805473134ddb49cd1957cc4f94c8e84a1ccb4e8f875e6765b3dac33f289 SEV-B-read-only hooks/_lib/safe_read.py
+52c331ed8a99a90e12e347215144e6799dbe1d278024432dfc46639a4de68405 SEV-B-read-only hooks/_lib/worktree_safety.py
+b647243fdf0a358d46a6a79b0bf7f817ee121f68d5d685fabe4b0ee2a93af94d SEV-B-read-only hooks/check-fabricated-hook-attribution.py
+2050c962d8ba4b38910d207c75e786f4b4831406ba3d8e799fe9f475623c8bff SEV-B-read-only hooks/detect-secrets-in-bash-output.py
+3599a56754108272a15a2c879a23a52c0e844edf2991932118ecf16b24706af9 SEV-B-read-only hooks/dev-hub-refresh-on-session-start.py
+383b879b07fd9dce4a66c6a9beb449e2c7ec378b7f94d393b2bf486cf26531fb SEV-B-read-only hooks/observe-tool-calls.py
+9ac734ab62df2f6176c7aabad09b72768fe553c93ef15a876ddae32e9a830ca4 SEV-B-read-only hooks/surface-sync-guard-findings.py
+2b14fd8dbb3f827ca22270bee60bdacf598984bd28f2221856702b7791ba71b2 SEV-B-read-only hooks/test_footprint_aggregate_bloat.py
+074e59997be3432d5dbab5858429d1185d65c4061dbbade2325f08d3b2165160 SEV-B-read-only hooks/test_secret_patterns_fp_filter.py
+5ab0af49336eca75f51dd8a442afb3d4e429294bf7f167e4bba9736b8c7ec6a7 SEV-B-read-only hooks/verify-discoverability-on-close.py
+dd255910d36390ba30e369d9bc406fcc5325dd1687f18f9bdf5d888b6a0b8340 SEV-B-read-only hooks/verify-session-close-cascade.py
+79bdb1ef10e6728f8263db6eacd0b19a614e71517509d6f6bf88012fca7f84a7 SEV-B-read-only scripts/audit-guard-activation-roots.py
+a1129452c2c68c67d4e4d81074625b198cb02a5a32e30eaa588f3a3fd5606b7f SEV-B-read-only scripts/caveman_lint.py
+98724e0626e0e16a77d82756dc9187d3ab57a06748a305a95e5fad09427f4c59 SEV-B-read-only scripts/check-renderer-crashes.py
+6528e02b526efba8cb4939aa0426b14754a1f32ff4a85cb369f5b94568451942 SEV-B-read-only scripts/dev-drift-report.py
+9ceedddb923461f4c803b48b1d8349c9e54f9f6ff73e40969aeb3332206c8824 SEV-B-read-only scripts/granola_core.py
+5b2a426f96ba2f79637975888633c7de53cdc3028baaccd33ed24c83db3f32eb SEV-B-read-only scripts/graphify_canonicalize.py
+4a5f57798e6752eccdbdad8e3d367c5313efcdc93e06ebebb5060a240b39de8f SEV-B-read-only scripts/graphify_dedupe_by_adjacency.py
+c005821701b63b26d2fb4bd2c6f9d49f979fc26ed838879ff074f6bb6f666d2b SEV-B-read-only scripts/graphify_preextract_block.py
+d07949ff88fd853a45c2dbb17f06bc0d1629021196f6baa416413ffc47014c98 SEV-B-read-only scripts/hook_runner.py
+6082be21cce7a61305998c0b07dd6c1148aebe660dcf364d8998d317b7cdcc57 SEV-B-read-only scripts/insight-fact-check.py
+c7c7ac03bdc38b1db366faf67be0f4e9aceacf8c68b0b420c38c831463da5e1e SEV-B-read-only scripts/mcps/graph-query-server.py
+f226d40cae4f1876faa3756c9d85446e6e4a7277551223df30fa219972d52d74 SEV-B-read-only scripts/test_hook_runner_single_interpreter.py
+3c1a5e886fc162733d9f2c3a7575b17e4dd7a3591c45aefaf03882179d97ee09 SEV-B-read-only scripts/token-usage-report.py
+6f3b4bf43bfe2f4edd00db13a4892399cded87e0b3cf02fb84f5f7f925d2ae50 SEV-B-read-only scripts/worktree-archive-prep.py
+84bb5dcf8fe8761a7856c6a30794cb7e772e0f2803d7b5caad9410bdfaac5d62 SEV-B-read-only skills/graphify/scripts/graphify_canonicalize.py
+14243dcb028acf9982eaf7d2aef9703af21014db24fc186830967a56a5491043 SEV-B-read-only skills/nano-banana/scripts/compose_images.py
+e7bb0ae136cb6f05f09b3c30f8bce52f38b6776170410d87cdaa0d1682a663c7 SEV-B-read-only skills/nano-banana/scripts/edit_image.py
+

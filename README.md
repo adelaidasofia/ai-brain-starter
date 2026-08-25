@@ -160,7 +160,7 @@ Bootstrap touches your `~/.claude/` directory and registers third-party content.
 
 **MCP servers wired in `~/.claude/.mcp.json`:** `granola` (meeting transcription), `chatprd` (PRD drafting). Existing MCPs you wired yourself are preserved.
 
-**System tools (skipped if already present):** Homebrew, Python 3.10+, Node, npm, pipx, gh, fastmcp, graphify (via pipx), skill-seekers (via pipx), Obsidian.
+**System tools (skipped if already present):** git, Homebrew, Python 3.10+, Node, npm, pipx, gh, fastmcp, graphify (via pipx), skill-seekers (via pipx), Obsidian. On Windows with no administrator rights, git and Node are unpacked into your own user folder rather than machine-wide.
 
 **Settings + backups:** every edit to `~/.claude/settings.json` and `~/.claude/.mcp.json` writes a `.bak-YYYY-MM-DD-HHMM` backup first. Existing custom marketplaces, plugins, hooks, env vars, and permissions are preserved (`setdefault` semantics, never overwrites).
 
@@ -440,7 +440,6 @@ Every tool is installed and wired during setup. They work together, not in isola
 | `/patterns` | Extract recurring patterns from sessions into permanent captures |
 | `/meeting-todos` | Pull action items from meeting notes into your to-do list |
 | `/optimize-brain` | Deep vault optimization: CRM, graphs, dashboards, compression, wikilinks |
-| `/mem-search` | Search Claude's cross-session memory database |
 
 The table above is the daily-driver subset. The full first-party catalog — forty-plus skills grouped by what they do — is in [`docs/SKILLS.md`](docs/SKILLS.md).
 
@@ -562,7 +561,7 @@ If what you need is agent federation, swarm topologies, or a 300-tool MCP server
 - **[`templates/CRM-examples/`](templates/CRM-examples/)** — three sample CRM cards (maintainer, advisor, contractor) showing what a populated entry looks like, plus the Source/Location/Shape/Channel pattern for delegating contractor tasks
 - **[`templates/rules/`](templates/rules/)** — opt-in rule files (voice-firewall, session-close, hookify-authoring, mcp-build-checks) to paste into your CLAUDE.md
 - **[`for-teams/`](for-teams/)** — extra docs for teams sharing a vault (working-with-me pages, team workflows)
-- **[`docs/OPTIMIZE.md`](docs/OPTIMIZE.md)** — the deep vault optimization guide (11 phases, weekend project). Run `/optimize-brain` after setup to become a power user.
+- **[`skills/optimize-brain/SKILL.md`](skills/optimize-brain/SKILL.md)** — the deep vault optimization guide (11 phases, weekend project). Run `/optimize-brain` after setup to become a power user.
 - **[`EXAMPLES.md`](EXAMPLES.md)** — sample journal entry and weekly insight report showing output quality
 - **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — how to contribute (the project is opinionated by design)
 - **[`SECURITY.md`](SECURITY.md)** — four practical habits that protect your machine and data when running a local AI + vault setup (secrets, skills/hooks, MCPs, Claude permissions)

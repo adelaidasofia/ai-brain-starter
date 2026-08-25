@@ -118,6 +118,34 @@ set -euo pipefail
 
 REPO_URL="https://github.com/mycelium-hq/ai-brain-starter.git"
 SKILL_DIR="$HOME/.claude/skills/ai-brain-starter"
+
+# === Python interpreter ===
+# `python3` is only ever the FIRST match on PATH, and on macOS that is
+# /usr/bin/python3 (3.9) whenever Homebrew sits later in PATH. The version
+# check further down used to test that one name and, finding it too old,
+# install Python 3.12 -- which fixes nothing on that machine, because
+# installing a formula cannot change what `python3` resolves to while /usr/bin
+# still comes first. The result was a redundant install, after which every
+# python3 call below still ran 3.9.
+#
+# So resolve an interpreter once, here, before anything uses one, and use it
+# everywhere below. AI_BRAIN_PYTHON names one directly, for a prefix no search
+# would guess (pyenv, conda).
+PY="python3"
+pick_python() {
+  local candidate resolved
+  for candidate in "${AI_BRAIN_PYTHON:-}" python3 python3.14 python3.13 python3.12 python3.11 python3.10; do
+    [[ -n "$candidate" ]] || continue
+    resolved="$(command -v "$candidate" 2>/dev/null || true)"
+    [[ -n "$resolved" ]] || continue
+    if "$resolved" -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3,10) else 1)' >/dev/null 2>&1; then
+      PY="$resolved"
+      return 0
+    fi
+  done
+  return 1
+}
+pick_python || true
 DRY_RUN=0
 # Corporate / hardened install profile (surfaced by an enterprise security
 # review). When 1, the installer: skips ALL third-party plugin marketplaces,
@@ -220,7 +248,7 @@ for arg in "$@"; do
         for a in "$@"; do
           [[ "$a" == "--install-hooks-user-level" ]] || forward_args+=("$a")
         done
-        exec python3 "$INSTALLER" "${forward_args[@]}"
+        exec "$PY" "$INSTALLER" "${forward_args[@]}"
       else
         echo "ERROR: install-hooks-user-level.py not found." >&2
         exit 2
@@ -632,7 +660,7 @@ if [[ "$UNINSTALL" == "1" ]]; then
 
   if [[ -f "$HOME/.claude/.mcp.json" ]]; then
     backup_file "$HOME/.claude/.mcp.json"
-    python3 - <<'PY' || warn "MCP cleanup failed"
+    "$PY" - <<'PY' || warn "MCP cleanup failed"
 import json, os
 p = os.path.expanduser("~/.claude/.mcp.json")
 m = json.load(open(p))
@@ -645,7 +673,7 @@ PY
 
   if [[ -f "$HOME/.claude/settings.json" ]]; then
     backup_file "$HOME/.claude/settings.json"
-    python3 - <<'PY' || warn "settings cleanup failed"
+    "$PY" - <<'PY' || warn "settings cleanup failed"
 import json, os
 p = os.path.expanduser("~/.claude/settings.json")
 s = json.load(open(p))
@@ -698,7 +726,7 @@ if [[ "${EMAIL_GATE_BYPASS:-0}" != "1" && $DRY_RUN -eq 0 && ! -f "$EMAIL_MARKER"
     esac
     log "$(t "Minting install token for $EMAIL via $INSTALL_API_BASE..." \
             "Generando token de instalación para $EMAIL en $INSTALL_API_BASE...")"
-    QM_PAYLOAD="$(EMAIL="$EMAIL" NAME="$NAME" QM_LANG="$QM_LANG" QM_OS="$QM_OS" python3 <<'PY'
+    QM_PAYLOAD="$(EMAIL="$EMAIL" NAME="$NAME" QM_LANG="$QM_LANG" QM_OS="$QM_OS" "$PY" <<'PY'
 import json, os
 print(json.dumps({
   "email": os.environ.get("EMAIL",""),
@@ -714,7 +742,7 @@ PY
       -H "content-type: application/json" \
       -d "$QM_PAYLOAD" 2>/dev/null)"
     set -e
-    QM_TOKEN="$(printf '%s' "${QM_RESP:-}" | python3 -c '
+    QM_TOKEN="$(printf '%s' "${QM_RESP:-}" | "$PY" -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -953,7 +981,7 @@ hdr "Cleaning up deprecated tools"
 # into every session. The built-in memory system covers all use cases safely.
 SETTINGS="$HOME/.claude/settings.json"
 _claude_mem_present=0
-if [[ -f "$SETTINGS" ]] && python3 -c "
+if [[ -f "$SETTINGS" ]] && "$PY" -c "
 import json, sys
 try:
     s = json.load(open('$SETTINGS'))
@@ -970,7 +998,7 @@ if [[ $_claude_mem_present -eq 1 ]]; then
     dry "would remove claude-mem from settings.json (marketplace + plugin entry)"
   else
     backup_file "$SETTINGS"
-    python3 - <<'PY'
+    "$PY" - <<'PY'
 import json, os
 p = os.path.expanduser("~/.claude/settings.json")
 s = json.load(open(p))
@@ -1180,7 +1208,7 @@ have_working_git && ok "git $(git --version 2>/dev/null | awk '{print $3}')"
 # Python 3.10+
 # ───────────────────────────────────────────────────────────────────────────────
 
-if ! python3 -c "import sys; assert sys.version_info >= (3,10)" 2>/dev/null; then
+if ! "$PY" -c "import sys; assert sys.version_info >= (3,10)" 2>/dev/null; then
   if [[ $DRY_RUN -eq 1 ]]; then
     dry "would: install Python 3.12 (brew on Mac; apt/dnf/pacman on Linux; user-space tarball with neither)"
   elif { is_mac && have brew; } || { is_linux && have_sudo; }; then
@@ -1202,7 +1230,11 @@ if ! python3 -c "import sys; assert sys.version_info >= (3,10)" 2>/dev/null; the
     install_python_userspace || note_gap "python3" "install Python 3.10+ yourself, then re-run"
   fi
 fi
-have python3 && ok "python3 $(python3 --version | awk '{print $2}')"
+# A newly installed interpreter lands under a versioned name, in a prefix
+# that may not come first in PATH either, so re-resolve instead of assuming
+# `python3` changed meaning.
+pick_python || true
+have "$PY" && ok "python3 $("$PY" --version 2>/dev/null | awk '{print $2}')"
 
 # ───────────────────────────────────────────────────────────────────────────────
 # Node.js + npm
@@ -1270,7 +1302,7 @@ elif ! have pipx; then
   if is_mac; then
     brew install pipx && pipx ensurepath || err "pipx install failed"
   else
-    python3 -m pip install --user pipx && python3 -m pipx ensurepath || err "pipx install failed"
+    "$PY" -m pip install --user pipx && "$PY" -m pipx ensurepath || err "pipx install failed"
   fi
 fi
 # pipx installs console scripts into ~/.local/bin, and `pipx ensurepath` only
@@ -1392,7 +1424,7 @@ elif ! have graphify; then
   # the fallback when pipx itself misbehaves; both land in ~/.local/bin,
   # which is already exported above.
   quiet_retry pipx install graphifyy \
-    || quiet_retry python3 -m pip install --user graphifyy \
+    || quiet_retry "$PY" -m pip install --user graphifyy \
     || true
   hash -r 2>/dev/null || true
   if have graphify; then
@@ -1540,7 +1572,7 @@ SKILL_FORKS=()
 SKILL_SYMLINKS=()
 SKILLS_TO_SYNC=()
 
-for sub in graphify cierre-de-llamada meeting-todos patterns insights deconstruct daily-journal rise repurpose-talk nano-banana second-brain-mapping setup-vault-types diagnose note-todos sunday-review coach coaching backfill-journal-body-context longitudinal resolver-query for-my-team health-context health-doctor health-setup ingest-github ingest-health ingest-youtube evolve instinct-export instinct-import interview-me longitudinal doubt-driven-development secret-warn; do
+for sub in graphify cierre-de-llamada meeting-todos patterns insights deconstruct daily-journal rise repurpose-talk nano-banana second-brain-mapping setup-vault-types diagnose note-todos sunday-review coach coaching backfill-journal-body-context longitudinal resolver-query for-my-team health-context health-doctor health-setup ingest-github ingest-health ingest-youtube evolve instinct-export instinct-import interview-me doubt-driven-development secret-warn optimize-brain security-snapshot vault-system skillify-meta-loop; do
   dst="$HOME/.claude/skills/$sub"
 
   if [[ -L "$dst" ]]; then
@@ -1905,7 +1937,7 @@ backup_file "$HOME/.claude/.mcp.json"
 if [[ $DRY_RUN -eq 1 ]]; then
   dry "would register granola + chatprd MCPs in ~/.claude/.mcp.json (existing entries preserved)"
 else
-  python3 - <<'PY' || err "MCP registration failed"
+  "$PY" - <<'PY' || err "MCP registration failed"
 import json, os
 p = os.path.expanduser("~/.claude/.mcp.json")
 try:
@@ -1945,7 +1977,7 @@ if [[ $DRY_RUN -eq 1 ]]; then
   [[ "$CORPORATE_PROFILE" == "1" ]] && \
     dry "would ENFORCE telemetry-off + pin env in settings.json: DISABLE_TELEMETRY, DISABLE_ERROR_REPORTING, DISABLE_FEEDBACK_COMMAND, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, DISABLE_AUTOUPDATER, MYCELIUM_NO_PING"
 else
-  python3 - <<'PY' || err "settings.json plugin registration failed"
+  "$PY" - <<'PY' || err "settings.json plugin registration failed"
 import json, os
 p = os.path.expanduser("~/.claude/settings.json")
 corporate = os.environ.get("CORPORATE_PROFILE") == "1"
@@ -2047,7 +2079,7 @@ for check in "${CHECKS[@]}"; do
   fi
 done
 # Skill folders (full bundled set + humanizer + ai-brain-starter itself)
-for sub in graphify cierre-de-llamada meeting-todos patterns insights deconstruct daily-journal rise repurpose-talk nano-banana humanizer ai-brain-starter diagnose second-brain-mapping setup-vault-types note-todos sunday-review coach coaching backfill-journal-body-context longitudinal resolver-query for-my-team health-context health-doctor health-setup ingest-github ingest-health ingest-youtube evolve instinct-export instinct-import interview-me doubt-driven-development secret-warn; do
+for sub in graphify cierre-de-llamada meeting-todos patterns insights deconstruct daily-journal rise repurpose-talk nano-banana humanizer ai-brain-starter diagnose second-brain-mapping setup-vault-types note-todos sunday-review coach coaching backfill-journal-body-context longitudinal resolver-query for-my-team health-context health-doctor health-setup ingest-github ingest-health ingest-youtube evolve instinct-export instinct-import interview-me doubt-driven-development secret-warn optimize-brain security-snapshot vault-system skillify-meta-loop; do
   if [[ -d "$HOME/.claude/skills/$sub" ]]; then
     ok "skill: $sub"
   else
@@ -2141,7 +2173,7 @@ if [[ -f "$USER_HOOK_INSTALLER" ]] && [[ "$DRY_RUN" -eq 0 ]]; then
   # not present on the local fork, the runtime swallows the failure silently
   # via `2>/dev/null || echo '{"continue":true}'`. Verifying at install time
   # surfaces the gap loudly so it can actually be fixed.
-  python3 "$USER_HOOK_INSTALLER" --quiet --fail-on-missing 2>&1 | tee -a "$BOOTSTRAP_LOG"
+  "$PY" "$USER_HOOK_INSTALLER" --quiet --fail-on-missing 2>&1 | tee -a "$BOOTSTRAP_LOG"
   rc=${PIPESTATUS[0]}
   if [[ "$rc" -eq 0 ]]; then
     ok "User-level hooks installed (~/.claude/settings.json)"
@@ -2175,7 +2207,7 @@ if [[ -f "$EMAIL_MARKER" && $DRY_RUN -eq 0 ]]; then
     if [[ -f "$SIG_FILE" ]] && have python3; then
       HMAC_SECRET="$(head -1 "$SIG_FILE" 2>/dev/null | tr -d '[:space:]')"
       if [[ -n "$HMAC_SECRET" ]]; then
-        SIG="$(python3 -c 'import hmac,hashlib,sys; t,s=sys.argv[1:3]; print(hmac.new(s.encode(),t.encode(),hashlib.sha256).hexdigest())' "$RECORDED_TOKEN" "$HMAC_SECRET" 2>/dev/null || true)"
+        SIG="$("$PY" -c 'import hmac,hashlib,sys; t,s=sys.argv[1:3]; print(hmac.new(s.encode(),t.encode(),hashlib.sha256).hexdigest())' "$RECORDED_TOKEN" "$HMAC_SECRET" 2>/dev/null || true)"
       fi
     fi
     if [[ -n "$SIG" ]]; then

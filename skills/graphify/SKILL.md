@@ -160,7 +160,11 @@ Then act on it:
 - If `total_files` is 0: stop with "No supported files found in [path]."
 - If `skipped_sensitive` is non-empty: mention file count skipped, not the file names.
 - If `total_words` > 2,000,000 OR `total_files` > 200: show the warning and the top 5 subdirectories by file count, then ask which subfolder to run on. Wait for the user's answer before proceeding.
-- Otherwise: proceed directly to Step 3 - no need to ask anything.
+- Otherwise: proceed directly to Step 2.5 if the corpus has `video` files, else straight to Step 3 - no need to ask anything.
+
+### Step 2.5 - Transcribe video/audio files (only if `detect` reported video files)
+
+Skip this step entirely if `.graphify_detect.json`'s `files.video` list is empty. Video and audio cannot be read directly - transcribe first, then treat the transcripts as doc files in Step 3. See [TRANSCRIBE.md](references/TRANSCRIBE.md) for the full procedure (writing a domain-hint prompt, `--whisper-model` handling, running `graphify.transcribe.transcribe_all`).
 
 ### Step 3 - Extract entities and relationships
 
@@ -481,6 +485,8 @@ print(f'Merged: {total} nodes, {edges} edges ({len(ast[\"nodes\"])} AST + {len(s
 
 ### Step 4 - Build graph, cluster, analyze, generate outputs
 
+**Before starting:** note whether `--directed` was given in the original invocation. Every `build_from_json(...)` call from here through the exports in Step 7 uses `directed=IS_DIRECTED` — replace `IS_DIRECTED` with the literal `True` if `--directed` was given, otherwise `False` (the default, an undirected graph). Do NOT leave the literal placeholder `IS_DIRECTED` in the code. Track this the same way you tracked `DEEP_MODE` in Step 3 - do not lose it. Skipping this silently rebuilds an undirected graph even when the user asked for directed, and on `--update` it silently collapses reciprocal A<->B edges into one.
+
 ```bash
 mkdir -p graphify-out
 $(cat graphify-out/.graphify_python) -c "
@@ -495,14 +501,17 @@ from pathlib import Path
 extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text())
 detection  = json.loads(Path('graphify-out/.graphify_detect.json').read_text())
 
-G = build_from_json(extraction)
+G = build_from_json(extraction, directed=IS_DIRECTED)
 communities = cluster(G)
 cohesion = score_all(G, communities)
 tokens = {'input': extraction.get('input_tokens', 0), 'output': extraction.get('output_tokens', 0)}
 gods = god_nodes(G)
 surprises = surprising_connections(G, communities)
-labels = {cid: 'Community ' + str(cid) for cid in communities}
-# Placeholder questions - regenerated with real labels in Step 5
+sys.path.insert(0, '{SKILL_DIR}/scripts')
+from graphify_seed_labels import seed_labels
+# Provisional names from each community's highest-degree member ('Money', 'Fear'),
+# never 'Community 412'. Step 5 replaces these with semantic labels.
+labels = seed_labels(G, communities)
 questions = suggest_questions(G, communities, labels)
 
 report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, 'INPUT_PATH', suggested_questions=questions)
@@ -525,13 +534,54 @@ print(f'Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges, {len(co
 "
 ```
 
+Then make the report safe to sit inside a vault:
+
+```bash
+python3 "{SKILL_DIR}/scripts/graphify_report_sanitize.py" graphify-out/GRAPH_REPORT.md
+```
+
+The upstream report links a `[[_COMMUNITY_*]]` hub note per community. Those notes exist
+only in the opt-in Obsidian export of Step 6, so on a default run every one of them is an
+unresolved link — and Obsidian draws each unresolved link as a node. On a real vault that
+is thousands of grey placeholder dots radiating from one file, which is what the user's
+graph view then shows instead of their notes. The sanitizer emits a wikilink only when the
+target note actually exists, lists communities at or above a node floor (default 5, since
+most detected communities are 1–2 node extraction fragments), and excludes `graphify-out/`
+from the vault index. Stdlib only — plain `python3`, not the graphify venv.
+
+**Never skip this on a corpus that is also someone's Obsidian vault.**
+
+If the user already has a report full of `Community 0` / `Community 412` names from an
+earlier run, rename it in place — no re-extraction needed:
+
+```bash
+python3 "{SKILL_DIR}/scripts/graphify_report_sanitize.py" graphify-out/GRAPH_REPORT.md \
+  --relabel-from graphify-out/graph.json
+```
+
 If this step prints `ERROR: Graph is empty`, stop and tell the user what happened - do not proceed to labeling or visualization.
 
 Replace INPUT_PATH with the actual path.
 
 ### Step 5 - Label communities
 
-Read `graphify-out/.graphify_analysis.json`. For each community key, look at its node labels and write a 2-5 word plain-language name (e.g. "Attention Mechanism", "Training Pipeline", "Data Loading").
+Read `graphify-out/.graphify_analysis.json`.
+
+**Label the communities that are real topics, not every key.** Community detection on a
+personal corpus produces a long tail of fragments: measured on a 14,046-node vault, 51% of
+communities held a SINGLE node and 96% held 4 or fewer. Naming those is busywork that
+produces junk names, and it is why unlabeled runs end up showing "Community 412".
+
+- Sort communities by node count, descending.
+- Label every community with **>= 5 nodes**, up to a ceiling of **50 communities**. On the
+  measured vault that is 101 communities holding 70% of all nodes — the whole map, at ~4%
+  of the naming work.
+- Leave the rest out of `LABELS_DICT`. They keep the provisional anchor name from Step 4
+  and are omitted from navigation by the sanitizer.
+
+For each community you do label, look at its node labels and write a 2-5 word plain-language
+name (e.g. "Attention Mechanism", "Training Pipeline", "Data Loading"). The Step 4 anchor
+name is a starting hint, not an answer — a semantic label beats it every time.
 
 Then regenerate the report and save the labels for the visualizer:
 
@@ -548,7 +598,7 @@ extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text())
 detection  = json.loads(Path('graphify-out/.graphify_detect.json').read_text())
 analysis   = json.loads(Path('graphify-out/.graphify_analysis.json').read_text())
 
-G = build_from_json(extraction)
+G = build_from_json(extraction, directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 cohesion = {int(k): v for k, v in analysis['cohesion'].items()}
 tokens = {'input': extraction.get('input_tokens', 0), 'output': extraction.get('output_tokens', 0)}
@@ -564,6 +614,16 @@ Path('graphify-out/GRAPH_REPORT.md').write_text(report)
 Path('graphify-out/.graphify_labels.json').write_text(json.dumps({str(k): v for k, v in labels.items()}))
 print('Report updated with community labels')
 "
+
+python3 "{SKILL_DIR}/scripts/graphify_report_sanitize.py" graphify-out/GRAPH_REPORT.md
+```
+
+`generate()` rewrites the whole report, so the sanitizer runs again here — otherwise this
+step puts every ghost link straight back. Verify with `--check`; it exits 1 if any
+unresolved community link survived:
+
+```bash
+python3 "{SKILL_DIR}/scripts/graphify_report_sanitize.py" --check graphify-out/GRAPH_REPORT.md
 ```
 
 Replace `LABELS_DICT` with the actual dict you constructed (e.g. `{0: "Attention Mechanism", 1: "Training Pipeline"}`).
@@ -588,7 +648,7 @@ extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text())
 analysis   = json.loads(Path('graphify-out/.graphify_analysis.json').read_text())
 labels_raw = json.loads(Path('graphify-out/.graphify_labels.json').read_text()) if Path('graphify-out/.graphify_labels.json').exists() else {}
 
-G = build_from_json(extraction)
+G = build_from_json(extraction, directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 cohesion = {int(k): v for k, v in analysis['cohesion'].items()}
 labels = {int(k): v for k, v in labels_raw.items()}
@@ -608,6 +668,14 @@ print('  _COMMUNITY_* - overview notes with cohesion scores and dataview queries
 "
 ```
 
+The hub notes now exist, so the report's navigation links can be live. Re-run the sanitizer
+pointed at the export to turn them back into working wikilinks:
+
+```bash
+python3 "{SKILL_DIR}/scripts/graphify_report_sanitize.py" graphify-out/GRAPH_REPORT.md \
+  --obsidian-dir OBSIDIAN_DIR
+```
+
 Generate the HTML graph (always, unless `--no-viz`):
 
 ```bash
@@ -621,7 +689,7 @@ extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text())
 analysis   = json.loads(Path('graphify-out/.graphify_analysis.json').read_text())
 labels_raw = json.loads(Path('graphify-out/.graphify_labels.json').read_text()) if Path('graphify-out/.graphify_labels.json').exists() else {}
 
-G = build_from_json(extraction)
+G = build_from_json(extraction, directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 labels = {int(k): v for k, v in labels_raw.items()}
 
@@ -644,7 +712,7 @@ from graphify.build import build_from_json
 from graphify.export import to_cypher
 from pathlib import Path
 
-G = build_from_json(json.loads(Path('graphify-out/.graphify_extract.json').read_text()))
+G = build_from_json(json.loads(Path('graphify-out/.graphify_extract.json').read_text()), directed=IS_DIRECTED)
 to_cypher(G, 'graphify-out/cypher.txt')
 print('cypher.txt written - import with: cypher-shell < graphify-out/cypher.txt')
 "
@@ -662,7 +730,7 @@ from pathlib import Path
 
 extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text())
 analysis   = json.loads(Path('graphify-out/.graphify_analysis.json').read_text())
-G = build_from_json(extraction)
+G = build_from_json(extraction, directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 
 result = push_to_neo4j(G, uri='NEO4J_URI', user='NEO4J_USER', password='NEO4J_PASSWORD', communities=communities)
@@ -685,7 +753,7 @@ extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text())
 analysis   = json.loads(Path('graphify-out/.graphify_analysis.json').read_text())
 labels_raw = json.loads(Path('graphify-out/.graphify_labels.json').read_text()) if Path('graphify-out/.graphify_labels.json').exists() else {}
 
-G = build_from_json(extraction)
+G = build_from_json(extraction, directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 labels = {int(k): v for k, v in labels_raw.items()}
 
@@ -706,7 +774,7 @@ from pathlib import Path
 extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text())
 analysis   = json.loads(Path('graphify-out/.graphify_analysis.json').read_text())
 
-G = build_from_json(extraction)
+G = build_from_json(extraction, directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 
 to_graphml(G, communities, 'graphify-out/graph.graphml')
@@ -733,6 +801,33 @@ To configure in Claude Desktop, add to `claude_desktop_config.json`:
   }
 }
 ```
+
+### Step 7e - Wiki export (only if --wiki flag)
+
+Run this before Step 9 (cleanup) - it reads `.graphify_labels.json`, which Step 5 writes and Step 9 may remove.
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+import json
+from graphify.build import build_from_json
+from graphify.wiki import to_wiki
+from pathlib import Path
+
+extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text())
+analysis   = json.loads(Path('graphify-out/.graphify_analysis.json').read_text())
+labels_path = Path('graphify-out/.graphify_labels.json')
+labels = {int(k): v for k, v in json.loads(labels_path.read_text()).items()} if labels_path.exists() else {}
+
+G = build_from_json(extraction, directed=IS_DIRECTED)
+communities = {int(k): v for k, v in analysis['communities'].items()}
+cohesion = {int(k): v for k, v in analysis['cohesion'].items()}
+
+n = to_wiki(G, communities, 'graphify-out/wiki', community_labels=labels, cohesion=cohesion, god_nodes_data=analysis.get('gods'))
+print(f'wiki: {n} article(s) written to graphify-out/wiki/ (plus index.md)')
+"
+```
+
+Writes `graphify-out/wiki/index.md` (agent entry point, catalog of every article) plus one article per community and per god node. Agent-crawlable: point another agent at `index.md` to navigate the graph without loading the whole `GRAPH_REPORT.md`.
 
 ### Step 8 - Token reduction benchmark (only if total_words > 5000)
 
@@ -828,6 +923,10 @@ The graph is the map. Your job after the pipeline is to be the guide.
 
 - **Incremental update** (`--update`): See [UPDATE_MODES.md](references/UPDATE_MODES.md)
 - **Re-cluster only** (`--cluster-only`): See [UPDATE_MODES.md](references/UPDATE_MODES.md)
+
+## Transcription
+
+- **Video/audio transcription** (`--whisper-model`): only relevant when Step 2's `detect` reports one or more `video` files. See [TRANSCRIBE.md](references/TRANSCRIBE.md)
 
 ## Query Commands
 

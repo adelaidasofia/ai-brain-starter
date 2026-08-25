@@ -81,9 +81,38 @@ ABS_SHIPPED_RE = re.compile(r"ai-brain-starter/(?:hooks|scripts)/([\w.-]+\.py)")
 # fine" -- an entry whose reason you cannot verify belongs in the baseline
 # below, honestly labelled, not here.
 TEMPLATE_ONLY: Dict[str, str] = {
+    "surface-stalled-git-operation.py":
+        "not a hook: a report BUILDER (build_report) called by "
+        "surface-stranded-session-artifacts.py, plus a standalone --test "
+        "carrying its own negative control. Deliberately unwired for the same "
+        "reason as surface-sync-guard-findings.py below -- its own SessionStart "
+        "entry put that event at 20/19 on the footprint SLA gate, and buying "
+        "budget to fit one more cold start hides the cost that gate exists to "
+        "surface. Checkable: grep surface-stalled-git-operation "
+        "hooks/surface-stranded-session-artifacts.py",
     "check_fab_shim.py":
         "not a hook: an import shim so tests can load the hyphenated guard "
         "module (hyphens are not importable identifiers).",
+    "surface-sync-guard-findings.py":
+        "not a hook: a report BUILDER (build_report) called by "
+        "worktree-footprint-signal.py at its single emission point, plus a "
+        "standalone --self-test diagnostic. Deliberately unwired -- wiring it "
+        "as its own SessionStart entry put that event at 20/19 on the "
+        "footprint SLA gate, and buying budget to fit one more cold start "
+        "would hide the cost that gate exists to surface. Checkable: grep "
+        "surface-sync-guard-findings hooks/worktree-footprint-signal.py "
+        "(MYC-1133).",
+    "surface-unniced-launchagents.py":
+        "opt-in detector, deliberately unwired. It names LaunchAgents that run "
+        "at normal scheduling priority -- the 2026-08-19 freeze class (68 "
+        "agents, none declaring itself background, load 109 on 10 cores with "
+        "RAM healthy). Same call as surface-sync-guard-findings above: "
+        "SessionStart is at 19/19, so wiring it would breach the footprint SLA, "
+        "and raising the budget would tax every install's cold start forever "
+        "for a GROWTH failure that a default install (0 daemons wired) does not "
+        "have. Run it by hand, or wire it locally, on a machine whose agent "
+        "fleet is growing. Checkable: bash "
+        "tests/integration/test_surface_unniced_launchagents.sh (MYC-4032).",
 }
 
 # --- A: pre-existing debt (ratchet, may only shrink) -------------------------

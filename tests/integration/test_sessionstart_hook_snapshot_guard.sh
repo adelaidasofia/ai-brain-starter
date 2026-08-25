@@ -265,6 +265,38 @@ run_guard "$H6"
 assert_warns "post-migration drop still warns"
 assert_has   "post-migration warning names the hook" "heal-journal-guard.py"
 
+echo "=== scenario 11: a POSIX -> Windows rewire is NOT a disappearance ==="
+# Running install-hooks-user-level.py on Windows platformizes EVERY wired command
+# in one shot. So the two wirings of one hook must yield the SAME identity, or that
+# single upgrade reads as the whole fleet vanishing at once -- the fleet-wide false
+# alarm scenario 10 guards against for v2 snapshots, reached by a different route
+# and on an install whose snapshot is already current.
+#
+# _self_test() pins this parity per command string; this pins it end to end, across
+# settings.json -> identities -> snapshot diff, which is where an integration-level
+# regression (in _current_identities or extract_sessionstart_commands) would land
+# without touching _script_identity at all.
+H7="$(newhome)"
+# literal ~ is the raw settings.json command text under test, not a path to expand
+# shellcheck disable=SC2088
+write_settings "$H7" \
+  'python3 ~/.claude/hooks/session-start-context.py 2>/dev/null || echo "{}"' \
+  'python3 ~/.claude/hooks/lint-claude-settings.py'
+run_guard "$H7"
+assert_rc     "posix baseline exits 0" 0
+assert_silent "posix baseline is silent"
+write_settings "$H7" \
+  "$(win_cmd session-start-context.py)" \
+  "$(win_cmd lint-claude-settings.py)"
+run_guard "$H7"
+assert_rc     "rewire run exits 0" 0
+assert_silent "platformizing the SAME hooks -> no false missing"
+# ...and the snapshot must still hold ONE identity per hook, not one per wiring.
+SF7="$(state_file "$H7")"
+python3 -c "import json;d=json.load(open('$SF7'));assert sorted(d['identities'])==['lint-claude-settings.py','session-start-context.py'],d" 2>/dev/null \
+  && ok "rewire leaves one identity per hook" \
+  || bad "rewire leaves one identity per hook" "$(cat "$SF7" 2>/dev/null)"
+
 echo ""
 echo "=== SUMMARY: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = 0 ]
