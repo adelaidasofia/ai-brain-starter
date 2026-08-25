@@ -10,7 +10,7 @@ Run weekly via cron, or manually after a journaling session.
 
 Insight reports saved by /weekly or /monthly (weekly-insights, monthly-insights,
 or their own report subfolder) are excluded from the index — see
-NON_JOURNAL_TYPES and DEFAULT_EXCLUDE_DIRS below. Without this, a report saved
+DEFAULT_EXCLUDE_DIRS below (a typed non-journal note is already excluded upstream). Without this, a report saved
 inside the journal folder gets indexed as an entry and inflates every count the
 insights skill reports.
 
@@ -68,6 +68,7 @@ from _meta_resolver import find_meta_dir  # noqa: E402
 # reach the ONE audited primitive, or the guarantee is only as good as the copy.
 # safe_read.py is stdlib-only, so mirroring it costs the vault nothing.
 from _lib.safe_read import safe_read_text  # noqa: E402
+from _floors import Floors  # noqa: E402
 
 # Read bounds for the shared safe_read primitive. Journal frontmatter sits in
 # the first lines; safe_read hands back the whole (size-capped) file. 1 MB is
@@ -105,22 +106,6 @@ JOURNAL_DIR_CANDIDATES = (
 )
 
 
-# Insight reports (weekly/monthly) are conventionally saved INSIDE the journal
-# folder and carry their own `creationDate`, so a naive walk indexes them as
-# journal entries and inflates every count the insights skill reports.
-#
-# Filter them by `type` using a DENYLIST, never an allowlist: real entries can
-# be missing the `type` field entirely (older entries, hand-written ones), and
-# requiring `type: journal` would silently drop them from the index — a quieter
-# and worse bug than the one this fixes.
-NON_JOURNAL_TYPES = {
-    "insight",
-    "insights",
-    "monthly-insights",
-    "weekly-insights",
-    "summary",
-    "report",
-}
 
 # Second layer: skip report subfolders outright, so a report that is missing its
 # `type` field still never reaches the index. Same localization spread as
@@ -215,6 +200,12 @@ def main():
     excluded_dirs = []
     excluded_by_type = []
 
+    # Floor vocabulary comes from the vault's own floor notes. When there are
+    # none there is nothing to check against, and the skip is announced below
+    # rather than passing silently.
+    floors = Floors(vault)
+    inconsistencies = []
+
     # Recursive walk: indexes journals nested under year-month subfolders
     # (e.g. Journals/2026-04/2026-04-15.md), not just top-level files.
     for root, dirs, files in os.walk(journal_dir):
@@ -250,7 +241,22 @@ def main():
                         meta[k.strip()] = v.strip().strip("'\"")
                 if i > 15:
                     break
-            if meta.get("type", "").strip().lower() in NON_JOURNAL_TYPES:
+            # A typed non-journal note living under the journal folder is not an
+            # entry. The recursive walk picks up the insight reports that
+            # /weekly and /monthly write into "Weekly Insights/" and
+            # "Monthly Insights/" subfolders, and those carry a creationDate,
+            # so the creationDate gate alone let them in — on one real vault,
+            # 29 indexed "entries" for 27 lived days. /patterns reads the last 7
+            # from this index, so the machine was re-reading its own summaries
+            # as if they were new material.
+            #
+            # Only a type that is present AND not "journal" disqualifies a file.
+            # An absent type still indexes: entries written before the daily-journal
+            # template gained `type: journal` (#379) have no field at all, and
+            # excluding those would empty the index on exactly the vaults that
+            # fix targets.
+            entry_type = meta.get("type")
+            if entry_type is not None and entry_type != "journal":
                 excluded_by_type.append(os.path.relpath(fpath, journal_dir))
                 continue
             if "creationDate" in meta:
@@ -267,6 +273,8 @@ def main():
                 if "floor_arc" in meta:
                     entry["floor_arc"] = _parse_inline_list(meta["floor_arc"])
                 entries.append(entry)
+                inconsistencies.extend(
+                    floors.check(meta, label=os.path.relpath(fpath, journal_dir)))
 
     if skipped:
         preview = ", ".join(f"{f} [{s}]" for f, s in skipped[:5])
@@ -302,6 +310,18 @@ def main():
         preview = ", ".join(sorted(excluded_by_type)[:5])
         more = " ..." if len(excluded_by_type) > 5 else ""
         print(f"  excluded {len(excluded_by_type)} non-journal file(s) by type: {preview}{more}")
+
+    if not floors:
+        print("  note: no floor notes found — frontmatter consistency check skipped",
+              file=sys.stderr)
+    elif not floors.has_tiers:
+        print("  note: floor notes declare no tiers — tier consistency check skipped",
+              file=sys.stderr)
+    if inconsistencies:
+        print("  {} frontmatter inconsistency(ies):".format(len(inconsistencies)),
+              file=sys.stderr)
+        for issue in inconsistencies:
+            print("    - {}".format(issue), file=sys.stderr)
 
 
 if __name__ == "__main__":

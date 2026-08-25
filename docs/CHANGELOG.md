@@ -9,6 +9,49 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-24: on Windows, "your backup is not a supported format" was the opener, not the backup
+
+**Who this affects:** Windows users who set their backup up with the `bash ... vault-backup.sh setup` command — which is the one the install walks you through.
+
+There are two halves to the backup feature, one written in bash and one in PowerShell, and they share a settings file and a destination folder. What they do not share is the kind of file they write: the bash half writes `.tar.gz`, the PowerShell half writes `.zip`. That was fine as long as nobody crossed the streams.
+
+They cross on Windows, routinely. The install hands you the bash command, and it runs perfectly well there under Git Bash. But the reminder that appears at the start of a session — the one that says *prove your backup restores* — hands Windows users the PowerShell command. Run it, and you got this:
+
+```
+.gpg is not a supported archive file format. .zip is the only supported archive file format.
+```
+
+Which reads like the backup is corrupt. It was not. Every one of those snapshots was fine and would have restored perfectly. The tool that was supposed to reassure you was holding the wrong opener and blaming the file.
+
+That is the part worth fixing carefully, because of *when* it happens. Nobody runs a restore drill on a good day. You run it the morning you are worried, and that morning it told you the one thing you did not want to hear, incorrectly.
+
+**Now `verify` looks at what the file actually is** and picks the matching opener — `.zip` or `.tar.gz`, encrypted or not. Everything that already worked keeps working, and a file that is genuinely neither now says so in a sentence you can read, instead of an exception about a `.zip` you never had.
+
+**One related trap, also closed.** The two halves store the encryption passphrase in files with the *same name* and different formats. When the PowerShell half met the bash half's passphrase, it threw a raw cryptography error that reads as a damaged secret. It now recognises the situation and hands you the bash command that works.
+
+**What you should do:** nothing. If you ever saw that "not a supported archive file format" message, your backups were never the problem — check them once more after updating and you should see the file count come back.
+
+---
+
+## 2026-08-24: the graphify sizer was under-counting its own cache, and the merge step could not open a real graph
+
+**Who this affects:** anyone who runs `/graphify` on a vault big enough to need the staged pipeline — which is anyone past a few hundred files.
+
+Two separate things, both in the wrapper scripts, both with the same shape: the tool kept working, told you nothing was wrong, and quietly cost you money.
+
+**The sizer said your cache was empty when it wasn't.** `graphify_stage_select.py` is the script that decides which files still need a paid extraction and prints the estimate you approve before spending. It ships twice — once for each supported vault layout — and *both* copies had grown their own hand-rolled version of graphify's cache key instead of asking the library. Between them they were wrong in four ways: it looked in the wrong directory, it fed the absolute file path into the digest where the library uses the path relative to your vault root, it hashed the whole Markdown file where the library deliberately hashes only the body below the frontmatter, and it swallowed any error into the "needs re-extraction" pile. On a 437-file vault with 1,113 perfectly good cache entries, it reported **zero** hits in every folder and sized the job at 185 files and roughly 401,000 tokens. The honest numbers were 74 files and 250,000. You would have paid twice for a third of the corpus and never known.
+
+The frontmatter part matters more than it sounds. A nightly metadata pass that stamps fields like `reviewed` or a word count onto your notes changes those files without changing a word of what they say. The library ignores frontmatter for exactly that reason. The sizer did not, so a metadata sweep across a folder made every file in it look like new work.
+
+**The merge step could not open a graph bigger than one megabyte.** `graphify_stage_finish.py` read your existing `graph.json` through a helper whose default size ceiling is 1 MB, and never raised it. A vault with a couple of thousand nodes is well past that, so the script aborted at the merge step with a "too-large" error, every time. It aborted rather than writing something broken, which is the right instinct — but it meant the one script the runbook tells you to always use for post-dispatch could not finish on any vault of realistic size.
+
+While in there, the eight text reads and writes these three scripts perform now pass `encoding="utf-8"` explicitly. Without it Python uses the machine's locale — cp1252 on a stock Windows box — which mangles accented characters and emoji folder names *without raising an error*. Vaults whose folders are named `📓 Diarios` or `⚙️ Meta` are exactly the ones this silently corrupts, so all three files came off the encoding backlog rather than being re-pinned.
+
+Both are fixed, in both copies of the sizer. It now calls `graphify.cache.file_hash()` when graphify is importable and falls back to a faithful local copy of the same rule when it is not (the common case — graphify usually lives in a virtualenv the wrapper scripts don't share). Cache lookup checks every layout this repo has shipped, so it can only ever find more entries than before, never fewer. Errors are reported instead of being counted as misses. And there are five regression tests at `tests/test_graphify_stage_select_cache_key.py`, each of which runs against *both* copies — the two drifted apart precisely because nothing was holding them to the same answer.
+
+---
+
+
 ## 2026-08-19: the privacy checker no longer publishes the private word list it checks for
 
 **Who this affects:** anyone who publishes repos with this starter installed, and anyone who forked one of ours.
@@ -59,6 +102,69 @@ When each check was its own separate program, the operating system kept it walle
 The speed is unchanged. The test suite that stayed green through all six of these now has a section aimed squarely at them, and every new test was confirmed to fail against the morning's version before it was allowed to pass against this one.
 
 **What you should do:** nothing beyond the update and re-install above. Same instruction, same one time.
+
+---
+
+## 2026-08-15: the hook that reads your priorities only understood English
+
+**Who this affects:** everyone who does not work in English. Also everyone who ever customized this hook by hand.
+
+`vault-context.py` is the helper that notices you asked a strategic question and quietly puts your priorities and open loops in front of Claude before it answers. The 2026-08-13 update fixed the reason it was doing nothing on every machine. This is the second reason, and it only showed up once the first was gone.
+
+The list of words that make it fire was written in English, in the file itself. Ask *"what should I prioritize this week"* and you got your priorities. Ask the same thing in Spanish — *"qué prioridades tengo esta semana"* — and nothing matched, so the hook exited quietly, exactly as if you had asked it something unimportant. Measured on a real Spanish vault: zero matches for the Spanish sentence, full injection for the English one.
+
+About a third of that list was also one person's vocabulary: the name of their company, their city, their newsletter, plus a second list pointing at file paths that exist in one vault on earth. Harmless-looking, but it meant the file could never quite be yours.
+
+**Both are fixed the same way.** The trigger words now live in language packs — `templates/vault-context/en.json` and `es.json` — the same shape the closing-signal detector already uses, and both load by default. Spanish patterns accept the version without accents, because that is how people actually type in a terminal. Everything personal moved out of the shipped code and into a file of your own:
+
+```
+~/.claude/.vault-context-signals.json
+```
+
+```json
+{
+  "strategic_signals": ["\\bacme corp\\b", "\\bproject atlas\\b"],
+  "topic_map": [
+    { "signals": ["\\bproject atlas\\b"], "files": ["Business/Atlas Brief.md"] }
+  ]
+}
+```
+
+That file is also the fix for an older piece of advice. The original release told you to add your own keywords by editing `~/.claude/hooks/vault-context.py` directly — but that file is redeployed on update, so every customization was silently reverted the next time you updated. Anything in the override file survives.
+
+**What you should do:** nothing. `en` and `es` both load by default; set `VAULT_CONTEXT_LANGS` if you want only one. Another language is one JSON file in `templates/vault-context/` — the loader takes any language name you give it.
+
+## 2026-08-15: your Sunday review now opens the backup instead of trusting it
+
+**Who this affects:** everyone who runs `/sunday-review`, and especially anyone whose vault sits inside iCloud, Dropbox, OneDrive, or any other sync folder.
+
+This one came out of a real vault. Someone asked a routine question about vault maintenance and found that their nightly backup had been producing an empty archive for 32 nights straight — 10 KB of nothing, against an 18 MB vault. The vault had been moved inside iCloud a month earlier, the scheduled job did not have macOS permission to read that folder, `tar` failed, and its complaint went to `/dev/null`. Nothing was lost, but for a month the safety net was a file that could not be opened.
+
+The part worth learning from is why nobody noticed. There were two checks running the whole time, and both said "OK, 0.7 days old" every single night. They were reading the archive's name and its timestamp — which were perfectly fine. A backup that fails this way keeps producing a fresh, correctly-named, recent file. Only opening it tells you anything.
+
+So `/sunday-review` now has a step that opens it: once a week, it decrypts the newest snapshot into a temp folder, restores it, and counts the files that came out. If the count is zero or absurdly low, that is a FAIL, in your review, in writing. If you have no backup configured at all, it says that too and hands you the setup command. The result now appears on its own line in the "Vault state" section of your Sunday note, next to the hygiene numbers.
+
+**What you should do:** nothing — the next `/sunday-review` runs it. If you would rather not wait for Sunday, the same drill is one command:
+
+```
+bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh verify
+```
+
+It takes a few seconds and either prints how many files it restored, or tells you your backup does not work.
+
+---
+
+## 2026-08-16: pasting a long note no longer closes your session because one line ended in "listo" or "done"
+
+**Who this affects:** anyone who pastes multi-line text into a session — a brief, a spec, a handoff, meeting notes. Spanish and Portuguese users saw it most, but the cause was language-independent.
+
+**The bug:** the session-close detector decides whether your message is a goodbye by matching it against sign-off patterns like `listo`, `ya está`, `bye`, `done for today`. Many of those patterns are anchored to the *end of the message* — that is what makes "listo, gracias" a close and "listo el borrador, sigamos" not one. But the matcher ran in a mode where "end of the message" meant "end of any line". So a 60-line handoff whose third line happened to read `Borrador listo` was treated as a farewell, and the whole close cascade ran in the middle of your work. Three real cases in nine days on one vault, all the same shape: a sign-off word ending an inner line of something long. Length was never considered either — a wave and a pasted document were scored the same way.
+
+**The fix:** the shared sign-off patterns now match against the whole message (so "end" means the real end) and against its last line alone (so a goodbye on the last line — "All good.\nbye" — still counts). A sign-off word ending an inner line satisfies neither. And the natural-language tiers only look at short messages, up to 300 characters; a sign-off is a few words, and anything longer is work being pasted in. Two things deliberately keep their old reach: slash commands (`/close`, `/cerrar`, `/wrap-up`) fire at any length because typing a command is deliberate, and your own `closingSignals.custom` phrases keep their original semantics for the same reason.
+
+**Also fixed, Spanish pack:** "estoy listo" / "estoy lista" ("I'm ready") is a statement of readiness — "estoy listo para el día" after a morning routine — never a goodbye. It now sits in the strict guard tier of `es.json`, because the bare word `listo` is a high-confidence sign-off and the weaker guards cannot override that.
+
+**New test:** `tests/integration/test_detect_closing_signal_length_gate.sh` — every "must not fire" case has a "must fire" twin, so a change that mutes the detector outright cannot pass it. Against the previous code, thirteen of its assertions fail.
 
 ---
 
