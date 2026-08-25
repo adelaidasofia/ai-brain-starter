@@ -1172,6 +1172,8 @@ PY_DIRECT=(
   # repo, so honouring an unresolvable `cd` (now reachable, since newlines split)
   # would turn a blocked op into an allowed one.
   hooks/test_block_raw_vault_git_cd.py
+  # Windows-only: CRLF frontmatter at the write boundary + list-valued relationship.
+  tests/test_windows_crlf_and_list_relationship.py
 )
 dormant_py=()
 while IFS= read -r -d '' f; do
