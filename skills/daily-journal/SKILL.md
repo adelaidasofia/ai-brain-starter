@@ -803,6 +803,33 @@ If no clear action items came up, skip silently — don't force it.
 
 ### Step 9: After saving
 
+**FIRST, before you tell them anything: rebuild the journal index.**
+
+The entry you just saved does not exist for `/weekly`, `/monthly` or `/sunday-review` until this
+runs. Nothing else rebuilds it — there is no hook and no scheduled task, and those skills only
+*read* the index.
+
+```bash
+python3 "[VAULT_PATH]/Meta/scripts/build-journal-index.py" --vault-root "[VAULT_PATH]" --journal-dir "[JOURNAL_FOLDER]"
+```
+
+Pass `--vault-root` and `--journal-dir` explicitly whenever the vault uses localized or
+emoji-prefixed folder names (`⚙️ Meta`, `📓 Journals`) — the script cannot infer those, and on
+Windows use `python`, not `/usr/bin/python3`.
+
+Expected output: `Indexed N entries → ...`, where N equals the number of journals on disk. **If it
+fails, say so** — never continue silently. A report built on a stale index looks successful and is
+wrong.
+
+> **Why this belongs here and not in the insights skills.** `/weekly` and `/monthly` guard the index
+> with a staleness check ("rebuild if missing or more than 7 days old"). That check measures *age,
+> not completeness*: a one-day-old index passes it while still missing every entry written since it
+> was built. Observed in the field: one vault sat at 21 indexed entries against 26 on disk, and went
+> **seven weeks without generating a single weekly or monthly report** — silently, because the index
+> was never "old", just incomplete. The index is derived from the journals, so it has to be refreshed
+> when one is *written*, not when someone remembers to check.
+
+
 Tell them the file name and floor. If relevant, connect it to a pattern from their data:
 - "This is your 3rd Courage entry this month — you're on a streak."
 - "Last time that person triggered you, you stayed on Anger for 3 entries. This time you moved to Acceptance same day. That's growth."

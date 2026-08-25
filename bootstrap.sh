@@ -1572,7 +1572,7 @@ SKILL_FORKS=()
 SKILL_SYMLINKS=()
 SKILLS_TO_SYNC=()
 
-for sub in graphify cierre-de-llamada meeting-todos patterns insights deconstruct daily-journal rise repurpose-talk nano-banana second-brain-mapping setup-vault-types diagnose note-todos sunday-review coach coaching backfill-journal-body-context longitudinal resolver-query for-my-team health-context health-doctor health-setup ingest-github ingest-health ingest-youtube evolve instinct-export instinct-import interview-me longitudinal doubt-driven-development secret-warn; do
+for sub in graphify cierre-de-llamada meeting-todos patterns insights deconstruct daily-journal rise repurpose-talk nano-banana second-brain-mapping setup-vault-types diagnose note-todos sunday-review coach coaching backfill-journal-body-context longitudinal resolver-query for-my-team health-context health-doctor health-setup ingest-github ingest-health ingest-youtube evolve instinct-export instinct-import interview-me doubt-driven-development secret-warn optimize-brain security-snapshot vault-system skillify-meta-loop; do
   dst="$HOME/.claude/skills/$sub"
 
   if [[ -L "$dst" ]]; then
@@ -2079,7 +2079,7 @@ for check in "${CHECKS[@]}"; do
   fi
 done
 # Skill folders (full bundled set + humanizer + ai-brain-starter itself)
-for sub in graphify cierre-de-llamada meeting-todos patterns insights deconstruct daily-journal rise repurpose-talk nano-banana humanizer ai-brain-starter diagnose second-brain-mapping setup-vault-types note-todos sunday-review coach coaching backfill-journal-body-context longitudinal resolver-query for-my-team health-context health-doctor health-setup ingest-github ingest-health ingest-youtube evolve instinct-export instinct-import interview-me doubt-driven-development secret-warn; do
+for sub in graphify cierre-de-llamada meeting-todos patterns insights deconstruct daily-journal rise repurpose-talk nano-banana humanizer ai-brain-starter diagnose second-brain-mapping setup-vault-types note-todos sunday-review coach coaching backfill-journal-body-context longitudinal resolver-query for-my-team health-context health-doctor health-setup ingest-github ingest-health ingest-youtube evolve instinct-export instinct-import interview-me doubt-driven-development secret-warn optimize-brain security-snapshot vault-system skillify-meta-loop; do
   if [[ -d "$HOME/.claude/skills/$sub" ]]; then
     ok "skill: $sub"
   else

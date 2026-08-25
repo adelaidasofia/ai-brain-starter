@@ -44,7 +44,30 @@ VAULT="${VAULT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 export VAULT_ROOT="$VAULT"
 REPORT="/tmp/abs-session-close-runner.report"
 TS="$(date '+%Y-%m-%dT%H:%M:%S%z')"
-PYTHON="$(command -v python3 || command -v python || true)"
+# Pick an interpreter that RUNS, not merely one that resolves. `command -v`
+# answers "is this name on PATH", which is a weaker claim than "this executes
+# python". On Windows the gap is routine: an app-execution alias for python3
+# ships enabled by default in %LOCALAPPDATA%\Microsoft\WindowsApps, sits on
+# PATH, satisfies `command -v`, and then exits non-zero printing an ad for the
+# Microsoft Store — while a real python is on the same PATH one candidate
+# later. Probing each candidate generalises the shim-strip above: it covers
+# any non-working stub, wherever it lives and whatever it is called.
+PYTHON=""
+PYTHON_REJECTED=""
+pick_python() {  # sets PYTHON / PYTHON_REJECTED in place — no subshell, or the
+  local c p     # rejected list would be lost with the command substitution.
+  for c in python3 python py; do
+    p="$(command -v "$c" 2>/dev/null)" || continue
+    [ -n "$p" ] || continue
+    if "$p" -c 'import sys; sys.exit(0)' >/dev/null 2>&1; then
+      PYTHON="$p"
+      return 0
+    fi
+    PYTHON_REJECTED="${PYTHON_REJECTED:+$PYTHON_REJECTED, }$c"
+  done
+  return 1
+}
+pick_python || true
 
 log() { printf '%s\n' "$1" | tee -a "$REPORT"; }
 
@@ -60,13 +83,27 @@ run_step() {  # human-name  script-filename
     return 0
   fi
   if [ -z "$PYTHON" ]; then
-    log "  [absent] $name (no python interpreter on PATH — skipped)"
+    if [ -n "$PYTHON_REJECTED" ]; then
+      log "  [absent] $name (found $PYTHON_REJECTED on PATH, none of them ran — skipped)"
+    else
+      log "  [absent] $name (no python interpreter on PATH — skipped)"
+    fi
     return 0
   fi
-  if "$PYTHON" "$path" >/dev/null 2>&1; then
+  local out rc line
+  out="$("$PYTHON" "$path" 2>&1)"; rc=$?
+  if [ "$rc" -eq 0 ]; then
     log "  [ok]     $name"
   else
-    log "  [warn]   $name (exited non-zero — non-fatal, continuing close)"
+    # Say WHY. The close is non-fatal by design, but a warning that drops the
+    # reason is how a broken aggregator survives for weeks: the report reads
+    # the same whether the vault is fine or the interpreter never ran.
+    log "  [warn]   $name (exit $rc — non-fatal, continuing close)"
+    if [ -n "$out" ]; then
+      printf '%s\n' "$out" | tail -n 5 | while IFS= read -r line; do
+        log "           | $line"
+      done
+    fi
   fi
 }
 
