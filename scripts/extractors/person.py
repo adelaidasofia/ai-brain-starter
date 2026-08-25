@@ -9,20 +9,12 @@ all journals for backlinks to this person. Expensive per-file, cached per-run.
 import glob
 import os
 import re
-import sys
-from pathlib import Path
-
 import yaml
 
 from _base import (
     VAULT, iso_date_from, count_words, ExtractionResult,
 )
 from _floors import floor_num_from_fm
-
-_HOOKS_DIR = Path(__file__).resolve().parent.parent.parent / "hooks"
-sys.path.insert(0, str(_HOOKS_DIR))
-
-from _lib.safe_read import safe_read_text  # noqa: E402
 
 AUTO_FIELDS = (
     "person_relationship_type", "person_company", "person_is_public_figure",
@@ -57,8 +49,9 @@ _JOURNAL_CANDIDATES = (
     "📓 Diario", "Diario",           # es, singular variant
     "📓 Diário", "Diário",           # pt
 )
-# JOURNALS_FOLDER (kept from this branch): an operator whose folder name is
-# outside the candidate list can point at it directly, without editing code.
+# JOURNALS_FOLDER: an operator whose journal folder is named outside the
+# candidate list can point at it directly, without editing code. Kept from
+# the branch that fixed this alongside the candidate list.
 JOURNALS_ROOT = os.environ.get("JOURNALS_FOLDER") or next(
     (os.path.join(VAULT, c) for c in _JOURNAL_CANDIDATES
      if os.path.isdir(os.path.join(VAULT, c))),
@@ -79,10 +72,11 @@ def _build_journal_index():
     wikilink_re = re.compile(r"\[\[([^\]|#]+?)(?:\|[^\]]+)?\]\]")
 
     for fp in glob.glob(os.path.join(JOURNALS_ROOT, "**", "*.md"), recursive=True):
-        result = safe_read_text(fp)
-        if not result.ok:
+        try:
+            with open(fp, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception:
             continue
-        content = result.text
         if not content.startswith("---"):
             continue
         end = content.find("\n---", 3)
@@ -103,13 +97,6 @@ def _build_journal_index():
         floor_num = floor_num_from_fm(fm)
         if not date_iso:
             continue
-        # Normalize to str. PyYAML parses an unquoted `date_iso: 2026-08-12` into
-        # a datetime.date but leaves a quoted one as str, so a vault with both
-        # styles yields a mixed list and `max()` in extract() dies with
-        # "'>' not supported between instances of 'str' and 'datetime.date'".
-        # ISO-8601 sorts identically as text, so string form is safe to compare.
-        if not isinstance(date_iso, str):
-            date_iso = date_iso.isoformat()
 
         body = content[end + 4:]
         # Find every wikilink in the body, Title-Cased
