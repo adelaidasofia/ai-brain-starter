@@ -8,6 +8,12 @@ of journal entries in milliseconds without re-reading every file.
 
 Run weekly via cron, or manually after a journaling session.
 
+Insight reports saved by /weekly or /monthly (weekly-insights, monthly-insights,
+or their own report subfolder) are excluded from the index — see
+DEFAULT_EXCLUDE_DIRS below (a typed non-journal note is already excluded upstream). Without this, a report saved
+inside the journal folder gets indexed as an entry and inflates every count the
+insights skill reports.
+
 Usage:
     python3 build-journal-index.py [--vault-root .] [--journal-dir Journals]
 
@@ -101,6 +107,14 @@ JOURNAL_DIR_CANDIDATES = (
 )
 
 
+
+# Second layer: skip report subfolders outright, so a report that is missing its
+# `type` field still never reaches the index. Same localization spread as
+# JOURNAL_DIR_CANDIDATES above — the insights skill saves reports under a
+# folder named in the vault's own language.
+DEFAULT_EXCLUDE_DIRS = ("Resúmenes", "Resumenes", "Summaries", "Reports", "Resumos")
+
+
 def find_journal_dir(vault):
     """Auto-detect the journal folder, mirroring what find_meta_dir does for Meta.
 
@@ -136,7 +150,13 @@ def main():
                     help="Meta subfolder where the index is written. Default: auto-detect the "
                          "vault's Meta folder (handles '⚙️ Meta' and plain 'Meta'). The folder "
                          "must already exist; this script never creates it.")
+    ap.add_argument("--exclude-dir", action="append", default=None,
+                    help="Subfolder name to skip, e.g. the folder insight reports are saved in "
+                         f"(repeatable). Default: {', '.join(DEFAULT_EXCLUDE_DIRS)}")
     args = ap.parse_args()
+
+    exclude_dirs = set(args.exclude_dir if args.exclude_dir is not None
+                       else DEFAULT_EXCLUDE_DIRS)
 
     vault = os.path.abspath(args.vault_root)
 
@@ -178,6 +198,8 @@ def main():
     output_path = os.path.join(meta_dir, "journal-index.json")
     entries = []
     skipped = []
+    excluded_dirs = []
+    excluded_by_type = []
 
     # Floor vocabulary comes from the vault's own floor notes. When there are
     # none there is nothing to check against, and the skip is announced below
@@ -187,7 +209,12 @@ def main():
 
     # Recursive walk: indexes journals nested under year-month subfolders
     # (e.g. Journals/2026-04/2026-04-15.md), not just top-level files.
-    for root, _dirs, files in os.walk(journal_dir):
+    for root, dirs, files in os.walk(journal_dir):
+        # Prune report subfolders in place so os.walk never descends into them.
+        for d in dirs:
+            if d in exclude_dirs:
+                excluded_dirs.append(os.path.relpath(os.path.join(root, d), journal_dir))
+        dirs[:] = [d for d in dirs if d not in exclude_dirs]
         for fname in files:
             if not fname.endswith(".md"):
                 continue
@@ -231,6 +258,7 @@ def main():
             # fix targets.
             entry_type = meta.get("type")
             if entry_type is not None and entry_type != "journal":
+                excluded_by_type.append(os.path.relpath(fpath, journal_dir))
                 continue
             if "creationDate" in meta:
                 # Store path relative to journal_dir so subfoldered entries
@@ -275,6 +303,14 @@ def main():
     print(f"Indexed {len(entries)} entries → {output_path}")
     if entries:
         print(f"  date range: {entries[0]['date']} → {entries[-1]['date']}")
+    # Report what the filters removed. A silent filter is how the opposite bug
+    # (real entries vanishing from the index) starts and stays unnoticed.
+    if excluded_dirs:
+        print(f"  excluded folder(s): {', '.join(sorted(set(excluded_dirs)))}")
+    if excluded_by_type:
+        preview = ", ".join(sorted(excluded_by_type)[:5])
+        more = " ..." if len(excluded_by_type) > 5 else ""
+        print(f"  excluded {len(excluded_by_type)} non-journal file(s) by type: {preview}{more}")
 
     if not floors:
         print("  note: no floor notes found — frontmatter consistency check skipped",
