@@ -13,20 +13,13 @@ from _base import (
     extract_first_prose_sentence, extract_section, match_people,
     count_words, iso_date_from, wikilinks_in, ExtractionResult,
 )
+from _floors import floor_num_from_name
 
 # Auto-written fields, in render order. First one is the idempotency marker.
 AUTO_FIELDS = (
     "smart_excerpt", "concepts_extracted", "people_mentioned",
     "word_count", "floor_num", "date_iso",
 )
-
-# Hawkins Map of Consciousness (Shame=1 → Enlightenment=17)
-FLOOR_MAP = {
-    "Shame": 1, "Guilt": 2, "Apathy": 3, "Grief": 4, "Fear": 5,
-    "Desire": 6, "Anger": 7, "Pride": 8, "Courage": 9, "Hope": 9,
-    "Neutrality": 10, "Willingness": 11, "Acceptance": 12, "Reason": 13,
-    "Love": 14, "Joy": 15, "Excitement": 15, "Peace": 16, "Enlightenment": 17,
-}
 
 SKIP_FILENAME_PATTERNS = (
     "[AI Extract]", "Weekly", "Monthly Summary",
@@ -35,12 +28,15 @@ SKIP_FILENAME_PATTERNS = (
 
 
 def _floor_num(fm):
-    raw = fm.get("floor")
-    if not raw:
-        return None
-    vals = raw if isinstance(raw, list) else [raw]
-    nums = [FLOOR_MAP[str(v)] for v in vals if str(v) in FLOOR_MAP]
-    return min(nums) if nums else None
+    """`floor_num` on the 34-floor High-Rise scale, from the entry's `floor` NAME.
+
+    Reads the name only (never a stale `floor_num` from an earlier run): this
+    extractor OWNS floor_num, so it must always be re-derived from what the
+    person wrote. Names resolve in English and Spanish, case-insensitively,
+    through the one canonical map in _floors (which mirrors vendor/high-rise/
+    floors.md). A list of floors scores as the lowest one, as before.
+    """
+    return floor_num_from_name(fm.get("floor"))
 
 
 def _concepts(body):
