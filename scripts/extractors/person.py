@@ -9,11 +9,19 @@ all journals for backlinks to this person. Expensive per-file, cached per-run.
 import glob
 import os
 import re
+import sys
+from pathlib import Path
+
 import yaml
 
 from _base import (
     VAULT, iso_date_from, count_words, ExtractionResult,
 )
+
+_HOOKS_DIR = Path(__file__).resolve().parent.parent.parent / "hooks"
+sys.path.insert(0, str(_HOOKS_DIR))
+
+from _lib.safe_read import safe_read_text  # noqa: E402
 
 AUTO_FIELDS = (
     "person_relationship_type", "person_company", "person_is_public_figure",
@@ -63,11 +71,10 @@ def _build_journal_index():
     wikilink_re = re.compile(r"\[\[([^\]|#]+?)(?:\|[^\]]+)?\]\]")
 
     for fp in glob.glob(os.path.join(JOURNALS_ROOT, "**", "*.md"), recursive=True):
-        try:
-            with open(fp, "r", encoding="utf-8") as f:
-                content = f.read()
-        except Exception:
+        result = safe_read_text(fp)
+        if not result.ok:
             continue
+        content = result.text
         if not content.startswith("---"):
             continue
         end = content.find("\n---", 3)
