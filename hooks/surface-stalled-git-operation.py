@@ -62,7 +62,7 @@ def _git(args: list[str], cwd: str) -> str | None:
     """
     try:
         r = subprocess.run(
-            ["git", *args], cwd=cwd, capture_output=True, text=True, timeout=10
+            ["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10
         )
     except Exception:
         return None
@@ -171,7 +171,7 @@ def _self_test() -> int:
             failures.append("clean repo produced a report (should be silent)")
 
         gd = Path(subprocess.run(["git", "-C", td, "rev-parse", "--absolute-git-dir"],
-                                 capture_output=True, text=True).stdout.strip())
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip())
 
         # 2. YOUNG operation -> still silent (not an incident yet)
         (gd / "rebase-merge").mkdir(parents=True, exist_ok=True)

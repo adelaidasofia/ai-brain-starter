@@ -108,7 +108,7 @@ def stranded_in_worktree(worktree: Path) -> list[str]:
             ["git", "-C", str(worktree), "-c", "core.quotePath=false",
              "status", "--porcelain", "--"] + pathspecs,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=15,
         )
     except (subprocess.SubprocessError, OSError):
