@@ -60,13 +60,12 @@
 # missing; #404's bug survived because the suite only ever ran on the
 # env-named vault.
 
-# ---- SEV-B-cwd  (15 file(s), 15 read(s)) ----
+# ---- SEV-B-cwd  (14 file(s), 14 read(s)) ----
 dd3795425a250401136ea1739bbc0090324a54ca2ac737fcb7ed36f7268d66a3 SEV-B-cwd scripts/check-claude-md-drift.py
 dfd1dee24edf0b7a56cc5241504e9190ac1625f24df2fc3b1a223baa9802f581 SEV-B-cwd scripts/check-rule-conflicts.py
 ecf437791a2199e922f3b4ea83fd5541e1f9b2852b6323243791ba827770a243 SEV-B-cwd scripts/crm-collision-check.py
 113b61af71c96cce33c625f6865f16050662270b509619ef3d032a5452aaab2a SEV-B-cwd scripts/decision-retrospective.py
 926b37dcb6f6b689dab5c69b74f169a74e911887f20e7ed6aeb3c1b51e507b58 SEV-B-cwd scripts/drift-detection.py
-1c7184abe8bea026809915956b43a5b945e44680a9248a8c83887a66f8d19bf0 SEV-B-cwd scripts/entity-disambiguator.py
 b461174f186d1a5bee479caf657c50c002324a09336324aa1bfef88090bfc8f1 SEV-B-cwd scripts/mcp-config-check.py
 601e5c47d84531274d14e3d0211c411fe4d37d1293879aa9c3c3fa163dd62883 SEV-B-cwd scripts/passive-capture.py
 3c41956000c24ca559be548481031b53a6fc269ef980af1bfedcd3c0bab133f0 SEV-B-cwd scripts/proposed-update-drafter.py

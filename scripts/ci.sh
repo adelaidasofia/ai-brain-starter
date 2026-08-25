@@ -227,6 +227,10 @@ INTEGRATION_TESTS=(
   # Windows leg of ARTIFACT-WITHOUT-ACTIVATION: bootstrap.ps1 installed the
   # skills but never commands/*.md, so no slash command existed on Windows.
   test_bootstrap_ps1_slash_commands
+  # Windows half of MYC-3895: bootstrap.ps1 called `git clone` itself and never
+  # installed git, so the one prerequisite a locked-down laptop cannot get was
+  # also the one nothing provided.
+  test_bootstrap_ps1_git_install
   test_preflight_git_and_it_request
   test_remediate_runaway_procs
   test_surface_unniced_launchagents
@@ -285,6 +289,7 @@ INTEGRATION_TESTS=(
   test_meeting_todos_step0_create_if_absent
   test_meeting_workflow_trigger_hook
   test_personal_brain_not_optional
+  test_private_context_scan_merge_base
   test_phase11_writes_to_vault_rule_file
   test_post_commit_ff_worktrees
   test_write_hook_meeting_folder_i18n
@@ -332,6 +337,22 @@ INTEGRATION_TESTS=(
   # every test ran against the vault the env var already named, which makes
   # "resolve from the env" and "resolve from the target" indistinguishable.
   test_hook_vault_root_per_target
+  # That same hook's launchd pass read `launchctl list`'s exit-status column
+  # only, which reads 0 for BOTH a healthy job and one that has never run at
+  # all -- a hollow job was indistinguishable from a clean one and stayed
+  # silently unflagged. Proves the blind spot on a frozen, independent
+  # reimplementation of the old rule (not a git-history diff, which would stop
+  # meaning anything once this fix lands on main), then proves the shipped fix
+  # (a second `launchctl print` probe, only for the ambiguous status==0 case)
+  # closes it -- with regression + false-positive + probe-failure controls.
+  test_launchd_hollow_job_detection
+  # The three shipped launchd plist templates carried no PATH, so a client
+  # script that shells out to a brew-installed tool failed with "not found"
+  # under launchd while working fine in every interactive shell. Validates the
+  # added EnvironmentVariables/PATH key with two independent parsers (plutil
+  # -lint where available, portable plistlib everywhere else) against both the
+  # raw template and a simulated real installer render.
+  test_launchd_template_path_env
   # The rm -rf rule in that same hook, which MYC-3529 left alone: its regex
   # spelled the vault root `$HOME/vault` -- a SHELL string in a PYTHON regex,
   # where `$` is an end-of-line anchor, so the branch was dead and the vault
@@ -417,6 +438,7 @@ INTEGRATION_TESTS=(
   # — silently, on a whole platform. Two layers must hold (the path gate AND the
   # vault-root resolve); fixing only the first looks right and still fails open.
   test_journal_guard_windows_paths
+  test_team_broadcast_install_gap
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new
@@ -1112,11 +1134,14 @@ echo "    OK - $unit_count scripts/ unit suite(s) passed"
 # fails the gate LOUD (the false-green class MYC-2922 closed for scripts/, MYC-2959
 # for hooks/+tests/). PY_DIRECT then runs the non-wrapped suites exactly once.
 PY_DIRECT=(
+  hooks/test_surface_stalled_git_operation.py
   hooks/test_memory_index.py
   tests/test_instinct.py
+  tests/test_entity_disambiguator_clustering.py
   hooks/test_live_session_reap.py
   hooks/test_relocation_orphan_reclaim.py
   hooks/test_secret_patterns_fp_filter.py
+  hooks/test_secret_patterns_nvidia.py
   hooks/test_check_fabricated_verification.py
   hooks/test_warn_chained_state_command.py
   hooks/test_footprint_aggregate_bloat.py

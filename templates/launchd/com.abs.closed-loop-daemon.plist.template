@@ -38,6 +38,16 @@
         <string>{{VAULT_ROOT}}</string>
     </array>
 
+    <!-- launchd hands a job a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) with
+         no Homebrew prefix, so anything this daemon shells out to that was
+         installed via brew (gh, uv, node, a brew git...) fails with "not
+         found" here even though it works in every interactive shell. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
     <key>KeepAlive</key>
     <true/>
 

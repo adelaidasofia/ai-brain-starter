@@ -174,6 +174,12 @@ jobs:
       - name: no naive VAULT_ROOT reads (resolve via _resolve_vault_root)
         run: python3 scripts/check-vault-root-reads.py
 
+      - name: SessionStart emit-shape negative controls (the guard must still bite)
+        run: python3 scripts/check-sessionstart-emit-shape.py --self-test
+
+      - name: no SessionStart hook strands context on a top-level key
+        run: python3 scripts/check-sessionstart-emit-shape.py
+
       # A negative control needs a "before" source. Read it from a MOVING ref
       # (`git show origin/main:file`) and the control is guaranteed to pass in
       # the PR that adds it and guaranteed to fail forever after it lands --
@@ -294,6 +300,26 @@ jobs:
             done
           done < <(grep -rn -E '`scripts/[A-Za-z0-9_./-]+\.(sh|ps1|py|plist)`' phases/ 2>/dev/null || true)
           [ -f /tmp/lint-ref-fail ] && exit 1 || exit 0
+
+      # Broader than the phases-only check above: every slash command and
+      # scripts/*.py path across README.md, docs/, phases/, and every
+      # skills/*/SKILL.md, plus a cheap check that a documented --flag is
+      # actually wired somewhere besides its own menu line. Built for
+      # MYC-4121 after eight of these were found by hand in one audit
+      # (/optimize-brain never shipped, /mem-search advertised after its own
+      # removal, two image scripts documented with a fabricated ship date,
+      # three graphify flags wired nowhere but their own menu, ...). See
+      # scripts/check-doc-promises.py's module docstring for what is checked
+      # and the bounded, documented exemptions for what is not. No
+      # untrusted input reaches this step -- it reads only committed
+      # tracked files already on the runner's checkout.
+      - name: doc-promises negative controls (the guard must still bite)
+        run: |
+          python3 scripts/check-doc-promises.py --self-test
+          python3 scripts/check-doc-promises.py --fixture-test
+
+      - name: every documented command, script, and flag actually exists
+        run: python3 scripts/check-doc-promises.py
 
       # Catches the bug class from the May 2026 install-UX incident: the README
       # told the installing assistant to run `bash <(curl -fsSL .../bootstrap.sh)`.
@@ -434,46 +460,24 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: git fetch origin "$BASE_REF" --depth=50
+        # NO --depth here. checkout above uses fetch-depth: 0, and a depth-limited
+        # fetch re-introduces a shallow boundary: on a PR older than that many
+        # commits the merge base falls outside it and `git diff BASE...HEAD`
+        # cannot be computed at all.
+        run: git fetch origin "$BASE_REF"
+
+      # The scan itself lives in scripts/check-private-context.sh so this
+      # enforcing gate and a local run cannot drift, and so its negative control
+      # is runnable. Same reasoning as check-ps1-encoding.sh above.
+      - name: private-context negative controls (the guard must still bite)
+        if: github.event_name == 'pull_request'
+        run: bash scripts/check-private-context.sh --self-test
 
       - name: private-context tokens (PR-scoped)
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: |
-          set -e
-          P='\b[A]delaida\b|\b[O]nde\b|\b[D]iaz.Roa\b|\b[B]ogot[aá]\b|\b[S]ergio Perez\b|\b[N]atalia\b|\b[P]aola\b|\b[A]ccenture\b|\b[H]igh.Rise Series\b|\b[S]hark Tank\b'
-          BASE="origin/$BASE_REF"
-          fail=0
-          while IFS= read -r f; do
-            [ -z "$f" ] && continue
-            [ ! -f "$f" ] && continue
-            case "$f" in
-              */.venv/*|*/node_modules/*|*/__pycache__/*) continue ;;
-            esac
-            case "$f" in
-              *.md|*.sh|*.ps1|*.py|*.json|*.yml|*.yaml|*.txt|.env.example) ;;
-              *) continue ;;
-            esac
-            # Scan ONLY lines this PR adds (diff lines starting with `+`,
-            # excluding the `+++ b/path` file header). Pre-existing committed
-            # content is intentionally ignored: CI gates net-new private-context
-            # additions, not legacy text in files this PR happens to touch.
-            added_lines=$(git diff "$BASE"..HEAD -- "$f" | grep -E '^\+' | grep -vE '^\+\+\+' || true)
-            if [ -z "$added_lines" ]; then
-              continue
-            fi
-            if matches=$(echo "$added_lines" | grep -nE "$P" 2>/dev/null); then
-              echo "::error file=$f::private-context token added in this PR"
-              echo "$matches" | head -3 | sed 's|^|  |'
-              fail=1
-            fi
-          done < <(git diff --name-only "$BASE"..HEAD)
-          if [ "$fail" = "1" ]; then
-            echo "::error::Private-context scan failed. Use placeholders or fictional names instead."
-            exit 1
-          fi
-          echo "Private-context scan passed (added lines only)."
+        run: bash scripts/check-private-context.sh "origin/$BASE_REF"
 
       # ---- last: the only step that installs anything ------------------------
 

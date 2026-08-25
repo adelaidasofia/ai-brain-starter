@@ -78,6 +78,23 @@ The speed is unchanged. The test suite that stayed green through all six of thes
 
 ---
 
+## 2026-08-15: your Sunday review now opens the backup instead of trusting it
+
+**Who this affects:** everyone who runs `/sunday-review`, and especially anyone whose vault sits inside iCloud, Dropbox, OneDrive, or any other sync folder.
+
+This one came out of a real vault. Someone asked a routine question about vault maintenance and found that their nightly backup had been producing an empty archive for 32 nights straight — 10 KB of nothing, against an 18 MB vault. The vault had been moved inside iCloud a month earlier, the scheduled job did not have macOS permission to read that folder, `tar` failed, and its complaint went to `/dev/null`. Nothing was lost, but for a month the safety net was a file that could not be opened.
+
+The part worth learning from is why nobody noticed. There were two checks running the whole time, and both said "OK, 0.7 days old" every single night. They were reading the archive's name and its timestamp — which were perfectly fine. A backup that fails this way keeps producing a fresh, correctly-named, recent file. Only opening it tells you anything.
+
+So `/sunday-review` now has a step that opens it: once a week, it decrypts the newest snapshot into a temp folder, restores it, and counts the files that came out. If the count is zero or absurdly low, that is a FAIL, in your review, in writing. If you have no backup configured at all, it says that too and hands you the setup command. The result now appears on its own line in the "Vault state" section of your Sunday note, next to the hygiene numbers.
+
+**What you should do:** nothing — the next `/sunday-review` runs it. If you would rather not wait for Sunday, the same drill is one command:
+
+```
+bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh verify
+```
+
+It takes a few seconds and either prints how many files it restored, or tells you your backup does not work.
 ## 2026-08-15: the setup could stop halfway and tell you it was finished
 
 **Who this affects:** anyone whose install ended early, especially if you never reached the journaling interview or your CLAUDE.md came out mostly empty.
@@ -123,6 +140,18 @@ python3 ~/.claude/skills/ai-brain-starter/scripts/install-hooks-user-level.py
 If your session start mentions "background helpers not active", this is what it was pointing at. Nothing else changes, and re-running is safe: anything you edited by hand is backed up to `<file>.bak-YYYY-MM-DD-HHMM` before it is replaced.
 
 ---
+
+## 2026-08-10: a missing team-broadcast install looked exactly like a healthy one
+
+**Who this affects:** anyone using the team-broadcast skill (Slack session-close recaps) across more than one machine.
+
+**The silent-failure watchdog (`surface-stale-automation-failures.py`) couldn't tell "never installed" from "installed and fine."** It works by scanning a log file for recent failures — no recent failures, no warning. But a machine that never had `auto-send.py` installed also has no log file, for the same reason: nothing ever ran there. Both cases produced exactly zero signal, on every session, forever. That's a stricter silence than an outright failure would have been — a broken install eventually leaves an error in the log; a missing install leaves nothing to ever go wrong. The watchdog now checks installation directly (the script's presence, then whether the daily launchd job is registered) before it ever looks at the log, and says so specifically instead of staying quiet. The launchd job is matched by its name ending, so it is found whatever reverse-DNS namespace you installed it under.
+
+**If you never set up team-broadcast, you will not hear about this at all.** This starter does not install that skill, so a missing one is the normal state for most people, and a warning about a component you never asked for is just noise that teaches you to ignore the rest. The check only speaks up when there is evidence you did set it up here and it since broke: a scheduled job that refers to it, a log from a previous run, or a half-present skill folder.
+
+**And a scheduled job that exists but has never actually run now gets caught too.** macOS reports the same status for a job that ran and finished cleanly as for one that was registered and never fired, so "the schedule is there" was being read as "it is working". The daily summary is the one job where that distinction is the entire point: the failure people actually hit is a broadcast that has never been sent. It now says so and gives you the two commands that reload it.
+
+**Also:** this file's non-ASCII console output (the warning emoji, some em dashes) was carried over from before the UTF-8 console-crash lint was widened to cover `hooks/`. It's provably safe — the only print is `json.dumps(...)`, which escapes non-ASCII before it reaches stdout — so it's now marked `# utf8-stdout-ok` and dropped from the legacy pin list instead of staying silently grandfathered in.
 
 ## 2026-08-05: on Mac and Linux, "daily backup scheduled" now means it really is
 
