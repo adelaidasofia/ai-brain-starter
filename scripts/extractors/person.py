@@ -91,7 +91,10 @@ def _priority(fm):
 
 def _is_public_figure(fm):
     """True if relationship type or notes flag this as author/thinker/public figure."""
-    rel = (fm.get("relationship") or "").lower().strip()
+    raw = fm.get("relationship") or ""
+    if isinstance(raw, (list, tuple, set)):
+        raw = " ".join(str(x) for x in raw)
+    rel = str(raw).lower().strip()
     if rel in PUBLIC_FIGURE_RELATIONSHIP_HINTS:
         return True
     # Also check if any hint word appears within a longer descriptor

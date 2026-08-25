@@ -167,7 +167,7 @@ def main() -> int:
         emit_allow()
         return 0
 
-    m = re.match(r"^---\n(.*?)\n---\s*", projected, re.DOTALL)
+    m = re.match(r"^---\r?\n(.*?)\r?\n---\s*", projected, re.DOTALL)
     if not m:
         emit_deny(
             f"Vault frontmatter linter: '---' delimiter not properly closed in {Path(file_path).name}. "

@@ -9,6 +9,18 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-25: on Windows, the frontmatter guard was blocking most edits to your own vault
+
+**Who this affects:** Windows users. Mac and Linux are unaffected.
+
+Before Claude writes to a decision, session, or journal note, a guard checks the little block of settings at the top of the file — the frontmatter — and refuses the write if it is malformed. Good guard. On Windows it was refusing writes to files that were perfectly fine.
+
+The reason is invisible unless you go looking. Windows ends every line with two characters where Mac and Linux use one. The guard's pattern only recognised the one-character version, so a valid file saved on Windows read as "the '---' delimiter is not properly closed" and the write was denied. On the machine where this was found, 274 of 400 notes in the vault were in the Windows format — so the guard blocked most edits to that vault, on a file that had nothing wrong with it. The deeper checker it hands off to already tolerated both formats; the guard in front of it did not, so the file was rejected before the real check ever ran.
+
+Also fixed alongside it: if a person's note in your CRM lists `relationship:` as a list rather than a single phrase — both are valid ways to write it — the person extractor crashed and took the whole mapping run down with it. It now reads either spelling.
+
+Both fixes ship with a test that fails without them, so they cannot quietly regress.
+
 ## 2026-08-19: the privacy checker no longer publishes the private word list it checks for
 
 **Who this affects:** anyone who publishes repos with this starter installed, and anyone who forked one of ours.
