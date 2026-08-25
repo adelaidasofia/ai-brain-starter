@@ -120,7 +120,7 @@ def destinations(path: Path, pattern: re.Pattern[str]) -> set[str]:
     ]
     return {m for m in pattern.findall("\n".join(lines))} - IGNORE
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # SECOND CHECK: skill-list coverage.
 #
 # The destination check above deliberately IGNOREs "skills" (see IGNORE) --
@@ -138,7 +138,7 @@ def destinations(path: Path, pattern: re.Pattern[str]) -> set[str]:
 #
 # A skill dir is the SOURCE OF TRUTH. Adding skills/<name>/SKILL.md and
 # forgetting the lists must fail RED here rather than ship an unreachable skill.
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 SKILLS_DIR = REPO / "skills"
 
