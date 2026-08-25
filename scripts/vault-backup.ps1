@@ -351,6 +351,22 @@ function Cmd-Status {
     $reach = if (Test-Path -LiteralPath $e.dest) { "(reachable)" } else { "(UNREACHABLE)" }
     Say "Destination: $($e.dest) $reach"
     Say "Encrypted:   $($e.encrypt)    Keep: $($e.keep)"
+    # Parity with vault-backup.sh: report WHERE the passphrase lives, not just
+    # that encryption is on. "Encrypted: True" alone does not tell the user
+    # whether the key is protected by the OS.
+    # Explicit rather than truthiness: ConvertFrom-Json normally yields a real
+    # bool, but any non-empty STRING is truthy in PowerShell, so a conf carrying
+    # "False" would print this line on an unencrypted vault.
+    $encOn = ($e.encrypt -is [bool] -and $e.encrypt) -or
+             ("$($e.encrypt)".Trim().ToLower() -in @("true", "1", "yes"))
+    if ($encOn) {
+      switch ($e.store_kind) {
+        "dpapi" { Say "Passphrase:  OS-protected (DPAPI, current user)" }
+        ""      { Warn "Passphrase:  unknown (no store_kind recorded) - re-run setup to repair" }
+        $null   { Warn "Passphrase:  unknown (no store_kind recorded) - re-run setup to repair" }
+        default { Say "Passphrase:  $($e.store_kind)" }
+      }
+    }
     $n = (Get-ChildItem -LiteralPath $e.dest -Filter "$Stem-*" -File -ErrorAction SilentlyContinue).Count
     Say "Snapshots:   $n in destination"
     Say "Last run:    $(if ($e.last) { $e.last } else { 'never' })"

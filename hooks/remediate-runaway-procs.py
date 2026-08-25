@@ -63,7 +63,7 @@ import sys
 
 def _emit(ctx: str | None) -> int:
     print(
-        json.dumps({"continue": True, "additionalContext": ctx})
+        json.dumps({"continue": True, "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": ctx}})
         if ctx
         else json.dumps({"continue": True, "suppressOutput": True})
     )
@@ -148,7 +148,8 @@ def main() -> int:
         try:
             out = subprocess.run(
                 ["ps", "-axo", "pid=,ppid=,etime=,comm="],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=15,
             )
         except (subprocess.TimeoutExpired, OSError):
             out = None
@@ -194,7 +195,8 @@ def main() -> int:
     try:
         out2 = subprocess.run(
             ["ps", "-axww", "-o", "pid=,etime=,pcpu=,command="],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=15,
         )
     except (subprocess.TimeoutExpired, OSError):
         out2 = None

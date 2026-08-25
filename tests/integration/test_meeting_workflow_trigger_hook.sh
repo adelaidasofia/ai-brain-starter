@@ -104,6 +104,15 @@ EN_POSITIVE=(
     # Artifact pulls + capture verbs
     "extract action items from the sync"
     "capture the to-dos from the meeting"
+    # Natural phrasings that silently missed before (measured against a
+    # 36-phrase probe of how people actually type this). Each maps to one
+    # trigger added in the same change:
+    "meeting's done"                      # contracted "is" riding on the noun
+    "the standup's over"                  # same, different noun
+    "that meeting is finally over"        # affirmative adverb between is/over
+    "had a meeting just now"              # postfix "just now" temporal anchor
+    "just did a call with the client"     # "did" as a completion verb
+    "finished a call with the client"     # bare finished + core meeting noun
 )
 for p in "${EN_POSITIVE[@]}"; do
     out=$(run_hook "$p")
@@ -189,6 +198,21 @@ NEGATIVE=(
     "process this CSV file"
     "I just had lunch"
     "I just had coffee"
+    # Negation + hedges around the completion verb. These read as "done"
+    # lexically but mean the meeting is STILL RUNNING. Guards ADV_DONE being
+    # an allow-list; a permissive adverb slot fires the cascade on all of them.
+    "the meeting is not done yet"
+    "the call is not over"
+    "my meeting isn't done"
+    "the meeting is almost over"
+    "the call is nearly finished"
+    "the meeting is never over"
+    "is the meeting done?"
+    "is the call over yet?"
+    # Bare finished/ended + an AMBIGUOUS noun is ordinary work talk, not a
+    # meeting signal. Guards NOUN_EN_CORE excluding review/session/chat.
+    "finished the review of the contract"
+    "ended the session early"
     "saca un café"
     "trae el café"
 )

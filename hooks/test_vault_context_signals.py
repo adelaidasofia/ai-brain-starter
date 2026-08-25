@@ -135,6 +135,7 @@ with tempfile.TemporaryDirectory() as tmp:
         [sys.executable, str(deployed)],
         input=json.dumps({"cwd": str(vault), "prompt": "qué prioridades tengo hoy"}),
         capture_output=True, text=True, env=env,
+        encoding="utf-8", errors="replace",
     )
 check("deployed copy resolves packs through the canonical clone",
       "cerrar la P.O." in dep.stdout, f"stdout={dep.stdout[:200]!r} stderr={dep.stderr[:200]!r}")
@@ -185,6 +186,7 @@ with tempfile.TemporaryDirectory() as tmp:
         [sys.executable, str(HOOK)],
         input=json.dumps({"cwd": str(vault), "prompt": "qué prioridades tengo hoy"}),
         capture_output=True, text=True, env=env,
+        encoding="utf-8", errors="replace",
     )
     injected = ""
     if proc.stdout.strip():

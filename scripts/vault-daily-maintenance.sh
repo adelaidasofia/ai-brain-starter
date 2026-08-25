@@ -63,6 +63,11 @@ else
   close_load_per_core() { echo "0"; }
   close_mutex_acquire() { return 0; }
   close_mutex_release() { :; }
+  # The index-lock resolver FAILS CLOSED, unlike the three above. Without the
+  # guard we cannot resolve the real git dir, so we cannot prove no other writer
+  # holds the lock - skip the reconcile commit (artifacts stay on disk for the
+  # next run) rather than commit into an unknown lock state.
+  vault_git_wait_unlocked() { return 1; }
 fi
 
 # Auto-detect the Meta folder via the shared resolver (prefers the variant
@@ -169,9 +174,10 @@ AGG_DECISIONS="$SCRIPT_DIR/aggregate-decisions.py"
 # Commit any close artifacts left uncommitted by a load-deferred close. Targeted
 # paths only - NEVER `git add -A` (vaults are commonly 10k-60k+ files).
 if [ -d "$VAULT/.git" ] || git -C "$VAULT" rev-parse --git-dir >/dev/null 2>&1; then
-  WAITED=0
-  while [ -f "$VAULT/.git/index.lock" ] && [ $WAITED -lt 60 ]; do sleep 2; WAITED=$((WAITED + 2)); done
-  if [ ! -f "$VAULT/.git/index.lock" ]; then
+  # Lock path RESOLVED from git, never assembled as "$VAULT/.git/index.lock": on
+  # a sidecar-relocated vault .git is a POINTER FILE, so the assembled path can
+  # never exist and this check would pass forever. Fails closed.
+  if vault_git_wait_unlocked "$VAULT"; then
     PATHS=()
     for p in "$META_DIR/Sessions" "$META_DIR/Decisions" \
              "$META_DIR/Last Session.md" "$META_DIR/Decision Log.md" \
@@ -185,7 +191,7 @@ if [ -d "$VAULT/.git" ] || git -C "$VAULT" rev-parse --git-dir >/dev/null 2>&1; 
       log "[reconcile-commit] staged ${#PATHS[@]} close-artifact path(s)"
     fi
   else
-    log "[reconcile-commit] SKIPPED - git index.lock held >60s"
+    log "[reconcile-commit] SKIPPED - git index.lock held (or git dir unresolvable) after ${VAULT_GIT_LOCK_MAX_WAIT:-60}s"
   fi
 fi
 
@@ -234,6 +240,16 @@ PASSIVE="$SCRIPT_DIR/passive-capture.py"
 # no relocation was ever recorded. rc=1 (ALARM) is logged, never fatal (set +e + run).
 RELOCWATCH="$SCRIPT_DIR/relocate-sweep.py"
 [ -f "$RELOCWATCH" ] && run "relocate-watch" /usr/bin/env python3 "$RELOCWATCH" --watch
+
+# Cloud-sync machinery scan (MYC-1133). Walks every synced root for git repos /
+# node_modules / build trees -- the sync-daemon storm + silent-corruption class.
+# Heavy (full walk of every cloud root) so it belongs here and NOT on SessionStart:
+# a per-session walk becomes N concurrent full walks under N sessions, which is the
+# storm itself. It writes ~/.claude/state/sync-guard-last.json; the SessionStart
+# surfacer reads that snapshot. Scheduling this is what gives the surfacer anything
+# to say -- without it the surfacer is silent forever and the guard is decoration.
+SYNCGUARD="$SCRIPT_DIR/../hooks/check-sync-folder-machinery.py"
+[ -f "$SYNCGUARD" ] && run "sync-folder-machinery" /usr/bin/env python3 "$SYNCGUARD" --json
 
 # === AUTO-GC (MYC-2363) =====================================================
 # The reclaim tier. Every piece below already existed and every one was OPT-IN,

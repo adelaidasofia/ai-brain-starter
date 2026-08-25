@@ -28,14 +28,17 @@ ICLOUD="Library/Mobile Documents/com~apple~CloudDocs"   # detect_cloud_sync mark
 NEUTRAL="$TMP/neutral"; mkdir -p "$NEUTRAL"              # a non-vault, non-git cwd
 NONE="$TMP/no-such-obsidian.json"                       # empty registry sentinel
 
-# Extract additionalContext from the hook's JSON stdout; "" when suppressed.
+# Extract the message from hookSpecificOutput.additionalContext -- the ONLY
+# channel SessionStart delivers to the model; "" when suppressed. This read a
+# TOP-LEVEL "additionalContext" until 2026-08-23, so it went green precisely
+# when the hook was mute: it pinned the defect rather than the defence.
 emit_ctx() {
   python3 -c 'import json,sys
 try:
     d=json.load(sys.stdin)
 except (ValueError, OSError):   # hook stdout was not valid JSON -> treat as silent
     print(""); sys.exit(0)
-print(d.get("additionalContext","") if isinstance(d,dict) else "")'
+print((d.get("hookSpecificOutput") or {}).get("additionalContext","") if isinstance(d,dict) else "")'
 }
 
 # Build an obsidian.json registry fixture listing the given vault path(s).

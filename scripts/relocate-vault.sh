@@ -87,22 +87,59 @@ say()  { printf '%s\n' "$*"; }
 warn() { printf 'WARN  %s\n' "$*" >&2; }
 die()  { printf 'relocate-vault: REFUSE — %s\n' "$1" >&2; exit "${2:-1}"; }
 
-# Obsidian-running probe, with a test seam so the negative-control suite can drive
-# BOTH outcomes deterministically on any host. RELOCATE_VAULT_OBSIDIAN:
-#   unset / auto -> real `pgrep -x Obsidian` probe — the production default;
-#                   behavior is IDENTICAL to before this seam existed.
-#   running      -> report Obsidian as running    (drives the refusal assertion).
-#   absent       -> report Obsidian as not running (lets the tests exercise the
-#                   OTHER soft gates on a dev box that has Obsidian open — the
-#                   normal state when developing an Obsidian-vault tool).
-# Mirrors the VAULT_BACKUP_SKIP_TIMEMACHINE / VAULT_BACKUP_CMD test seams already
-# used below: the default path runs the real check, so real safety is unchanged.
+# Obsidian-running probe. THREE outcomes, never two:
+#   0 = running · 1 = not running · 2 = COULD NOT TELL
+#
+# "Could not tell" is not "not running", and the caller treats it as running.
+# The old form was
+#     command -v pgrep >/dev/null 2>&1 && pgrep -x Obsidian >/dev/null 2>&1
+# which collapses to one false. A machine with no `pgrep` therefore read as
+# "Obsidian is not running" and this gate waved the move through — under a live
+# editor, which is the one thing it exists to prevent. Git Bash on Windows has no
+# `pgrep`, so that was a whole population where the guard was inert while looking
+# fine. `pgrep` also exits >1 on a real error, which the old form read as absent
+# too. The PowerShell twin was corrected this way already; this is the bash side.
+#
+# Test seam (parity with the .ps1 twin) — RELOCATE_VAULT_OBSIDIAN:
+#   unset / auto -> the real probe; the production default.
+#   running      -> report running     (drives the refusal assertion).
+#   absent       -> report not running (lets the tests exercise the OTHER soft
+#                   gates on a dev box that has Obsidian open — the normal state
+#                   when developing an Obsidian-vault tool).
+#   unreadable   -> report "could not tell" (drives the fail-closed assertion).
 obsidian_running() {
   case "${RELOCATE_VAULT_OBSIDIAN:-auto}" in
-    running) return 0 ;;
-    absent)  return 1 ;;
-    *) command -v pgrep >/dev/null 2>&1 && pgrep -x Obsidian >/dev/null 2>&1 ;;
+    running)    return 0 ;;
+    absent)     return 1 ;;
+    unreadable) return 2 ;;
+    *) ;;
   esac
+  command -v pgrep >/dev/null 2>&1 || return 2
+  local rc=0
+  pgrep -x Obsidian >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) return 0 ;;   # matched a process
+    1) return 1 ;;   # pgrep's documented "no processes matched" — a real answer
+    *) return 2 ;;   # 2 = usage error, 3 = fatal: not an answer
+  esac
+}
+
+# Is a Claude session actively writing under the vault's worktrees?
+#   0 = yes · 1 = no · 2 = COULD NOT TELL
+#
+# Same class as the probe above, and it was the same shape: `find ... 2>/dev/null
+# | head -1 || true` turns every failure — no find, an unreadable directory — into
+# an empty string, which read as "nothing is active". The `head -1` was its own
+# hazard: it closes the pipe, so find can exit non-zero on a perfectly good scan
+# and the exit code could not be trusted even if it had been read.
+worktree_activity() {  # $1 = worktrees dir
+  local dir="$1" out rc=0
+  [ -d "$dir" ] || return 1
+  command -v find >/dev/null 2>&1 || return 2
+  out="$(find "$dir" -type f -mmin -10 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || return 2      # a partial scan cannot prove the tree is idle
+  [ -n "$out" ] && return 0
+  return 1
 }
 
 # abspath/pathkey via python3 so the key transform matches Claude Code's JS
@@ -362,18 +399,50 @@ NEW_ABS="$(abspath "$NEW")"
 [ "$OLD_ABS" != "$NEW_ABS" ] || die "source and target are the same path"
 if [ -e "$NEW_ABS" ]; then die "target '$NEW_ABS' already exists (will not overwrite)"; fi
 
+# HARD gate, above the soft ones: WHAT is being moved. This script `mv`s the
+# source and leaves a symlink behind. Aimed at $HOME that relocates the user's
+# entire home directory — every dotfile, key and credential — and replaces it
+# with a link. The only validation used to be "exists, is a directory, is not a
+# symlink" (MYC-4028, the sibling defect in relocate-machinery-sidecar.sh).
+# FAIL-CLOSED: a check that cannot answer is not a pass.
+_cvt="$SCRIPT_DIR/check-vault-target.py"
+[ -f "$_cvt" ] || die "cannot validate the source path — $_cvt is missing. Re-run the installer to restore it."
+_cvt_rc=0
+_cvt_out="$(python3 "$_cvt" --porcelain "$OLD_ABS" 2>/dev/null)" || _cvt_rc=$?
+case "$_cvt_out" in
+  OK_VAULT) : ;;
+  REFUSE_HOME:*)
+    die "source '$OLD_ABS' is ${_cvt_out#REFUSE_HOME:}.
+  This script MOVES that path and leaves a symlink in its place. Doing it here
+  relocates your entire home directory — dotfiles, SSH keys, credentials.
+  Point it at your vault instead, e.g.  ~/Brain  or  ~/vaults/<name>.
+  There is NO --force for this one, by design." ;;
+  REFUSE_CREDENTIALS:*)
+    if [ "$FORCE" = 1 ]; then
+      printf 'relocate-vault: WARN — source holds credential material (%s) — proceeding under --force\n' \
+        "${_cvt_out#REFUSE_CREDENTIALS:}" >&2
+    else
+      die "source '$OLD_ABS' holds credential material at its top level (${_cvt_out#REFUSE_CREDENTIALS:}).
+  That looks like a home directory, not a vault. Pass --force if you are certain."
+    fi ;;
+  *)
+    die "could not validate the source path (check-vault-target.py exited $_cvt_rc and said: ${_cvt_out:-<nothing>}).
+  A check that cannot answer is not a pass. Fix the install, then re-run." ;;
+esac
+
 # Soft gates — skippable with --force.
 BACKUP_TOKEN=""
 if [ "$FORCE" != 1 ]; then
-  if obsidian_running; then
-    die "Obsidian is running — quit it first (moving an open vault is unsafe), or pass --force"
-  fi
-  if [ -d "$OLD_ABS/.claude/worktrees" ]; then
-    active="$(find "$OLD_ABS/.claude/worktrees" -type f -mmin -10 2>/dev/null | head -1 || true)"
-    if [ -n "$active" ]; then
-      die "an active Claude session is writing under .claude/worktrees (touched <10 min) — close it, or pass --force"
-    fi
-  fi
+  obs_rc=0; obsidian_running || obs_rc=$?
+  case "$obs_rc" in
+    0) die "Obsidian is running — quit it first (moving an open vault is unsafe), or pass --force" ;;
+    2) die "cannot tell whether Obsidian is running (the process-list probe could not run — \`pgrep\` missing or failing). A probe that errors and an idle machine look identical, so this refuses rather than guess. Quit Obsidian and pass --force, or install pgrep." ;;
+  esac
+  wt_rc=0; worktree_activity "$OLD_ABS/.claude/worktrees" || wt_rc=$?
+  case "$wt_rc" in
+    0) die "an active Claude session is writing under .claude/worktrees (touched <10 min) — close it, or pass --force" ;;
+    2) die "cannot tell whether a Claude session is writing under .claude/worktrees (the scan could not complete). This refuses rather than guess — close any live sessions and pass --force." ;;
+  esac
   # Backup-first ENFORCEMENT (MYC-2382). A vault is often the one irreplaceable
   # asset; moving it with no off-machine backup is the one move you cannot undo
   # if the disk dies mid-flight. Route through the SINGLE source of truth

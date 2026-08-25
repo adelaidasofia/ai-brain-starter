@@ -434,9 +434,9 @@ Leave graphify **off by default**. User decides when.
 
 ### Step 6: Weekly cadence
 
-If they use `/plan week`, their week-plan already checks graph freshness and proposes a run if stale (>7 days).
+Recommend a Monday 10am calendar block for `/second-brain-mapping --metadata-only`. Takes under a minute. Zero tokens. Keeps Claude's context layer fresh.
 
-If not: recommend a Monday 10am calendar block for `/second-brain-mapping --metadata-only`. Takes under a minute. Zero tokens. Keeps Claude's context layer fresh.
+Skip the block only if they already run a weekly planning routine of their own that checks graph freshness and proposes a run when the graph is stale.
 
 ### Step 7: Confirm CRM auto-log
 
@@ -672,3 +672,16 @@ Then truly stop.
 - This should feel like a conversation with a smart friend who's helping them set up their system, not a software installer.
 - **NEVER FAIL SILENTLY.** If any file save, install, or operation fails — tell the user immediately. Say what failed, why, and offer to fix it.
 - **NEVER FAIL SILENTLY.** After every file write, verify the file exists. After every install, verify it worked. If ANYTHING fails — wrong path, missing folder, permission error, install timeout — TELL THE USER IMMEDIATELY. Say what failed, why, and how to fix it. Then FIX IT — create the missing folder, correct the path, retry the install. Don't just report the problem; solve it. People are trusting this skill with their personal data. Losing a journal entry or a CLAUDE.md because of a silent failure is unacceptable.
+
+---
+
+## → End of the install
+
+**Phase 24.5 is the last phase.** There is no next file.
+
+Write `~/.claude/.ai-brain-starter-progress.json` with
+`{"last_completed_phase": "24.5", "ts": "<ISO-8601 timestamp for now>", "version": 1}`
+so a later session can tell a finished install from an abandoned one and never
+re-runs it.
+
+<!-- phase-chain: terminal -->
