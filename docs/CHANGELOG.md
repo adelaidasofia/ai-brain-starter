@@ -344,6 +344,21 @@ Now it does. When a session set a goal that was never cleared, the close ends by
 
 **What you should do:** nothing for new entries. If you journaled before this fix, ask Claude to backfill `type: journal` into your existing entries' frontmatter so extraction sees them too.
 
+## 2026-07-16: the test gate now runs green on Spanish-locale Macs
+
+**Who this affects:** anyone contributing (or just running `bash scripts/ci.sh`) from a Mac whose system language is Spanish — until now the gate failed on two tests and, because it stops at the first failure, hid every test wired after them. On linux CI everything was green, so the breakage was invisible upstream.
+
+**The bug:** two integration tests assumed English output but ran on machines where the code under test auto-detects the system language:
+
+- `test_post_update_email_ask` greps English copy ("optional", "Never a token"), but the email-ask hook picks its language from `AppleLocale` on macOS — and there was **no way to force English**: the env check only short-circuited toward Spanish, never toward English, so even `LANG=en_US` couldn't pin it.
+- `test_bootstrap_corporate_profile` pinned the wrong knob: it exported `LANG_HINT=en`, which only feeds the install-funnel API payload — the bilingual `t()` helper reads `BOOTSTRAP_LANG`/`LC_ALL`/`LANG`/`AppleLocale`, so on a Spanish Mac one hardening message came out in Spanish and the English grep missed it.
+
+**The fix:** the email-ask hook now honors an explicit env locale in **both** directions (`LANG=en_*` wins over AppleLocale, same as `es_*` always did — no change when the env is unset); its test pins the language per case and gains a new case exercising the **Spanish** ask block, which previously had zero coverage anywhere (linux CI always falls through to English). The corporate-profile test now pins `BOOTSTRAP_LANG=en`, the knob `detect_lang()` actually reads.
+
+**Verified:** full `scripts/ci.sh` green (81 integration tests) plus repo-wide shellcheck on an `es_CO` Mac — the machine class that reproduced both failures.
+
+---
+
 ## 2026-07-16: the Spanish close detector stopped firing mid-conversation and started hearing "cierra esta sesión"
 
 **Who this affects:** anyone journaling or working in Spanish (or Portuguese) — the session-close detector was misbehaving in both directions for you, and English users never saw it.
