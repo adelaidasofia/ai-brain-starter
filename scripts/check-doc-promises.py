@@ -102,7 +102,20 @@ from _lib.safe_read import safe_read_text  # noqa: E402
 # Scan surface
 # ---------------------------------------------------------------------------
 
-DOC_GLOBS = ["README.md", "docs/**/*.md", "phases/**/*.md", "skills/*/SKILL.md"]
+# INCLUDE EVERY MARKDOWN FILE, exclude by documented category below.
+#
+# This was an allowlist of four globs and it covered 98 of 287 markdown files.
+# Widening it to eleven globs reached 248 -- but an allowlist of directory
+# NAMES is a denylist against an open set wearing the other hat: the next
+# top-level directory someone adds is silently unwatched, which is exactly
+# the failure being fixed, one level up. Both team-onboarding directories
+# (for-teams/, para-equipos/ -- a paying client's first surface, EN and ES)
+# sat outside the original four for months for precisely that reason.
+#
+# So the default is now EVERYTHING, and every exemption below is a bounded
+# category with a stated reason. A new directory is watched the day it
+# appears, and anyone who wants it exempt has to say why, in writing, here.
+DOC_GLOBS = ["**/*.md"]
 
 # CHANGELOG.md is a chronological development log ("full development history
 # including internal refactors and bug fixes" -- its own framing in
@@ -118,7 +131,33 @@ EXCLUDED_DOC_FILES = {"docs/CHANGELOG.md"}
 # removed) to justify the current decision. docs/adr/0003 describes
 # scripts/email-gate-hook.py, which the ADR itself says was deleted -- an
 # accurate historical record, not a live promise about repo contents.
-EXCLUDED_DOC_PREFIXES = ("docs/adr/",)
+EXCLUDED_DOC_PREFIXES = (
+    # An ADR's Context section narrates a past design, often one deliberately
+    # removed, to justify the current decision -- accurate history, not a live
+    # promise. Same category as CHANGELOG.md above.
+    "docs/adr/",
+    # Test fixtures deliberately contain fabricated commands and paths; that
+    # is their job. This module's own --fixture-test plants one.
+    "tests/",
+    # Third-party content we do not author and cannot fix.
+    "vendor/",
+    # Issue/PR templates and workflow docs, written for contributors to THIS
+    # repo rather than instructions a client follows.
+    ".github/",
+)
+
+# A file under templates/ is COPIED INTO THE USER'S OWN VAULT, so a path
+# written inside one names a file in THEIR tree, not an artifact this repo
+# promises to ship. templates/generated/todo-system-template.md illustrates
+# what a context anchor looks like with "(e.g., `scripts/extract.py`,
+# `drafts/Q3-plan.md`)" -- neither exists here, and neither should. That is
+# the same reasoning _VAULT_PATH_PREFIXES already applies to "Meta/..."
+# paths, just reached by directory instead of by prefix.
+#
+# Scoped to the SCRIPT check only, deliberately. A template that tells a user
+# to type a slash command IS making a promise this repo has to keep, so the
+# command check still reads every template (negative control proves it).
+SCRIPT_CHECK_EXCLUDED_PREFIXES = ("templates/",)
 
 # ---------------------------------------------------------------------------
 # Non-command tokens: bounded, documented categories only (see module
@@ -161,6 +200,15 @@ NON_COMMAND_TOKENS = {
     # is disclosed construction at install time, not a claim that this repo
     # ships a team-weekly skill of its own -- it doesn't, by design.
     "team-weekly",
+    # An HTTP health endpoint, not a slash command. This module's own
+    # docstring already names /healthz as the reason the HTTP-verb table-row
+    # exemption exists; that exemption covers it inside an endpoint TABLE,
+    # while services/memory-api/README.md also names it in prose ("All
+    # endpoints except `/healthz` require Authorization"). Same object, same
+    # category, one sentence outside a table. Note the bounded-category rule
+    # above still holds: this is a route, not a skill name, so nothing is
+    # being silenced -- there is no /healthz skill anyone could ship.
+    "healthz",
 }
 
 # Confirmed references to something this repo does NOT resolve, found by
@@ -490,7 +538,12 @@ def scan(root: Path) -> list[Finding]:
     skills_scripts = build_skills_scripts_index(root)
     findings: list[Finding] = []
     findings += check_commands(root, files, vocabulary)
-    findings += check_scripts(root, files, skills_scripts)
+    findings += check_scripts(
+        root,
+        [f for f in files
+         if not f.relative_to(root).as_posix().startswith(SCRIPT_CHECK_EXCLUDED_PREFIXES)],
+        skills_scripts,
+    )
     findings += check_flags(root)
     return findings
 
@@ -514,6 +567,20 @@ def self_test() -> int:
         else:
             print(f"  FAIL {name:60s} expected {'RED' if expect else 'clean'}, got {'RED' if got else 'clean'}")
             failures += 1
+
+    # DEFERRED_UNRESOLVED_TOKENS is a suppression list, and an appendable
+    # suppression list is a gate anyone can buy past: a future session facing
+    # a RED guard can add one string and the finding vanishes with no test,
+    # no reviewer, and no record. Its comment says empty is the correct
+    # steady state; this makes that a FACT the suite enforces rather than a
+    # sentence someone can read past. Re-filling it now costs a deliberate
+    # edit to this assertion too, which is exactly the visible, arguable
+    # moment the original two entries never got.
+    check(
+        "DEFERRED_UNRESOLVED_TOKENS is empty (suppression lists ratchet down, never up)",
+        bool(DEFERRED_UNRESOLVED_TOKENS),
+        False,
+    )
 
     vocabulary = {"graphify", "optimize-brain", "coaching"}
     skills_scripts: dict[str, list[Path]] = {"real_script.py": [Path("skills/x/scripts/real_script.py")]}
