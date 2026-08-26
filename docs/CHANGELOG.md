@@ -9,6 +9,18 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-24: one contact with a bracketed `relationship` no longer aborts the whole metadata pass
+
+**Who this affects:** anyone whose vault has a person note whose `relationship:` line still holds the bracketed placeholder we ship.
+
+`templates/obsidian/CRM Entry.md` ships `relationship: [friend/family/colleague/investor/client/contractor]`, and `phases/phase-06-09-tools-templates.md` tells Claude to write the same bracketed form during setup. Square brackets are YAML for a list, so a note saved with that line intact hands the person extractor a list where it expected a string. The extractor called `.lower()` on it and raised `AttributeError: 'list' object has no attribute 'lower'`.
+
+That error was not contained. `process_file()` only guards the file read, so the exception travelled up through `main()` and ended the run — every note still queued behind the offending one went unprocessed, and the failure read as a crash rather than as one bad field.
+
+Frontmatter is hand-written, so the same key legitimately arrives as a string in one vault and a list in another. `relationship` now goes through the same kind of defensive coercion `priority` already used: lists and dicts are flattened to one lowercase string, `None` becomes empty, and anything else is `str()`-ed. A placeholder value no longer stops the pass, and the public-figure hint matching still works on whichever shape arrived.
+
+---
+
 ## 2026-08-24: on Windows, "your backup is not a supported format" was the opener, not the backup
 
 **Who this affects:** Windows users who set their backup up with the `bash ... vault-backup.sh setup` command — which is the one the install walks you through.
