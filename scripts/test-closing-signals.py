@@ -140,6 +140,23 @@ FIXTURES: list[tuple[str, str, str | None]] = [
      "and 'start closing cascade'", None),
     ("neg-other-than-close",
      'anything other than "close this session" should not trigger it', None),
+
+    # === Relayed speech (es) — MUST NOT fire ===
+    # The user asks Claude to pass a close-shaped phrase to a THIRD PARTY.
+    # "dile a Ana que ya quedó" ends on the high_confidence pattern
+    # \bya quedó...$ and fired the full cascade mid-task. The phrase is
+    # message content, not a sign-off.
+    ("neg-es-dile-ya-quedo", "dile a Ana que ya quedó", None),
+    ("neg-es-dile-listo", "dile a Marta que listo", None),
+    ("neg-es-avisale", "avísale a Pedro que ya quedó", None),
+    ("neg-es-escribele", "escríbele a Sofía que buenas noches", None),
+    ("neg-es-contestale", "contéstale a Lucía que hasta luego", None),
+    ("neg-es-diciendo", "mándale un mensaje a Elena diciendo que ya quedó", None),
+    ("neg-es-cuentale", "cuéntale que nos vemos", None),
+
+    # ...while the bare phrases they relay must STILL close the session.
+    ("es-ya-quedo-bare", "ya quedó", "high_confidence"),
+    ("es-ya-quedo-gracias", "ya quedó, gracias", "high_confidence"),
 ]
 
 
