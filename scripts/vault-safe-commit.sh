@@ -8,7 +8,9 @@
 #   VAULT_ROOT="/path/to/vault" vault-safe-commit.sh [--kill-leaked] "commit message" path1 path2 ...
 #
 # Configuration:
-#   VAULT_ROOT   Absolute path to the vault. Required.
+#   VAULT_ROOT   Absolute path to the vault. Optional — when unset, falls back
+#                to `git rev-parse --show-toplevel` from the current directory.
+#                Set it explicitly when running from outside the vault.
 #
 # Flags:
 #   --kill-leaked   Kill leaked git-status/diff children of Claude.app
@@ -48,9 +50,17 @@ else
     vault_git_index_lock() { echo ""; return 1; }
 fi
 
+# VAULT_ROOT is optional: when unset, derive it from the repo the caller is
+# standing in. The session-close cascade (Phase 2b) and the block-raw-vault-git
+# hook both prescribe this script WITHOUT the env var, and a hard exit there
+# meant the close committed nothing AND the verify-session-close-cascade Stop
+# hook then blocked the close over those same uncommitted artifacts.
 if [ -z "${VAULT_ROOT:-}" ]; then
-    echo "vault-safe-commit: VAULT_ROOT env var not set" >&2
-    exit 1
+    VAULT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [ -z "${VAULT_ROOT}" ]; then
+        echo "vault-safe-commit: VAULT_ROOT not set and cwd ($(pwd)) is not a git repo" >&2
+        exit 1
+    fi
 fi
 
 LOCK_FILE="$(vault_git_index_lock "${VAULT_ROOT}" || true)"

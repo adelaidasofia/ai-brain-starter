@@ -26,6 +26,16 @@ import yaml
 # Make sibling modules importable (no package installs, emoji-path-safe)
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+# /setup-vault-types installs the extractors into a vault by symlinking each
+# file, one by one, into <vault>/scripts/extractors/. A NEW infrastructure
+# module that lands beside the real files later (e.g. _floors.py) is not
+# visible through those symlinks until they are redone — and an extractor that
+# imports it would fail to load, silently dropping its type from every run.
+# So the directory this file RESOLVES to goes on the path as well — after HERE,
+# so a vault's own copy of a module still wins over the shared one.
+_REAL_HERE = os.path.dirname(os.path.realpath(__file__))
+if _REAL_HERE != HERE and _REAL_HERE not in sys.path:
+    sys.path.insert(1, _REAL_HERE)
 
 from _base import (  # noqa: E402
     VAULT, SKIP_PARTS,
@@ -41,6 +51,10 @@ INFRASTRUCTURE_TYPES = {
 }
 
 # Alias map: users write whatever type feels natural; we route to a real extractor.
+# Keys are matched AFTER hyphens are normalized to underscores (`meeting-prep`
+# and `meeting_prep` both hit "meeting_prep"), and only when no extractor is
+# registered under the raw type — an explicit <type>.py always wins. Aliases
+# never rewrite the note: the translation happens in memory, per run.
 TYPE_ALIASES = {
     "place": "travel",
     "trip": "travel",
@@ -55,6 +69,58 @@ TYPE_ALIASES = {
     "framework": "concept",
     "analysis": "strategy",
     "tracker": "dashboard",  # treat as infra
+    "contact": "person",         # these three are named in CONTEXT.md
+    "location": "travel",
+    "organization": "company",
+
+    # Types this repo's own skills and templates write, but no extractor
+    # claimed — so those notes silently fell out of every index.
+    "rise": "journal",         # /rise morning entries carry a floor + priorities
+    "profile": "person",       # templates/Home/About Me.md
+    "meeting_prep": "meeting",
+    "meeting_note": "meeting",
+    "prep": "meeting",
+    "index": "reference",
+    "brief": "reference",
+    "plan": "strategy",
+    "growth_plan": "strategy",
+    "content_strategy": "strategy",
+    "content_plan": "strategy",
+    "content_scripts": "playbook",
+    "content_bank": "playbook",
+    "content_calendar": "playbook",
+    "content_playbook": "playbook",
+    "platform_playbook": "playbook",
+
+    # Spanish (es). The setup interview runs the whole vault in the user's
+    # language, so a Spanish install types its notes in Spanish; every one of
+    # these had no extractor and dropped out of the index without a message.
+    # Consolidated from the ~50 type names observed across one Spanish vault.
+    "reunion": "meeting",
+    "reunion_prep": "meeting",
+    "prep_reunion": "meeting",
+    "nota_reunion": "meeting",
+    "agenda_reunion": "meeting",
+    "extraccion_comite": "meeting",
+    "nota": "reference",
+    "referencia": "reference",
+    "datos": "reference",
+    "indice": "reference",
+    "sistema": "reference",
+    "documento_juridico": "reference",
+    "estrategia": "strategy",
+    "analisis": "strategy",
+    "propuesta": "strategy",
+    "metodologia": "strategy",
+    "proceso": "playbook",
+    "proyecto": "business",
+    "financiero": "business",
+    "viaje": "travel",
+    "sociedad": "company",
+    "perfil": "person",
+    "rol": "person",
+    "obligacion_personal": "asset",
+    "activo_personal": "asset",
 }
 
 
@@ -111,8 +177,11 @@ def process_file(filepath, registry, context, dry_run=False, force=False):
 
     # Normalize: Python modules can't have hyphens. `negotiation-prep` → `negotiation_prep`.
     doc_type = doc_type_raw.replace("-", "_")
-    # Aliases: `place` → `travel`, `chat` → `ai_chat`, etc.
-    doc_type = TYPE_ALIASES.get(doc_type, doc_type)
+    # Aliases: `place` → `travel`, `chat` → `ai_chat`, etc. — but only when the
+    # raw type has no extractor of its own. A user who added `plan.py` for
+    # `type: plan` must keep getting it, alias or not.
+    if doc_type not in registry:
+        doc_type = TYPE_ALIASES.get(doc_type, doc_type)
     # Aliases can route to infrastructure (e.g. tracker → dashboard): re-check.
     if doc_type in INFRASTRUCTURE_TYPES:
         return "INFRASTRUCTURE"

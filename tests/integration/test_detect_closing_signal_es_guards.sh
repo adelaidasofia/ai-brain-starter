@@ -18,6 +18,15 @@
 #   cerrar/cerremos/cerramos but NOT the imperative "cierra" — Spanish "cerrar"
 #   is an e→ie stem-changing verb, so the imperative stem is "cierr", not "cerr".
 #
+#   FALSE NEGATIVE (2026-08-16): the same stem list was completed to
+#   cierra/cierre/cierren/cierras but still omitted the FIRST PERSON "cierro".
+#   "cierro sesión" — a user announcing they are closing, one of the most
+#   natural ways to say it — matched nothing. The two strict_guards that
+#   suppress a close aimed at something else ("cierro la sesión de la base de
+#   datos") enumerated the same incomplete stem list, so they are extended in
+#   step with it: widening high_confidence alone would have opened a false
+#   positive the guards could no longer catch.
+#
 # Fix under test:
 #   1. strict_guards tier added to es.json (Spanish counterparts of en.json's).
 #   2. `ya (está|estuvo|fue)` anchored to end-of-message.
@@ -99,6 +108,8 @@ for p in \
   "las sesiones se archivan solas" \
   "la sesión se cierra sola cada rato" \
   "cierra la sesión de la base de datos" \
+  "cierro la sesión de la base de datos" \
+  "cierro sesión de depuración" \
   "¿ya cerraste la sesión?" \
   "¿la sesión quedó cerrada?" \
   "qué significa chao?" \
@@ -110,6 +121,10 @@ done
 for p in \
   "cierra esta sesión" \
   "cierra la sesión" \
+  "cierro sesión" \
+  "cierro la sesión" \
+  "cierren la sesión" \
+  "cierras la sesión" \
   "cerremos la sesión" \
   "cerrar la sesión" \
   "chao" \

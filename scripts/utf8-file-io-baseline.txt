@@ -23,7 +23,7 @@
 #
 # <sha256-of-normalized-content> <tag> <repo-relative-path>
 
-# ---- SEV-A-write  (38 file(s)) ----
+# ---- SEV-A-write  (34 file(s)) ----
 b87ac14c241be51fb2427ac9a86ab8de4a5b161549f2ee0d445b6e9ca4f65550 SEV-A-write hooks/_lib/session_echo.test.py
 62adfe6bbcfecc12d8e6bbad292ab40215e9f15c8812ec91f53dfe42156e7886 SEV-A-write hooks/_lib/standing_report.test.py
 987aca2ae82229a42d29a8c89fed690e9de7e6fad4182dea564bc92557a81922 SEV-A-write hooks/auto-capture-public-ships.py
@@ -46,9 +46,7 @@ dfba549e5cd609ddde59d63aac175d884d0224a6703265e0b04c1a0eac315b20 SEV-A-write hoo
 3ccff027531794bd7467dacde500599156465a8840d277ab306d14c571ff15f6 SEV-A-write scripts/graphify_coverage_audit.py
 9c2b94c22cb78ad78aa2a3e9b464518a1f5912642ed26575b7007957e31eda43 SEV-A-write scripts/graphify_minimax_preprocess.py
 09030282864a31f53a406d134fdaf19efc7e3b36b3a493746652dd98da2f5485 SEV-A-write scripts/graphify_prep.py
-f2c8a6e4561fe4ecb6b0bb6e060501ac5fe3fff65d35d9fd3726ab76db790ad4 SEV-A-write scripts/graphify_stage_select.py
 52ccd8dd4950e60db4695a88b258bbeb5e62c68fbd399dbc2a26ab9a80023e71 SEV-A-write scripts/measure-plugin-load.py
-1480b6939ee271300bea0fc015a83945ae48605daf9ffaedf64e3d9abccc94db SEV-A-write scripts/post-update-email-ask.py
 ec8a23a1974b53b36a4b75c130be1dd96a5844a2a7bb2f6242fc47d038af6769 SEV-A-write scripts/relocate-sweep.py
 094e856feb69cd63ac7602b4d763d2067201d9b88c79aa7edc6f50fca9f7038a SEV-A-write scripts/security-snapshot.py
 e52050614b0dd74b8cd278689707747921073b05da3acb90f8c0b6e9dda10914 SEV-A-write scripts/stub_audit.py
@@ -60,20 +58,16 @@ bf2aa37b1fc14be871ed01920e719d1f71d87052e536d4c435ed2fff227ca8ec SEV-A-write scr
 1bc37b829f0ad1c3a92a45030f30a92349a49352a71d272680f869a2974c9d14 SEV-A-write scripts/vault-nested-repos.py
 a29f6c2b98ccf874e4c818e2487ce74f32248ecbbce73a11c91a738561f3aa84 SEV-A-write skills/graphify/scripts/graphify_chunk.py
 8397e371e756c7cff96453d8f8f2c895e1e8ac0762edc8538c573c059e07d19d SEV-A-write skills/graphify/scripts/graphify_prep.py
-03d3f290e244d9ab0ae72af71ee51ed71be2e4f2aea62f6cf705d34ddcdeef69 SEV-A-write skills/graphify/scripts/graphify_stage_finish.py
-52d758fe570f834711cc82f5f0870678755325a30280625e1213b2882e036f6d SEV-A-write skills/graphify/scripts/graphify_stage_select.py
 
-# ---- SEV-B-read-only  (31 file(s)) ----
+# ---- SEV-B-read-only  (29 file(s)) ----
 b266f20ff920feeb950d48705939568f13e71e844707b90876c179c76d013da9 SEV-B-read-only hooks/_lib/dev_repo_scan.py
 3f7a1805473134ddb49cd1957cc4f94c8e84a1ccb4e8f875e6765b3dac33f289 SEV-B-read-only hooks/_lib/safe_read.py
 52c331ed8a99a90e12e347215144e6799dbe1d278024432dfc46639a4de68405 SEV-B-read-only hooks/_lib/worktree_safety.py
 b647243fdf0a358d46a6a79b0bf7f817ee121f68d5d685fabe4b0ee2a93af94d SEV-B-read-only hooks/check-fabricated-hook-attribution.py
-9384c96d288eb31a5f59cc7e985ec4b79e723309595d48a09a87e30d7907c5eb SEV-B-read-only hooks/check-fabricated-verification.py
 2050c962d8ba4b38910d207c75e786f4b4831406ba3d8e799fe9f475623c8bff SEV-B-read-only hooks/detect-secrets-in-bash-output.py
 3599a56754108272a15a2c879a23a52c0e844edf2991932118ecf16b24706af9 SEV-B-read-only hooks/dev-hub-refresh-on-session-start.py
 383b879b07fd9dce4a66c6a9beb449e2c7ec378b7f94d393b2bf486cf26531fb SEV-B-read-only hooks/observe-tool-calls.py
 9ac734ab62df2f6176c7aabad09b72768fe553c93ef15a876ddae32e9a830ca4 SEV-B-read-only hooks/surface-sync-guard-findings.py
-328fa4ceb9777bf7600821fd6a31c4cfe7b97db233c59a1fa4d830f882cfd9f6 SEV-B-read-only hooks/test_check_fabricated_verification.py
 2b14fd8dbb3f827ca22270bee60bdacf598984bd28f2221856702b7791ba71b2 SEV-B-read-only hooks/test_footprint_aggregate_bloat.py
 074e59997be3432d5dbab5858429d1185d65c4061dbbade2325f08d3b2165160 SEV-B-read-only hooks/test_secret_patterns_fp_filter.py
 5ab0af49336eca75f51dd8a442afb3d4e429294bf7f167e4bba9736b8c7ec6a7 SEV-B-read-only hooks/verify-discoverability-on-close.py
