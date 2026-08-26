@@ -296,6 +296,7 @@ INTEGRATION_TESTS=(
   # These existed on disk, passed locally, and never ran in CI.
   test_detect_closing_signal_strict_guards
   test_detect_closing_signal_es_guards
+  test_detect_closing_signal_utf8_stdin
   test_journal_index_localized_dir
   test_inject_meeting_workflow_truncation_flag
   test_install_path_verification
