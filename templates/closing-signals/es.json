@@ -21,7 +21,7 @@
     "\\bnos hablamos\\b",
     "\\bme voy[.!?\\s]*$",
     "\\bcerremos (acá|aquí|esto|por (hoy|ahora))\\b",
-    "\\b(cerr(emos|ar|amos|á)|cierr(a|e|en|as))\\s+(la\\s+|esta\\s+|mi\\s+)?sesi[oó]n\\b",
+    "\\b(cerr(emos|ar|amos|á)|cierr(a|e|en|as|o))\\s+(la\\s+|esta\\s+|mi\\s+)?sesi[oó]n\\b",
     "\\b(termin(amos|emos)|listo)\\s+por\\s+(hoy|ahora)\\b",
     "\\bya\\s+termin(amos|é)\\b",
     "\\btermin(emos|amos)\\s+(esto|aquí|acá|por\\s+hoy)\\b",
@@ -97,11 +97,11 @@
     },
     {
       "_comment": "Backtick/quote-wrapped technical references to close phrases (regex, code, or script content quoted in a question).",
-      "pattern": "[`\"'].{0,40}\\b(cerr(ar|emos|amos)\\s+(la|esta)\\s+sesi[óo]n|cierr[ae]\\s+(la|esta)\\s+sesi[óo]n|chao|chau|buenas noches|hasta luego)\\b.{0,40}[`\"']"
+      "pattern": "[`\"'].{0,40}\\b(cerr(ar|emos|amos)\\s+(la|esta)\\s+sesi[óo]n|cierr(a|e|en|as|o)\\s+(la|esta)\\s+sesi[óo]n|chao|chau|buenas noches|hasta luego)\\b.{0,40}[`\"']"
     },
     {
       "_comment": "'cerrar la sesión de X' where X is a technical/other noun (base de datos, terminal, navegador, coaching…) — closing something else, not this conversation.",
-      "pattern": "\\b(cerr(ar|emos|amos|á)|cierr[ae])\\s+(la\\s+|una\\s+|mi\\s+|esa\\s+|esta\\s+|cada\\s+)?sesi[óo]n\\s+(de|del)\\s+(la\\s+|el\\s+|los\\s+|las\\s+|un\\s+|una\\s+|mi\\s+|ese\\s+|esa\\s+)?(base\\s+de\\s+datos|bd|db|usuario|cliente|terminal|navegador|pesta[ñn]a|ssh|conexi[óo]n|depuraci[óo]n|debug|coaching|escritura|entrevista|reuni[óo]n|clase|chat|conversaci[óo]n|trabajo|obra)\\b"
+      "pattern": "\\b(cerr(ar|emos|amos|á)|cierr(a|e|en|as|o))\\s+(la\\s+|una\\s+|mi\\s+|esa\\s+|esta\\s+|cada\\s+)?sesi[óo]n\\s+(de|del)\\s+(la\\s+|el\\s+|los\\s+|las\\s+|un\\s+|una\\s+|mi\\s+|ese\\s+|esa\\s+)?(base\\s+de\\s+datos|bd|db|usuario|cliente|terminal|navegador|pesta[ñn]a|ssh|conexi[óo]n|depuraci[óo]n|debug|coaching|escritura|entrevista|reuni[óo]n|clase|chat|conversaci[óo]n|trabajo|obra)\\b"
     },
     {
       "_comment": "Meta-QUESTION about a close word — '¿qué significa chao?', '¿cómo se dice listo?'. Asking ABOUT a close phrase is referenced content, never a close itself. Strict because the weak-tier meta-question FP guard does NOT override a high_confidence match on the bare word.",

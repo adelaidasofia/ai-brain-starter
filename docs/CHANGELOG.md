@@ -63,6 +63,21 @@ Both are fixed, in both copies of the sizer. It now calls `graphify.cache.file_h
 
 ---
 
+## 2026-08-20: people insights worked only if your journals folder was named in English
+
+**Who this affects:** anyone whose vault is not in English — and anyone who renamed their journals folder.
+
+The insight engine has a handful of sections built on one question: which people show up in your journals, and how were you feeling when they did. Lucky-charm people, drag people, high-priority contacts going cold. If your journals folder was named anything other than `📓 Journals`, all of those sections came back empty.
+
+The reason was one line. The person extractor looked for journals in a folder path written out in English, so a vault with `📓 Diarios` — or `Journals` with no emoji, or anything else — pointed the scan at a folder that did not exist. It found nothing, wrote `person_journal_mention_count: 0` onto every contact, and reported no error. Nothing in the output said "I could not find your journals." It looked exactly like a vault too thin to have insights yet, which is the worst way for a bug to fail: it blames your data.
+
+The folder is now found the same way the CRM folder already was — check a list of common names, or set `JOURNALS_FOLDER` if yours is unusual. English vaults behave exactly as before.
+
+A second bug was hiding behind the first, and could only surface once journals were being found at all: if some entries wrote their date in quotes and others did not, the two came back as different Python types and the extractor crashed comparing them. Both styles are handled now.
+
+**What to do:** re-run the extraction over your contacts so the counts recompute — `/second-brain-mapping` picks it up, but the counts are a derived field, so pass `--force --type person` if you want them refreshed without waiting for other changes.
+
+---
 
 ## 2026-08-19: the privacy checker no longer publishes the private word list it checks for
 
@@ -163,6 +178,21 @@ That file is also the fix for an older piece of advice. The original release tol
 **What changes for you:** journal entries extracted from now on carry `floor_num` on the 34-floor scale (Hope is 20, not 9). Entries extracted earlier keep their old number in the file until you re-run extraction with `--force`; nothing that reads floors uses that stored number anymore when the name is there, so your insights are right either way. `/setup-vault-types` now also links `_floors.py` into your vault; existing installs pick it up automatically without re-running it.
 
 **New tests:** `tests/integration/test_floor_name_map_canonical.sh` (the table matches the vendored canon, with a planted drift as negative control) and `tests/integration/test_extractors_localized_vault.sh` (a Spanish vault, end to end: 11 of its assertions fail on the previous code). Both wired into `scripts/ci.sh`, which now installs PyYAML on the CI runner (and only there) so the extractors can actually run in CI.
+
+---
+
+## 2026-08-16: "cierro sesión" did not close the session
+
+**Who this affects:** anyone who closes their session in Spanish.
+
+Spanish has several ways to say you are closing, and the list the close detector matched against had a hole in it. "cierra la sesión" worked. "cerremos la sesión" worked. **"cierro sesión"** — first person, one of the most natural ways to put it — matched nothing at all, and the session simply never closed.
+
+The verb is the reason. "Cerrar" changes its stem when it conjugates: *cerramos* keeps the `cerr`, but *cierro* and *cierra* switch to `cierr`. The pattern had been extended once already to catch `cierra`, `cierre`, `cierren` and `cierras`, and `cierro` was the one form left out.
+
+Two related patterns had the same gap, and they matter more than they look. They are the ones that stop a close from firing when you are plainly talking about closing *something else* — "cierro la sesión de la base de datos" should not end your session. Widening the main pattern without widening those would have swapped a missed close for a wrong one, so all three moved together.
+
+**What you should do:** nothing beyond updating.
+
 
 ---
 

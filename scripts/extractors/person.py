@@ -50,7 +50,10 @@ _JOURNAL_CANDIDATES = (
     "📓 Diario", "Diario",           # es, singular variant
     "📓 Diário", "Diário",           # pt
 )
-JOURNALS_ROOT = next(
+# JOURNALS_FOLDER: an operator whose journal folder is named outside the
+# candidate list can point at it directly, without editing code. Kept from
+# the branch that fixed this alongside the candidate list.
+JOURNALS_ROOT = os.environ.get("JOURNALS_FOLDER") or next(
     (os.path.join(VAULT, c) for c in _JOURNAL_CANDIDATES
      if os.path.isdir(os.path.join(VAULT, c))),
     os.path.join(VAULT, _JOURNAL_CANDIDATES[0]),
