@@ -827,7 +827,7 @@ def _has_live_session_lock(repo: Path, now_ts: Optional[float] = None) -> bool:
     now_ts = now_ts or time.time()
     lock = repo / ".claude" / ".session-lock.json"
     try:
-        data = json.loads(lock.read_text())
+        data = json.loads(lock.read_text(encoding="utf-8", errors="replace"))
     except (OSError, ValueError):
         return False
     if not isinstance(data, dict):
@@ -1481,7 +1481,7 @@ def fetch_repos_capped(
     """
     now_ts = now_ts or time.time()
     try:
-        last = float(json.loads(state_path.read_text()).get("last_fetch_ts", 0))
+        last = float(json.loads(state_path.read_text(encoding="utf-8", errors="replace")).get("last_fetch_ts", 0))
     except Exception:
         last = 0.0
     if now_ts - last < cap_hours * 3600:
