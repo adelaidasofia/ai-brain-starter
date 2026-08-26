@@ -16,6 +16,7 @@ from _base import (
 )
 from _floors import floor_num_from_fm
 
+
 AUTO_FIELDS = (
     "person_relationship_type", "person_company", "person_is_public_figure",
     "person_last_journal_iso", "person_journal_mention_count",
@@ -49,7 +50,10 @@ _JOURNAL_CANDIDATES = (
     "📓 Diario", "Diario",           # es, singular variant
     "📓 Diário", "Diário",           # pt
 )
-JOURNALS_ROOT = next(
+# JOURNALS_FOLDER: an operator whose journal folder is named outside the
+# candidate list can point at it directly, without editing code. Kept from
+# the branch that fixed this alongside the candidate list.
+JOURNALS_ROOT = os.environ.get("JOURNALS_FOLDER") or next(
     (os.path.join(VAULT, c) for c in _JOURNAL_CANDIDATES
      if os.path.isdir(os.path.join(VAULT, c))),
     os.path.join(VAULT, _JOURNAL_CANDIDATES[0]),
@@ -117,9 +121,22 @@ def _priority(fm):
     return p if p in ("high", "mid", "medium", "low") else None
 
 
+def _coerce_text(value):
+    """Frontmatter fields are author-written: the same key shows up as a string,
+    a YAML list, or a number across vaults. Flatten to one lowercase string so
+    callers never have to care which shape arrived."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(_coerce_text(v) for v in value)
+    if isinstance(value, dict):
+        return " ".join(_coerce_text(v) for v in value.values())
+    return str(value).lower().strip()
+
+
 def _is_public_figure(fm):
     """True if relationship type or notes flag this as author/thinker/public figure."""
-    rel = (fm.get("relationship") or "").lower().strip()
+    rel = _coerce_text(fm.get("relationship"))
     if rel in PUBLIC_FIGURE_RELATIONSHIP_HINTS:
         return True
     # Also check if any hint word appears within a longer descriptor

@@ -9,6 +9,30 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-24: graphify no longer stops merging once your graph passes 1 MB
+
+**Who this affects:** anyone whose vault has grown enough that `graph.json` is over a megabyte. It is a threshold every growing vault crosses eventually.
+
+Finishing a graphify stage means reading the existing `graph.json`, backing it up, and union-merging the new stage into it. That read went through `safe_read_bytes()` without a size argument, so it inherited the 1 MB default meant for ordinary note files. `graph.json` is not an ordinary note file — it holds the entire vault graph, and a few thousand notes is enough to pass a megabyte.
+
+Once past it, the read came back `too-large` and the stage ended on `ERROR: could not read existing graph.json (too-large), aborting`. Nothing was corrupted — the abort happens before the backup is written, so the existing graph survived intact — but no stage could finish again. The graph simply stopped growing, and the error named a size limit rather than anything the user had done.
+
+The read now uses `MAX_GRAPH_BYTES` (200 MB), sized to catch a runaway file rather than to bound normal growth. The merge decodes the whole document into memory regardless, so a graph large enough to trip the new ceiling is one the step could not have processed anyway.
+
+---
+
+## 2026-08-24: one contact with a bracketed `relationship` no longer aborts the whole metadata pass
+
+**Who this affects:** anyone whose vault has a person note whose `relationship:` line still holds the bracketed placeholder we ship.
+
+`templates/obsidian/CRM Entry.md` ships `relationship: [friend/family/colleague/investor/client/contractor]`, and `phases/phase-06-09-tools-templates.md` tells Claude to write the same bracketed form during setup. Square brackets are YAML for a list, so a note saved with that line intact hands the person extractor a list where it expected a string. The extractor called `.lower()` on it and raised `AttributeError: 'list' object has no attribute 'lower'`.
+
+That error was not contained. `process_file()` only guards the file read, so the exception travelled up through `main()` and ended the run — every note still queued behind the offending one went unprocessed, and the failure read as a crash rather than as one bad field.
+
+Frontmatter is hand-written, so the same key legitimately arrives as a string in one vault and a list in another. `relationship` now goes through the same kind of defensive coercion `priority` already used: lists and dicts are flattened to one lowercase string, `None` becomes empty, and anything else is `str()`-ed. A placeholder value no longer stops the pass, and the public-figure hint matching still works on whichever shape arrived.
+
+---
+
 ## 2026-08-24: on Windows, "your backup is not a supported format" was the opener, not the backup
 
 **Who this affects:** Windows users who set their backup up with the `bash ... vault-backup.sh setup` command — which is the one the install walks you through.
@@ -51,6 +75,21 @@ Both are fixed, in both copies of the sizer. It now calls `graphify.cache.file_h
 
 ---
 
+## 2026-08-20: people insights worked only if your journals folder was named in English
+
+**Who this affects:** anyone whose vault is not in English — and anyone who renamed their journals folder.
+
+The insight engine has a handful of sections built on one question: which people show up in your journals, and how were you feeling when they did. Lucky-charm people, drag people, high-priority contacts going cold. If your journals folder was named anything other than `📓 Journals`, all of those sections came back empty.
+
+The reason was one line. The person extractor looked for journals in a folder path written out in English, so a vault with `📓 Diarios` — or `Journals` with no emoji, or anything else — pointed the scan at a folder that did not exist. It found nothing, wrote `person_journal_mention_count: 0` onto every contact, and reported no error. Nothing in the output said "I could not find your journals." It looked exactly like a vault too thin to have insights yet, which is the worst way for a bug to fail: it blames your data.
+
+The folder is now found the same way the CRM folder already was — check a list of common names, or set `JOURNALS_FOLDER` if yours is unusual. English vaults behave exactly as before.
+
+A second bug was hiding behind the first, and could only surface once journals were being found at all: if some entries wrote their date in quotes and others did not, the two came back as different Python types and the extractor crashed comparing them. Both styles are handled now.
+
+**What to do:** re-run the extraction over your contacts so the counts recompute — `/second-brain-mapping` picks it up, but the counts are a derived field, so pass `--force --type person` if you want them refreshed without waiting for other changes.
+
+---
 
 ## 2026-08-19: the privacy checker no longer publishes the private word list it checks for
 
@@ -167,6 +206,20 @@ It appeared healthy on any machine that happened to have a particular Python set
 The hook now reads your message as raw data and decodes it itself, identically on every operating system and every language setting.
 
 **What you should do:** nothing beyond updating. If you had worked around this by typing English goodbyes to force a close, you can stop.
+
+---
+
+## 2026-08-16: "cierro sesión" did not close the session
+
+**Who this affects:** anyone who closes their session in Spanish.
+
+Spanish has several ways to say you are closing, and the list the close detector matched against had a hole in it. "cierra la sesión" worked. "cerremos la sesión" worked. **"cierro sesión"** — first person, one of the most natural ways to put it — matched nothing at all, and the session simply never closed.
+
+The verb is the reason. "Cerrar" changes its stem when it conjugates: *cerramos* keeps the `cerr`, but *cierro* and *cierra* switch to `cierr`. The pattern had been extended once already to catch `cierra`, `cierre`, `cierren` and `cierras`, and `cierro` was the one form left out.
+
+Two related patterns had the same gap, and they matter more than they look. They are the ones that stop a close from firing when you are plainly talking about closing *something else* — "cierro la sesión de la base de datos" should not end your session. Widening the main pattern without widening those would have swapped a missed close for a wrong one, so all three moved together.
+
+**What you should do:** nothing beyond updating.
 
 
 ---
