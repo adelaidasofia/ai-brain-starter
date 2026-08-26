@@ -827,7 +827,7 @@ def _has_live_session_lock(repo: Path, now_ts: Optional[float] = None) -> bool:
     now_ts = now_ts or time.time()
     lock = repo / ".claude" / ".session-lock.json"
     try:
-        data = json.loads(lock.read_text())
+        data = json.loads(lock.read_text(encoding="utf-8", errors="replace"))
     except (OSError, ValueError):
         return False
     if not isinstance(data, dict):
@@ -865,6 +865,92 @@ def _lock_entries(data: dict) -> list:
     return []
 
 
+PROC_CWD_CACHE_TTL_SEC = 30.0
+_PROC_CWD_CACHE = {"at": 0.0, "value": None}
+_PROC_PROBE_WARNED = [False]
+
+
+def _claude_pids() -> Optional[list]:
+    """PIDs of running Claude processes, or None if the process table is unreadable."""
+    try:
+        r = subprocess.run(["ps", "ax", "-o", "pid=,command="],
+                           capture_output=True, text=True, timeout=15,
+                           encoding="utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        return None
+    if r.returncode != 0:
+        return None
+    pids = []
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        pid, _, cmd = line.partition(" ")
+        if pid.isdigit() and "claude" in cmd.lower():
+            pids.append(pid)
+    return pids
+
+
+def live_process_cwds(now_ts: Optional[float] = None) -> Optional[set]:
+    """Directories a running Claude process currently has as its CWD.
+
+    THREE-STATE, and the third state is the point: a `set()` means "measured,
+    nobody is here"; `None` means "could not measure". Collapsing None into an
+    empty set is how a probe that failed reports a busy worktree as idle.
+
+    Cached for PROC_CWD_CACHE_TTL_SEC because the destructive callers ask once
+    per worktree and there can be dozens; one `lsof` over all PIDs at once costs
+    a fraction of one call each.
+    """
+    now_ts = now_ts or time.time()
+    if (_PROC_CWD_CACHE["value"] is not None
+            and (now_ts - _PROC_CWD_CACHE["at"]) < PROC_CWD_CACHE_TTL_SEC):
+        return _PROC_CWD_CACHE["value"]
+
+    pids = _claude_pids()
+    if pids is None:
+        return None
+    if not pids:
+        _PROC_CWD_CACHE.update(at=now_ts, value=set())
+        return set()
+
+    try:
+        r = subprocess.run(["lsof", "-a", "-p", ",".join(pids), "-d", "cwd", "-Fn"],
+                           capture_output=True, text=True, timeout=30,
+                           encoding="utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        return None
+    # lsof exits 1 when SOME pids vanished mid-run but still prints the rest.
+    if r.returncode not in (0, 1):
+        return None
+    cwds = {ln[1:] for ln in r.stdout.splitlines() if ln.startswith("n") and len(ln) > 1}
+    if r.returncode == 1 and not cwds:
+        return None  # exited non-zero AND told us nothing: could not measure.
+    _PROC_CWD_CACHE.update(at=now_ts, value=cwds)
+    return cwds
+
+
+def _process_is_live_in(path: Path, now_ts: float) -> Optional[bool]:
+    """True/False if measurable, None if the probe could not run."""
+    cwds = live_process_cwds(now_ts)
+    if cwds is None:
+        return None
+    try:
+        target = os.path.realpath(path)
+    except OSError:
+        return True  # cannot resolve the thing we are about to delete -> LOCKED
+    for c in cwds:
+        try:
+            rc = os.path.realpath(c)
+        except OSError:
+            continue
+        # The separator is load-bearing: without it `~/dev/repo` would match
+        # the sibling worktree `~/dev/repo-slug` and lock the whole fleet.
+        if rc == target or rc.startswith(target + os.sep):
+            return True
+    return False
+
+
 def has_live_session_lock(path: Path, now_ts: Optional[float] = None) -> bool:
     """Is a Claude session live in this working tree? THE one answer.
 
@@ -883,15 +969,35 @@ def has_live_session_lock(path: Path, now_ts: Optional[float] = None) -> bool:
     worktree and having its `target/` deleted. `dev-worktree-prune.py` deletes
     the whole worktree.
 
-    Three probes, in order of authority. Legacy mtime probes are kept because
-    they cost one stat and any future tool that drops a plain `.session-lock`
-    still gets protected.
+    FOUR probes, in order of authority. Probe 0 is a running process whose CWD
+    is this tree: direct evidence, needing no cooperating writer, and it cannot
+    go stale. It exists because the lock-file probes depend on session-lock.py
+    actually writing, and measured 2026-08-26 one busy repo's lock held ZERO
+    session entries and had not been written in 3210 minutes while THREE live
+    sessions held that repo's worktrees as their CWD. Every lock probe below
+    returned False for all of them; `dev-worktree-prune.py` duly classified two
+    actively-edited worktrees REAP. A guard that depends on a writer is dead
+    wherever that writer is dead, and it fails in the unsafe direction.
+
+    Legacy mtime probes are kept because they cost one stat and any future tool
+    that drops a plain `.session-lock` still gets protected.
 
     An OSError anywhere reads as LOCKED, never unlocked: "I could not tell" and
     "nobody is here" are different answers, and only one is safe to act on when
     the action is deletion.
     """
     now_ts = now_ts or time.time()
+
+    # 0. A live process sitting in this tree. Highest authority: observed, not
+    #    reported. `None` means the probe could not run -- fall through to the
+    #    lock probes rather than silently reporting "idle", and say so once.
+    proc = _process_is_live_in(path, now_ts)
+    if proc:
+        return True
+    if proc is None and not _PROC_PROBE_WARNED[0]:
+        _PROC_PROBE_WARNED[0] = True
+        print("dev_repo_scan: live-process probe unavailable (ps/lsof); "
+              "falling back to session-lock files only.", file=sys.stderr)
 
     # 1. Legacy per-worktree marker files (cheap, and back-compatible).
     for cand in (path / ".session-lock", path / ".claude" / ".session-lock"):
@@ -1375,7 +1481,7 @@ def fetch_repos_capped(
     """
     now_ts = now_ts or time.time()
     try:
-        last = float(json.loads(state_path.read_text()).get("last_fetch_ts", 0))
+        last = float(json.loads(state_path.read_text(encoding="utf-8", errors="replace")).get("last_fetch_ts", 0))
     except Exception:
         last = 0.0
     if now_ts - last < cap_hours * 3600:

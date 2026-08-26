@@ -59,8 +59,7 @@ bf2aa37b1fc14be871ed01920e719d1f71d87052e536d4c435ed2fff227ca8ec SEV-A-write scr
 a29f6c2b98ccf874e4c818e2487ce74f32248ecbbce73a11c91a738561f3aa84 SEV-A-write skills/graphify/scripts/graphify_chunk.py
 8397e371e756c7cff96453d8f8f2c895e1e8ac0762edc8538c573c059e07d19d SEV-A-write skills/graphify/scripts/graphify_prep.py
 
-# ---- SEV-B-read-only  (29 file(s)) ----
-b266f20ff920feeb950d48705939568f13e71e844707b90876c179c76d013da9 SEV-B-read-only hooks/_lib/dev_repo_scan.py
+# ---- SEV-B-read-only  (28 file(s)) ----
 3f7a1805473134ddb49cd1957cc4f94c8e84a1ccb4e8f875e6765b3dac33f289 SEV-B-read-only hooks/_lib/safe_read.py
 52c331ed8a99a90e12e347215144e6799dbe1d278024432dfc46639a4de68405 SEV-B-read-only hooks/_lib/worktree_safety.py
 b647243fdf0a358d46a6a79b0bf7f817ee121f68d5d685fabe4b0ee2a93af94d SEV-B-read-only hooks/check-fabricated-hook-attribution.py
