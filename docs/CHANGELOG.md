@@ -9,6 +9,18 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-24: graphify no longer stops merging once your graph passes 1 MB
+
+**Who this affects:** anyone whose vault has grown enough that `graph.json` is over a megabyte. It is a threshold every growing vault crosses eventually.
+
+Finishing a graphify stage means reading the existing `graph.json`, backing it up, and union-merging the new stage into it. That read went through `safe_read_bytes()` without a size argument, so it inherited the 1 MB default meant for ordinary note files. `graph.json` is not an ordinary note file — it holds the entire vault graph, and a few thousand notes is enough to pass a megabyte.
+
+Once past it, the read came back `too-large` and the stage ended on `ERROR: could not read existing graph.json (too-large), aborting`. Nothing was corrupted — the abort happens before the backup is written, so the existing graph survived intact — but no stage could finish again. The graph simply stopped growing, and the error named a size limit rather than anything the user had done.
+
+The read now uses `MAX_GRAPH_BYTES` (200 MB), sized to catch a runaway file rather than to bound normal growth. The merge decodes the whole document into memory regardless, so a graph large enough to trip the new ceiling is one the step could not have processed anyway.
+
+---
+
 ## 2026-08-24: one contact with a bracketed `relationship` no longer aborts the whole metadata pass
 
 **Who this affects:** anyone whose vault has a person note whose `relationship:` line still holds the bracketed placeholder we ship.
