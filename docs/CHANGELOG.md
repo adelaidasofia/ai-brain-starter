@@ -21,6 +21,90 @@ The visible symptom was one quiet line in the output, `no floor notes found — 
 
 Folder names are now matched by meaning instead of by exact spelling: emoji, punctuation and accents are ignored, and both English and Spanish words for "notes" and "floors" are understood, in any combination. Your folders keep whatever names you gave them.
 
+---
+
+## 2026-08-24: graphify no longer stops merging once your graph passes 1 MB
+
+**Who this affects:** anyone whose vault has grown enough that `graph.json` is over a megabyte. It is a threshold every growing vault crosses eventually.
+
+Finishing a graphify stage means reading the existing `graph.json`, backing it up, and union-merging the new stage into it. That read went through `safe_read_bytes()` without a size argument, so it inherited the 1 MB default meant for ordinary note files. `graph.json` is not an ordinary note file — it holds the entire vault graph, and a few thousand notes is enough to pass a megabyte.
+
+Once past it, the read came back `too-large` and the stage ended on `ERROR: could not read existing graph.json (too-large), aborting`. Nothing was corrupted — the abort happens before the backup is written, so the existing graph survived intact — but no stage could finish again. The graph simply stopped growing, and the error named a size limit rather than anything the user had done.
+
+The read now uses `MAX_GRAPH_BYTES` (200 MB), sized to catch a runaway file rather than to bound normal growth. The merge decodes the whole document into memory regardless, so a graph large enough to trip the new ceiling is one the step could not have processed anyway.
+
+---
+
+## 2026-08-24: one contact with a bracketed `relationship` no longer aborts the whole metadata pass
+
+**Who this affects:** anyone whose vault has a person note whose `relationship:` line still holds the bracketed placeholder we ship.
+
+`templates/obsidian/CRM Entry.md` ships `relationship: [friend/family/colleague/investor/client/contractor]`, and `phases/phase-06-09-tools-templates.md` tells Claude to write the same bracketed form during setup. Square brackets are YAML for a list, so a note saved with that line intact hands the person extractor a list where it expected a string. The extractor called `.lower()` on it and raised `AttributeError: 'list' object has no attribute 'lower'`.
+
+That error was not contained. `process_file()` only guards the file read, so the exception travelled up through `main()` and ended the run — every note still queued behind the offending one went unprocessed, and the failure read as a crash rather than as one bad field.
+
+Frontmatter is hand-written, so the same key legitimately arrives as a string in one vault and a list in another. `relationship` now goes through the same kind of defensive coercion `priority` already used: lists and dicts are flattened to one lowercase string, `None` becomes empty, and anything else is `str()`-ed. A placeholder value no longer stops the pass, and the public-figure hint matching still works on whichever shape arrived.
+
+---
+
+## 2026-08-24: on Windows, "your backup is not a supported format" was the opener, not the backup
+
+**Who this affects:** Windows users who set their backup up with the `bash ... vault-backup.sh setup` command — which is the one the install walks you through.
+
+There are two halves to the backup feature, one written in bash and one in PowerShell, and they share a settings file and a destination folder. What they do not share is the kind of file they write: the bash half writes `.tar.gz`, the PowerShell half writes `.zip`. That was fine as long as nobody crossed the streams.
+
+They cross on Windows, routinely. The install hands you the bash command, and it runs perfectly well there under Git Bash. But the reminder that appears at the start of a session — the one that says *prove your backup restores* — hands Windows users the PowerShell command. Run it, and you got this:
+
+```
+.gpg is not a supported archive file format. .zip is the only supported archive file format.
+```
+
+Which reads like the backup is corrupt. It was not. Every one of those snapshots was fine and would have restored perfectly. The tool that was supposed to reassure you was holding the wrong opener and blaming the file.
+
+That is the part worth fixing carefully, because of *when* it happens. Nobody runs a restore drill on a good day. You run it the morning you are worried, and that morning it told you the one thing you did not want to hear, incorrectly.
+
+**Now `verify` looks at what the file actually is** and picks the matching opener — `.zip` or `.tar.gz`, encrypted or not. Everything that already worked keeps working, and a file that is genuinely neither now says so in a sentence you can read, instead of an exception about a `.zip` you never had.
+
+**One related trap, also closed.** The two halves store the encryption passphrase in files with the *same name* and different formats. When the PowerShell half met the bash half's passphrase, it threw a raw cryptography error that reads as a damaged secret. It now recognises the situation and hands you the bash command that works.
+
+**What you should do:** nothing. If you ever saw that "not a supported archive file format" message, your backups were never the problem — check them once more after updating and you should see the file count come back.
+
+---
+
+## 2026-08-24: the graphify sizer was under-counting its own cache, and the merge step could not open a real graph
+
+**Who this affects:** anyone who runs `/graphify` on a vault big enough to need the staged pipeline — which is anyone past a few hundred files.
+
+Two separate things, both in the wrapper scripts, both with the same shape: the tool kept working, told you nothing was wrong, and quietly cost you money.
+
+**The sizer said your cache was empty when it wasn't.** `graphify_stage_select.py` is the script that decides which files still need a paid extraction and prints the estimate you approve before spending. It ships twice — once for each supported vault layout — and *both* copies had grown their own hand-rolled version of graphify's cache key instead of asking the library. Between them they were wrong in four ways: it looked in the wrong directory, it fed the absolute file path into the digest where the library uses the path relative to your vault root, it hashed the whole Markdown file where the library deliberately hashes only the body below the frontmatter, and it swallowed any error into the "needs re-extraction" pile. On a 437-file vault with 1,113 perfectly good cache entries, it reported **zero** hits in every folder and sized the job at 185 files and roughly 401,000 tokens. The honest numbers were 74 files and 250,000. You would have paid twice for a third of the corpus and never known.
+
+The frontmatter part matters more than it sounds. A nightly metadata pass that stamps fields like `reviewed` or a word count onto your notes changes those files without changing a word of what they say. The library ignores frontmatter for exactly that reason. The sizer did not, so a metadata sweep across a folder made every file in it look like new work.
+
+**The merge step could not open a graph bigger than one megabyte.** `graphify_stage_finish.py` read your existing `graph.json` through a helper whose default size ceiling is 1 MB, and never raised it. A vault with a couple of thousand nodes is well past that, so the script aborted at the merge step with a "too-large" error, every time. It aborted rather than writing something broken, which is the right instinct — but it meant the one script the runbook tells you to always use for post-dispatch could not finish on any vault of realistic size.
+
+While in there, the eight text reads and writes these three scripts perform now pass `encoding="utf-8"` explicitly. Without it Python uses the machine's locale — cp1252 on a stock Windows box — which mangles accented characters and emoji folder names *without raising an error*. Vaults whose folders are named `📓 Diarios` or `⚙️ Meta` are exactly the ones this silently corrupts, so all three files came off the encoding backlog rather than being re-pinned.
+
+Both are fixed, in both copies of the sizer. It now calls `graphify.cache.file_hash()` when graphify is importable and falls back to a faithful local copy of the same rule when it is not (the common case — graphify usually lives in a virtualenv the wrapper scripts don't share). Cache lookup checks every layout this repo has shipped, so it can only ever find more entries than before, never fewer. Errors are reported instead of being counted as misses. And there are five regression tests at `tests/test_graphify_stage_select_cache_key.py`, each of which runs against *both* copies — the two drifted apart precisely because nothing was holding them to the same answer.
+
+---
+
+## 2026-08-20: people insights worked only if your journals folder was named in English
+
+**Who this affects:** anyone whose vault is not in English — and anyone who renamed their journals folder.
+
+The insight engine has a handful of sections built on one question: which people show up in your journals, and how were you feeling when they did. Lucky-charm people, drag people, high-priority contacts going cold. If your journals folder was named anything other than `📓 Journals`, all of those sections came back empty.
+
+The reason was one line. The person extractor looked for journals in a folder path written out in English, so a vault with `📓 Diarios` — or `Journals` with no emoji, or anything else — pointed the scan at a folder that did not exist. It found nothing, wrote `person_journal_mention_count: 0` onto every contact, and reported no error. Nothing in the output said "I could not find your journals." It looked exactly like a vault too thin to have insights yet, which is the worst way for a bug to fail: it blames your data.
+
+The folder is now found the same way the CRM folder already was — check a list of common names, or set `JOURNALS_FOLDER` if yours is unusual. English vaults behave exactly as before.
+
+A second bug was hiding behind the first, and could only surface once journals were being found at all: if some entries wrote their date in quotes and others did not, the two came back as different Python types and the extractor crashed comparing them. Both styles are handled now.
+
+**What to do:** re-run the extraction over your contacts so the counts recompute — `/second-brain-mapping` picks it up, but the counts are a derived field, so pass `--force --type person` if you want them refreshed without waiting for other changes.
+
+---
+
 ## 2026-08-19: the privacy checker no longer publishes the private word list it checks for
 
 **Who this affects:** anyone who publishes repos with this starter installed, and anyone who forked one of ours.
@@ -74,6 +158,71 @@ The speed is unchanged. The test suite that stayed green through all six of thes
 
 ---
 
+## 2026-08-15: the hook that reads your priorities only understood English
+
+**Who this affects:** everyone who does not work in English. Also everyone who ever customized this hook by hand.
+
+`vault-context.py` is the helper that notices you asked a strategic question and quietly puts your priorities and open loops in front of Claude before it answers. The 2026-08-13 update fixed the reason it was doing nothing on every machine. This is the second reason, and it only showed up once the first was gone.
+
+The list of words that make it fire was written in English, in the file itself. Ask *"what should I prioritize this week"* and you got your priorities. Ask the same thing in Spanish — *"qué prioridades tengo esta semana"* — and nothing matched, so the hook exited quietly, exactly as if you had asked it something unimportant. Measured on a real Spanish vault: zero matches for the Spanish sentence, full injection for the English one.
+
+About a third of that list was also one person's vocabulary: the name of their company, their city, their newsletter, plus a second list pointing at file paths that exist in one vault on earth. Harmless-looking, but it meant the file could never quite be yours.
+
+**Both are fixed the same way.** The trigger words now live in language packs — `templates/vault-context/en.json` and `es.json` — the same shape the closing-signal detector already uses, and both load by default. Spanish patterns accept the version without accents, because that is how people actually type in a terminal. Everything personal moved out of the shipped code and into a file of your own:
+
+```
+~/.claude/.vault-context-signals.json
+```
+
+```json
+{
+  "strategic_signals": ["\\bacme corp\\b", "\\bproject atlas\\b"],
+  "topic_map": [
+    { "signals": ["\\bproject atlas\\b"], "files": ["Business/Atlas Brief.md"] }
+  ]
+}
+```
+
+That file is also the fix for an older piece of advice. The original release told you to add your own keywords by editing `~/.claude/hooks/vault-context.py` directly — but that file is redeployed on update, so every customization was silently reverted the next time you updated. Anything in the override file survives.
+
+**What you should do:** nothing. `en` and `es` both load by default; set `VAULT_CONTEXT_LANGS` if you want only one. Another language is one JSON file in `templates/vault-context/` — the loader takes any language name you give it.
+
+---
+
+## 2026-08-16: on a Spanish vault, people never met your journal and floors never became numbers
+
+**Who this affects:** anyone journaling in Spanish (or in any vault whose journal folder is not literally `📓 Journals`), plus everyone who tags a journal entry with one of the 16 floors added when the framework grew from 16 to 34 — Trust, Frustration, Loneliness, Gratitude and the rest.
+
+**The bug, in three parts, all silent:**
+
+1. **The wrong journal folder.** The CRM extractor counts how often each person appears in your journals and on which floors. It looked for those journals in a folder hardcoded as `📓 Journals`. A Spanish install creates `📓 Diarios` (that is what the setup interview says to create), so the scan found nothing: every person got zero mentions and an empty floor list, and the insight engine's lucky-charm / drag-people / stale-relationship sections, which are built on those, never fired. Everything ran green. (`/weekly` and `/monthly` had the same problem in July and were fixed for `📓 Diario`, singular; the plural the installer actually creates is now recognised there too.)
+2. **Names, not numbers.** The journal tags each entry with the floor's *name* (`floor: Esperanza`, `floor: Hope`); every floor-based computation wants its *number*. The only translation table lived inside the journal extractor and was the pre-expansion 17-level English list — Fear was 5, Peace was 16, Excitement was 15, and Trust, Frustration, Loneliness, Gratitude and a dozen more did not exist. Spanish names never resolved. So floor co-occurrence was empty and the engine's floor baseline was `None`, which switches off four of its sections.
+3. **Note types with nowhere to go.** A Spanish vault types its notes in Spanish — `reunion`, `nota`, `estrategia`, `proyecto` — and a couple of this repo's own skills write types no extractor claimed (`/rise` writes `type: rise`, About Me is `type: profile`). Those notes dropped out of the metadata index with no message.
+
+**The fix:** one floor table, `scripts/extractors/_floors.py`, mirrored from the canonical 34-floor list in `vendor/high-rise/floors.md` with English and Spanish names (accents optional), used by the journal extractor, the CRM extractor and the insight engine alike — the name on the entry always wins over a stored number, so an old `floor_num` from the 17-level days cannot skew anything. A CI check fails if that table and the canonical one ever disagree. The CRM extractor now finds the journal folder the same way `/weekly` does (`📓 Journals`, `📓 Diarios`, `📓 Diário`, plain or with the emoji). And the type-alias map learned Spanish plus `rise`, `profile`, `meeting_prep`, `plan`, `brief`, `index` and the `content_*` family — while an extractor you wrote yourself for a type always beats an alias.
+
+**What changes for you:** journal entries extracted from now on carry `floor_num` on the 34-floor scale (Hope is 20, not 9). Entries extracted earlier keep their old number in the file until you re-run extraction with `--force`; nothing that reads floors uses that stored number anymore when the name is there, so your insights are right either way. `/setup-vault-types` now also links `_floors.py` into your vault; existing installs pick it up automatically without re-running it.
+
+**New tests:** `tests/integration/test_floor_name_map_canonical.sh` (the table matches the vendored canon, with a planted drift as negative control) and `tests/integration/test_extractors_localized_vault.sh` (a Spanish vault, end to end: 11 of its assertions fail on the previous code). Both wired into `scripts/ci.sh`, which now installs PyYAML on the CI runner (and only there) so the extractors can actually run in CI.
+
+---
+
+## 2026-08-16: "cierro sesión" did not close the session
+
+**Who this affects:** anyone who closes their session in Spanish.
+
+Spanish has several ways to say you are closing, and the list the close detector matched against had a hole in it. "cierra la sesión" worked. "cerremos la sesión" worked. **"cierro sesión"** — first person, one of the most natural ways to put it — matched nothing at all, and the session simply never closed.
+
+The verb is the reason. "Cerrar" changes its stem when it conjugates: *cerramos* keeps the `cerr`, but *cierro* and *cierra* switch to `cierr`. The pattern had been extended once already to catch `cierra`, `cierre`, `cierren` and `cierras`, and `cierro` was the one form left out.
+
+Two related patterns had the same gap, and they matter more than they look. They are the ones that stop a close from firing when you are plainly talking about closing *something else* — "cierro la sesión de la base de datos" should not end your session. Widening the main pattern without widening those would have swapped a missed close for a wrong one, so all three moved together.
+
+**What you should do:** nothing beyond updating.
+
+
+---
+
+
 ## 2026-08-15: your Sunday review now opens the backup instead of trusting it
 
 **Who this affects:** everyone who runs `/sunday-review`, and especially anyone whose vault sits inside iCloud, Dropbox, OneDrive, or any other sync folder.
@@ -91,6 +240,23 @@ bash ~/.claude/skills/ai-brain-starter/scripts/vault-backup.sh verify
 ```
 
 It takes a few seconds and either prints how many files it restored, or tells you your backup does not work.
+
+---
+
+## 2026-08-16: pasting a long note no longer closes your session because one line ended in "listo" or "done"
+
+**Who this affects:** anyone who pastes multi-line text into a session — a brief, a spec, a handoff, meeting notes. Spanish and Portuguese users saw it most, but the cause was language-independent.
+
+**The bug:** the session-close detector decides whether your message is a goodbye by matching it against sign-off patterns like `listo`, `ya está`, `bye`, `done for today`. Many of those patterns are anchored to the *end of the message* — that is what makes "listo, gracias" a close and "listo el borrador, sigamos" not one. But the matcher ran in a mode where "end of the message" meant "end of any line". So a 60-line handoff whose third line happened to read `Borrador listo` was treated as a farewell, and the whole close cascade ran in the middle of your work. Three real cases in nine days on one vault, all the same shape: a sign-off word ending an inner line of something long. Length was never considered either — a wave and a pasted document were scored the same way.
+
+**The fix:** the shared sign-off patterns now match against the whole message (so "end" means the real end) and against its last line alone (so a goodbye on the last line — "All good.\nbye" — still counts). A sign-off word ending an inner line satisfies neither. And the natural-language tiers only look at short messages, up to 300 characters; a sign-off is a few words, and anything longer is work being pasted in. Two things deliberately keep their old reach: slash commands (`/close`, `/cerrar`, `/wrap-up`) fire at any length because typing a command is deliberate, and your own `closingSignals.custom` phrases keep their original semantics for the same reason.
+
+**Also fixed, Spanish pack:** "estoy listo" / "estoy lista" ("I'm ready") is a statement of readiness — "estoy listo para el día" after a morning routine — never a goodbye. It now sits in the strict guard tier of `es.json`, because the bare word `listo` is a high-confidence sign-off and the weaker guards cannot override that.
+
+**New test:** `tests/integration/test_detect_closing_signal_length_gate.sh` — every "must not fire" case has a "must fire" twin, so a change that mutes the detector outright cannot pass it. Against the previous code, thirteen of its assertions fail.
+
+---
+
 ## 2026-08-15: the setup could stop halfway and tell you it was finished
 
 **Who this affects:** anyone whose install ended early, especially if you never reached the journaling interview or your CLAUDE.md came out mostly empty.
@@ -266,6 +432,21 @@ Now it does. When a session set a goal that was never cleared, the close ends by
 **The fix:** the entry template now opens with `type: journal`, and the capture-first save names it as a required field. Nothing else about the entry changed.
 
 **What you should do:** nothing for new entries. If you journaled before this fix, ask Claude to backfill `type: journal` into your existing entries' frontmatter so extraction sees them too.
+
+## 2026-07-16: the test gate now runs green on Spanish-locale Macs
+
+**Who this affects:** anyone contributing (or just running `bash scripts/ci.sh`) from a Mac whose system language is Spanish — until now the gate failed on two tests and, because it stops at the first failure, hid every test wired after them. On linux CI everything was green, so the breakage was invisible upstream.
+
+**The bug:** two integration tests assumed English output but ran on machines where the code under test auto-detects the system language:
+
+- `test_post_update_email_ask` greps English copy ("optional", "Never a token"), but the email-ask hook picks its language from `AppleLocale` on macOS — and there was **no way to force English**: the env check only short-circuited toward Spanish, never toward English, so even `LANG=en_US` couldn't pin it.
+- `test_bootstrap_corporate_profile` pinned the wrong knob: it exported `LANG_HINT=en`, which only feeds the install-funnel API payload — the bilingual `t()` helper reads `BOOTSTRAP_LANG`/`LC_ALL`/`LANG`/`AppleLocale`, so on a Spanish Mac one hardening message came out in Spanish and the English grep missed it.
+
+**The fix:** the email-ask hook now honors an explicit env locale in **both** directions (`LANG=en_*` wins over AppleLocale, same as `es_*` always did — no change when the env is unset); its test pins the language per case and gains a new case exercising the **Spanish** ask block, which previously had zero coverage anywhere (linux CI always falls through to English). The corporate-profile test now pins `BOOTSTRAP_LANG=en`, the knob `detect_lang()` actually reads.
+
+**Verified:** full `scripts/ci.sh` green (81 integration tests) plus repo-wide shellcheck on an `es_CO` Mac — the machine class that reproduced both failures.
+
+---
 
 ## 2026-07-16: the Spanish close detector stopped firing mid-conversation and started hearing "cierra esta sesión"
 

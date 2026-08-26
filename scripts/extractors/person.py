@@ -14,6 +14,8 @@ import yaml
 from _base import (
     VAULT, iso_date_from, count_words, ExtractionResult,
 )
+from _floors import floor_num_from_fm
+
 
 AUTO_FIELDS = (
     "person_relationship_type", "person_company", "person_is_public_figure",
@@ -31,7 +33,31 @@ PUBLIC_FIGURE_RELATIONSHIP_HINTS = {
     "teacher", "public intellectual", "academic",
 }
 
-JOURNALS_ROOT = os.path.join(VAULT, "📓 Journals")
+# Journals folder: self-locating, the same candidate list (and order) that
+# scripts/build-journal-index.py uses for /weekly and /monthly. The setup
+# interview creates a LOCALIZED folder on a non-English install ("📓 Diarios"
+# on Spanish, "📓 Diário" on Portuguese), and a hardcoded "📓 Journals" here
+# scanned a path that did not exist — silently: every person got
+# person_journal_mention_count = 0 and an empty person_floor_cooccurrence,
+# which in turn switched off the lucky-charm / drag-people / stale-relationship
+# sections of the insight engine for the whole vault. Pick the first candidate
+# that exists; fall back to the English default so the glob below still yields
+# nothing (rather than crashing) on a vault with no journal folder at all.
+_JOURNAL_CANDIDATES = (
+    "📓 Journals", "Journals",       # en (Phase 3 default)
+    "📔 Journal", "Journal",
+    "📓 Diarios", "Diarios",         # es (what Phase 1 tells the installer to create)
+    "📓 Diario", "Diario",           # es, singular variant
+    "📓 Diário", "Diário",           # pt
+)
+# JOURNALS_FOLDER: an operator whose journal folder is named outside the
+# candidate list can point at it directly, without editing code. Kept from
+# the branch that fixed this alongside the candidate list.
+JOURNALS_ROOT = os.environ.get("JOURNALS_FOLDER") or next(
+    (os.path.join(VAULT, c) for c in _JOURNAL_CANDIDATES
+     if os.path.isdir(os.path.join(VAULT, c))),
+    os.path.join(VAULT, _JOURNAL_CANDIDATES[0]),
+)
 
 # Per-run cache: person_name → [(journal_iso, floor_num), ...]
 _JOURNAL_INDEX = None
@@ -63,7 +89,13 @@ def _build_journal_index():
             continue
 
         date_iso = fm.get("date_iso") or iso_date_from(fm.get("creationDate"))
-        floor_num = fm.get("floor_num")
+        # The journal writes the floor's NAME (`floor: Hope` / `floor: Esperanza`);
+        # `floor_num` only exists once the journal extractor has run, and on an
+        # older scale if it ran long ago. Translate the name first, then fall
+        # back to the stored number — otherwise co-occurrence is empty on every
+        # vault whose journals were never extracted, and the insight sections
+        # built on it never fire.
+        floor_num = floor_num_from_fm(fm)
         if not date_iso:
             continue
 
@@ -89,9 +121,22 @@ def _priority(fm):
     return p if p in ("high", "mid", "medium", "low") else None
 
 
+def _coerce_text(value):
+    """Frontmatter fields are author-written: the same key shows up as a string,
+    a YAML list, or a number across vaults. Flatten to one lowercase string so
+    callers never have to care which shape arrived."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(_coerce_text(v) for v in value)
+    if isinstance(value, dict):
+        return " ".join(_coerce_text(v) for v in value.values())
+    return str(value).lower().strip()
+
+
 def _is_public_figure(fm):
     """True if relationship type or notes flag this as author/thinker/public figure."""
-    rel = (fm.get("relationship") or "").lower().strip()
+    rel = _coerce_text(fm.get("relationship"))
     if rel in PUBLIC_FIGURE_RELATIONSHIP_HINTS:
         return True
     # Also check if any hint word appears within a longer descriptor

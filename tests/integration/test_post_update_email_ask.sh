@@ -9,9 +9,19 @@
 #   D. HEAD unchanged since last run -> passthrough (no update = no ask)
 #   E. HEAD changed (a pull landed)  -> ASK, and the ask is gentle + token-free
 #   F. another update inside cooldown-> passthrough (no double-ask)
+#   G. Spanish env                   -> the ES block fires, same guarantees
 #
 # Negative controls baked in: case D proves it does NOT ask on a normal
 # session; case E proves the ask never tells the user to paste a token.
+#
+# Locale hermeticity: the hook picks its language from LC_ALL/LANG and, on
+# macOS, falls back to `defaults read -g AppleLocale` — which cfprefsd serves
+# from the REAL user's prefs, ignoring this test's $HOME sandbox. Cases E and
+# G therefore PIN LC_ALL/LANG explicitly. Before the symmetric env override
+# in _detect_lang_hint, this test failed on every Spanish-locale Mac (the ask
+# came out in Spanish; the greps here are English) while staying green on
+# linux CI, and — being early in ci.sh's stop-on-first-failure gate — its
+# abort hid every integration test wired after it.
 #
 # Self-contained. Builds a throwaway git repo as the "installed skill clone"
 # and never writes outside its tmpdir.
@@ -73,8 +83,9 @@ echo "$OUT" | grep -q '"continue": true' || fail "D: unchanged HEAD must passthr
 echo "$OUT" | grep -q "additionalContext" && fail "D: must NOT ask on a normal session (HEAD unchanged)"
 
 # --- E. HEAD changed (pull landed) -> ASK, gentle + token-free ---
+# Pinned to English: the assertions below grep English copy.
 git -C "$SKILL_DIR" commit -q --allow-empty -m c2
-OUT="$(run_hook)"
+OUT="$(LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 run_hook)"
 echo "$OUT" | grep -q "additionalContext" || fail "E: must ASK after a version change"
 echo "$OUT" | grep -q "optional" || fail "E: ask must be framed optional"
 echo "$OUT" | grep -q "Never a token" || fail "E: ask must carry the token-free guard"
@@ -88,4 +99,16 @@ OUT="$(run_hook)"
 echo "$OUT" | grep -q '"continue": true' || fail "F: cooldown must passthrough"
 echo "$OUT" | grep -q "additionalContext" && fail "F: must NOT ask again inside cooldown"
 
-echo "PASS: post-update-email-ask asks only after a real update, stays silent otherwise, token-free, cooldown holds"
+# --- G. Spanish env -> the ES block fires, with the same guarantees ---
+# First deterministic coverage of _ES_BLOCK anywhere (linux CI always fell
+# through to English before the symmetric env override existed).
+rm -f "$STATE"                                             # fresh state: no cooldown
+OUT="$(LC_ALL=es_CO.UTF-8 LANG=es_CO.UTF-8 run_hook)"      # first run: records HEAD, silent
+echo "$OUT" | grep -q "additionalContext" && fail "G: state-reset first run must be SILENT"
+git -C "$SKILL_DIR" commit -q --allow-empty -m c4
+OUT="$(LC_ALL=es_CO.UTF-8 LANG=es_CO.UTF-8 run_hook)"
+echo "$OUT" | grep -q "additionalContext" || fail "G: must ASK after a version change under a Spanish env"
+echo "$OUT" | grep -q "opcional" || fail "G: Spanish ask must be framed opcional"
+echo "$OUT" | grep -q "Nunca un token" || fail "G: Spanish ask must carry the token-free guard"
+
+echo "PASS: post-update-email-ask asks only after a real update, stays silent otherwise, token-free, cooldown holds, ES block covered"
