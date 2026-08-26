@@ -155,6 +155,30 @@ jobs:
       - name: baseline section-header negative controls (the guard must still bite)
         run: python3 scripts/_baseline_sections.py --self-test
 
+      # Every scripts/test_*.py, DISCOVERED BY GLOB. Measured 2026-08-26: the
+      # repo carried 30 such suites and exactly ONE (test_ps1_encoding_gate.py)
+      # was named in any workflow, so 29 had never run in CI - including
+      # test_dev_worktree_prune.py and test_dev_worktree_prune_failsafe.py, the
+      # safety controls for the tool that DELETES whole worktrees. A suite that
+      # never runs and a suite that passes report the same green. Naming them
+      # here would re-create the bug: the next suite added would be dormant too.
+      - name: scripts/test_*.py suites (globbed - a dormant suite is not a passing one)
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          suites=(scripts/test_*.py)
+          if [ ${#suites[@]} -eq 0 ]; then
+            echo "no scripts/test_*.py found - the glob broke, not the repo"; exit 1
+          fi
+          echo "discovered ${#suites[@]} suite(s)"
+          rc=0
+          for t in "${suites[@]}"; do
+            echo "::group::$t"
+            if python3 "$t"; then echo "  ok   $t"; else echo "  FAIL $t"; rc=1; fi
+            echo "::endgroup::"
+          done
+          exit $rc
+
       # Every tiered baseline, DISCOVERED BY GLOB rather than named here. Naming
       # them would be the original bug one level up: a hand-maintained list of
       # what to check goes stale exactly as silently as a hand-maintained count,
