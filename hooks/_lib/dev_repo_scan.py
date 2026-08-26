@@ -874,8 +874,9 @@ def _claude_pids() -> Optional[list]:
     """PIDs of running Claude processes, or None if the process table is unreadable."""
     try:
         r = subprocess.run(["ps", "ax", "-o", "pid=,command="],
-                           capture_output=True, text=True, timeout=15)
-    except (OSError, subprocess.SubprocessError):
+                           capture_output=True, text=True, timeout=15,
+                           encoding="utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return None
     if r.returncode != 0:
         return None
@@ -915,8 +916,9 @@ def live_process_cwds(now_ts: Optional[float] = None) -> Optional[set]:
 
     try:
         r = subprocess.run(["lsof", "-a", "-p", ",".join(pids), "-d", "cwd", "-Fn"],
-                           capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
+                           capture_output=True, text=True, timeout=30,
+                           encoding="utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return None
     # lsof exits 1 when SOME pids vanished mid-run but still prints the rest.
     if r.returncode not in (0, 1):
