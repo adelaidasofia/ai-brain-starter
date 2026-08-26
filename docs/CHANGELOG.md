@@ -9,6 +9,20 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-25: the check on your journal's floor labels was never running
+
+**Who this affects:** anyone whose vault folders have emoji in their names and are in English — which is the default this project sets up.
+
+Every journal entry records which floor you landed on. A check is supposed to run over those labels and tell you when one does not line up — a floor number that belongs to a different floor, a level that contradicts the floor, that sort of thing. It reads the floor list from your own floor notes rather than carrying its own copy, which is the right design.
+
+It was looking for those notes in four places, and the folder this project actually creates was not one of them. It knew about `📝 Notas/Floors` (emoji, Spanish) and about `Notes/Floors` (no emoji, English) but not `📝 Notes/Floors` — which is exactly where setup puts them on an English install. So it found no floor list, and with no list it skipped the check rather than guessing. Skipping was the right call; not finding the folder was not.
+
+The visible symptom was one quiet line in the output, `no floor notes found — frontmatter consistency check skipped`, easy to read as a note rather than a fault. The index itself always built fine. The check behind it just never ran, so a mislabelled entry could sit there for months without anyone hearing about it. One did.
+
+Folder names are now matched by meaning instead of by exact spelling: emoji, punctuation and accents are ignored, and both English and Spanish words for "notes" and "floors" are understood, in any combination. Your folders keep whatever names you gave them.
+
+---
+
 ## 2026-08-24: graphify no longer stops merging once your graph passes 1 MB
 
 **Who this affects:** anyone whose vault has grown enough that `graph.json` is over a megabyte. It is a threshold every growing vault crosses eventually.
