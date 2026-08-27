@@ -191,7 +191,7 @@ def write_snapshot(findings, high):
     try:
         os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
         tmp = STATE_PATH + ".tmp"
-        with open(tmp, "w") as fh:
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump({
                 "scanned_at": time.time(),
                 "roots": [{"path": p, "provider": prov} for p, prov in synced_roots()],
@@ -214,14 +214,14 @@ def self_test():
         big = os.path.join(tmp, "hugedir")
         os.makedirs(big)
         for i in range(FILE_COUNT_THRESHOLD + 5):
-            open(os.path.join(big, f"f{i}"), "w").close()
+            open(os.path.join(big, f"f{i}"), "w", encoding="utf-8").close()
         f = scan_root(tmp, "TEST")
         got_marker = any(x["reason"].startswith("machinery dir '.git'") for x in f)
         got_big = any("files in one synced dir" in x["reason"] for x in f)
         # control: a clean docs tree must produce NOTHING
         clean = os.path.join(tmp, "clean_docs")
         os.makedirs(clean)
-        open(os.path.join(clean, "notes.md"), "w").close()
+        open(os.path.join(clean, "notes.md"), "w", encoding="utf-8").close()
         f2 = scan_root(clean, "TEST")
         print(f"[self-test] detects .git inside synced folder: {got_marker}")
         print(f"[self-test] detects oversized synced dir:      {got_big}")
@@ -238,7 +238,7 @@ def self_test():
         os.makedirs(os.path.join(seed, ".claude", "worktrees"))   # empty -> MUST flag
         os.makedirs(os.path.join(seed, ".obsidian"))              # legit sync -> silent
         os.makedirs(os.path.join(seed, "worktrees"))              # bare name -> silent
-        open(os.path.join(seed, ".claude", "settings.local.json"), "w").close()
+        open(os.path.join(seed, ".claude", "settings.local.json"), "w", encoding="utf-8").close()
         f3 = scan_root(seed, "TEST")
         seed_paths = {x["path"] for x in f3}
         got_seed = os.path.join(seed, ".claude", "worktrees") in seed_paths
@@ -285,7 +285,7 @@ def self_test():
         os.makedirs(os.path.join(mirror_git, ".git"))
         mirror_clean = os.path.join(tmp, "mirror_clean")    # Mirror, clean -> no finding
         os.makedirs(mirror_clean)
-        open(os.path.join(mirror_clean, "notes.md"), "w").close()
+        open(os.path.join(mirror_clean, "notes.md"), "w", encoding="utf-8").close()
         stream_git = os.path.join(tmp, "stream_vault")      # sync_type=2 -> IGNORED
         os.makedirs(os.path.join(stream_git, ".git"))
 
