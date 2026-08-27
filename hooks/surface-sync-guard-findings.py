@@ -111,7 +111,7 @@ def main():
     if os.environ.get("SYNC_GUARD_SURFACE_BYPASS") == "1":
         return 0
     try:
-        with open(STATE_PATH) as fh:
+        with open(STATE_PATH, encoding="utf-8") as fh:
             snap = json.load(fh)
     except FileNotFoundError:
         # Never ran, or ran only on a version predating snapshots. Silent:

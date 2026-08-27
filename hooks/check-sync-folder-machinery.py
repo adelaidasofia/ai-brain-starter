@@ -60,10 +60,14 @@ MARKER_DIRS = {".git", "node_modules", ".venv", "venv", "target",
 # `worktrees` is machinery ONLY under a tool dir. A bare folder named
 # "worktrees" is plausible user content, so it is scoped by PARENT rather than
 # added as another ambiguous bare name alongside dist/build/target. See
-# scan_root. Deliberately absent everywhere: `.obsidian` -- it legitimately
+# scan_root. Deliberately absent from THIS file's marker set: `.obsidian` -- it legitimately
 # syncs, that is how Obsidian mobile works, and a guard that cries wolf on real
 # folders teaches bypass, which then masks the true hits.
-WORKTREE_PARENTS = {".claude", ".git"}
+# Only ".claude": ".git" is itself in MARKER_DIRS and is pruned from dirnames before the
+# walk descends, so os.walk never yields a dirpath ending in "/.git" and a ".git" entry
+# here could only fire if a scan ROOT were named .git. Listing it read as coverage that
+# does not exist. A repo's own .git/worktrees is covered by the .git hit itself.
+WORKTREE_PARENTS = {".claude"}
 # A plain folder this big is also too much for a File Provider to live-sync
 FILE_COUNT_THRESHOLD = 5000
 # Per-root safety budget so a streamed Google Drive can't hang the scan
@@ -141,7 +145,18 @@ def scan_root(root, provider):
     findings = []
     start = time.monotonic()
     base_depth = root.rstrip("/").count("/")
-    for dirpath, dirnames, filenames in os.walk(root, topdown=True):
+    def _unreadable(err):
+        # os.walk's default onerror is None -- it SWALLOWS a permission/IO failure and
+        # yields nothing for that subtree, so an unreadable root produced findings:[] and
+        # main() printed "clean". That routes an unproven scan into the one verdict this
+        # guard must never emit. Recorded as coverage-PARTIAL, same channel as a budget
+        # truncation.
+        findings.append({"path": getattr(err, "filename", root) or root,
+                         "provider": provider,
+                         "reason": f"unreadable subtree ({type(err).__name__}) -- coverage PARTIAL, not clean",
+                         "severity": "info"})
+
+    for dirpath, dirnames, filenames in os.walk(root, topdown=True, onerror=_unreadable):
         if time.monotonic() - start > ROOT_TIME_BUDGET_S:
             findings.append({"path": root, "provider": provider,
                              "reason": "scan-time-budget-exceeded (large/streamed tree)",
@@ -150,20 +165,29 @@ def scan_root(root, provider):
         if dirpath.count("/") - base_depth >= MAX_DEPTH:
             dirnames[:] = []
             continue
-        hit = set(MARKER_DIRS.intersection(dirnames))
+        candidates = set(MARKER_DIRS.intersection(dirnames))
         # An EMPTY .claude/worktrees still counts -- it is the SEED, not the
         # storm. 0 files, so FILE_COUNT_THRESHOLD structurally cannot see it,
         # and it fills with a ~6.5K-file checkout the next time a session ticks
         # the worktree box. Missed for 8 days inside a live Google Drive root
         # while this scan reported findings:[] every morning (MYC-4188).
         if "worktrees" in dirnames and os.path.basename(dirpath.rstrip("/")) in WORKTREE_PARENTS:
-            hit.add("worktrees")
+            candidates.add("worktrees")
+        # A SYMLINK here is the documented CURE, never the disease. Shape B in
+        # CLOUD_SYNC.md tells the user to run relocate-machinery-sidecar, which moves
+        # .smart-env / .codegraph / .claude/worktrees to a sidecar and leaves a symlink
+        # behind -- the churn is then outside the synced tree by construction. os.walk
+        # lists a symlinked directory in dirnames, so without this filter a vault fixed
+        # EXACTLY as our own docs instruct reports three permanent HIGH findings that no
+        # action can clear. The pre-existing markers were accidentally immune: .git
+        # remediates to a pointer FILE, which never appears in dirnames.
+        hit = {h for h in candidates if not os.path.islink(os.path.join(dirpath, h))}
         for h in sorted(hit):
             findings.append({"path": os.path.join(dirpath, h), "provider": provider,
                              "reason": f"machinery dir '{h}' inside synced folder",
                              "severity": "high"})
         # don't descend into machinery we already flagged
-        dirnames[:] = [d for d in dirnames if d not in hit and d not in MARKER_DIRS]
+        dirnames[:] = [d for d in dirnames if d not in candidates and d not in MARKER_DIRS]
         if len(filenames) >= FILE_COUNT_THRESHOLD:
             findings.append({"path": dirpath, "provider": provider,
                              "reason": f"{len(filenames)}+ files in one synced dir",
@@ -180,7 +204,8 @@ def run_scan():
 
 def truncated_roots(findings):
     """Roots whose walk hit the time budget -> coverage is PARTIAL, not clean."""
-    return [f["path"] for f in findings if "budget" in f.get("reason", "")]
+    return [f["path"] for f in findings
+            if "budget" in f.get("reason", "") or "coverage PARTIAL" in f.get("reason", "")]
 
 
 def write_snapshot(findings, high):
@@ -239,6 +264,17 @@ def self_test():
         os.makedirs(os.path.join(seed, ".obsidian"))              # legit sync -> silent
         os.makedirs(os.path.join(seed, "worktrees"))              # bare name -> silent
         open(os.path.join(seed, ".claude", "settings.local.json"), "w", encoding="utf-8").close()
+        # Sidecar-symlink control. The islink regression above shipped past this diff's
+        # own new legs because every fixture here was a REAL dir. A suite made only of
+        # the bug you just fixed cannot see the bug you just made.
+        sidecar = os.path.join(tmp, "sidecar_target")
+        os.makedirs(os.path.join(sidecar, "worktrees"))
+        os.makedirs(os.path.join(sidecar, "smart-env"))
+        fixed = os.path.join(tmp, "fixed_vault")
+        os.makedirs(os.path.join(fixed, ".claude"))
+        os.symlink(os.path.join(sidecar, "worktrees"), os.path.join(fixed, ".claude", "worktrees"))
+        os.symlink(os.path.join(sidecar, "smart-env"), os.path.join(fixed, ".smart-env"))
+
         f3 = scan_root(seed, "TEST")
         seed_paths = {x["path"] for x in f3}
         got_seed = os.path.join(seed, ".claude", "worktrees") in seed_paths
@@ -247,7 +283,22 @@ def self_test():
         print(f"[self-test] detects EMPTY .claude/worktrees:   {got_seed}")
         print(f"[self-test] .obsidian stays silent:            {quiet_obsidian}")
         print(f"[self-test] bare worktrees/ stays silent:      {quiet_bare}")
-        ok = ok and got_seed and quiet_obsidian and quiet_bare
+        f4 = scan_root(fixed, "TEST")
+        quiet_sidecar = len(f4) == 0
+        print(f"[self-test] sidecar SYMLINKS stay silent:      {quiet_sidecar}")
+        ok = ok and got_seed and quiet_obsidian and quiet_bare and quiet_sidecar
+
+        # Unreadable-subtree control: coverage must read PARTIAL, never clean.
+        locked = os.path.join(tmp, "locked_root")
+        os.makedirs(os.path.join(locked, "vault", ".git"))
+        os.chmod(locked, 0o000)
+        try:
+            f5 = scan_root(locked, "TEST")
+            loud_unreadable = bool(truncated_roots(f5))
+        finally:
+            os.chmod(locked, 0o755)
+        print(f"[self-test] unreadable root reports PARTIAL:   {loud_unreadable}")
+        ok = ok and loud_unreadable
 
         # Metadata-only negative control: a FIFO has the same forever-blocking
         # behavior as a placeholder if opened for content. This scanner must
