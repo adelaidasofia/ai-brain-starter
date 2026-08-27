@@ -55,7 +55,15 @@ STATE_PATH = os.path.join(HOME, ".claude", "state", "sync-guard-last.json")
 
 # Directory names that mean "machinery, never sync this"
 MARKER_DIRS = {".git", "node_modules", ".venv", "venv", "target",
-               "__pycache__", ".next", "dist", "build", ".tox", ".gradle"}
+               "__pycache__", ".next", "dist", "build", ".tox", ".gradle",
+               ".codegraph", ".smart-env"}
+# `worktrees` is machinery ONLY under a tool dir. A bare folder named
+# "worktrees" is plausible user content, so it is scoped by PARENT rather than
+# added as another ambiguous bare name alongside dist/build/target. See
+# scan_root. Deliberately absent everywhere: `.obsidian` -- it legitimately
+# syncs, that is how Obsidian mobile works, and a guard that cries wolf on real
+# folders teaches bypass, which then masks the true hits.
+WORKTREE_PARENTS = {".claude", ".git"}
 # A plain folder this big is also too much for a File Provider to live-sync
 FILE_COUNT_THRESHOLD = 5000
 # Per-root safety budget so a streamed Google Drive can't hang the scan
@@ -142,13 +150,20 @@ def scan_root(root, provider):
         if dirpath.count("/") - base_depth >= MAX_DEPTH:
             dirnames[:] = []
             continue
-        hit = MARKER_DIRS.intersection(dirnames)
+        hit = set(MARKER_DIRS.intersection(dirnames))
+        # An EMPTY .claude/worktrees still counts -- it is the SEED, not the
+        # storm. 0 files, so FILE_COUNT_THRESHOLD structurally cannot see it,
+        # and it fills with a ~6.5K-file checkout the next time a session ticks
+        # the worktree box. Missed for 8 days inside a live Google Drive root
+        # while this scan reported findings:[] every morning (MYC-4188).
+        if "worktrees" in dirnames and os.path.basename(dirpath.rstrip("/")) in WORKTREE_PARENTS:
+            hit.add("worktrees")
         for h in sorted(hit):
             findings.append({"path": os.path.join(dirpath, h), "provider": provider,
                              "reason": f"machinery dir '{h}' inside synced folder",
                              "severity": "high"})
         # don't descend into machinery we already flagged
-        dirnames[:] = [d for d in dirnames if d not in MARKER_DIRS]
+        dirnames[:] = [d for d in dirnames if d not in hit and d not in MARKER_DIRS]
         if len(filenames) >= FILE_COUNT_THRESHOLD:
             findings.append({"path": dirpath, "provider": provider,
                              "reason": f"{len(filenames)}+ files in one synced dir",
@@ -212,6 +227,27 @@ def self_test():
         print(f"[self-test] detects oversized synced dir:      {got_big}")
         print(f"[self-test] clean docs tree -> no findings:    {len(f2) == 0}")
         ok = got_marker and got_big and len(f2) == 0
+
+        # --- MYC-4188: the seed case. An EMPTY .claude/worktrees inside a
+        # synced root must fire, and the innocent look-alikes must stay silent.
+        # This leg exists because the previous control suite was built only from
+        # bugs already fixed, so it could not report a word missing from its own
+        # vocabulary -- the guard walked into the directory, looked straight at
+        # the hazard, and did not know the name.
+        seed = os.path.join(tmp, "seed_root")
+        os.makedirs(os.path.join(seed, ".claude", "worktrees"))   # empty -> MUST flag
+        os.makedirs(os.path.join(seed, ".obsidian"))              # legit sync -> silent
+        os.makedirs(os.path.join(seed, "worktrees"))              # bare name -> silent
+        open(os.path.join(seed, ".claude", "settings.local.json"), "w").close()
+        f3 = scan_root(seed, "TEST")
+        seed_paths = {x["path"] for x in f3}
+        got_seed = os.path.join(seed, ".claude", "worktrees") in seed_paths
+        quiet_obsidian = os.path.join(seed, ".obsidian") not in seed_paths
+        quiet_bare = os.path.join(seed, "worktrees") not in seed_paths
+        print(f"[self-test] detects EMPTY .claude/worktrees:   {got_seed}")
+        print(f"[self-test] .obsidian stays silent:            {quiet_obsidian}")
+        print(f"[self-test] bare worktrees/ stays silent:      {quiet_bare}")
+        ok = ok and got_seed and quiet_obsidian and quiet_bare
 
         # Metadata-only negative control: a FIFO has the same forever-blocking
         # behavior as a placeholder if opened for content. This scanner must

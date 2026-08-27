@@ -340,7 +340,7 @@ judgment.
 | SessionStart | `worktree-footprint-signal.py` | warns early on worktree count, orphan dirs, low free disk, and the dangerous vault-in-a-cloud-sync-folder combo |
 | SessionStart | `remediate-runaway-procs.py` | reaps orphaned runaway processes (the `yes`-pileup class), pure waste with zero recoverable output |
 | weekly cron | `scripts/worktree-prune.sh` | backstop: safe reclaim of orphan dirs + merged-branch cleanup + snapshot retention |
-| on-demand / weekly | `hooks/check-sync-folder-machinery.py` | audits **every** cloud-synced root (iCloud Drive, iCloud Desktop & Documents, OneDrive, Dropbox, Box, Google Drive) for machinery — `.git`, `node_modules`, build dirs, any 5k+-file dir — *anywhere on the machine*, not just the vault. Broader than the per-session `worktree-footprint-signal.py` (which only checks the vault's own location). Advisory, never blocks; `--self-test` proves it fires. |
+| on-demand / weekly | `hooks/check-sync-folder-machinery.py` | audits **every** cloud-synced root (iCloud Drive, iCloud Desktop & Documents, OneDrive, Dropbox, Box, Google Drive) for machinery — `.git`, `.claude/worktrees`, `node_modules`, `.codegraph`, `.smart-env`, build dirs, any 5k+-file dir — *anywhere on the machine*. An **empty** `.claude/worktrees` counts: it is 0 files, so the size leg cannot see it, and it fills with a full checkout the next time a session opens a worktree there, not just the vault. Broader than the per-session `worktree-footprint-signal.py` (which only checks the vault's own location). Advisory, never blocks; `--self-test` proves it fires. |
 
 **The non-destructive contract.** Auto-remediation fixes only reconstructible
 things: a scratch worktree directory (recreatable from its branch), an orphaned
