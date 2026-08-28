@@ -131,9 +131,13 @@ NON_MATCHER_EVENTS = ["SessionStart", "UserPromptSubmit", "Stop", "PreCompact", 
 # Matcher-gated events whose fan-out is budgeted PER TOOL.
 MATCHER_EVENTS = ["PreToolUse", "PostToolUse"]
 # Representative tools to compute matcher-gated fan-out for. mcp__ is a class.
+# WebFetch joined this list when the sdd-cache pair was wired. A budget key
+# for a tool that is NOT measured here governs nothing -- the gate simply
+# never asks about it -- so adding the key without adding the tool would be
+# a decorative budget, which is worse than an absent one.
 REPRESENTATIVE_TOOLS = ["Write", "Edit", "MultiEdit", "Bash", "Read", "Glob",
                         "Grep", "Task", "Agent", "Skill", "NotebookEdit",
-                        "mcp__server__tool"]
+                        "WebFetch", "mcp__server__tool"]
 
 # A wired command that runs a substrate hook/script via python3. Any path under
 # `skills/ai-brain-starter/.../<name>.py` is the substrate signature (matched at

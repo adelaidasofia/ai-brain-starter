@@ -20,7 +20,7 @@ treats the payload as authoritative.
 
 Bypass: SUBAGENT_RETURN_VALIDATE_BYPASS=1 in env.
 
-Wired into ~/.claude/settings.json hooks.PostToolUse with matcher "Agent".
+PostToolUse matcher: "Agent|Task" -- the harness names this tool either way.
 """
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ def main() -> None:
     except Exception:
         sys.exit(0)
 
-    if payload.get("tool_name") != "Agent":
+    if payload.get("tool_name") not in ("Agent", "Task"):
         sys.exit(0)
 
     tin = payload.get("tool_input", {}) or {}

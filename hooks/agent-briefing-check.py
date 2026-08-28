@@ -204,8 +204,8 @@ def main() -> None:
         sys.exit(0)
 
     warn(
-        "Agent briefing has likely-verbose patterns. The 2026-04-26 digest "
-        f"showed avg 19.4 turns/agent (target <8) for {subagent}. Issues:"
+        f"Agent briefing for {subagent} has likely-verbose patterns. A vague "
+        "or unbounded brief drives the subagent's turn count up. Issues:"
     )
     for i, msg in enumerate(issues, 1):
         warn(f"  [{i}] {msg}")

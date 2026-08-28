@@ -113,64 +113,229 @@ TEMPLATE_ONLY: Dict[str, str] = {
         "have. Run it by hand, or wire it locally, on a machine whose agent "
         "fleet is growing. Checkable: bash "
         "tests/integration/test_surface_unniced_launchagents.sh (MYC-4032).",
+    "sunday-review-nudge.py":
+        "budget: SessionStart is 19/19 and a once-weekly cosmetic nudge "
+        "cannot justify evicting a guard from a saturated cold-start event. "
+        "Substrate-clean otherwise (root via $SUNDAY_NUDGE_VAULT, no-ops "
+        "when unset). Checkable: python3 scripts/footprint-sla-check.py "
+        "--gate",
+    "surface-dependabot-backlog.py":
+        "two blockers. SessionStart 19/19; and OWNER is the unsubstituted "
+        "placeholder 'github-username' that no installer rewrites, so a "
+        "stranger's cold start would shell out to `gh repo list` against "
+        "whoever owns that handle, then up to 100 further `gh pr list` "
+        "calls. Checkable: git grep -n github-username",
+    "surface-stale-automation-failures.py":
+        "budget: SessionStart 19/19, and this is the heaviest candidate on "
+        "that event -- a launchctl subprocess per job plus several log "
+        "scans. Checkable: python3 scripts/footprint-sla-check.py --gate",
+    "list-wip-stashes-on-session-start.py":
+        "budget: its only useful event is SessionStart (the point is to "
+        "warn BEFORE fresh work starts) and that event is 19/19. Checkable: "
+        "python3 scripts/footprint-sla-check.py --gate",
+    "scan-prior-sessions-for-secrets.py":
+        "FORBIDDEN, not merely unbudgeted: "
+        "tests/integration/test_sessionstart_freeze_class_excluded.sh "
+        "asserts against the real hooks.json that this basename stays off "
+        "SessionStart, and ships a negative control proving the assertion "
+        "bites. Its corpus walk caused a machine freeze at load 36. "
+        "Checkable: bash "
+        "tests/integration/test_sessionstart_freeze_class_excluded.sh",
+    "health-auto-sync.py":
+        "deliberate opt-in with a regression test ENFORCING the dormancy: "
+        "services/health-mcp/tests/test_v05_hooks.py asserts this basename "
+        "is NOT in the SessionStart blob. It also does network I/O on cold "
+        "start, the freeze class. Not debt. Checkable: grep -n health-auto- "
+        "sync services/health-mcp/tests/test_v05_hooks.py",
+    "check-cron-paths.sh":
+        "budget: SessionStart 19/19, and it is POSIX-only (crontab -l), so "
+        "it would tax a Windows install's cold start forever for a check "
+        "that can never fire there. Checkable: python3 scripts/footprint- "
+        "sla-check.py --gate",
+    "pty-pressure-check.sh":
+        "budget: SessionStart 19/19, plus an lsof subprocess on the one "
+        "event the budgets file names as saturated, for a macOS-only, long- "
+        "session-only failure a fresh install does not have. Checkable: "
+        "python3 scripts/footprint-sla-check.py --gate",
+    "rotate-logs.sh":
+        "budget: SessionStart 19/19, and silent housekeeping is the wrong "
+        "thing to buy the last slot with -- it belongs on a periodic job. "
+        "Reads no hook payload at all (env/argv driven). Checkable: grep -c "
+        "stdin hooks/rotate-logs.sh",
+    "session-turn-counter.py":
+        "two blockers. Stop is 5/5 against a hard cap of 5; and its user- "
+        "facing message renders one operator's spend figure to every "
+        "stranger's console, so it is unshippable as written regardless of "
+        "budget. Checkable: grep -n 'last 30d burn' hooks/session-turn- "
+        "counter.py",
+    "create-dev-repo-checkpoint.py":
+        "budget: Stop 5/5. Note the trap -- wiring it to SubagentStop "
+        "instead would APPEAR to fit, but SubagentStop is absent from "
+        "NON_MATCHER_EVENTS in footprint-sla-check.py, so that wire evades "
+        "the SLA rather than satisfying it. Checkable: grep -n "
+        "NON_MATCHER_EVENTS scripts/footprint-sla-check.py",
+    "verify-discoverability-on-close.py":
+        "two blockers. Stop 5/5; and its only actuator, discoverability- "
+        "verifier.py, does not ship in this repo, so the exists() guard "
+        "returns an empty gap list and it can never block. Checkable: git "
+        "ls-files | grep -i discoverab",
+    "warn-uncommitted-builds-on-stop.py":
+        "budget: Stop 5/5, and a warn-only scan cannot displace a Stop- "
+        "event blocker. Checkable: python3 scripts/footprint-sla-check.py "
+        "--gate",
+    "worktree-archive-autoprep.py":
+        "budget: Stop 5/5, and it only fires when cwd is inside "
+        ".claude/worktrees/, a workflow this substrate advises against for "
+        "vaults -- a per-turn no-op on the reference install. Checkable: "
+        "grep -n worktrees hooks/worktree-archive-autoprep.py",
+    "reconcile-worktree-shared.py":
+        "its own docstring says SessionEnd alone leaves a race window and "
+        "it needs a Stop leg too; Stop is 5/5, so the wiring it calls "
+        "necessary cannot be installed. Independently, a default-on hook "
+        "that unlinks files and can auto-commit in a stranger's repo needs "
+        "a far higher bar than a warn hook. Checkable: grep -n unlink "
+        "hooks/reconcile-worktree-shared.py",
+    "block-branch-switch-with-untracked-build.py":
+        "budget: PreToolUse:Bash 9/9. A real data-loss guard, but its block "
+        "message also cites a rule doc that does not ship here. Checkable: "
+        "python3 scripts/footprint-sla-check.py --gate",
+    "check-py-import-precommit.py":
+        "budget: PreToolUse:Bash 9/9. Wire-ready the moment a Bash slot "
+        "frees -- unlike its budget-blocked siblings it already has a test "
+        "surface. Checkable: grep -n check-py-import-precommit "
+        "tests/integration/test_session_coordination_guards.sh",
+    "vault-command-nudges.py":
+        "budget: PreToolUse:Bash 9/9, and its two load-bearing rules are "
+        "already delivered by block-raw-vault-git.py and block-vault-git- "
+        "fullwalk.py, which activate through the phase-doc channel. "
+        "Checkable: grep -n block-raw-vault-git phases/phase-05-context- "
+        "layer.md",
+    "session-lock.py":
+        "documented opt-in, not debt: docs/HOOKS_INSTALL.md states it is "
+        "not auto-installed because it only matters with concurrent "
+        "sessions on one repo, and it needs a manual global-gitignore step "
+        "first. Its enforcement leg needs PreToolUse:Bash (9/9) anyway; "
+        "wiring only the SessionEnd heartbeat would install bookkeeping "
+        "without the gate, which is worse than dormant. Checkable: grep -n "
+        "session-lock docs/HOOKS_INSTALL.md",
+    "block-worktree-shared-edit.py":
+        "budget: all three of its matchers (Write, Edit, MultiEdit) are "
+        "12/12. On merit the strongest budget-blocked candidate -- "
+        "substrate-general, data-loss class, already tested, already "
+        "generalized off VAULT_ROOT. First in line if a Write slot is ever "
+        "freed. Checkable: python3 scripts/footprint-sla-check.py --gate",
+    "warn-recreate-deleted-file.py":
+        "budget: PreToolUse:Write 12/12, and it is warn-only, so it cannot "
+        "justify evicting a blocking guard. Checkable: python3 "
+        "scripts/footprint-sla-check.py --gate",
+    "auto-capture-public-ships.py":
+        "personal: PENDING_SUBPATH carries an unsubstituted template "
+        "placeholder on a mkdir(parents=True) WRITE path, so a stranger's "
+        "install silently creates a folder named after the placeholder; and "
+        "PUBLIC_REPOS is one operator's repo list, so the loop matches "
+        "nothing anywhere else. Checkable: grep -n PENDING_SUBPATH "
+        "hooks/auto-capture-public-ships.py",
+    "build-runbook-check.py":
+        "dependency does not ship: it gates on two private vault runbooks "
+        "absent from this repo, so its read-check is always False on a "
+        "stranger's install and it emits an unconditional false-positive "
+        "nag citing lessons from a document the user does not have. "
+        "Checkable: git ls-files | grep -ci 'Build Standards'",
+    "hookify-auto-commit.py":
+        "personal and unsafe by default: it creates commits in a stranger's "
+        "repo without consent on every hookify-file edit, and its merge "
+        "target is hardcoded to master with no main fallback, so on most "
+        "repos it silently no-ops or fast-forwards the wrong branch. "
+        "Checkable: grep -n master hooks/hookify-auto-commit.py",
+    "imessage-mcp-auto-export.py":
+        "dependency does not ship: its WRAPPER path is a maintainer-machine "
+        "binary this repo does not install, so the isfile/access guard "
+        "fails forever and wiring it buys a cold start per MCP call and "
+        "zero behavior. Checkable: git ls-files | grep -ci imessage-export- "
+        "vault",
+    "inject-best-of-best-on-consulting.py":
+        "personal: it injects one operator's house style (banning option- "
+        "menus and cost framing), not a guard over a model-general defect. "
+        "Its trigger vocabulary is ambiguous in the language it scans -- "
+        "scope, sprint, package, rate, tier and offer are ordinary "
+        "engineering words -- so it would fire on a large share of normal "
+        "prompts. Checkable: grep -n KEYWORD hooks/inject-best-of-best-on- "
+        "consulting.py",
+    "route-suggest.py":
+        "personal: it encodes one operator's model ladder and cost "
+        "preference, and names a specific third-party vendor as a route, "
+        "rather than guarding a bug class. Its classifier is broad enough "
+        "to fire on a large share of ordinary prompts, on the one event "
+        "that still has headroom. Checkable: grep -n minimax hooks/route- "
+        "suggest.py",
+    "whatsapp-mcp-auto-export.py":
+        "dependency does not ship: its WRAPPER path is absent from this "
+        "repo, so it takes the wrapper-missing branch forever. It also "
+        "writes a fixed /tmp state filename that collides across concurrent "
+        "sessions. Checkable: git ls-files | grep -ci export-vault",
+    "file-changed-settings.sh":
+        "superseded: pre-write-settings-lint.py (wired, PreToolUse) catches "
+        "a bad config BEFORE it lands, and lint-claude-settings.py (wired) "
+        "catches duplicate keys at any depth, which json.load tolerates. "
+        "This hook's after-the-fact validity check is strictly weaker than "
+        "both. Checkable: grep -n pre-write-settings-lint hooks.json",
+    "pre-compact.sh":
+        "superseded: pre-compact-context.py is already wired on PreCompact "
+        "and does the same job. PreCompact has free slots, so budget is NOT "
+        "the reason -- wiring both would double the injected-token cost on "
+        "one event for one behavior. It also emits additionalContext where "
+        "the repo documents systemMessage as PreCompact's channel. "
+        "Checkable: grep -n pre-compact-context hooks.json",
+    "check-sync-folder-machinery.py":
+        "not a hook: a standalone bounded-walk audit driven by sys.argv "
+        "that reads no stdin payload. It already reaches the fleet by two "
+        "other routes -- scripts/vault-daily-maintenance.sh runs it, and "
+        "surface-sync-guard-findings.py reads its snapshot from inside the "
+        "wired worktree-footprint-signal.py. Checkable: grep -n sync- "
+        "folder-machinery scripts/vault-daily-maintenance.sh",
+    "claude-scheduled-runner.sh":
+        "not a hook: an argv-driven launchd/cron entry point taking a task "
+        "name, reading no stdin payload, so it can never appear in "
+        "hooks.json. Misfiled in hooks/; belongs in scripts/. Checkable: "
+        "grep -c stdin hooks/claude-scheduled-runner.sh",
+    "cwd-changed.sh":
+        "emits no signal on any path: its only output statement appends to "
+        "a log file, so nothing reaches stdout or stderr. Its header also "
+        "promises to run vault-integrity checks on entering a wrapped vault "
+        "and the body contains no such check. Wiring it would ship a per- "
+        "cwd-change interpreter spawn for zero user-visible behavior. "
+        "Checkable: grep -n LOG hooks/cwd-changed.sh",
 }
 
-# --- A: pre-existing debt (ratchet, may only shrink) -------------------------
-# Shipped before this gate existed; each still needs a wire-or-retire decision
-# under MYC-1031 item 1. Listing them is the opposite of silence: they are
-# counted, printed on every run, and the count cannot grow. Resolve one by
-# either wiring it in hooks.json or deleting it, then remove it from this list
-# -- a stale entry is itself a failure.
-UNCLASSIFIED_BASELINE: Set[str] = {
-    "agent-briefing-check.py",
-    "auto-capture-public-ships.py",
-    "block-branch-switch-with-untracked-build.py",
-    "block-worktree-shared-edit.py",
-    "build-runbook-check.py",
-    "check-cron-paths.sh",
-    "check-py-import-precommit.py",
-    "check-rule-conflicts-on-write.py",
-    "check-sync-folder-machinery.py",
-    "check_fab_shim.py",
-    "claude-scheduled-runner.sh",
-    "create-dev-repo-checkpoint.py",
-    "cwd-changed.sh",
-    "detect-secrets-in-bash-output.py",
-    "file-changed-settings.sh",
-    "health-auto-sync.py",
-    "hookify-auto-commit.py",
-    "imessage-mcp-auto-export.py",
-    "inject-best-of-best-on-consulting.py",
-    "list-wip-stashes-on-session-start.py",
-    "nudge-checkpoint-after-pytest-pass.py",
-    "pre-compact.sh",
-    "pty-pressure-check.sh",
-    "reconcile-worktree-shared.py",
-    "rotate-logs.sh",
-    "route-suggest.py",
-    "scan-prior-sessions-for-secrets.py",
-    "scrub-session-jsonl-secrets.py",
-    "sdd-cache-post.sh",
-    "sdd-cache-pre.sh",
-    "session-lock.py",
-    "session-turn-counter.py",
-    "sunday-review-nudge.py",
-    "surface-dependabot-backlog.py",
-    "surface-stale-automation-failures.py",
-    "validate-calendar-timezone.py",
-    "validate-subagent-return.py",
-    "vault-command-nudges.py",
-    "verify-discoverability-on-close.py",
-    "warn-recreate-deleted-file.py",
-    "warn-uncommitted-builds-on-stop.py",
-    "whatsapp-mcp-auto-export.py",
-    "worktree-archive-autoprep.py",
-}
+# --- A: the drained baseline, now pinned ------------------------------------
+# EMPTY, and enforced empty. Every name that sat here was triaged to exactly one
+# outcome: wired in hooks.json, or a checkable reason in TEMPLATE_ONLY above.
+#
+# WHY A PINNED COUNT AND NOT JUST A LIST. The docstring above has always said
+# this baseline "may never GROW". Nothing enforced that. Measured on the parent
+# commit: appending one name to this set took it 43 -> 44 and the gate printed
+# "44 on the shrinking unclassified baseline" and exited 0. `len()` appeared
+# twice in this file, both times inside that print, never once in a comparison.
+# So the ratchet was a sentence, and any dormant hook could be waved through by
+# adding a line to it -- which made "unbaselined" a movable goalpost rather than
+# a predicate. That is the appendable-suppression-list class: amnesty must
+# ratchet DOWN, never up.
+#
+# TEMPLATE_ONLY is the escape valve, and deliberately a different shape: it
+# costs a WRITTEN, CHECKABLE reason that a reader can run, and a stale entry
+# there fails the gate. Amnesty with no reason attached has no home any more.
+UNCLASSIFIED_BASELINE: Set[str] = set()
+
+# The cap. Raising this is the explicit, reviewable act of re-opening amnesty --
+# which is the point: it can be done, but not silently, and not by one line in a
+# set literal.
+BASELINE_MAX = 0
 
 # --- B: pre-existing debt (ratchet, may only shrink) -------------------------
 # Wired at the skill path but absent from the installer's owned set, so the
 # installer cannot dedup / replace / retire them. Fix by adding the fingerprint
 # + basename to install-hooks-user-level.py, then removing the name here.
+# Pinned by UNOWNED_MAX below, same reason as BASELINE_MAX.
 UNOWNED_BASELINE: Set[str] = {
     "coach-auto-prescribe-on-journal.py",
     "post-tool-use-learnings.py",
@@ -182,6 +347,8 @@ UNOWNED_BASELINE: Set[str] = {
     "surface-stranded-session-artifacts.py",
     "validate-skill-frontmatter.py",
 }
+
+UNOWNED_MAX = 9
 
 
 PHASE_HOOK_RE = re.compile(r"hooks/([\w.-]+\.(?:py|sh))")
@@ -245,9 +412,21 @@ def iter_commands(doc: dict) -> Iterable[str]:
 
 def check_activation(hook_files: Iterable[str], wired: Set[str],
                      template_only: Dict[str, str],
-                     baseline: Set[str]) -> List[str]:
+                     baseline: Set[str],
+                     baseline_max: int | None = None) -> List[str]:
     """A: every shipped hook is wired, decided, or on the shrinking baseline."""
     problems: List[str] = []
+
+    # THE RATCHET, enforced. Without this the baseline is an amnesty list anyone
+    # can append to, and the gate reports OK while the debt grows.
+    if baseline_max is not None and len(baseline) > baseline_max:
+        problems.append(
+            f"A: UNCLASSIFIED_BASELINE has {len(baseline)} entries but "
+            f"BASELINE_MAX is {baseline_max}.\n    The baseline may only "
+            f"SHRINK. Wire the hook in hooks.json, or add it to TEMPLATE_ONLY "
+            f"with a checkable reason. Raising BASELINE_MAX re-opens amnesty "
+            f"and must be a deliberate, reviewed change."
+        )
     files = {b for b in hook_files if not is_test_file(b)}
 
     for basename in sorted(files):
@@ -283,9 +462,17 @@ def check_activation(hook_files: Iterable[str], wired: Set[str],
 
 
 def check_ownership(commands: Iterable[str], is_owned: Callable[[str], bool],
-                    baseline: Set[str]) -> List[str]:
+                    baseline: Set[str],
+                    baseline_max: int | None = None) -> List[str]:
     """B: every hook we wire is also owned by the installer."""
     problems: List[str] = []
+
+    if baseline_max is not None and len(baseline) > baseline_max:
+        problems.append(
+            f"B: UNOWNED_BASELINE has {len(baseline)} entries but UNOWNED_MAX "
+            f"is {baseline_max}.\n    Add the hook's fingerprint + basename to "
+            f"scripts/install-hooks-user-level.py instead of widening the list."
+        )
     offenders: Set[str] = set()
 
     for cmd in commands:
@@ -328,16 +515,18 @@ def run_gate(repo_root: Path) -> int:
 
     problems: List[str] = []
     problems += check_activation(hook_files, wired, TEMPLATE_ONLY,
-                                 UNCLASSIFIED_BASELINE)
+                                 UNCLASSIFIED_BASELINE, BASELINE_MAX)
     problems += check_ownership(iter_commands(template), installer.is_abs_owned,
-                                UNOWNED_BASELINE)
+                                UNOWNED_BASELINE, UNOWNED_MAX)
 
     examined = len([b for b in hook_files if not is_test_file(b)])
     activated = len([b for b in hook_files
                      if not is_test_file(b) and b in wired])
     print(f"hook activation: {activated}/{examined} shipped hooks wired; "
-          f"{len(UNCLASSIFIED_BASELINE)} on the shrinking unclassified "
-          f"baseline, {len(UNOWNED_BASELINE)} on the unowned baseline.")
+          f"{len(UNCLASSIFIED_BASELINE)}/{BASELINE_MAX} on the unclassified "
+          f"baseline, {len(UNOWNED_BASELINE)}/{UNOWNED_MAX} on the unowned "
+          f"baseline (both capped; a cap is raised deliberately, never by "
+          f"appending a name).")
 
     if problems:
         print()
@@ -391,6 +580,22 @@ def self_test() -> int:
     case("A: registered via a phase doc -> pass",
          bool(check_activation({"block-raw-vault-git.py"},
                                {"block-raw-vault-git.py"}, {}, set())), False)
+    # THE RATCHET CAP -- the assertion that did not exist before, and the exact
+    # shape that shipped: a dormant hook waved through by appending one name to
+    # the baseline. Measured on the parent commit as 43 -> 44, exit 0.
+    case("A: baseline OVER cap -> FAIL",
+         bool(check_activation({"g.py"}, set(), {}, {"g.py"}, 0)), True)
+    case("A: baseline AT cap -> pass",
+         bool(check_activation({"g.py"}, set(), {}, {"g.py"}, 1)), False)
+    # Back-compat: cap is opt-in, so a caller that passes no max keeps the old
+    # behaviour. If this ever flips to FAIL the default changed under someone.
+    case("A: no cap given -> cap not enforced",
+         bool(check_activation({"g.py"}, set(), {}, {"g.py"})), False)
+    # The drained state itself: an empty baseline against a zero cap must be
+    # quiet, or the shipped configuration reds its own gate.
+    case("A: empty baseline at cap 0 -> pass",
+         bool(check_activation({"g.py"}, {"g.py"}, {}, set(), 0)), False)
+
     # Ratchet.
     case("A: stale baseline entry (file gone) -> FAIL",
          bool(check_activation(set(), set(), {}, {"gone.py"})), True)
@@ -415,6 +620,10 @@ def self_test() -> int:
          bool(check_ownership([unowned_cmd], owned, {"g.py"})), False)
     case("B: stale baseline entry -> FAIL",
          bool(check_ownership([owned_cmd], owned, {"g.py"})), True)
+    case("B: unowned baseline OVER cap -> FAIL",
+         bool(check_ownership([unowned_cmd], owned, {"g.py"}, 0)), True)
+    case("B: unowned baseline AT cap -> pass",
+         bool(check_ownership([unowned_cmd], owned, {"g.py"}, 1)), False)
 
     failed = 0
     for label, got, want in results:

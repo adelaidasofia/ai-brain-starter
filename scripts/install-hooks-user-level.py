@@ -117,6 +117,15 @@ WINDOWS_HOOK_TIMEOUT_SECONDS = 60
 # the author registered in both lists below, believed it was active, and said
 # so in the commit message. Tracked as MYC-1031 (structural CI gate).
 ABS_FINGERPRINTS = [
+    "ai-brain-starter/hooks/agent-briefing-check.py",
+    "ai-brain-starter/hooks/validate-calendar-timezone.py",
+    "ai-brain-starter/hooks/sdd-cache-pre.sh",
+    "ai-brain-starter/hooks/nudge-checkpoint-after-pytest-pass.py",
+    "ai-brain-starter/hooks/detect-secrets-in-bash-output.py",
+    "ai-brain-starter/hooks/check-rule-conflicts-on-write.py",
+    "ai-brain-starter/hooks/validate-subagent-return.py",
+    "ai-brain-starter/hooks/sdd-cache-post.sh",
+    "ai-brain-starter/hooks/scrub-session-jsonl-secrets.py",
     "ai-brain-starter/hooks/detect-closing-signal.py",
     "ai-brain-starter/hooks/verify-session-close-cascade.py",
     "ai-brain-starter/hooks/lint-vault-frontmatter.py",
@@ -252,6 +261,15 @@ ABS_FINGERPRINTS = [
 # SCRIPT BASENAME, else a re-run duplicates every hook a hand-maintained config
 # wired at the user-hooks path. Only OUR script basenames are matched this way.
 ABS_OWNED_BASENAMES = {
+    "agent-briefing-check.py",
+    "validate-calendar-timezone.py",
+    "sdd-cache-pre.sh",
+    "nudge-checkpoint-after-pytest-pass.py",
+    "detect-secrets-in-bash-output.py",
+    "check-rule-conflicts-on-write.py",
+    "validate-subagent-return.py",
+    "sdd-cache-post.sh",
+    "scrub-session-jsonl-secrets.py",
     "detect-closing-signal.py", "verify-session-close-cascade.py",
     "lint-vault-frontmatter.py", "log-skill-usage.py",
     "first-week-checkin.py", "migrate-to-user-level.py",

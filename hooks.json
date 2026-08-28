@@ -219,6 +219,11 @@
           {
             "type": "command",
             "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/observe-tool-calls.py 2>/dev/null || echo '{\"continue\":true,\"suppressOutput\":true}'"
+          },
+          {
+            "type": "command",
+            "command": "if [ -f ~/.claude/skills/ai-brain-starter/hooks/validate-calendar-timezone.py ]; then [PYTHON] ~/.claude/skills/ai-brain-starter/hooks/validate-calendar-timezone.py; else echo '{\"continue\":true,\"suppressOutput\":true}'; fi",
+            "statusMessage": "Checking calendar event carries an explicit timezone..."
           }
         ]
       },
@@ -228,6 +233,26 @@
           {
             "type": "command",
             "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/warn-stale-dev-checkout.py 2>/dev/null || echo '{\"continue\":true,\"suppressOutput\":true}'"
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/agent-briefing-check.py || echo '{\"continue\":true,\"suppressOutput\":true}'",
+            "statusMessage": "Checking subagent brief for unbounded scope..."
+          }
+        ]
+      },
+      {
+        "matcher": "WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f ~/.claude/skills/ai-brain-starter/hooks/sdd-cache-pre.sh ]; then bash ~/.claude/skills/ai-brain-starter/hooks/sdd-cache-pre.sh; else echo '{\"continue\":true,\"suppressOutput\":true}'; fi",
+            "statusMessage": "Revalidating cached fetch against origin..."
           }
         ]
       }
@@ -354,6 +379,11 @@
             "type": "command",
             "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/remove-ended-worktree.py 2>/dev/null || echo '{\"continue\":true,\"suppressOutput\":true}'",
             "statusMessage": "Removing ended session worktree (committed + unsaved work preserved)..."
+          },
+          {
+            "type": "command",
+            "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/scrub-session-jsonl-secrets.py 2>/dev/null || echo '{\"continue\":true,\"suppressOutput\":true}'",
+            "statusMessage": "Scrubbing secrets from this session's transcript..."
           }
         ]
       }
@@ -375,6 +405,51 @@
           {
             "type": "command",
             "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/post-tool-use-learnings.py 2>/dev/null || echo '{\"continue\":true,\"suppressOutput\":true}'"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/nudge-checkpoint-after-pytest-pass.py 2>/dev/null || echo '{\"continue\":true,\"suppressOutput\":true}'",
+            "statusMessage": "Checking for uncommitted module-in-flight work..."
+          },
+          {
+            "type": "command",
+            "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/detect-secrets-in-bash-output.py 2>/dev/null || echo '{\"continue\":true,\"suppressOutput\":true}'",
+            "statusMessage": "Scanning tool output for exposed credentials..."
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/check-rule-conflicts-on-write.py 2>/dev/null || echo '{\"continue\":true,\"suppressOutput\":true}'",
+            "statusMessage": "Checking the new rule against existing rules..."
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[PYTHON] ~/.claude/skills/ai-brain-starter/hooks/validate-subagent-return.py || echo '{\"continue\":true,\"suppressOutput\":true}'",
+            "statusMessage": "Validating the subagent's return before it is aggregated..."
+          }
+        ]
+      },
+      {
+        "matcher": "WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/skills/ai-brain-starter/hooks/sdd-cache-post.sh 2>/dev/null || echo '{\"continue\":true,\"suppressOutput\":true}'",
+            "statusMessage": "Caching fetch response for revalidation..."
           }
         ]
       }
