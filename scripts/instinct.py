@@ -345,7 +345,13 @@ def _resolve_type(inst: il.Instinct, yaml_mod) -> str | None:
         return str(flat).strip().lower()
     try:
         full = yaml_mod.safe_load("\n".join(inst.fm_lines)) or {}
-    except Exception:
+    except yaml_mod.YAMLError:
+        # Malformed frontmatter -> type is unproven, not "safe". A bare
+        # `except Exception` here would ALSO swallow a genuine bug unrelated
+        # to YAML (e.g. inst.fm_lines holding something un-joinable), and
+        # silently treat a real defect as "exclude this instinct" instead of
+        # surfacing it -- narrowed to the one error class this call can
+        # actually raise for bad DATA, so anything else still fails loud.
         return None
     meta = full.get("metadata") if isinstance(full, dict) else None
     if isinstance(meta, dict) and meta.get("type"):
