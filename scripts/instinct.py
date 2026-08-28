@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -258,15 +259,118 @@ def cmd_report(args, memory_dir: Path) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# --shareable: type filter + disclosure scan for `export`
+# ---------------------------------------------------------------------------
+# Only these two types are PROVEN transferable. `reference`/`project` are
+# audit bookmarks (private companies, tickets, artifact URLs) that happen to
+# live in the same feedback_*/discovery_* files the Instinct Engine scans; an
+# instinct with no resolvable type at all is treated the same as an unsafe
+# one. This is an ALLOW-list, not a denylist of {reference, project}, on
+# purpose: a denylist only stops the types it already knows about, and a
+# brand-new type value tomorrow would sail straight through it unexamined.
+SHAREABLE_TYPES = frozenset({"feedback", "discovery"})
+
+# Deliberately conservative. A false positive here costs a re-run; a missed
+# one ships a disclosure. Two matching STYLES on purpose:
+#   substring     catches a compound brand token wherever it appears, even
+#                 inside a longer word (see the ondeplan note below).
+#   word_boundary catches a short bare name/word WITHOUT matching it as a
+#                 substring of something unrelated.
+# CRITICAL: `\bonde\b` does NOT match inside "ondeplan" (no word boundary
+# between "e" and "p"), which is exactly why the compound names
+# (ondeplan/onde-platform/onde_team) are their own substring entries instead
+# of being folded into the bare `\bonde\b` word-boundary pattern. Merging
+# them back into one word-boundary pattern reopens the exact leak this gate
+# exists to close. All patterns are matched case-insensitively -- these are
+# names and tickets, and there is no safe casing to assume away.
+DISCLOSURE_PATTERNS: dict[str, tuple[str, ...]] = {
+    "substring": (
+        "ondeplan", "onde-platform", "onde_team", "mycelium", "myceliumai", "diazroa",
+    ),
+    "word_boundary": (
+        r"\bonde\b", r"\badelaida\b", r"\bdiaz-roa\b", r"\bsergio\b", r"\bnelly\b",
+        r"\bcolombia\b", r"\bbogot[aá]\b", r"\baccenture\b", r"\bpanorama\b",
+    ),
+    "regex": (
+        r"MYC-\d+", r"OND-\d+", r"claude\.ai/code/artifact",
+    ),
+}
+
+
+def _compile_disclosure_patterns() -> list[tuple[str, re.Pattern]]:
+    compiled = []
+    for raw in DISCLOSURE_PATTERNS["substring"]:
+        compiled.append((raw, re.compile(re.escape(raw), re.IGNORECASE)))
+    for raw in DISCLOSURE_PATTERNS["word_boundary"] + DISCLOSURE_PATTERNS["regex"]:
+        compiled.append((raw, re.compile(raw, re.IGNORECASE)))
+    return compiled
+
+
+_DISCLOSURE_COMPILED = _compile_disclosure_patterns()
+
+
+def _disclosure_hits(filename: str, body: str) -> list[str]:
+    """Scan `filename` and `body` against every DISCLOSURE_PATTERNS entry.
+
+    Returns one human-readable line per hit (empty list = clean). Checks
+    ALL patterns against BOTH surfaces rather than stopping at the first hit,
+    so a single failing run can report everything that needs fixing at once.
+    """
+    hits: list[str] = []
+    for surface, text in (("filename", filename), ("body", body)):
+        for raw, rx in _DISCLOSURE_COMPILED:
+            m = rx.search(text)
+            if m:
+                hits.append(f"{surface} matched {raw!r} -> {m.group(0)!r}")
+    return hits
+
+
+def _resolve_type(inst: il.Instinct, yaml_mod) -> str | None:
+    """The instinct's declared `type`, checked in both schemas real memory
+    files use.
+
+    Some instincts carry a flat top-level `type:` (written by `import`'s
+    _write_inherited, and already read elsewhere via fm.get("type") for
+    confidence seeding). Others -- including ones written by Claude's own
+    project-memory tooling -- nest it under a `metadata:` mapping instead
+    (measured live: a real vault discovery_*.md carries `metadata.type:
+    project` despite its discovery_ filename, which is exactly the bookmark
+    this filter exists to keep out of a shareable pack). Returns None when
+    neither form is present; callers must treat that as UNKNOWN, never as
+    safe -- that is what makes the SHAREABLE_TYPES check below fail closed.
+    """
+    flat = inst.fm.get("type")
+    if flat:
+        return str(flat).strip().lower()
+    try:
+        full = yaml_mod.safe_load("\n".join(inst.fm_lines)) or {}
+    except yaml_mod.YAMLError:
+        # Malformed frontmatter -> type is unproven, not "safe". A bare
+        # `except Exception` here would ALSO swallow a genuine bug unrelated
+        # to YAML (e.g. inst.fm_lines holding something un-joinable), and
+        # silently treat a real defect as "exclude this instinct" instead of
+        # surfacing it -- narrowed to the one error class this call can
+        # actually raise for bad DATA, so anything else still fails loud.
+        return None
+    meta = full.get("metadata") if isinstance(full, dict) else None
+    if isinstance(meta, dict) and meta.get("type"):
+        return str(meta["type"]).strip().lower()
+    return None
+
+
 def cmd_export(args, memory_dir: Path) -> int:
     try:
         import yaml
     except ImportError:
         print("ERROR: export needs PyYAML (pip install pyyaml).", file=sys.stderr)
         return 2
+    shareable = getattr(args, "shareable", False)
     today = _today()
     proj = args.project or il.current_project_id()
     out = []
+    excluded_type = 0
+    disclosure_report: list[str] = []
     for path in il.iter_instinct_paths(memory_dir):
         inst = il.parse_instinct(path)
         fm = inst.fm
@@ -276,6 +380,15 @@ def cmd_export(args, memory_dir: Path) -> int:
         eff = round(_effective(inst, today), 3)
         if eff < args.min_confidence:
             continue
+        if shareable:
+            itype = _resolve_type(inst, yaml)
+            if itype not in SHAREABLE_TYPES:
+                excluded_type += 1
+                continue
+            hits = _disclosure_hits(path.name, inst.body)
+            if hits:
+                disclosure_report.extend(f"{path.name}: {h}" for h in hits)
+                continue
         out.append({
             "id": inst.slug,
             "trigger": fm.get("name", inst.slug),
@@ -285,13 +398,26 @@ def cmd_export(args, memory_dir: Path) -> int:
             "action": (fm.get("description", "") or "").strip(),
             "evidence": inst.body.strip()[:1200],
         })
+
+    if disclosure_report:
+        # FAIL CLOSED, always -- never write a partial pack with only the
+        # offender silently dropped (that is the SILENT-NO-OP bug class: a
+        # pack that "worked" while quietly shipping less coverage than it
+        # claimed, with nobody told which file was cut).
+        print("ERROR: --shareable disclosure scan failed. Refusing to write any "
+              "output. Fix or exclude the file(s) below and re-run:", file=sys.stderr)
+        for line in disclosure_report:
+            print(f"  {line}", file=sys.stderr)
+        return 1
+
     out.sort(key=lambda r: r["confidence"], reverse=True)
     doc = {"instinct_pack_version": 1, "exported_for_project": proj,
            "exported_count": len(out), "instincts": out}
     text = yaml.safe_dump(doc, sort_keys=False, allow_unicode=True, width=100)
+    suffix = f" (--shareable excluded {excluded_type} reference/project/untyped)" if shareable else ""
     if args.out:
         Path(args.out).expanduser().write_text(text, encoding="utf-8")
-        print(f"export: {len(out)} instinct(s) -> {args.out}")
+        print(f"export: {len(out)} instinct(s) -> {args.out}{suffix}")
     else:
         sys.stdout.write(text)
     return 0
@@ -501,6 +627,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("export", parents=[common])
     sp.add_argument("--project"); sp.add_argument("--min-confidence", type=float, default=0.0)
     sp.add_argument("--all", action="store_true"); sp.add_argument("--out")
+    sp.add_argument("--shareable", action="store_true",
+                    help="exclude reference/project-type (and untyped) instincts, and fail "
+                         "closed -- writing nothing -- if any surviving instinct's filename "
+                         "or body matches a private brand/name/ticket disclosure pattern")
 
     sp = sub.add_parser("import", parents=[common]); sp.add_argument("file"); sp.add_argument("--dry-run", action="store_true")
 
