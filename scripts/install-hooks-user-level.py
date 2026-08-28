@@ -119,12 +119,10 @@ WINDOWS_HOOK_TIMEOUT_SECONDS = 60
 ABS_FINGERPRINTS = [
     "ai-brain-starter/hooks/agent-briefing-check.py",
     "ai-brain-starter/hooks/validate-calendar-timezone.py",
-    "ai-brain-starter/hooks/sdd-cache-pre.sh",
     "ai-brain-starter/hooks/nudge-checkpoint-after-pytest-pass.py",
     "ai-brain-starter/hooks/detect-secrets-in-bash-output.py",
     "ai-brain-starter/hooks/check-rule-conflicts-on-write.py",
     "ai-brain-starter/hooks/validate-subagent-return.py",
-    "ai-brain-starter/hooks/sdd-cache-post.sh",
     "ai-brain-starter/hooks/scrub-session-jsonl-secrets.py",
     "ai-brain-starter/hooks/detect-closing-signal.py",
     "ai-brain-starter/hooks/verify-session-close-cascade.py",
@@ -263,12 +261,10 @@ ABS_FINGERPRINTS = [
 ABS_OWNED_BASENAMES = {
     "agent-briefing-check.py",
     "validate-calendar-timezone.py",
-    "sdd-cache-pre.sh",
     "nudge-checkpoint-after-pytest-pass.py",
     "detect-secrets-in-bash-output.py",
     "check-rule-conflicts-on-write.py",
     "validate-subagent-return.py",
-    "sdd-cache-post.sh",
     "scrub-session-jsonl-secrets.py",
     "detect-closing-signal.py", "verify-session-close-cascade.py",
     "lint-vault-frontmatter.py", "log-skill-usage.py",
@@ -324,6 +320,15 @@ ABS_OWNED_BASENAMES = {
     # committed basenames against owned deployed ones — every Windows user would
     # get a "1 background helper is not active" nag that no action can clear.
     "pre-write-settings-lint.py", "lint-claude-settings.py",
+    # sdd-cache-pre.sh / sdd-cache-post.sh are deliberately NOT owned, for the
+    # same reason as check-claude-code-version.sh above: they are bash-only, so
+    # platformize_template_for_windows skips wiring them on Windows. Owning a
+    # hook that Windows never wires is permanent false drift for
+    # hooks/surface-deployed-hooks-behind.py, which diffs owned committed
+    # basenames against owned deployed ones -- every Windows user would get a
+    # "2 background helpers are not active" nag that no action can clear.
+    # Measured: owning them failed test_windows_platformize T5 (drift surfacer
+    # FIRED on a healthy Windows install); unowning them restored 10/10.
     # Phase-05 hooks, moved to the installer route 2026-08-13 (see
     # HOME_HOOKS_INSTALLER_DEPLOYS). Owned for the same reason as the two
     # above: unowned means verify_paths_on_disk() never looks at them, and a

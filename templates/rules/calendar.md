@@ -25,7 +25,7 @@ Naive datetimes in calendar APIs are a known footgun. The MCP layer accepts them
 ## Enforcement
 
 Hook script: `~/.claude/hooks/validate-calendar-timezone.py`
-Registered in: `~/.claude/settings.json` as PreToolUse with matcher `mcp__google-workspace__cal_(create|update)_event`
+Registered in: `~/.claude/settings.json` as PreToolUse with matcher `mcp__.*`. The hook self-filters to the calendar create/update tools, so the broad matcher costs one cold start per MCP call and changes no behaviour. It is deliberate: the footprint gate probes `mcp__server__tool`, so a narrower matcher would be invisible to the SLA rather than cheaper.
 Action: blocks any call whose start/end is a datetime without TZ marker. Date-only strings (all-day events) are exempt.
 
 ## Default timezone
