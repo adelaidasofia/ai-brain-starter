@@ -39,6 +39,16 @@
       "event": "SessionStart",
       "hook": "check-claude-code-version.sh",
       "reason": "Bash-only, and the ONLY one of the four that is a deliberate documented choice: install-hooks-user-level.py keeps it out of ABS_OWNED_BASENAMES precisely because it is skipped on Windows, so hooks/surface-deployed-hooks-behind.py does not nag Windows users with drift no action can clear. Cost: Windows installs are never told the Claude Code CLI is behind, nor what changed in the releases they skipped. scripts/update-check.ps1 is NOT this hook's equivalent - it tracks the ai-brain-starter checkout, not the CLI."
+    },
+    {
+      "event": "PreToolUse",
+      "hook": "sdd-cache-pre.sh",
+      "reason": "Bash-only; platformize_template_for_windows drops it. What Windows users lose: the WebFetch revalidation cache. Every WebFetch refetches the full body instead of sending If-None-Match / If-Modified-Since and serving a 304 from disk, so repeated fetches of the same doc are slower and burn more bandwidth. Correctness is unaffected - the cache only ever serves content the origin confirmed unchanged, so its absence degrades speed, never accuracy. Removing the drop needs a PowerShell port of the pair (it is inseparable from sdd-cache-post.sh); the upstream is MIT (addyosmani/agent-skills) and shells out to jq + curl."
+    },
+    {
+      "event": "PostToolUse",
+      "hook": "sdd-cache-post.sh",
+      "reason": "Bash-only; the WRITE half of the sdd-cache pair, dropped on Windows for the same reason as sdd-cache-pre.sh. What Windows users lose: nothing is ever stored for revalidation, so even if the read half were ported alone it would find an empty cache forever. The two must be ported together or not at all."
     }
   ],
   "windows_only": []
