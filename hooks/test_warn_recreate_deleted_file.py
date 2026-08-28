@@ -3,7 +3,7 @@
 
 Self-contained: builds throwaway git repos in a temp dir, drives the hook via
 subprocess with realistic PreToolUse(Write) payloads, asserts on stdout JSON.
-Run: python3 warn-recreate-deleted-file.test.py   (exit 0 = all pass)
+Run: python3 hooks/test_warn_recreate_deleted_file.py   (exit 0 = all pass)
 """
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ def main() -> int:
         repo = tmp / "repo"
         _init_repo(repo)
         f = repo / "orphan.py"
-        f.write_text("print('hi')\n")
+        f.write_text("print('hi')\n", encoding="utf-8")
         _git(repo, "add", "orphan.py")
         _git(repo, "commit", "-q", "-m", "add orphan")
         f.unlink()
@@ -76,7 +76,7 @@ def main() -> int:
 
         # Case 3: editing/overwriting a file that currently EXISTS → MUST NOT fire.
         live = repo / "live.py"
-        live.write_text("v1\n")
+        live.write_text("v1\n", encoding="utf-8")
         _git(repo, "add", "live.py")
         _git(repo, "commit", "-q", "-m", "add live")
         cases.append(("overwrite live file silent", False, fired({

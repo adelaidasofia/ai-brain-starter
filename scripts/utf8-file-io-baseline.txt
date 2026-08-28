@@ -23,7 +23,7 @@
 #
 # <sha256-of-normalized-content> <tag> <repo-relative-path>
 
-# ---- SEV-A-write  (32 file(s)) ----
+# ---- SEV-A-write  (31 file(s)) ----
 b87ac14c241be51fb2427ac9a86ab8de4a5b161549f2ee0d445b6e9ca4f65550 SEV-A-write hooks/_lib/session_echo.test.py
 62adfe6bbcfecc12d8e6bbad292ab40215e9f15c8812ec91f53dfe42156e7886 SEV-A-write hooks/_lib/standing_report.test.py
 987aca2ae82229a42d29a8c89fed690e9de7e6fad4182dea564bc92557a81922 SEV-A-write hooks/auto-capture-public-ships.py
@@ -35,7 +35,6 @@ d293427274a02ef33d15ec50b17860aa305405adc9f372fde46a46454267becd SEV-A-write hoo
 28e5213af92f1d0e68a80ddd122d2793ac9db2e7d665f2270e5a08fdcbfb360f SEV-A-write hooks/test_live_session_reap.py
 79944fad14fe10762e356a505764960ab8c5ad8942656376a465dba19d5d7cd0 SEV-A-write hooks/test_relocation_orphan_reclaim.py
 295a88e709680eccae5cc81cb21b3f8fb872b6b8418a795b98f881748b3e3bb4 SEV-A-write hooks/test_scan_prior_sessions.py
-02c4531a12185a5a529f3e90e3f9dd820a47116ac9adeb956acd4ef1dc98f41e SEV-A-write hooks/warn-recreate-deleted-file.test.py
 b290d1f3ae5391676c6c8ad1761346ff64a367d69396f1e9b685dad40644b62a SEV-A-write hooks/warn-stale-dev-checkout.py
 dfba549e5cd609ddde59d63aac175d884d0224a6703265e0b04c1a0eac315b20 SEV-A-write hooks/whatsapp-mcp-auto-export.py
 376761410a0275fef52d6c4afd51e9026adb4362eff5ed88d0a2f42542969a00 SEV-A-write scripts/claude_performance_digest.py
