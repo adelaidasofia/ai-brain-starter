@@ -38,6 +38,17 @@
 # launchctl is macOS-only; CI runs ubuntu (CONTRIBUTING.md). A fake launchctl on
 # PATH makes cases 2-5 deterministic on any OS instead of skipping Linux CI.
 # Stdlib python3 + bash only. No network, no real launchd/git. Tmpdir on exit.
+#
+# THE HOOK READS HOST STATE THROUGH THREE CHANNELS, AND ALL THREE ARE PINNED
+# HERE. HOME (run_sandboxed) and launchctl (fake_launchctl) are the obvious two.
+# The third is the VAULT: main() resolves one and hands it to runners() and
+# receipts_reconcile_findings(), which read `<vault>/⚙️ Meta/...`. Nothing about
+# the HOME sandbox constrains that resolution — vault_root_for() walks up from
+# the payload's `cwd` and otherwise falls back to $VAULT_ROOT, an env var
+# routinely exported machine-wide. Left inherited, it aimed the hook at the
+# DEVELOPER'S OWN vault and the three "-> SILENT" cases below failed on that
+# operator's real receipts-reconcile findings — a red that says nothing about
+# team-broadcast. See newhome() and run_hook() for the pinning.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,7 +71,20 @@ assert_silent() { case "$OUT" in "") ok "$1" ;; *) bad "$1" "unexpected output (
 assert_has()    { case "$OUT" in *"$2"*) ok "$1" ;; *) bad "$1" "missing '$2' (out=${OUT:0:150})" ;; esac; }
 assert_lacks()  { case "$OUT" in *"$2"*) bad "$1" "unexpectedly present: '$2'" ;; *) ok "$1" ;; esac; }
 
-newhome() { local d; d="$(mktemp -d)"; TMPDIRS+=("$d"); mkdir -p "$d/.claude"; echo "$d"; }
+# newhome -- a sandboxed HOME *and* a pristine vault at <home>/vault.
+#
+# The vault carries an EMPTY "⚙️ Meta": the shape of a real vault, none of its
+# state. Shape, because a Meta-suffixed folder is the signature vault_root_for()
+# resolves on, and having one at the start of the walk-up terminates it there on
+# any machine — including one whose $TMPDIR happens to live inside a real vault.
+# Empty, because every vault-rooted path the hook reads (the two runner logs,
+# "Receipts Reconcile") then resolves under this directory and is absent, which
+# is what a healthy vault looks like to this hook.
+newhome() {
+  local d; d="$(mktemp -d)"; TMPDIRS+=("$d")
+  mkdir -p "$d/.claude" "$d/vault/⚙️ Meta"
+  echo "$d"
+}
 
 install_broadcast_script() {  # <home> -- make auto-send.py exist
   mkdir -p "$1/.claude/skills/team-broadcast/scripts"
@@ -107,9 +131,22 @@ EOF
 
 # run_hook HOME -- invokes the real SessionStart entrypoint, sandboxed fakebin
 # first on PATH so it beats any real launchctl on the runner.
+#
+# `cwd` on the payload AND $VAULT_ROOT are BOTH pinned to the sandbox vault,
+# because vault_root_for() consults them in that order: a vault detected from
+# `cwd` wins outright, and $VAULT_ROOT is the fallback when none is. Pinning
+# either alone leaves the other channel live on some machine.
+#
+# -u SURFACE_STALE_AUTOMATION_BYPASS: an operator with that exported would make
+# the hook return before it looks at anything, turning every "-> FIRES" case
+# into a false red and — worse — every "-> SILENT" case into a pass that proves
+# nothing. Removing a bypass here only ever lets the hook do MORE work.
 run_hook() {
-  local home="$1"
-  OUT="$(PATH="$home/fakebin:$PATH" run_sandboxed "$home" python3 "$HOOK" <<<'{}' 2>/dev/null)"
+  local home="$1" payload
+  payload="$(python3 -c 'import json,sys; print(json.dumps({"cwd": sys.argv[1]}))' "$home/vault")"
+  OUT="$(PATH="$home/fakebin:$PATH" run_sandboxed "$home" \
+    env -u SURFACE_STALE_AUTOMATION_BYPASS "VAULT_ROOT=$home/vault" \
+    python3 "$HOOK" <<<"$payload" 2>/dev/null)"
 }
 
 echo "=== precondition ==="
