@@ -9,6 +9,7 @@ temp dir — never touches real memory.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import tempfile
 from datetime import date, timedelta
@@ -182,6 +183,126 @@ def test_export_import_roundtrip():
         check(after > before, f"higher-confidence import updates local ({before}->{after})")
 
 
+def _write_shareable_fixture(md: Path, name: str, frontmatter: str, body: str) -> Path:
+    p = md / name
+    p.write_text(f"---\n{frontmatter}\n---\n{body}\n", encoding="utf-8")
+    return p
+
+
+def test_shareable_export():
+    """`export --shareable`: type-filters reference/project/untyped instincts
+    and fails closed (writes NOTHING) if any surviving instinct's filename or
+    body matches a private disclosure pattern.
+
+    The reference-type fixture uses the NESTED `metadata: {type: ...}`
+    frontmatter shape -- the shape real memory files actually carry (measured
+    live against a real vault file: discovery_308_redirect_kills_failopen_
+    reporters.md has `metadata.type: project` despite its discovery_
+    filename -- an audit bookmark, not a transferable instinct). The other
+    fixtures use the flat top-level `type:` shape (already read elsewhere via
+    fm.get("type")), so both schemas this repo's memory files use get
+    exercised.
+    """
+    print("test_shareable_export")
+    try:
+        import yaml
+    except ImportError:
+        print("  [SKIP] test_shareable_export: PyYAML not installed (optional dep)")
+        return
+
+    # Sanity anchor for the regression Control 3 exists to catch: a bare
+    # word-boundary pattern for "onde" must NOT match inside "ondeplan" (no
+    # boundary between "e" and "p"). If this ever stopped being true the
+    # substring/word-boundary split in DISCLOSURE_PATTERNS would be pointless.
+    check(re.search(r"\bonde\b", "ondeplan", re.IGNORECASE) is None,
+          r"sanity: \bonde\b does NOT match inside 'ondeplan' (why substring is separate)")
+
+    # --- CONTROL 1 + POSITIVE CONTROL: one pack, nothing disclosed ----------
+    with tempfile.TemporaryDirectory() as t:
+        md = Path(t) / "Agent Memory"
+        md.mkdir(parents=True)
+        _write_shareable_fixture(
+            md, "discovery_audit_bookmark_reference_type.md",
+            "name: audit bookmark example\n"
+            "description: private audit note, not a transferable instinct\n"
+            "metadata:\n"
+            "  node_type: memory\n"
+            "  confidence: 0.9\n"
+            "  observations: 1\n"
+            "  last_seen: 2026-01-01\n"
+            "  project_id: global\n"
+            "  type: reference",
+            "Bookmark only. Nothing transferable here.")
+        _write_shareable_fixture(
+            md, "feedback_clean_shareable_example.md",
+            "name: a perfectly ordinary rule\n"
+            "description: ship the fix, verify the tests, done\n"
+            "type: feedback\nstrength: explicit",
+            "A perfectly ordinary instinct body with no private tokens.")
+        cli.cmd_backfill(Args(no_backup=True), md)
+        out = Path(t) / "pack.yaml"
+        rc = cli.cmd_export(Args(project=None, min_confidence=0.0, all=True,
+                                 out=str(out), shareable=True), md)
+        check(rc == 0, f"clean fixture + one reference-typed fixture exports OK (rc={rc})")
+        check(out.is_file(), "--shareable wrote the output file when nothing disclosed")
+        doc = yaml.safe_load(out.read_text()) if out.is_file() else {}
+        ids = {r["id"] for r in doc.get("instincts", [])}
+        check("discovery_audit_bookmark_reference_type" not in ids,
+              "CONTROL 1: metadata.type: reference EXCLUDED by --shareable")
+        check("feedback_clean_shareable_example" in ids,
+              "POSITIVE CONTROL: clean type: feedback fixture with no tokens EXPORTED")
+
+    # --- CONTROL 2: a brand token in the body fails the WHOLE export --------
+    with tempfile.TemporaryDirectory() as t:
+        md = Path(t) / "Agent Memory"
+        md.mkdir(parents=True)
+        leak = _write_shareable_fixture(
+            md, "feedback_accidental_brand_leak.md",
+            "name: some rule\ndescription: a normal feedback rule\n"
+            "type: feedback\nstrength: explicit",
+            "Ship the mycelium runtime pattern here.")
+        cli.cmd_backfill(Args(no_backup=True), md)
+        out = Path(t) / "pack.yaml"
+        import io
+        from contextlib import redirect_stderr
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            rc = cli.cmd_export(Args(project=None, min_confidence=0.0, all=True,
+                                     out=str(out), shareable=True), md)
+        err = buf.getvalue()
+        check(rc != 0, f"CONTROL 2: brand token 'mycelium' in body -> non-zero exit (rc={rc})")
+        check(not out.exists(), "CONTROL 2: no output file written on disclosure hit")
+        check(leak.name in err, "CONTROL 2: stderr names the offending file")
+        check("mycelium" in err.lower(), "CONTROL 2: stderr names the matched token")
+
+    # --- CONTROL 3: the ondeplan regression ----------------------------------
+    # A fixture whose BODY says "ondeplan" must be caught by the substring
+    # bucket even though the word-boundary \bonde\b pattern would miss it.
+    with tempfile.TemporaryDirectory() as t:
+        md = Path(t) / "Agent Memory"
+        md.mkdir(parents=True)
+        leak = _write_shareable_fixture(
+            md, "feedback_regression_case_body_token.md",
+            "name: some rule\ndescription: a normal feedback rule\n"
+            "type: feedback\nstrength: explicit",
+            "Verified this against the ondeplan e2e baselines.")
+        cli.cmd_backfill(Args(no_backup=True), md)
+        out = Path(t) / "pack.yaml"
+        import io
+        from contextlib import redirect_stderr
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            rc = cli.cmd_export(Args(project=None, min_confidence=0.0, all=True,
+                                     out=str(out), shareable=True), md)
+        err = buf.getvalue()
+        check(rc != 0, f"CONTROL 3: 'ondeplan' in body -> non-zero exit (rc={rc})")
+        check(not out.exists(), "CONTROL 3: no output file written on disclosure hit")
+        check(leak.name in err, "CONTROL 3: stderr names the offending file")
+        check("ondeplan" in err.lower(),
+              "CONTROL 3: substring pattern catches 'ondeplan' in the body "
+              "(the case a word-boundary-only pattern would silently miss)")
+
+
 def test_evolve():
     print("test_evolve")
     with tempfile.TemporaryDirectory() as t:
@@ -280,6 +401,7 @@ def main():
     test_surgical_frontmatter()
     test_backfill_and_correct()
     test_export_import_roundtrip()
+    test_shareable_export()
     test_evolve()
     test_project_scoping()
     test_reseed()
