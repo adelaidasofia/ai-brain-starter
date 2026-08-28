@@ -51,7 +51,7 @@ Modes:
   --self-test                  positive + negative control; exit 0 iff all pass
 
 Bug class: ALWAYS-LOADED-TEXT-UNMEASURED (sibling of ARTIFACT-WITHOUT-MEASUREMENT).
-MEMORY.md remediation is owned by check-memory-md-cap.py — this hook measures
+MEMORY.md remediation is owned by session-start-context.py — this hook measures
 MEMORY.md for the total but does NOT duplicate its cliff warning.
 """
 from __future__ import annotations
@@ -107,7 +107,7 @@ def noop():
 # --- file discovery (generic, name-free) --------------------------------------
 def _memory_md(cwd: str) -> Path | None:
     """Locate MEMORY.md the way Claude Code loads it (sanitized-cwd projects dir),
-    falling back to the in-vault canonical path. Mirrors check-memory-md-cap.py."""
+    falling back to the in-vault canonical path. Mirrors session-start-context.py."""
     cands: list[Path] = []
     env = os.environ.get("CLAUDE_PROJECT_DIR")
     if env:
@@ -168,7 +168,7 @@ def discover(cwd: str) -> list[dict]:
 
     `kind` drives reporting; `ceiling` is the hard per-file warn threshold (None =
     baseline-drift only); `defer_to` names a guard that owns this file's hard
-    warning so we don't double-nag (MEMORY.md -> check-memory-md-cap.py)."""
+    warning so we don't double-nag (MEMORY.md -> session-start-context.py)."""
     items: list[dict] = []
 
     def add(path: Path | None, kind: str, ceiling: int | None, defer_to: str | None = None):
@@ -183,7 +183,7 @@ def discover(cwd: str) -> list[dict]:
 
     add(HOME / ".claude" / "CLAUDE.md", GLOBAL_KIND, GLOBAL_CEILING)
     add(_project_file(cwd, "CLAUDE.md"), "project CLAUDE.md", None)
-    add(_memory_md(cwd), "MEMORY.md", None, defer_to="check-memory-md-cap.py")
+    add(_memory_md(cwd), "MEMORY.md", None, defer_to="session-start-context.py")
     add(_project_file(cwd, "CONTEXT.md"), "project CONTEXT.md", None)
     # de-dup by resolved path (global and project CLAUDE.md can coincide)
     seen: set[str] = set()
