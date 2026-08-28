@@ -6,7 +6,7 @@ already saw on this turn, so this layer is detection + loud-alert + audit
 log. Two outputs:
 
 1. STDERR alert to the agent in the SAME turn ("secrets just landed in
-   your transcript, rotation playbook at <path>"). The agent sees this as
+   your transcript, rotate now"). The agent sees this as
    additional context and can react.
 
 2. Append-only audit log at ~/.claude/hooks/secret-detection-log.jsonl.
@@ -44,7 +44,6 @@ sys.path.insert(0, str(HOOK_DIR))
 from _lib.secret_patterns import filter_tool_output_false_positives, scan  # noqa: E402
 
 LOG_PATH = HOOK_DIR / "secret-detection-log.jsonl"
-PLAYBOOK_HINT = "⚙️ Meta/Handoffs/20260513-eng6-secrets-rotation-playbook.md"
 
 # Per the user's stated preference (2026-05-23): grep'ing her own .env.local /
 # admin.env / .zsh_secrets to verify what's stored is intentional, not a leak.
@@ -148,7 +147,7 @@ def main() -> int:
             {"pattern": n, "count": c, "reason": r} for n, c, r in fp_suppressed
         ]
     try:
-        with LOG_PATH.open("a") as f:
+        with LOG_PATH.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, separators=(",", ":")) + "\n")
     except OSError:
         # Log write failure shouldn't break the hook; alert path runs anyway.
@@ -171,9 +170,9 @@ def main() -> int:
     alert = (
         f"⚠️ SECRETS DETECTED in Bash tool output ({summary}). "
         f"This session's transcript now contains plaintext secrets. "
-        f"Rotate per {PLAYBOOK_HINT}, then run "
-        f"`bash \"⚙️ Meta/scripts/scrub-session-jsonl-20260513-secrets.sh\"` "
-        f"(or the equivalent for any new pattern). "
+        f"Rotate the exposed credential(s) at their provider now, then "
+        f"scrub them from this session's transcript before it is shared, "
+        f"synced, or archived. "
         f"Audit log: {LOG_PATH}."
     )
     print(

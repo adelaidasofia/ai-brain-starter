@@ -62,14 +62,16 @@
       "Agent": 3,
       "Skill": 3,
       "NotebookEdit": 3,
-      "mcp__server__tool": 3
+      "mcp__server__tool": 3,
+      "WebFetch": 3
     },
     "PostToolUse": {
       "Write": 3,
       "Edit": 3,
       "Bash": 3,
       "Task": 3,
-      "Agent": 3
+      "Agent": 3,
+      "WebFetch": 3
     }
   },
   "default_on_daemons": 0,

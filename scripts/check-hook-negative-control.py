@@ -132,6 +132,14 @@ NO_TEST_BASELINE: Set[str] = {
     "whatsapp-mcp-auto-export",
 }
 
+# THE RATCHET, enforced. The docstring above says this list "may never GROW".
+# Nothing enforced that: measured on the parent commit, appending one name
+# took it 28 -> 29 and the gate still printed "shrinking baseline" and exited
+# 0. Same appendable-suppression-list hole as scripts/check-hook-activation.py
+# (fixed there in the same change). Amnesty ratchets DOWN, never up; raising
+# this number is a deliberate, reviewable act.
+NO_TEST_MAX = 28
+
 
 def is_test_surface(path: Path) -> bool:
     if path.suffix not in TEST_SUFFIXES:
@@ -180,12 +188,20 @@ def shipped_hooks() -> List[str]:
     )
 
 
-def evaluate(hooks: List[str], blob: str, baseline: Set[str]) -> tuple[List[str], List[str]]:
+def evaluate(hooks: List[str], blob: str, baseline: Set[str],
+             baseline_max: int | None = None) -> tuple[List[str], List[str]]:
     """Pure core: (problems, hooks-with-no-test-surface). Kept free of I/O so
     --selftest can drive it with synthetic inputs instead of writing probe files
     into hooks/, which would race a concurrent run and leave debris on crash."""
     missing = [h for h in hooks if h not in blob]
     problems: List[str] = []
+
+    if baseline_max is not None and len(baseline) > baseline_max:
+        problems.append(
+            f"NO_TEST_BASELINE has {len(baseline)} entries but NO_TEST_MAX is "
+            f"{baseline_max}.\n    The baseline may only SHRINK. Add a test "
+            f"surface for the hook instead of widening the amnesty list."
+        )
 
     for name in missing:
         if name in baseline:
@@ -240,6 +256,18 @@ def selftest() -> int:
     # And the inverse: a clean tree must NOT fail, or the check cries wolf and
     # gets ignored -- the failure mode that makes a guard worthless.
     problems, _ = evaluate(["already-tested"], "already-tested is named here", set())
+
+    # THE RATCHET CAP -- the shape that shipped: a hook with no test surface
+    # waved through by appending one name. Measured on the parent commit as
+    # 28 -> 29, exit 0, output still reading "shrinking".
+    over, _ = evaluate(["g"], "", {"g"}, 0)
+    print(f"{'PASS' if over else 'FAIL'}  baseline OVER cap -> FAIL")
+    at, _ = evaluate(["g"], "", {"g"}, 1)
+    print(f"{'PASS' if not at else 'FAIL'}  baseline AT cap -> pass")
+    nocap, _ = evaluate(["g"], "", {"g"})
+    print(f"{'PASS' if not nocap else 'FAIL'}  no cap given -> cap not enforced")
+    assert over and not at and not nocap, "ratchet-cap control did not bite"
+
     if problems:
         print("  FAIL: a fully-tested tree went RED (false alarm)")
         failures += 1
@@ -290,7 +318,7 @@ def main() -> int:
         print(f"FATAL: found 0 shipped hooks under {HOOK_DIR}.", file=sys.stderr)
         return 2
 
-    problems, missing = evaluate(hooks, blob, NO_TEST_BASELINE)
+    problems, missing = evaluate(hooks, blob, NO_TEST_BASELINE, NO_TEST_MAX)
 
     if args.list:
         for h in missing:

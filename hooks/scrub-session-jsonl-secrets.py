@@ -77,7 +77,7 @@ def _scrub_file(path: Path) -> tuple[int, list[tuple[str, int]]]:
 
     Idempotent: if no patterns match, file is not rewritten.
     """
-    original = path.read_text()
+    original = path.read_text(encoding="utf-8")
     hits_pre = scan(original)
     if not hits_pre:
         return 0, []
@@ -95,13 +95,13 @@ def _scrub_file(path: Path) -> tuple[int, list[tuple[str, int]]]:
     backup = path.with_suffix(path.suffix + f".bak.{int(time.time())}")
     shutil.copy2(path, backup)
 
-    path.write_text(out_text)
+    path.write_text(out_text, encoding="utf-8")
     return abs(len(out_text) - len(original)), hits_pre
 
 
 def _log(summary: dict) -> None:
     try:
-        with SCRUB_LOG.open("a") as f:
+        with SCRUB_LOG.open("a", encoding="utf-8") as f:
             f.write(json.dumps(summary, separators=(",", ":")) + "\n")
     except OSError:
         pass
@@ -142,10 +142,17 @@ def main() -> int:
     )
     if hits_pre:
         names = ", ".join(f"{n}×{c}" for n, c in hits_pre)
-        print(
-            f"[scrub-session-jsonl-secrets] redacted {names} from {jsonl.name}",
-            file=sys.stderr,
-        )
+        # stdout, not stderr: the SessionEnd wiring idiom discards stderr
+        # (`2>/dev/null || echo '{...}'`), so a stderr-only notice that we
+        # rewrote the user's transcript would never reach the user.
+        print(json.dumps({
+            "continue": True,
+            "systemMessage": (
+                f"[scrub-session-jsonl-secrets] redacted {names} from "
+                f"{jsonl.name}"
+            ),
+        }))
+        return 0
 
     print(json.dumps({"continue": True, "suppressOutput": True}))
     return 0

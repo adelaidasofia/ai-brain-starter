@@ -60,10 +60,17 @@ PLATFORM_ONLY = POSIX_ONLY | WINDOWS_ONLY
 # Hooks the SMOKE pass cannot run, each with a reason. Never a bare skip: a
 # silent exemption list is how the original hole stayed open. The static
 # platform-import gate still covers everything here.
-SMOKE_EXEMPT = {
-    "warn-recreate-deleted-file.test.py":
-        "not a hook -- a stray test file living in hooks/ (misnamed; it is not "
-        "test_*.py so no runner picks it up either)",
+SMOKE_EXEMPT: dict[str, str] = {
+    # Empty. Its one entry named warn-recreate-deleted-file.test.py and its
+    # reason was "misnamed; it is not test_*.py so no runner picks it up" --
+    # both facts stopped being true when that file was renamed to
+    # test_warn_recreate_deleted_file.py and registered in scripts/ci.sh. The
+    # discover() glob already skips a test_ prefix, so the exemption was dead.
+    #
+    # It sat here stale and SILENT, because nothing checked. That is the same
+    # shape this file's own comment warns about one line up -- a silent
+    # exemption list is how the original hole stayed open -- so the staleness
+    # assertion below now enforces what the comment only asserted.
 }
 
 # Minimal but structurally plausible payloads, keyed by the event a hook is
@@ -87,6 +94,18 @@ DEFAULT_EVENT = "PreToolUse"
 def hook_files() -> list[Path]:
     return sorted(p for p in HOOKS.glob("*.py")
                   if not p.name.startswith(("test_", "_")))
+
+
+def stale_exemptions(discovered) -> list:
+    """Names on SMOKE_EXEMPT that discover() no longer returns.
+
+    An exemption outlives the file it excuses -- a rename or a delete leaves it
+    behind, still granting a pardon nothing needs, and the next reader trusts
+    its reason. Measured 2026-08-28: renaming the one entry's file left it here
+    with a reason that had become false, and every gate stayed green.
+    """
+    names = {p.name for p in discovered}
+    return sorted(n for n in SMOKE_EXEMPT if n not in names)
 
 
 def event_for() -> dict[str, str]:
@@ -218,6 +237,13 @@ def main() -> int:
               "a planted import-time crasher produced no traceback -- the "
               "smoke gate's crash predicate does not detect the class it "
               "exists for")
+
+    # The exemption ratchet. A pardon must not outlive the file it pardons.
+    for name in stale_exemptions(hooks):
+        failures.append(
+            "SMOKE_EXEMPT names '%s', which discover() no longer returns. "
+            "The file was renamed or deleted; remove the entry. A pardon that "
+            "outlives its file still reads as a reason to the next person." % name)
 
     if failures:
         print("FAILED - hook smoke:")
