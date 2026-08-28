@@ -18,7 +18,8 @@ HOOK = str(Path(__file__).with_name("warn-recreate-deleted-file.py"))
 
 def _git(repo: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(repo), *args], check=True,
-                   capture_output=True, text=True)
+                   capture_output=True, text=True,
+                   encoding="utf-8", errors="replace")
 
 
 def _init_repo(repo: Path) -> None:
@@ -31,7 +32,8 @@ def _init_repo(repo: Path) -> None:
 
 def run(payload: dict) -> dict:
     r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload),
-                       capture_output=True, text=True)
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
     assert r.returncode == 0, f"hook must always exit 0, got {r.returncode}: {r.stderr}"
     out = r.stdout.strip()
     return json.loads(out) if out else {}
