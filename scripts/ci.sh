@@ -1198,6 +1198,12 @@ PY_DIRECT=(
   # resolve a zone at module level.
   hooks/test_auto_capture_ships_tz.py
   hooks/test_git_inflight_op_guard.py
+  # Shipped as warn-recreate-deleted-file.test.py -- a real 7/7 suite that NO
+  # runner collected, because this list is explicit and the repo convention is
+  # test_*.py. It passed the whole time and proved nothing, which is the same
+  # can-it-be-proven gap check-hook-negative-control.py exists for, one layer
+  # out. Renamed and registered (MYC-3550 item 3).
+  hooks/test_warn_recreate_deleted_file.py
   # The generalisation of the line above (MYC-3537). Two hooks were dead on
   # arrival for their whole lives because NOTHING executed them: the tz
   # placeholder, and `import fcntl` at module scope in the SessionStart secret
