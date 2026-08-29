@@ -40,8 +40,10 @@ THE RULE
     self-test necessarily contain example deferral strings, and scanning
     itself would be a guaranteed false positive on every run.
 
-Exit 0 when every named target resolves. Exit 1, listing each
-`path:line -> missing target`, when any dangling deferral is found.
+Three states, distinguished by exit code (a failed read is not an empty
+answer): 0 = every named target resolves; 1 = a dangling deferral was found,
+listing each `path:line -> missing target`; 2 = the scan was INCOMPLETE
+because a file could not be read, so no clean verdict is claimable.
 
 Usage:
   check-defer-targets.py               # scan tracked hooks/ + scripts/ files
@@ -57,6 +59,16 @@ from typing import Dict, List, Optional, Set, Tuple
 
 REPO = Path(__file__).resolve().parent.parent
 SELF_PATH = Path(__file__).resolve()
+
+# This walker rglobs a tree and reads what it finds, so it MUST go through the
+# shared cloud-safe reader rather than Path.read_text: a vault under Google
+# Drive / iCloud / OneDrive can hand back an offline placeholder, a FIFO, or a
+# mount that stalls forever. Enforced by tests/integration/test_cloud_safe_file_walkers.sh.
+sys.path.insert(0, str(REPO / "hooks"))
+from _lib.safe_read import safe_read_text  # noqa: E402
+
+READ_TIMEOUT_S = 5.0
+READ_MAX_BYTES = 4_000_000
 
 SCAN_DIRS = ("hooks", "scripts")
 
@@ -142,9 +154,9 @@ def dangling(hits_by_path: Dict[str, List[Tuple[int, str]]],
     return out
 
 
-def scan_repo() -> Tuple[List[str], Dict[str, List[Tuple[int, str]]], Set[str]]:
+def scan_repo() -> Tuple[List[str], Dict[str, List[Tuple[int, str]]], Set[str], List[str]]:
     """I/O shell: real discovery + real file reads, feeding the pure functions
-    above. Returns (scanned paths, hits by path, resolvable basename set)."""
+    above. Returns (scanned paths, hits by path, resolvable basenames, skipped)."""
     all_paths = tracked_files()
     if all_paths is None:
         all_paths = walk_files()
@@ -152,24 +164,40 @@ def scan_repo() -> Tuple[List[str], Dict[str, List[Tuple[int, str]]], Set[str]]:
 
     scanned = scan_targets(all_paths)
     hits_by_path: Dict[str, List[Tuple[int, str]]] = {}
+    skipped: List[str] = []
     for rel in scanned:
-        fp = REPO / rel
-        try:
-            text = fp.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        result = safe_read_text(
+            REPO / rel, timeout=READ_TIMEOUT_S, max_bytes=READ_MAX_BYTES,
+            encoding="utf-8", errors="replace",
+        )
+        if not result.ok:
+            # A file we could not read is a file we did not scan. Silence here
+            # would print "all resolve" over an unread file that may hold a
+            # dangling deferral -- a false clean. Surface it and fail.
+            detail = (" (" + result.detail + ")") if result.detail else ""
+            skipped.append("%s [%s]%s" % (rel, result.status, detail))
             continue
-        hits = find_deferrals(text)
+        hits = find_deferrals(result.text or "")
         if hits:
             hits_by_path[rel] = hits
-    return scanned, hits_by_path, known
+    return scanned, hits_by_path, known, skipped
 
 
 def main() -> int:
     if "--self-test" in sys.argv:
         return self_test()
 
-    scanned, hits_by_path, known = scan_repo()
+    scanned, hits_by_path, known, skipped = scan_repo()
     problems = dangling(hits_by_path, known)
+
+    if skipped:
+        # INCOMPLETE is not CLEAN. Exit 2 so a partial scan can never be read
+        # as a pass (a scanner states how much of its input it actually read).
+        print(f"::error::incomplete scan - {len(skipped)} file(s) could not be "
+              f"read, so this run cannot claim every deferral resolves:")
+        for s in skipped:
+            print(f"  {s}")
+        return 2
 
     if problems:
         print(f"::error::dangling defer target(s) ({len(problems)}) - named as "
@@ -267,12 +295,50 @@ def self_test() -> int:
     if self_rel in real_scanned:
         fails.append("SELF-EXCLUSION: the checker's own path was included in a real scan")
 
+    # 6. INCOMPLETE-SCAN control: the skipped-read path must actually trigger
+    #    on something unreadable, and must NOT trigger on an ordinary file.
+    #    Without this, the exit-2 branch is a sentence nobody has ever run.
+    #    Uses a FIFO (never a regular file) in a temp dir -- the repo is untouched.
+    import os
+    import tempfile
+    tmpd = tempfile.mkdtemp(prefix="defer-targets-selftest-")
+    try:
+        fifo = os.path.join(tmpd, "a-fifo")
+        os.mkfifo(fifo)
+        fifo_result = safe_read_text(fifo, timeout=1.0, max_bytes=READ_MAX_BYTES,
+                                     encoding="utf-8", errors="replace")
+        if fifo_result.ok:
+            fails.append("INCOMPLETE-CONTROL: a FIFO read as ok - the skipped-read "
+                         "branch would never fire and a partial scan would print clean")
+        plain = os.path.join(tmpd, "plain.py")
+        with open(plain, "w", encoding="utf-8") as fh:
+            fh.write('defer_to="whatever.py"\n')
+        plain_result = safe_read_text(plain, timeout=1.0, max_bytes=READ_MAX_BYTES,
+                                      encoding="utf-8", errors="replace")
+        if not plain_result.ok or "whatever.py" not in (plain_result.text or ""):
+            fails.append("INCOMPLETE-CONTROL: an ordinary file did not read back "
+                         "cleanly - every scan would report INCOMPLETE")
+    except (OSError, NotImplementedError) as exc:
+        fails.append(f"INCOMPLETE-CONTROL: could not run ({exc.__class__.__name__})")
+    finally:
+        for root, _dirs, files in os.walk(tmpd, topdown=False):
+            for f in files:
+                try:
+                    os.unlink(os.path.join(root, f))
+                except OSError:
+                    pass
+        try:
+            os.rmdir(tmpd)
+        except OSError:
+            pass
+
     if fails:
         for f in fails:
             print(f"FAIL: {f}")
         return 1
     print("OK - check-defer-targets self-test passed "
-          "(positive + negative + negative-control-check + detector + self-exclusion)")
+          "(positive + negative + negative-control-check + detector + "
+          "self-exclusion + incomplete-scan)")
     return 0
 
 
