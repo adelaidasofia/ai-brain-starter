@@ -72,20 +72,134 @@ def _norm(text):
     return text.replace("\\", "/")
 
 
+# A heredoc opener: `<< EOF`, `<<'EOF'`, `<<"EOF"`, `<<-EOF`. `<<<` herestrings
+# do not match (the third '<' is not a delimiter character).
+_HEREDOC_RE = re.compile(r"""<<-?[ \t]*(["']?)([A-Za-z_][A-Za-z0-9_]*)\1""")
+
+
+def _strip_heredocs(cmd):
+    """The command LINES, with every heredoc BODY removed.
+
+    The gate must open on what a command WRITES, not on whatever text it happens
+    to carry. A journal entry's body, a test fixture, or a doc that quotes a
+    journal path all travel inside a heredoc, and matching those opened the gate
+    on writes that are not journal saves at all — measured 2026-08-28, when a
+    write to `tests/integration/*.sh` was blocked because the test's own PROSE
+    contained `Journals/August 2026/`. A guard that fires on unrelated writes
+    teaches the operator to reach for the bypass, and a bypass reached for by
+    habit is how the real block gets waved through.
+
+    Only the GATE narrows. `creationDate:` is still read from the full text,
+    because that lives in the body by construction."""
+    if "<<" not in cmd:
+        return cmd
+    lines = cmd.split("\n")
+    kept, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        kept.append(line)
+        i += 1
+        for m in _HEREDOC_RE.finditer(line):
+            delim = m.group(2)
+            while i < len(lines) and lines[i].strip() != delim:
+                i += 1
+            i += 1  # drop the closing delimiter line too
+    return "\n".join(kept)
+
+
 def _vault_root(text):
-    """Absolute dir before the '<optional emoji >Journals/<Month YYYY>/' segment.
+    r"""Absolute dir before the '<optional emoji >Journals/<Month YYYY>/' segment,
+    or None when the text carries no ABSOLUTE journal path.
+
     Anchored on the absolute path (starts at a real '/', or a `C:/` drive root),
     so a leading shell prefix like `cat > '/vault/.../x.md'` is NOT captured into
-    the root (that was the 2026-07-07 Bash-path fail-open bug). Quotes bound the
-    segment on the Bash path.
+    the root (that was the 2026-07-07 Bash-path fail-open bug).
 
     The drive-letter alternative is guarded by `(?<![A-Za-z])` so a URL like
-    `http://host/Journals/May 2026/` cannot have its `p:` read as a drive."""
+    `http://host/Journals/May 2026/` cannot have its `p:` read as a drive.
+
+    The optional emoji-prefix segment is bounded on quotes and shell operators,
+    not only on '/' and newline. Journals are written as
+
+        cd "<vault>" && cat > "<emoji> Journals/August 2026/e.md" << 'EOF'
+
+    where the journal path is RELATIVE. With the old `(?:[^/\n]*\s)?` the segment
+    swallowed `vault" && cat > "<emoji> ` and matched `Journals/` anyway, so group 1
+    stopped at the vault's PARENT and the marker was looked up one directory too
+    high (measured 2026-08-28 on a real save). Returning None here is the honest
+    answer for a relative path; `_resolve_root` recovers the real root from the
+    `cd` target or the session cwd."""
     m = re.search(
-        r"((?:(?<![A-Za-z])[A-Za-z]:)?/[^\n\"']*?)/(?:[^/\n]*\s)?"
+        r"((?:(?<![A-Za-z])[A-Za-z]:)?/[^\n\"']*?)/(?:[^/\n\"'&|;<>]*\s)?"
         r"Journals/[A-Z][a-zA-Z]+\s+\d{4}/",
         text)
     return m.group(1) if m else None
+
+
+# `cd <path>`, honouring quotes and skipping option flags (`cd -P /x`). Bounded on
+# shell operators so it cannot run past the end of the cd word.
+_CD_RE = re.compile(
+    r"""(?:^|[;&|]|\s)cd\s+(?:-[A-Za-z]+\s+)*("[^"\n]+"|'[^'\n]+'|[^\s;&|<>]+)""")
+
+# The journal folder as it is spelled in this command -- `Journals` or, in the
+# default vault layout, `<emoji> Journals`. The class cannot cross '/', so an
+# absolute path yields the last segment only.
+_JOURNAL_DIR_RE = re.compile(r"([^/\n\"']*Journals)/[A-Z][a-zA-Z]+\s+\d{4}/")
+
+
+def _is_vault(root, journal_dirname=None):
+    """True only if `root` actually holds a journals folder.
+
+    This is the check that would have caught the 2026-08-28 bug on its own: the
+    stitched root `/Users/me` holds no Journals dir, so it can never be mistaken
+    for a vault no matter what the regex hands over. A candidate that fails here
+    is discarded rather than trusted, so a wrong guess degrades to fail-open
+    instead of to a confident answer about the wrong directory.
+
+    Metadata-only (isdir/listdir), never a file read, so it stays safe on a
+    cloud-mirrored vault per the cloud-safe-filesystem-walk rule."""
+    try:
+        if not os.path.isdir(root):
+            return False
+        if journal_dirname and os.path.isdir(os.path.join(root, journal_dirname)):
+            return True
+        if os.path.isdir(os.path.join(root, "Journals")):
+            return True
+        for entry in os.listdir(root):
+            if entry.endswith(" Journals") and os.path.isdir(os.path.join(root, entry)):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _resolve_root(text, cwd):
+    """The vault root for this write, or None when it cannot be determined.
+
+    Ordered by how directly each candidate names the write target:
+      1. an ABSOLUTE journal path in the text  (strongest -- names the vault itself)
+      2. the `cd` target in the same command   (the relative-path write form)
+      3. the session cwd from the hook payload (relative path, no cd)
+
+    Every candidate must pass `_is_vault`, so a wrong one is dropped instead of
+    being used. None means fail-open, which is the correct posture for ambiguity:
+    this guard blocks only on a POSITIVE determination that the marker is absent."""
+    jm = _JOURNAL_DIR_RE.search(text)
+    journal_dirname = jm.group(1) if jm else None
+
+    candidates = []
+    root = _vault_root(text)
+    if root:
+        candidates.append(root)
+    for cm in _CD_RE.finditer(text):
+        candidates.append(cm.group(1).strip("\"'"))
+    if cwd:
+        candidates.append(cwd)
+
+    for cand in candidates:
+        if cand and _is_vault(cand, journal_dirname):
+            return cand
+    return None
 
 
 def _marker_exists(vault, date_iso):
@@ -117,17 +231,23 @@ elif tool_name == "Bash":
        re.search(r"(^|\s)JOURNAL_CONTEXT_BYPASS=1(\s|$)", cmd):
         sys.exit(0)
     cmd_norm = _norm(cmd)
-    if JOURNAL_PATH_RE.search(cmd_norm) and any(
-        m in cmd for m in ("cat >", "cat >>", "tee ", "tee -", " > ", " >> ", "mv ", "cp ", "rsync ")
+    # Gate on the command LINES only (heredoc bodies stripped), so a write whose
+    # PAYLOAD merely mentions a journal path is not mistaken for a journal save.
+    gate_text = _strip_heredocs(cmd_norm)
+    if JOURNAL_PATH_RE.search(gate_text) and any(
+        m in gate_text for m in ("cat >", "cat >>", "tee ", "tee -", " > ", " >> ", "mv ", "cp ", "rsync ")
     ):
         # Normalized, because _vault_root() below must see forward slashes too.
+        # The FULL text (body included) is the blob: the gate narrows, the
+        # creationDate scan must not.
         blob = cmd_norm
 
 if not blob:
     sys.exit(0)  # not a journal save
 
-vault = _vault_root(blob)
-if not vault or not os.path.isdir(vault):
+vault = _resolve_root(_strip_heredocs(blob) if tool_name == "Bash" else blob,
+                      payload.get("cwd") or None)
+if not vault:
     sys.exit(0)  # can't locate vault -> fail open
 
 dm = CREATION_DATE_RE.search(blob)
