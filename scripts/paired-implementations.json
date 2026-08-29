@@ -1,0 +1,81 @@
+{
+  "_README": [
+    "Declared paired implementations. Enforced by scripts/check-paired-implementations.py.",
+    "",
+    "THE BUG CLASS. One behavioural contract, implemented by hand more than once,",
+    "with nothing pairing the copies. Someone fixes one; the others stay wrong; every",
+    "check on both sides stays green, because each implementation is internally",
+    "consistent and no gate has ever seen the other one. Measured three times on",
+    "machinery-sidecar/1 alone (MYC-1088, MYC-4035, and the interpreter probe).",
+    "",
+    "WHY A LIST AND NOT CODEGEN. Codegen needs a canonical machine-readable source to",
+    "generate FROM (MYC-136 has an OpenAPI document, MYC-306 a Rust enum). Here the",
+    "shared artefact is a manifest schema and the thing that drifts is not in it:",
+    "'refuse $HOME with no force escape' is a BEHAVIOUR, and nothing emits it. Neither",
+    "side is canonical. So the lever is not generation, it is visibility.",
+    "",
+    "WHY ONE LIST AND NOT N HEADER COMMENTS. Header comments were tried first and",
+    "half-worked: they exist, but only ever pointing from the NEWER implementation to",
+    "the older one. relocate-machinery-sidecar.ps1 names the .sh; the .sh names",
+    "nothing. vault_safety.rs names the .sh; the .sh names nothing. So the person",
+    "editing the ORIGINAL - the one who starts every drift - is the one file with no",
+    "pointer. Worse, a comment enumerating its siblings is itself a copy of this list,",
+    "and rots the same way. Each paired file therefore carries ONE durable pointer to",
+    "THIS file, and this file holds the enumeration.",
+    "",
+    "WHAT 'local' MEANS. true = the path lives in this repo and the gate can verify it.",
+    "false = it lives in another repo (usually a private paid one) which public CI",
+    "cannot and should not check out. Remote entries are DECLARATIONS, not assertions:",
+    "the gate never claims anything about their current state, because a cross-repo",
+    "state claim written here goes stale the moment the other repo merges. ADR-0007",
+    "carried exactly such a sentence and it was false 29 minutes after it was written.",
+    "",
+    "ADDING A CONTRACT. Say what the behaviour IS, not which files are involved. If",
+    "you cannot state the contract in one sentence without naming a file, it is",
+    "probably not one contract."
+  ],
+
+  "contracts": [
+    {
+      "id": "machinery-sidecar/1",
+      "what": "Relocate a vault's churning git machinery (.git, worktrees, caches) out of a cloud-synced tree into a local sidecar, leaving only static pointers behind, and roll that back on request.",
+      "drift_history": ["MYC-1088", "MYC-4035", "MYC-4036"],
+      "implementations": [
+        { "path": "scripts/relocate-machinery-sidecar.sh", "role": "POSIX CLI", "local": true },
+        { "path": "scripts/relocate-machinery-sidecar.ps1", "role": "Windows CLI", "local": true },
+        { "repo": "mycelium-studio", "path": "apps/desktop/src-tauri/src/commands/vault_safety.rs", "role": "desktop native (no bash/python dependency)", "local": false }
+      ]
+    },
+    {
+      "id": "vault-target-refusal",
+      "what": "Refuse to treat $HOME, a filesystem root, a strict ancestor of $HOME, or a system directory as a vault, with no force escape on the home refusal; compare resolved paths, not strings.",
+      "drift_history": ["MYC-4028", "MYC-4035"],
+      "governing_decision": "docs/adr/0007-no-force-escape-on-the-home-refusal.md",
+      "implementations": [
+        { "path": "scripts/check-vault-target.py", "role": "substrate source of truth; the .sh/.ps1 CLIs shell out to it", "local": true },
+        { "repo": "mycelium-studio", "path": "apps/desktop/src-tauri/src/commands/vault_safety.rs", "symbol": "vault_target_guard", "role": "independent Rust reimplementation", "local": false }
+      ]
+    },
+    {
+      "id": "cloud-sync-detection",
+      "what": "Decide whether a given path resolves inside a consumer cloud-sync root (iCloud, OneDrive, Dropbox, Google Drive incl. Mirror roots, Box).",
+      "drift_history": ["MYC-1088"],
+      "implementations": [
+        { "path": "scripts/check-cloud-sync.py", "role": "substrate source of truth", "local": true },
+        { "repo": "mycelium-studio", "path": "apps/desktop/src-tauri/src/commands/vault_safety.rs", "symbol": "detect_cloud_sync", "role": "independent Rust reimplementation", "local": false }
+      ]
+    },
+    {
+      "id": "egress-disclosure",
+      "what": "Every network egress from a Mycelium surface is disclosed to the user AND stoppable by the user; a consent toggle must suppress the send, not merely hide the UI.",
+      "drift_history": [],
+      "governing_decision": "docs/adr/0003-no-runtime-email-gate.md",
+      "implementations": [
+        { "path": "SECURITY.md", "section": "5", "role": "substrate policy statement", "local": true },
+        { "repo": "mycelium-studio", "path": "apps/desktop/src/lib/posthog.ts", "role": "desktop capture path", "local": false },
+        { "repo": "mycelium-studio", "path": "apps/desktop/src/lib/posthog.opt-out.test.ts", "role": "negative control proving the toggle suppresses egress", "local": false },
+        { "repo": "mycelium-studio", "path": "apps/desktop/src/components/settings/privacy-panel.tsx", "role": "the disclosure surface itself", "local": false }
+      ]
+    }
+  ]
+}
