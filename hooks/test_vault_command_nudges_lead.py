@@ -116,6 +116,15 @@ try:
     check(True,  "07. lowercase assignment prefix", "foo=bar git push", VAULT)
     check(True,  "08. subshell `(git push)`", "(git push)", VAULT)
     check(True,  "09. stacked wrapper + assignment", "sudo env A=1 git push", VAULT)
+    # 09a/09b were LOST when _LEAD first replaced the previous rm-only prefix:
+    # a wrapper could no longer carry its own flag+value, and a brace group --
+    # which runs in the CURRENT shell, unlike a subshell -- stopped being seen
+    # at all. tests/integration/test_rm_rf_vault_target.sh caught both on the
+    # rm rule; they are pinned here for the git rules too.
+    check(True,  "09a. wrapper carrying its own flag+value",
+          "sudo -u root git push", VAULT)
+    check(True,  "09b. brace group is not a free pass",
+          "{ git push; }", VAULT)
 
     print("--- cwd resolution: a wrong guess used to point off the vault ---")
     check(True,  "10. `$VAR` cd, never expanded before",
@@ -136,6 +145,10 @@ try:
           f'FOO=bar rm -rf "{VAULT}"', TMP)
     check(True,  "17. absolute path to rm",
           f'/bin/rm -rf "{VAULT}"', TMP)
+    check(True,  "17a. wrapper flag+value on rm (sudo -u root rm)",
+          f'sudo -u root rm -rf "{VAULT}"', TMP)
+    check(True,  "17b. brace group around rm",
+          f'{{ rm -rf "{VAULT}"; }}', TMP)
     check(True,  "18. vault ROOT, plain          [kept from previous rev]",
           f'rm -rf "{VAULT}"', TMP)
     check(True,  "19. top-level folder, absolute [kept]",

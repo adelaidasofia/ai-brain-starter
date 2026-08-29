@@ -354,7 +354,23 @@ def _cwd_candidates(segs, base: str):
 # that did not.
 _ASSIGN_TOK = r'[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|\'[^\']*\'|\S*)'
 _WRAPPER_TOK = r'(?:env|command|exec|builtin|nohup|sudo|time)'
-_LEAD = r'\s*(?:(?:' + _ASSIGN_TOK + r'|' + _WRAPPER_TOK + r')\s+)*(?:\S*/)?'
+# A brace group opens a command without being a subshell: `{ rm -rf <vault>; }`
+# runs in the CURRENT shell. The splitter separates on `(` and `)` but not on
+# `{`, so a brace group arrives as a segment that literally starts with `{ `,
+# and the verb sits behind it. `(` is accepted here too for the spellings the
+# splitter cannot reach. Both require trailing whitespace, which is exactly when
+# a shell treats `{` as the reserved word rather than as brace expansion or the
+# `{` of `${VAR}`.
+_GROUP_OPEN = r'(?:[({]\s+)*'
+# A wrapper may carry its OWN options, including a flag whose value is a
+# SEPARATE argument (`sudo -u root rm`). Bounded at three tokens and reachable
+# only AFTER a literal wrapper word, so this cannot degrade into "any command
+# containing the verb" — `git commit -m "rm -rf x"` never enters this branch,
+# which matters because the operands of a false match would then be resolved
+# against a vault cwd.
+_LEAD = (r'\s*' + _GROUP_OPEN +
+         r'(?:' + _ASSIGN_TOK + r'\s+|' + _WRAPPER_TOK + r'\s+(?:\S+\s+){0,3})*'
+         r'(?:\S*/)?')
 
 # ---------------------------------------------------------------------------
 # rm -rf targeting (target-scoped)
