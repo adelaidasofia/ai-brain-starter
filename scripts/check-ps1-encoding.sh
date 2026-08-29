@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# exit-contract: ENFORCING
+
 #
 # scripts/check-ps1-encoding.sh - *.ps1 byte hygiene for Windows PowerShell 5.1.
 #

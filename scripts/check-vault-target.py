@@ -47,6 +47,8 @@ absolute: no legitimate setup makes a home directory an AI-brain vault, and a
 --force on it is the one an agent reaches for at 2am. The other two are
 heuristics and callers may honour --force on them, loudly.
 """
+# exit-contract: ENFORCING
+
 from __future__ import annotations
 
 import os

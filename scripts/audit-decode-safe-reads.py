@@ -49,6 +49,8 @@ Modes:
 
 Stdlib only.
 """
+# exit-contract: ENFORCING
+
 
 from __future__ import annotations
 

@@ -25,6 +25,9 @@ Mutation safety: every file that gets a managed-field write keeps a one-time
 <file>.bak-instinct snapshot of its pre-engine state. Runs are idempotent — a
 second identical run writes nothing.
 """
+# exit-contract: NOT-A-CHECKER -- a mutation CLI for backfill, reinforce,
+#   decay, export and import
+
 
 from __future__ import annotations
 

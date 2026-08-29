@@ -61,6 +61,8 @@ Usage:
   check-defer-targets.py               # scan tracked hooks/ + scripts/ files
   check-defer-targets.py --self-test   # positive + negative control
 """
+# exit-contract: ENFORCING
+
 from __future__ import annotations
 
 import re

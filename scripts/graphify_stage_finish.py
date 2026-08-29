@@ -22,6 +22,9 @@ Usage:
 If graphify is installed via pipx, use the pipx python interpreter.
 For multi-vault setups, pass --vault-root to target a specific vault.
 """
+# exit-contract: ADVISORY -- a pipeline stage whose verification note is
+#   advisory to the operator running the graphify stages by hand
+
 import argparse
 import hashlib
 import json

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# exit-contract: ENFORCING
+
 #
 # scripts/ci.sh - the canonical, locally-runnable unit/type gate for
 # ai-brain-starter. ONE command, shared by two callers so they can never drift:
@@ -1085,6 +1087,16 @@ echo "==> (e2) hook block-protocol: $PY scripts/check-hook-block-protocol.py"
 # before this existed: MYC-1017, MYC-1031, and MYC-782 / #371.
 # The ARTIFACT-WITHOUT-ACTIVATION half of the family whose WIRED-BUT-NEUTERED half
 # is (e2) and whose wired-but-never-deployed half is (e4). Pure stdlib.
+# scripts/check-exit-contract.py fails a tracked non-test CLI under scripts/
+# that carries no exit-contract marker, an ENFORCING file with no non-zero exit
+# token, or an ADVISORY/NOT-A-CHECKER file whose reason is too short to be a
+# reason. Ships with a capped baseline of the not-yet-declared tail, which may
+# only shrink. Self-test first: a gate whose controls stopped biting would pass
+# this repo silently.
+echo "==> (e10) exit contract: $PY scripts/check-exit-contract.py"
+"$PY" scripts/check-exit-contract.py --self-test >/dev/null
+"$PY" scripts/check-exit-contract.py
+
 echo "==> (e2b) hook activation: $PY scripts/check-hook-activation.py"
 "$PY" scripts/check-hook-activation.py --selftest >/dev/null
 "$PY" scripts/check-hook-activation.py

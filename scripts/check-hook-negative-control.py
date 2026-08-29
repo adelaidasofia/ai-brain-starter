@@ -76,6 +76,8 @@ without a test surface.
 
 ASCII-only output on purpose -- see scripts/check-utf8-stdout.py.
 """
+# exit-contract: ENFORCING
+
 
 from __future__ import annotations
 

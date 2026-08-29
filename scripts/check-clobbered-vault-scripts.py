@@ -30,6 +30,8 @@ Usage:
   python3 check-clobbered-vault-scripts.py --vault /path/to/vault
   python3 check-clobbered-vault-scripts.py --vault ... --surface   # always exit 0
 """
+# exit-contract: ENFORCING
+
 from __future__ import annotations
 
 import argparse

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# exit-contract: ADVISORY -- a session-start rule parses the STATUS token out
+#   of stdout; a non-zero on the ordinary you-have-updates path would read as
+#   a failure
+
 #
 # update-check.sh — daily drift detector for the ai-brain-starter setup
 #

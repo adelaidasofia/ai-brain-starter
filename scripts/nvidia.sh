@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# exit-contract: NOT-A-CHECKER -- shells an OpenAI-compatible NVIDIA
+#   completion request
+
 # nvidia.sh — Route grunt-work text to NVIDIA build (build.nvidia.com)
 #
 # Free credits on developer accounts; OpenAI-compatible.

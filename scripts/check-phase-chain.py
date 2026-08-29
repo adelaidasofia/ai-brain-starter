@@ -52,6 +52,8 @@ Pure stdlib. Usage:
     python3 scripts/check-phase-chain.py
     python3 scripts/check-phase-chain.py --phases-dir /path/to/phases
 """
+# exit-contract: ENFORCING
+
 
 from __future__ import annotations
 

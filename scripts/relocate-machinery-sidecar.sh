@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# exit-contract: NOT-A-CHECKER -- relocates machinery out of a sync folder;
+#   its guards are preconditions
+
 # relocate-machinery-sidecar.sh — make a vault SAFE to keep inside iCloud / a
 # cloud-sync folder by moving every churning machinery dir OUT of the synced
 # tree into a local sidecar, leaving only tiny static pointers/symlinks behind.

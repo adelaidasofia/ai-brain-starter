@@ -74,6 +74,8 @@ Provenance: MYC-3879. Sibling gate: scripts/check-hook-activation.py (which
 asks whether a hook is wired AT ALL; this asks whether it is wired on BOTH
 platforms).
 """
+# exit-contract: ENFORCING
+
 
 from __future__ import annotations
 

@@ -9,6 +9,8 @@ Usage:
   python3 rotate_graphify_backups.py --vault-root /path/to/vault
   python3 rotate_graphify_backups.py --vault-root /path/to/vault --keep 5 --bak-max-age 14
 """
+# exit-contract: NOT-A-CHECKER -- deletes old graphify backups; rotation work
+
 
 import argparse
 import sys

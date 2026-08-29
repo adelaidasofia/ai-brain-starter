@@ -25,6 +25,9 @@ PHASE is a string identifier like "0", "10a", "23.5", "24".
 
 No network. No third-party deps. Stdlib only. Safe to call from bash.
 """
+# exit-contract: NOT-A-CHECKER -- appends and aggregates install telemetry
+#   records
+
 
 from __future__ import annotations
 

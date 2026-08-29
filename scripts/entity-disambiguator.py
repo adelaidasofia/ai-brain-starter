@@ -43,6 +43,9 @@ CLI:
 
 Idempotent. Stdlib only.
 """
+# exit-contract: NOT-A-CHECKER -- builds the alias index file used by later
+#   graphify stages
+
 from __future__ import annotations
 
 import argparse

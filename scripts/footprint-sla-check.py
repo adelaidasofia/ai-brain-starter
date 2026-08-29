@@ -113,6 +113,8 @@ Stage 0 footprint report + corrections). Sibling-by-design with
 scripts/audit-sessionstart-boundedness.py (MYC-571), whose proven shape this
 mirrors.
 """
+# exit-contract: ENFORCING
+
 from __future__ import annotations
 
 import argparse

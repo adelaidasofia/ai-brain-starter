@@ -1,4 +1,7 @@
 #!/bin/bash
+# exit-contract: NOT-A-CHECKER -- prunes worktrees, branches and snapshots,
+#   logging to a file
+
 # Weekly git worktree maintenance for the vault. Self-locates so it survives a move.
 #
 # Worktree pileup is prevented at the SOURCE by the lifecycle hooks

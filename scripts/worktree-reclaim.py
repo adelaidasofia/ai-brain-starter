@@ -33,6 +33,9 @@ Usage:
   --dry-run   classify + report only; remove nothing
   --json      machine-readable report
 """
+# exit-contract: NOT-A-CHECKER -- removes reclaimable worktrees and narrates
+#   the actions it took
+
 from __future__ import annotations
 
 import argparse

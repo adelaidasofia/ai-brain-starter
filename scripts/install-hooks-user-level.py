@@ -41,6 +41,10 @@ fires on every session regardless of cwd.
 We ship hooks.json as the canonical source. This script is the install
 mechanism; the source-of-truth content lives in hooks.json.
 """
+# exit-contract: ADVISORY -- the installer path is consumed by bootstrap,
+#   which branches on --fail-on-missing explicitly rather than on the default
+#   exit
+
 
 from __future__ import annotations
 

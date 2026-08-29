@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# exit-contract: ENFORCING
+
 # preflight.sh — verify every prerequisite BEFORE bootstrap touches the machine.
 #
 # Bilingual (English / Español, locale-detected via $LANG and macOS AppleLocale).

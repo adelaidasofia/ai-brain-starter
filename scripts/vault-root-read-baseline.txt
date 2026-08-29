@@ -60,9 +60,8 @@
 # missing; #404's bug survived because the suite only ever ran on the
 # env-named vault.
 
-# ---- SEV-B-cwd  (14 file(s), 14 read(s)) ----
+# ---- SEV-B-cwd  (12 file(s), 12 read(s)) ----
 dd3795425a250401136ea1739bbc0090324a54ca2ac737fcb7ed36f7268d66a3 SEV-B-cwd scripts/check-claude-md-drift.py
-dfd1dee24edf0b7a56cc5241504e9190ac1625f24df2fc3b1a223baa9802f581 SEV-B-cwd scripts/check-rule-conflicts.py
 ecf437791a2199e922f3b4ea83fd5541e1f9b2852b6323243791ba827770a243 SEV-B-cwd scripts/crm-collision-check.py
 113b61af71c96cce33c625f6865f16050662270b509619ef3d032a5452aaab2a SEV-B-cwd scripts/decision-retrospective.py
 926b37dcb6f6b689dab5c69b74f169a74e911887f20e7ed6aeb3c1b51e507b58 SEV-B-cwd scripts/drift-detection.py
@@ -72,7 +71,6 @@ b461174f186d1a5bee479caf657c50c002324a09336324aa1bfef88090bfc8f1 SEV-B-cwd scrip
 2bf61214c177290c2408dd5b404d35bce060d22dbd9c06b10792ab4d286df3b9 SEV-B-cwd scripts/resolver-branch-merge-prompt.py
 8484cdc3aaea0a7882dd1f1c1c8d8a0b46c9977995a3c09563ebf74611fb8dd9 SEV-B-cwd scripts/resolver-build.py
 a826003cdacfbeefdfe8019947632e71fb369ae9a5905d7dcce5a947b94b60ee SEV-B-cwd scripts/resolver-conflict-report.py
-30efd1751a2a773b931fb67a12214db06bc8b9820fe49f48028236b42450659d SEV-B-cwd scripts/stale-rule-check.py
 c27dc2a06172b75ca4ed910c9da19b8e45761fd44908161a1fb42afdfd65fcd7 SEV-B-cwd scripts/undo-last-close.py
 8a1bf7b92664f946386b6af0e61b03042422f132d8f0f79b830aecd314385b17 SEV-B-cwd scripts/vault-hygiene.py
 

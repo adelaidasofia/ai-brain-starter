@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# exit-contract: ENFORCING
+
 # Private-context token scan, PR-scoped.
 #
 # Lives here rather than inline in .github/workflows/lint.yml for the same

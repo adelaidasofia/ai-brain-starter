@@ -51,6 +51,9 @@ File format (Decisions/ entries):
 Determinism rules identical to aggregate-sessions.py: sorted filename
 descending → deterministic output → concurrent runs safe.
 """
+# exit-contract: NOT-A-CHECKER -- concatenates decision files into the
+#   decision log
+
 
 from __future__ import annotations
 

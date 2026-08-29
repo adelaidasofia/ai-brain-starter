@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# exit-contract: ENFORCING
+
 #
 # scripts/shellcheck.sh - the canonical, locally-runnable shellcheck gate for
 # ai-brain-starter. ONE command, shared by two callers so they can never drift:

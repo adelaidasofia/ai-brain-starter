@@ -1,4 +1,7 @@
 #!/bin/bash
+# exit-contract: NOT-A-CHECKER -- fetches GitHub traffic and appends a JSONL
+#   row
+
 # traffic-snapshot.sh — capture a weekly snapshot of GitHub repo traffic
 #
 # Fetches clones, views, stars/watchers/forks, top referrers, and top paths from the

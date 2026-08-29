@@ -1,4 +1,6 @@
 #!/bin/bash
+# exit-contract: ENFORCING
+
 # vault-repo-drift-check.sh — Detect when the vault has things the repo doesn't
 #
 # Runs monthly. Compares:
@@ -17,6 +19,52 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# --- negative control -------------------------------------------------------
+# The defect this covers: DRIFT_FOUND was computed on every branch and then
+# thrown away, because the script simply ended. A fully drifted vault exited 0
+# and the only non-zero in the file was the unset-VAULT_ROOT usage error, so a
+# scheduled runner could not tell "in sync" from "five drifted files".
+# Re-invokes this same script against fixture vaults, so the control cannot
+# pass while the real exit stays 0.
+if [ "${1:-}" = "--self-test" ]; then
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  fails=0
+
+  # BITE: a rule file present in the vault and absent from the repo is drift.
+  mkdir -p "$tmp/drifted/⚙️ Meta/rules"
+  echo "# a rule this repo does not ship" \
+    > "$tmp/drifted/⚙️ Meta/rules/zz-not-in-repo-$$.md"
+  # HOME is sandboxed for both probes: the Skills and Plugins sections scan
+  # ~/.claude/, so with the developer's real HOME the verdict depends on which
+  # skills happen to be installed on this machine and the inverse case can
+  # never be clean. A control whose result varies by machine is not a control.
+  mkdir -p "$tmp/home/.claude/skills"
+  rc=0
+  HOME="$tmp/home" VAULT_ROOT="$tmp/drifted" bash "$0" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -ne 1 ]; then
+    echo "FAIL: a vault-only rule file exited $rc, expected 1. DRIFT_FOUND is"
+    echo "      not reaching the exit."
+    fails=1
+  fi
+
+  # INVERSE: an empty ⚙️ Meta tree has nothing to drift and must exit 0.
+  # Without this, a script that exited 1 unconditionally would satisfy the
+  # case above and the control would prove nothing.
+  mkdir -p "$tmp/clean/⚙️ Meta/rules"
+  rc=0
+  HOME="$tmp/home" VAULT_ROOT="$tmp/clean" bash "$0" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "FAIL: a vault with nothing vault-only exited $rc, expected 0. The"
+    echo "      BITE case above may be passing for the wrong reason."
+    fails=1
+  fi
+
+  if [ "$fails" -ne 0 ]; then exit 1; fi
+  echo "OK - self-test: a vault-only rule file exits 1, an empty vault exits 0."
+  exit 0
+fi
+
 # Detect vault root (look for ⚙️ Meta/ folder)
 if [ -n "${VAULT_ROOT:-}" ] && [ -d "$VAULT_ROOT" ]; then
   VAULT="$VAULT_ROOT"
@@ -27,6 +75,7 @@ fi
 
 META="$VAULT/⚙️ Meta"
 DRIFT_FOUND=0
+
 
 # Load .driftignore patterns (one substring per line, # comments allowed).
 # A drift line is suppressed if any pattern is a substring of the emitted path.
@@ -44,7 +93,15 @@ fi
 # Returns 0 (true) if the path matches any ignore pattern.
 is_ignored() {
   local path="$1"
-  for pat in "${IGNORE_PATTERNS[@]}"; do
+  # `${arr[@]}` on an EMPTY array is an unbound-variable error under `set -u`
+  # in bash 3.2 (the only bash on a stock Mac) and in bash < 4.4. With no
+  # .driftignore the array is never populated, so this function aborted the
+  # whole script at the first skill it examined -- output simply stopped after
+  # "--- Skills ---" and the script exited 1. That was survivable while the
+  # exit code meant nothing; now that 1 means "drift found", a crash and a
+  # finding would be the same signal, which is the defect this file was just
+  # fixed for. The `+` expansion yields nothing at all when unset.
+  for pat in ${IGNORE_PATTERNS[@]+"${IGNORE_PATTERNS[@]}"}; do
     case "$path" in
       *"$pat"*) return 0 ;;
     esac
@@ -138,3 +195,11 @@ if [ $DRIFT_FOUND -eq 0 ]; then
 else
   echo "Drift detected. Review items above and propagate to the repo if they're universal."
 fi
+
+# DRIFT_FOUND was computed on every branch above and then thrown away: the file
+# ended here, so a fully drifted vault exited 0 and the only non-zero in the
+# script was the unset-VAULT_ROOT usage error. A scheduled runner could not tell
+# "in sync" from "five drifted files". .driftignore remains the suppression
+# channel; suppressed paths never set DRIFT_FOUND, so an intentional difference
+# still exits 0.
+exit "$DRIFT_FOUND"

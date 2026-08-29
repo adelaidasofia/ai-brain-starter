@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# exit-contract: NOT-A-CHECKER -- a MiniMax API wrapper for cheap text
+#   generation
+
 # minimax.sh — cheap text processing via MiniMax M2.7
 # Usage: minimax.sh "your prompt here" [max_tokens]
 # Cost: ~$0.06/M tokens (vs ~$15/M for Claude Opus)

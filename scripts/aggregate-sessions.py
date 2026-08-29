@@ -59,6 +59,9 @@ Safety:
   - Pass --no-legacy to disable legacy preservation (destructive — review
     before using on a vault with existing content).
 """
+# exit-contract: NOT-A-CHECKER -- rebuilds Last Session.md from the session
+#   files
+
 
 from __future__ import annotations
 

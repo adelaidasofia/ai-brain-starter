@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# exit-contract: ENFORCING
+
 # relocate-vault.sh — move a vault OUT of a consumer cloud-sync folder onto a
 # local disk, leave a symlink so existing references keep resolving, AND migrate
 # Claude Code's path-keyed state (session transcripts + the agent-memory symlink)

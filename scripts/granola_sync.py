@@ -39,6 +39,8 @@ EXIT CODES: 0 ok (including "0 new" -- a legitimate quiet period); 1 hard failur
 prints that plainly -- sustained silence is caught by check-connector-liveness.py
 (the 0-vs-0 watchdog), not by failing an individual run.
 """
+# exit-contract: ENFORCING
+
 from __future__ import annotations
 
 import argparse

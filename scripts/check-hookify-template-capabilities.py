@@ -18,6 +18,10 @@ Update them (and shrink KNOWN_UPSTREAM_GAPS) when upstream ships new capabilitie
 
 stdlib only, no PyYAML -- runs under `python3 -S`.
 """
+# exit-contract: ADVISORY -- the known-gap allowlist is deliberate and its
+#   stale entries already fail; the gate ships green today while keeping the
+#   debt visible
+
 import re
 import sys
 from pathlib import Path

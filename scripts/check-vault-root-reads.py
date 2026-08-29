@@ -77,6 +77,8 @@ Exit: 0 clean, 1 violation, 2 usage/IO error.
 
 ASCII-only output on purpose -- see scripts/check-utf8-stdout.py.
 """
+# exit-contract: ENFORCING
+
 from __future__ import annotations
 
 import argparse

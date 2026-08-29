@@ -30,6 +30,8 @@ registration is not activation either if the output channel is discarded.
 
 ASCII-only output on purpose -- see scripts/check-utf8-stdout.py.
 """
+# exit-contract: ENFORCING
+
 
 from __future__ import annotations
 

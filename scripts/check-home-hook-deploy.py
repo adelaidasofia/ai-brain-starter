@@ -75,6 +75,8 @@ USAGE
 
 Stdlib only. No network, no git, no writes.
 """
+# exit-contract: ENFORCING
+
 
 from __future__ import annotations
 
