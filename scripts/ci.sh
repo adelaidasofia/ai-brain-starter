@@ -1177,6 +1177,7 @@ PY_DIRECT=(
   tests/test_graphify_stage_select_cache_key.py
   hooks/test_live_session_reap.py
   hooks/test_relocation_orphan_reclaim.py
+  hooks/test_worktree_remove_verifies_side_effect.py
   hooks/test_secret_patterns_fp_filter.py
   hooks/test_secret_patterns_nvidia.py
   hooks/test_check_fabricated_verification.py

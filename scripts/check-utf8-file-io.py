@@ -161,6 +161,16 @@ def violations_in(path):
         if not isinstance(node, ast.Call):
             continue
         name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        # `os.open()` returns a file DESCRIPTOR (an int). It takes no encoding=
+        # at all and performs no text decoding, so it is not text I/O -- but it
+        # matches on the bare attribute name `open`, which made every caller a
+        # false positive. The only way to silence one was to content-pin the
+        # whole file in the baseline, which then went STALE on the next edit and
+        # re-surfaced the same false positive as a fresh FAIL.
+        if (name == "open"
+                and isinstance(node.func, ast.Attribute)
+                and getattr(node.func.value, "id", None) == "os"):
+            continue
         if name not in ("open", "write_text", "read_text"):
             continue
         if any(kw.arg == "encoding" for kw in node.keywords):
@@ -252,6 +262,11 @@ def d(p, raw):
         f.write(raw)
 def e(p, obj):
     Path(p).write_text(json.dumps(obj))  # provably ASCII (ensure_ascii defaults True)
+def f(p, raw):
+    import os
+    fd = os.open(p, os.O_WRONLY | os.O_CREAT, 0o600)   # fd, not text I/O
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(raw)
 '''
     tmp = Path(tempfile.mkdtemp())
     failures = []
