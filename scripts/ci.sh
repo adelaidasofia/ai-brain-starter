@@ -1211,6 +1211,7 @@ echo "    OK - $unit_count scripts/ unit suite(s) passed"
 # fails the gate LOUD (the false-green class MYC-2922 closed for scripts/, MYC-2959
 # for hooks/+tests/). PY_DIRECT then runs the non-wrapped suites exactly once.
 PY_DIRECT=(
+  hooks/test_umbrella_map.py
   hooks/test_surface_stalled_git_operation.py
   hooks/test_memory_index.py
   tests/test_instinct.py
