@@ -1186,6 +1186,15 @@ PY_DIRECT=(
   hooks/test_unpushed_drift_surface.py
   hooks/test_claim_surface_honesty.py
   hooks/test_narrow_refspec_falsealarm.py
+  # session-lock resolves the repo identity its whole mechanism keys off with
+  # `git -C <cwd>`, and git honors GIT_DIR/GIT_COMMON_DIR OVER `-C`. `_git_common_dir`
+  # shipped with no env= at all (a second, dead _GIT_CLEAN_ENV definition shadowed
+  # the real one, so the file's own comment claimed a protection only one of three
+  # call sites had). Measured: a leaked GIT_DIR made _main_root AND _current_branch
+  # resolve a different repo entirely -- the SessionStart warning and the PreToolUse
+  # DENY then decide against the wrong worktree. Every leg carries a harness control
+  # asserting the leak still bites raw git, so a leg cannot pass by being inert.
+  hooks/test_session_lock_git_env.py
   # The frontmatter gate's own delimiter pattern stayed LF-only after #409/#431
   # fixed the validator behind it, so CRLF content was still denied one layer
   # out. The hook is fail-open, so an allow-only suite would pass against a
