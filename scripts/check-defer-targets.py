@@ -40,6 +40,17 @@ THE RULE
     self-test necessarily contain example deferral strings, and scanning
     itself would be a guaranteed false positive on every run.
 
+KNOWN LIMITS (this gate is a FLOOR, not a ceiling -- state them so the next
+reader does not mistake a green for proof of absence):
+  - Detection is LINE-BY-LINE. A deferral whose verb and filename wrap onto
+    different lines is NOT seen.
+  - Only string LITERALS are seen. `defer_to=SOME_CONST` is not.
+  - Resolution is by BASENAME anywhere in the repo, not by path. A deferral to
+    "x.py" resolves against an unrelated tests/fixtures/x.py.
+  - Documentation that quotes a real-looking deferral string will trip this
+    check. Write examples as `<owner>.py` -- the angle brackets fall outside
+    the basename class, so they cannot parse as a real target.
+
 Three states, distinguished by exit code (a failed read is not an empty
 answer): 0 = every named target resolves; 1 = a dangling deferral was found,
 listing each `path:line -> missing target`; 2 = the scan was INCOMPLETE
