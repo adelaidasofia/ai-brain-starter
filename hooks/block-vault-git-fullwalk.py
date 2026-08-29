@@ -172,7 +172,13 @@ def _targets_vault_repo(cwd: str) -> bool:
     try:
         out = subprocess.run(
             ["git", "-C", cwd, "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, timeout=5,
+            # encoding pinned, not left to the locale: this prints a PATH, and a
+            # vault path can carry an emoji folder name (U+FE0F, byte 0x8F
+            # unmapped in cp1252). text=True alone raises UnicodeDecodeError
+            # inside subprocess.run on a non-UTF-8 console, before we see a byte
+            # -- and this guard then fails open on the machine it never ran on.
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=5,
         )
     except Exception:
         return False
@@ -209,7 +215,10 @@ def _git_dir_is_vault(git_dir: str) -> bool:
     try:
         out = subprocess.run(
             ["git", "--git-dir", git_dir, "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, timeout=5,
+            # encoding pinned for the same reason as the call above: the child
+            # prints a path, and vault paths carry non-cp1252 bytes.
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=5,
             cwd=git_dir if os.path.isdir(git_dir) else None,
         )
         if out.returncode == 0 and out.stdout.strip():
