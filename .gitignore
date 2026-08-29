@@ -57,3 +57,10 @@ hooks/.secret-scan.lock
 # are already ignored; this covers the exported message content too, so a user
 # can never stage their own WhatsApp history into a public fork.
 /🤖 AI Chats/
+
+# scripts/worktree-prune.sh defaults LOG_DIR to `$SCRIPT_DIR/../logs`, i.e. the
+# repo's OWN checkout. Every install that runs it dirties its own clone, and a
+# dirty clone BLOCKS the ff-only auto-update — so the install silently stops
+# receiving substrate updates. Measured on the deployed checkout at
+# ~/.claude/skills/ai-brain-starter: untracked logs/ present, update blocked.
+/logs/
