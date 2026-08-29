@@ -70,6 +70,22 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Installed HERE, before any step that parses YAML or frontmatter -- not
+      # further down next to the one consumer that prompted it. Placed lower,
+      # it ran AFTER stale-rule-check.py --self-test and that step died on
+      # "ERROR: PyYAML required" (PR #619, run 33237272846).
+      #
+      # Load-bearing, not cosmetic: without PyYAML ci-cost-audit.py parses
+      # NOTHING -- every workflow lands in its "unparsed" branch and every
+      # static rule is skipped. Until 2026-08-29 that skip was filed as an
+      # advisory finding, so the step named "runs clean against this repo's own
+      # workflows" passed green having checked nothing (measured on 8b9038b,
+      # where the same --fail-on high command exits 1 on a box that has
+      # PyYAML). The auditor now exits 2 when it cannot parse, so this install
+      # is what keeps those steps meaningful rather than merely quiet.
+      - name: install PyYAML (guards that parse YAML or frontmatter need it)
+        run: python3 -m pip install --user pyyaml
+
       # ---- instant checks first (byte / JSON scans, no tooling) -------------
 
       - name: JSON validity (hooks.json, *.mcp.json)
@@ -459,16 +475,6 @@ jobs:
       # runner - and still stays quiet on a well-formed one. An auditor that
       # silently stopped detecting would let a client install drift back into an
       # unbounded Actions bill behind a green check.
-      # Without PyYAML the auditor parses NOTHING: every workflow lands in its
-      # "unparsed" branch and every static rule is skipped. Until 2026-08-29
-      # that skip was filed as an advisory finding, so both steps below passed
-      # green having checked nothing -- measured on 8b9038b, where the same
-      # `--fail-on high` command exits 1 on a developer box that has PyYAML.
-      # The auditor now exits 2 when it cannot parse, so this install is what
-      # keeps the two steps below meaningful rather than merely quiet.
-      - name: install PyYAML (the auditor cannot parse a workflow without it)
-        run: python3 -m pip install --user pyyaml
-
       - name: ci-cost-audit negative controls (the auditor must still bite)
         run: python3 scripts/ci-cost-audit.py --self-test
 
