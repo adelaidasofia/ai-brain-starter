@@ -184,9 +184,18 @@ try:
     # imported, the guard must still stop a vault push rather than wave it
     # through. Proven by running a COPY with shell_parse.py removed.
     degraded = os.path.join(TMP, "degraded")
-    shutil.copytree(os.path.dirname(HOOK), degraded,
-                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    os.remove(os.path.join(degraded, "_lib", "shell_parse.py"))
+    os.makedirs(os.path.join(degraded, "_lib"))
+    hooks_dir = os.path.dirname(HOOK)
+    # Copied file-by-file, NOT with shutil.copytree. copytree owns its own
+    # recursion and opens file content internally, which
+    # scripts/check-cloud-safe-file-walkers.py flags fleet-wide unless the call
+    # surface reaches the shared safe_read primitive. Naming the three files the
+    # hook actually needs is also the more precise fixture: it proves
+    # shell_parse.py is the ONLY thing absent, rather than copying the whole
+    # directory and deleting one entry back out of it.
+    for rel in ("vault-command-nudges.py", "_lib/__init__.py", "_lib/vault_root.py"):
+        parts = rel.split("/")
+        shutil.copy2(os.path.join(hooks_dir, *parts), os.path.join(degraded, *parts))
     dhook = os.path.join(degraded, "vault-command-nudges.py")
     check(True,  "38. degraded parse still blocks a vault push",
           "git push", VAULT, hook=dhook)
