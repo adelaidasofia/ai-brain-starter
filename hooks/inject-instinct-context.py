@@ -179,4 +179,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313): a non-ASCII instinct name must not
+    # crash the hook on encode. Fail-open applies to output too.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     main()

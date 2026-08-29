@@ -197,6 +197,10 @@ def _git_remote_url(start: Path) -> str | None:
         out = subprocess.run(
             ["git", "-C", str(start), "remote", "get-url", "origin"],
             capture_output=True, text=True, timeout=3,
+            # Explicit, never the locale encoding: vault paths carry non-ASCII
+            # ("⚙️ Meta"), and a cp1252 Windows console raises
+            # UnicodeDecodeError decoding them (ai-brain-starter#313 class).
+            encoding="utf-8", errors="replace",
         )
         if out.returncode == 0:
             url = out.stdout.strip()

@@ -23,6 +23,11 @@
 #     user, so an emoji vault folder reaches stderr from the filesystem), which
 #     staled its row and forced the choice this file already documents below:
 #     guard it and delete the row, never re-pin. Deleted, per that rule.
+#   - hooks/inject-instinct-context.py    guarded + unpinned alongside the
+#     instinct promotion pass. It now writes an injection ledger and renders
+#     instinct NAMES to the console, so non-ASCII reaches stdout from the
+#     memory store itself rather than only from source comments. Guarded and
+#     the row deleted, per the rule above.
 #   - every SEV-1-hard-crash and SEV-2-ascii-pipe row  guarded + unpinned for
 #     ai-brain-starter#314. Those two tags are the population where the guard is
 #     unambiguously the right remedy: each does a RAW console write (not through
@@ -97,7 +102,6 @@
 
 # ---- SEV-3-doc-only  (2 file(s)) ----
 ed1d68dba02ab76c99907e8efc27ac0aac8c98a14dad261da73fa5d8e1610369 SEV-3-doc-only hooks/_lib/template_purity.py
-8dea18caf79e387a2fbeddca90403ef8af0d0ff1e6395e3b1f00e1b396491a4b SEV-3-doc-only hooks/inject-instinct-context.py
 
 # ---- SEV-4-json-encoded  (22 file(s)) ----
 02627cdfcde451edc91149f9092154b2b846cb1a19d30f1f5ca01d66258791b2 SEV-4-json-encoded hooks/block-branch-switch-with-untracked-build.py
