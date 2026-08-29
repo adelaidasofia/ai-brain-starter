@@ -474,6 +474,22 @@ INTEGRATION_TESTS=(
   # — silently, on a whole platform. Two layers must hold (the path gate AND the
   # vault-root resolve); fixing only the first looks right and still fails open.
   test_journal_guard_windows_paths
+  # Journal-context guard vs the RELATIVE write form (2026-08-28). Entries are
+  # written as `cd "<vault>" && cat > "<emoji> Journals/<Month>/e.md"`, and the
+  # optional emoji-prefix segment in _vault_root was bounded only on '/' and
+  # newline, so it swallowed `vault" && cat > "<emoji> ` and resolved the root to
+  # the vault's PARENT. Loud direction: a correct save blocked. Quiet direction,
+  # which is worse: a marker in the parent satisfies the check and a journal with
+  # NO context ships silently. 7 assertions fail on the pre-fix hook.
+  test_journal_guard_relative_path_root
+  # Same guard, driven over real stdin against a real temp vault, so both
+  # directions are proven on the artifact people actually run: marker absent must
+  # still DENY (a fix that only removes blocks is indistinguishable from a fix
+  # that removes the guard), and the heredoc-BODY gate must not open on a write
+  # that merely quotes a journal path. Every heredoc control embeds an ABSOLUTE
+  # path, because with a relative one the old code fails open before the gate is
+  # reached and the assertion would pass without varying with the defect.
+  test_journal_guard_end_to_end
   # Close detector, whole-message anchoring + length gate (2026-08-16): the
   # shared pack tiers ran under re.MULTILINE, so every `$`-anchored sign-off
   # matched the end of ANY line and a 60-line handoff whose third line read
