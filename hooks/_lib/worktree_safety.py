@@ -509,12 +509,33 @@ def snapshot_unrecoverable(main_repo: Path, worktree: Path, slug: str) -> tuple[
 
 
 def remove_worktree(main_repo: Path, worktree: Path, force: bool = True) -> bool:
-    """`git worktree remove` (keeps the branch ref). True on success."""
+    """`git worktree remove` (keeps the branch ref). True on success.
+
+    `timeout=None` is LOAD-BEARING. `git worktree remove` unlinks the working
+    tree in raw readdir order, so killing it partway leaves a contiguous PREFIX
+    of the checkout deleted while `.git`, HEAD and the admin record survive --
+    the worktree still lists as registered and gets re-damaged on the next run.
+    Tracked files come back with `git checkout -- .`; an untracked `.env.local`
+    does not come back at all. This helper defaulted to GIT_TIMEOUT (120s) AND
+    force=True, which is the same hazard with a longer fuse and no confirmation
+    prompt. Measured on a reaper carrying this bug 2026-08-02: 26+ damaged
+    worktrees.
+
+    Reporting the side effect rather than `returncode == 0` is the other half:
+    git exiting 0 is its report, not the outcome. A caller must never be able to
+    record a half-removal as a removal. `os.path.lexists` (not `Path.exists`)
+    because the latter follows symlinks and would call a leftover dangling link
+    at the worktree path a clean removal.
+
+    Negative control: hooks/test_worktree_remove_verifies_side_effect.py
+    """
     args = ["worktree", "remove"] + (["--force"] if force else []) + [str(worktree)]
     try:
-        return git(main_repo, args).returncode == 0
+        if git(main_repo, args, timeout=None).returncode != 0:
+            return False
     except (subprocess.TimeoutExpired, OSError):
         return False
+    return not os.path.lexists(worktree)
 
 
 def list_orphan_dirs(main_repo: Path) -> list[Path]:
