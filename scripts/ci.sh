@@ -85,6 +85,28 @@
 #                           so the class was caught one full CI round-trip AFTER
 #                           the push. Both callers now run the same script and
 #                           scripts/test_ps1_encoding_gate.py pins that.
+#   (e8) file I/O encoding - scripts/check-utf8-file-io.py fails a file read or
+#                           write in text mode with no encoding=, which uses the
+#                           LOCALE encoding: identical source then produces UTF-8
+#                           artifacts on macOS and cp1252 artifacts on Windows.
+#                           The read half is the quiet one -- it usually does not
+#                           raise, it decodes into mojibake. (Summary bullet was
+#                           missing while the step itself has always run, so a
+#                           top-to-bottom reader saw e7 jump straight to e9.)
+#   (e9) defer targets    - scripts/check-defer-targets.py fails a hook/script
+#                           under hooks/ or scripts/ that names a sibling as the
+#                           owner of a responsibility (`defer_to="<owner>.py"`, or
+#                           prose "owned by <owner>.py" / "handled by <owner>.py" / "delegates
+#                           to <owner>.py" / "deferred to <owner>.py") when no tracked file in
+#                           the repo has that basename. A dangling deferral is
+#                           worse than a dormant guard: a dormant guard is absent
+#                           and looks absent, a dangling deferral is absent and
+#                           reads as covered. Caught live: context-budget-measure.py
+#                           deferred MEMORY.md's cliff warning to a file that only
+#                           ever existed in a private, remote-less, machine-local
+#                           repo - every install of THIS repo read "handled
+#                           elsewhere" and got nothing. Self-test first, then the
+#                           fleet. Pure stdlib.
 #   (f) Python unit tests - the scripts/test_*.py stdlib suites (the claude-router
 #                           structured-envelope gate, the graph-liveness
 #                           STAMP-GREEN-WHILE-GONE guard). Gate (a) py_compiles them,
@@ -1139,6 +1161,25 @@ bash scripts/check-ps1-encoding.sh
 echo "==> (e8) file I/O encoding: $PY scripts/check-utf8-file-io.py"
 "$PY" scripts/check-utf8-file-io.py --self-test >/dev/null
 "$PY" scripts/check-utf8-file-io.py
+
+# ---- (e9) Dangling defer targets --------------------------------------------
+# scripts/check-defer-targets.py fails a hook/script under hooks/ or scripts/
+# that names a sibling guard as the owner of a responsibility -- structurally
+# (`defer_to="<owner>.py"`) or in prose ("owned by <owner>.py" / "handled by <owner>.py" /
+# "delegates to <owner>.py" / "deferred to <owner>.py") -- when no tracked file in the repo
+# has that basename. Bug class: DEFERRAL-TO-AN-UNSHIPPED-OWNER, and it is worse
+# than plain dormancy: a dormant guard is absent and looks absent, a dangling
+# deferral is absent and looks COVERED. Caught live: context-budget-measure.py
+# deferred MEMORY.md's cliff warning to a guard that shipped only on one
+# contributor's private, remote-less machine-local repo -- never in this one --
+# so every install read "handled elsewhere" and got nothing, silently. Fixed by
+# re-pointing the deferral at the real owner (session-start-context.py), which
+# already existed under a different name. Self-test first (positive + negative,
+# both driven off injected sets so no real file is touched), then the fleet.
+# Pure stdlib.
+echo "==> (e9) defer targets: $PY scripts/check-defer-targets.py"
+"$PY" scripts/check-defer-targets.py --self-test >/dev/null
+"$PY" scripts/check-defer-targets.py
 
 # ---- (f) Python unit tests (scripts/ + hooks/ + tests/) --------------------
 # Every Python unit suite in the repo, run under the SAME interpreter as the rest
