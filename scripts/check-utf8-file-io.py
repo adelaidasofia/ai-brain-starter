@@ -163,6 +163,15 @@ def violations_in(path):
         name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
         if name not in ("open", "write_text", "read_text"):
             continue
+        # `os.open` is NOT the builtin: it returns a raw file descriptor, has no
+        # text mode, and rejects encoding= with a TypeError. Flagging it tells
+        # the author to "pass encoding=utf-8" -- advice that breaks their code
+        # and pushes a correct call into the baseline as if it were debt. The
+        # qualifier is the whole difference; `p.open()` on a Path still counts.
+        if (name == "open"
+                and isinstance(node.func, ast.Attribute)
+                and getattr(node.func.value, "id", None) == "os"):
+            continue
         if any(kw.arg == "encoding" for kw in node.keywords):
             continue
         if name == "open":
@@ -286,6 +295,25 @@ def e(p, obj):
     if sha256_of(lf) != sha256_of(crlf):
         failures.append("CRLF and LF content hash differently - the ratchet would "
                         "fire spuriously on a Windows checkout")
+
+    # os.open is a raw file descriptor, not text I/O: no mode, no encoding=
+    # (it raises TypeError on one). It must NOT be flagged -- and the BUILTIN
+    # open two lines below it MUST still be, so the exemption is proven narrow
+    # rather than a blanket mute of the word "open".
+    osopen = tmp / "osopen.py"
+    osopen.write_text("import os\nfd = os.open('/tmp/x', os.O_CREAT)\n",
+                      encoding="utf-8")
+    if violations_in(osopen):
+        failures.append("os.open flagged as locale-encoded I/O: {}"
+                        .format(violations_in(osopen)))
+
+    mixed = tmp / "mixed.py"
+    mixed.write_text("import os\nfd = os.open('/tmp/x', os.O_CREAT)\n"
+                     "fh = open('/tmp/y')\n", encoding="utf-8")
+    got = violations_in(mixed)
+    if len(got) != 1 or got[0][0] != 3:
+        failures.append("a builtin open beside an os.open must still be caught, "
+                        "expected one hit on line 3, got {}".format(got))
 
     if failures:
         print("SELF-TEST FAIL:")
