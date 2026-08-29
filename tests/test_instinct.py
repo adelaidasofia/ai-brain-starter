@@ -668,6 +668,131 @@ def test_promote_refuses_concurrent_run():
         check(not lock.exists(), "the lock is released on exit")
 
 
+
+def test_promote_refuses_when_it_cannot_record_credit():
+    print("test_promote_refuses_when_it_cannot_record_credit")
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        md = make_memory(tmp)
+        cli.cmd_backfill(Args(no_backup=True), md)
+        slug = "feedback_voice_humanizer"
+        before = il.parse_float(il.parse_instinct(md / f"{slug}.md").fm["confidence"])
+        inj = [{"ts": _old_ts(), "session": f"s{i}", "injected": [slug], "explored": []}
+               for i in range(3)]
+        obs = []
+        for i in range(3):
+            obs += _busy(f"s{i}")
+        _write_ledgers(tmp, inj, obs)
+
+        # The state file is the ONLY thing that makes a re-run idempotent. If it
+        # cannot be written, crediting anyway means the next run credits the
+        # same sessions again -- confidence climbing on evidence never gathered,
+        # with every log line reading healthy.
+        #
+        # Fail at the WRITE specifically, not at mkdir: an earlier version of
+        # this fixture made the state path's PARENT a file, so it tripped the
+        # directory guard and stayed green even with the write guard removed --
+        # a test that appeared to cover this blocker and did not.
+        # The state file must be ABSENT (so the load path returns {} normally,
+        # a legitimate first run) with only the WRITE impossible. Two earlier
+        # fixtures failed to isolate this: a parent that was a file tripped the
+        # mkdir guard, and a target that was a directory tripped the LOAD
+        # guard -- both stayed green with the write guard removed, so both
+        # looked like coverage of this blocker and were not.
+        statedir = tmp / "state"
+        statedir.mkdir()
+        cli.PROMOTE_STATE_PATH = statedir / "promote-state.json"
+        # Block the atomic temp write and NOTHING else: the state file stays
+        # absent (so the load path is a normal first run) and the directory
+        # stays writable (so the lock is takeable). Two earlier fixtures failed
+        # to isolate this -- a parent that was a file tripped the mkdir guard,
+        # a target that was a directory tripped the LOAD guard -- and both
+        # stayed green with the write guard removed, looking like coverage of
+        # this blocker while covering a different one.
+        (statedir / "promote-state.json.tmp").mkdir()
+        raised = False
+        try:
+            cli.cmd_promote(_promote_args(), md)
+        except cli.PromoteStateError:
+            raised = True
+        check(raised, "an unwritable state file RAISES instead of crediting blind")
+        fm = il.parse_instinct(md / f"{slug}.md").fm
+        check(il.parse_int(fm.get("exposures"), 0) == 0,
+              "no instinct was mutated when the credit could not be recorded")
+        check(abs(il.parse_float(fm["confidence"]) - before) < 1e-9,
+              "confidence untouched by the refused run")
+        check(fm.get("evidence") == "seed",
+              "`evidence` did not certify a promotion that never happened")
+
+
+def test_promote_refuses_unreadable_ledger():
+    print("test_promote_refuses_unreadable_ledger")
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        md = make_memory(tmp)
+        cli.cmd_backfill(Args(no_backup=True), md)
+        inj, _obs = _write_ledgers(
+            tmp, [{"ts": _old_ts(), "session": "s1",
+                   "injected": ["feedback_voice_humanizer"], "explored": []}],
+            _busy("s1"))
+        os.chmod(inj, 0o000)
+        try:
+            raised = False
+            try:
+                cli.cmd_promote(_promote_args(), md)
+            except cli.PromoteStateError:
+                raised = True
+            # An EXISTING but unreadable ledger is not an ABSENT one; reporting
+            # "nothing to promote yet" is a false clean a cron reads as healthy
+            # forever.
+            check(raised, "an unreadable ledger raises rather than reading as empty")
+        finally:
+            os.chmod(inj, 0o644)
+
+
+def test_promote_does_not_credit_undated_records_past_the_cursor():
+    print("test_promote_does_not_credit_undated_records_past_the_cursor")
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        md = make_memory(tmp)
+        cli.cmd_backfill(Args(no_backup=True), md)
+        slug = "feedback_voice_humanizer"
+        # A record whose ts cannot be parsed cannot be checked against the
+        # cursor. Once the bounded session set has truncated, crediting it
+        # would re-credit it on every later pass, forever -- the exact hole
+        # the cursor exists to close.
+        _write_ledgers(tmp, [
+            {"session": "nodate", "injected": [slug], "explored": []},
+            {"ts": "2026-08-28 10:00:00", "session": "badfmt",
+             "injected": [slug], "explored": []},
+        ], _busy("nodate") + _busy("badfmt"))
+        cli.PROMOTE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        cli.PROMOTE_STATE_PATH.write_text(
+            json.dumps({"credited_sessions": [], "cursor_ts": _old_ts(minutes_ago=60)}),
+            encoding="utf-8")
+        cli.cmd_promote(_promote_args(), md)
+        fm = il.parse_instinct(md / f"{slug}.md").fm
+        check(il.parse_int(fm.get("exposures"), 0) == 0,
+              "undated / unparseable-ts records are not credited once a cursor exists")
+
+
+def test_promote_rejects_a_gate_of_zero():
+    print("test_promote_rejects_a_gate_of_zero")
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        md = make_memory(tmp)
+        cli.cmd_backfill(Args(no_backup=True), md)
+        _write_ledgers(tmp, [{"ts": _old_ts(), "session": "s1",
+                              "injected": ["feedback_voice_humanizer"], "explored": []}],
+                       _busy("s1"))
+        raised = False
+        try:
+            cli.cmd_promote(_promote_args(every=0), md)
+        except cli.PromoteStateError:
+            raised = True
+        check(raised, "--every 0 is refused, not silently accepted as a no-promote run")
+
+
 def main():
     print("=== Instinct Engine regression tests ===")
     test_confidence_math()
@@ -687,6 +812,10 @@ def main():
     test_promote_reports_unbackfilled()
     test_promote_state_three_ways()
     test_promote_refuses_concurrent_run()
+    test_promote_refuses_when_it_cannot_record_credit()
+    test_promote_refuses_unreadable_ledger()
+    test_promote_does_not_credit_undated_records_past_the_cursor()
+    test_promote_rejects_a_gate_of_zero()
     print(f"\n{'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILURE(S): ' + '; '.join(FAILS)}")
     return 1 if FAILS else 0
 
