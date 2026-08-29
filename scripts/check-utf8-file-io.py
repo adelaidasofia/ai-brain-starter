@@ -161,26 +161,18 @@ def violations_in(path):
         if not isinstance(node, ast.Call):
             continue
         name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-        # `os.open()` returns a file DESCRIPTOR (an int). It takes no encoding=
-        # at all and performs no text decoding, so it is not text I/O -- but it
-        # matches on the bare attribute name `open`, which made every caller a
-        # false positive. The only way to silence one was to content-pin the
-        # whole file in the baseline, which then went STALE on the next edit and
-        # re-surfaced the same false positive as a fresh FAIL.
+        # `os.open` is NOT the builtin: it returns a raw file DESCRIPTOR, has no
+        # text mode, and rejects encoding= with a TypeError. Flagging it tells
+        # the author to "pass encoding=utf-8" -- advice that breaks their code
+        # and pushes a correct call into the baseline as if it were debt. That
+        # pin then went STALE on the next edit and re-surfaced the same false
+        # positive as a fresh FAIL. The qualifier is the whole difference;
+        # `p.open()` on a Path still counts.
         if (name == "open"
                 and isinstance(node.func, ast.Attribute)
                 and getattr(node.func.value, "id", None) == "os"):
             continue
         if name not in ("open", "write_text", "read_text"):
-            continue
-        # `os.open` is NOT the builtin: it returns a raw file descriptor, has no
-        # text mode, and rejects encoding= with a TypeError. Flagging it tells
-        # the author to "pass encoding=utf-8" -- advice that breaks their code
-        # and pushes a correct call into the baseline as if it were debt. The
-        # qualifier is the whole difference; `p.open()` on a Path still counts.
-        if (name == "open"
-                and isinstance(node.func, ast.Attribute)
-                and getattr(node.func.value, "id", None) == "os"):
             continue
         if any(kw.arg == "encoding" for kw in node.keywords):
             continue
