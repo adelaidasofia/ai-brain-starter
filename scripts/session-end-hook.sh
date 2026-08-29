@@ -1,4 +1,7 @@
 #!/bin/bash
+# exit-contract: NOT-A-CHECKER -- the Stop-hook finalizer: aggregators,
+#   retention and a git snapshot
+
 # --- ai-brain-starter: shim-safe PATH (strip refuse-shims) ----------------
 # Some machines carry a python3/python PATH shim (e.g. trailofbits
 # modern-python) that exit-1s on bare invocation and would turn every bare

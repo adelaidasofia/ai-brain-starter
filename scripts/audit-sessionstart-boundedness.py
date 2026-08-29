@@ -90,6 +90,8 @@ Provenance: MYC-571 (parent incident MYC-570, the 2026-06-05 Mac-freeze);
 verdict + resolution-root fixes MYC-3879.
 Canonical guarded example: hooks/scan-prior-sessions-for-secrets.py.
 """
+# exit-contract: ENFORCING
+
 from __future__ import annotations
 
 import argparse

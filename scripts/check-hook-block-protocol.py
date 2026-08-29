@@ -28,6 +28,8 @@ THE RULE
 
 Exit 0 clean, 1 on violation, 2 on usage error.
 """
+# exit-contract: ENFORCING
+
 from __future__ import annotations
 
 import json

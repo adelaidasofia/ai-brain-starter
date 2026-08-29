@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# exit-contract: ADVISORY -- an Ousterhout heuristic offered as a structural
+#   signal for a human, explicitly not an architectural verdict
+
 # deletion-test.sh — Ousterhout's deletion test for a candidate file.
 # Usage:
 #   bash deletion-test.sh <file-path> [search-root]

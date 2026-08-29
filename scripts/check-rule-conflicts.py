@@ -44,6 +44,8 @@ Output:
     Markdown: Meta/Rule Conflicts.md (default)
     JSON: stdout (with --json or --hook)
 """
+# exit-contract: ENFORCING
+
 
 from __future__ import annotations
 
@@ -57,6 +59,10 @@ import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+# vault-root-ok: this tool scans the rules corpus of the vault it is invoked
+# FROM, and it ships in the repo rather than inside any vault, so the
+# script-location resolver used by aggregate-*.py would resolve to the repo
+# and never to a vault. cwd is the contract; VAULT_ROOT overrides it.
 VAULT_ROOT = Path(os.environ.get("VAULT_ROOT") or os.getcwd())
 
 
@@ -552,6 +558,10 @@ def run_self_test(semantic=False):
             print(f"  {c.new_imp.verb} {c.new_imp.noun} <-> {c.existing_imp.verb} {c.existing_imp.noun} ({c.confidence})")
         kw_pass = False
 
+    # Tracks the semantic half's verdict separately from the keyword half so
+    # neither can be silently dropped from the return below.
+    semantic_pass = True
+
     if semantic:
         print("\n--- self-test (semantic-live) ---")
         api_key = get_anthropic_key()
@@ -574,6 +584,12 @@ def run_self_test(semantic=False):
                     failures += 1
                     print(f"  FAIL [{fx['label']}] {fx['name']}: expected={fx['expected_conflict']}, got={got_conflict}")
             print(f"  {len(SEMANTIC_FIXTURE) - failures}/{len(SEMANTIC_FIXTURE)} semantic fixtures pass")
+            # A failing fixture used to be printed and then dropped: `failures`
+            # never reached the return, so `--self-test --semantic` could print
+            # FAIL lines and still exit 0. A self-test whose own failures are
+            # advisory cannot certify anything.
+            if failures:
+                semantic_pass = False
 
         print("\n--- self-test (semantic-parsing, no API call) ---")
         try:
@@ -599,7 +615,76 @@ def run_self_test(semantic=False):
         for label, count in sorted(labels.items()):
             print(f"  {label}: {count}")
 
-    return 0 if kw_pass else 1
+    # --- negative control: the verdict must not depend on OUTPUT FORMAT ----
+    # The defect this covers: --json exited `1 if conflicts` while the default
+    # markdown path exited 0 for the SAME conflicts, six lines apart. A caller
+    # that changed format silently lost its gate. Drives main() end-to-end in
+    # both modes against one fixture corpus, so the control cannot pass while
+    # the two exit lines disagree.
+    import tempfile as _tf
+    global VAULT_ROOT, META_DIR, CONFLICT_REPORT, MEMORY_DIR, CORPUS_GLOBS
+    _saved = (VAULT_ROOT, META_DIR, CONFLICT_REPORT, MEMORY_DIR, CORPUS_GLOBS)
+    try:
+        root = Path(_tf.mkdtemp())
+        (root / "Meta" / "rules").mkdir(parents=True)
+        (root / "Meta" / "rules" / "a.md").write_text(
+            SELF_TEST_FIXTURE_NEW, encoding="utf-8")
+        (root / "Meta" / "rules" / "b.md").write_text(
+            SELF_TEST_FIXTURE_CORPUS, encoding="utf-8")
+        VAULT_ROOT = root
+        META_DIR = root / "Meta"
+        CONFLICT_REPORT = META_DIR / "Rule Conflicts.md"
+        MEMORY_DIR = None
+        CORPUS_GLOBS = ("Meta/rules/*.md",)
+
+        def _run(extra):
+            argv = sys.argv
+            sys.argv = ["check-rule-conflicts.py", "--scan-all"] + extra
+            try:
+                main()
+                return 0
+            except SystemExit as e:
+                return e.code if isinstance(e.code, int) else 0
+            finally:
+                sys.argv = argv
+
+        rc_md = _run([])
+        rc_js = _run(["--json"])
+        if rc_md != rc_js:
+            print(f"FAIL: markdown mode exited {rc_md} but --json exited "
+                  f"{rc_js} on the SAME corpus. The verdict must not depend "
+                  f"on the output format.")
+            kw_pass = False
+        elif rc_md != 1:
+            print(f"FAIL: a corpus with known opposing pairs exited {rc_md}; "
+                  f"expected 1 from both modes. If this is 0 the gate is "
+                  f"reporting conflicts it found as a clean run.")
+            kw_pass = False
+        else:
+            print("PASS: both output modes exit 1 on the same conflicts")
+
+        # Inverse: a corpus with NO conflicts must exit 0 in both modes, or the
+        # agreement above could be two constants that happen to match.
+        clean = Path(_tf.mkdtemp())
+        (clean / "Meta" / "rules").mkdir(parents=True)
+        (clean / "Meta" / "rules" / "only.md").write_text(
+            "- always wikilink concepts\n", encoding="utf-8")
+        VAULT_ROOT = clean
+        META_DIR = clean / "Meta"
+        CONFLICT_REPORT = META_DIR / "Rule Conflicts.md"
+        rc_md0 = _run([])
+        rc_js0 = _run(["--json"])
+        if (rc_md0, rc_js0) != (0, 0):
+            print(f"FAIL: a conflict-free corpus exited md={rc_md0} "
+                  f"json={rc_js0}; expected 0 from both. The agreement case "
+                  f"above may be passing for the wrong reason.")
+            kw_pass = False
+        else:
+            print("PASS: both modes exit 0 on a conflict-free corpus")
+    finally:
+        VAULT_ROOT, META_DIR, CONFLICT_REPORT, MEMORY_DIR, CORPUS_GLOBS = _saved
+
+    return 0 if (kw_pass and semantic_pass) else 1
 
 
 def main():
@@ -660,7 +745,12 @@ def main():
 
     report_path = write_markdown_report(conflicts, scan_target, semantic_conflicts)
     print(f"Wrote {report_path} ({len(conflicts)} keyword conflicts, {len(semantic_conflicts)} semantic conflicts)")
-    sys.exit(0)
+    # Same verdict as the --json/--hook branch above. This was a bare
+    # sys.exit(0), which made the exit code depend on the OUTPUT FORMAT rather
+    # than on the findings: --json reported 1 for conflicts that the default
+    # markdown run reported as 0. A caller that changed formats silently lost
+    # its gate, and the two lines sat six apart.
+    sys.exit(1 if conflicts or semantic_conflicts else 0)
 
 
 if __name__ == "__main__":

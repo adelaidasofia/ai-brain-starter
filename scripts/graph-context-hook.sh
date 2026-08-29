@@ -1,4 +1,7 @@
 #!/bin/bash
+# exit-contract: ADVISORY -- a UserPromptSubmit hook: the protocol requires
+#   JSON on stdout and exit 0, so a non-zero here is a crash, not a verdict
+
 # --- ai-brain-starter: shim-safe PATH (strip refuse-shims) ----------------
 # Some machines carry a python3/python PATH shim (e.g. trailofbits
 # modern-python) that exit-1s on bare invocation and would turn every bare

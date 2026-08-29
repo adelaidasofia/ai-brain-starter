@@ -53,6 +53,8 @@ Provenance: MYC-4036. Sibling gate: scripts/check-hook-parity.py (which asks
 whether one behaviour reaches both PLATFORMS; this asks whether one contract's
 several IMPLEMENTATIONS know about each other).
 """
+# exit-contract: ENFORCING
+
 
 from __future__ import annotations
 

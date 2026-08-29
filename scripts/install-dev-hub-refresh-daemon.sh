@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# exit-contract: NOT-A-CHECKER -- installs a launchd plist and edits the
+#   global gitignore
+
 # install-dev-hub-refresh-daemon.sh
 #
 # One-shot installer for the bare-~/dev-hub freshness daemon on macOS (MYC-1893).

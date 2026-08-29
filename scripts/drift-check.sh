@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# exit-contract: ADVISORY -- its consumer contract is the parsed STATUS /
+#   DRIFT_COUNT stdout block, not the exit code; a session-start walkthrough
+#   resolves each row
+
 #
 # drift-check.sh — detect file drift between the ai-brain-starter repo and
 # the user's installed copies. READ-ONLY: never modifies anything.
@@ -45,7 +49,7 @@
 #     up, then replace (or skip).
 #
 # Output format (stable, parseable):
-#   STATUS: <OK | SKIPPED_TODAY | ERROR>
+#   STATUS: <OK | DRIFT | SKIPPED_TODAY | ERROR>
 #   DRIFT_COUNT: <integer>
 #   ---DRIFT_FILES---
 #   <scope>|<installed_path>|<repo_source_path>|<note>
@@ -57,6 +61,7 @@
 #         (e.g. graph-context-hook.sh) that need cherry-pick instead of
 #         wholesale overwrite.
 #
+
 # Cooldown:
 #   drift-check honors a once-per-day cooldown (mirrors update-check.sh) so
 #   that session start isn't noisy. Pass --force to bypass.
@@ -79,6 +84,7 @@ COOLDOWN_FILE="$HOME/.claude/.ai-brain-starter-drift-check-last-run"
 IGNORE_FILE="$HOME/.claude/.ai-brain-starter-drift-check-ignore"
 TODAY="$(date +%Y-%m-%d)"
 FORCE=0
+SELF_TEST=0
 VAULT=""
 
 # Parse args
@@ -92,11 +98,74 @@ while [[ $# -gt 0 ]]; do
       FORCE=1
       shift
       ;;
+    --self-test)
+      SELF_TEST=1
+      shift
+      ;;
     *)
       shift
       ;;
   esac
 done
+
+# --- negative control -------------------------------------------------------
+# The defect this covers: STATUS was the literal string OK on every run, so a
+# fully drifted install and a clean one emitted the identical token. The exit
+# code is 0 either way by design (a session-start consumer parses this block
+# and must not be blocked), which made STATUS the ONLY channel that could carry
+# the finding -- and it carried nothing.
+#
+# Asserts on the emitted TOKEN, not on the exit code, because the exit code is
+# deliberately constant here. HOME and the vault are sandboxed so the verdict
+# cannot depend on what happens to be installed on this machine.
+if [ "$SELF_TEST" = "1" ]; then
+  st_tmp="$(mktemp -d)"
+  trap 'rm -rf "$st_tmp"' EXIT
+  st_fail=0
+
+  mkdir -p "$st_tmp/home/.claude/skills"
+  mkdir -p "$st_tmp/vault/⚙️ Meta/rules"
+
+  # BITE: a vault rule file that differs from the repo template is drift.
+  st_rule="$(ls "$STARTER_DIR/templates/rules/"*.md 2>/dev/null | head -1)"
+  if [ -z "$st_rule" ]; then
+    echo "UNEVALUATED: no templates/rules/*.md to build a drift fixture from."
+    echo "  The control could not run, which is not a pass."
+    exit 2
+  fi
+  cp "$st_rule" "$st_tmp/vault/⚙️ Meta/rules/$(basename "$st_rule")"
+  printf '\n<!-- local edit that makes this differ from the repo -->\n' \
+    >> "$st_tmp/vault/⚙️ Meta/rules/$(basename "$st_rule")"
+
+  st_out="$(HOME="$st_tmp/home" bash "$0" --vault "$st_tmp/vault" --force 2>&1)"
+  st_status="$(printf '%s\n' "$st_out" | grep '^STATUS:' | head -1)"
+  st_count="$(printf '%s\n' "$st_out" | grep '^DRIFT_COUNT:' | head -1 | tr -cd '0-9')"
+  if [ "${st_count:-0}" -gt 0 ] && [ "$st_status" != "STATUS: DRIFT" ]; then
+    echo "FAIL: DRIFT_COUNT is ${st_count:-0} but STATUS is '$st_status'."
+    echo "      A standing alarm must not emit the same token as an all-clear."
+    st_fail=1
+  elif [ "${st_count:-0}" -eq 0 ]; then
+    echo "UNEVALUATED: the drift fixture produced DRIFT_COUNT 0, so the BITE"
+    echo "  case never exercised the branch it names."
+    exit 2
+  fi
+
+  # INVERSE: an empty vault has no drift and must still say OK. Without this a
+  # script that printed DRIFT unconditionally would satisfy the case above.
+  mkdir -p "$st_tmp/clean/⚙️ Meta/rules"
+  st_out2="$(HOME="$st_tmp/home" bash "$0" --vault "$st_tmp/clean" --force 2>&1)"
+  st_status2="$(printf '%s\n' "$st_out2" | grep '^STATUS:' | head -1)"
+  if [ "$st_status2" != "STATUS: OK" ]; then
+    echo "FAIL: a vault with no drift emitted '$st_status2', expected STATUS: OK."
+    echo "      The BITE case above may be passing for the wrong reason."
+    st_fail=1
+  fi
+
+  if [ "$st_fail" -ne 0 ]; then exit 1; fi
+  echo "OK - self-test: a drifted vault emits STATUS: DRIFT, a clean one emits"
+  echo "     STATUS: OK (so the control is not vacuous)."
+  exit 0
+fi
 
 # Cooldown
 if [[ $FORCE -eq 0 && -f "$COOLDOWN_FILE" ]]; then
@@ -117,6 +186,7 @@ fi
 # Bash 3.2 — initialize as empty string and append; avoid array unbound issues
 DRIFT_LINES=""
 DRIFT_COUNT=0
+
 
 # ── Ignore registry ──────────────────────────────────────────────────────
 # Per-user file at ~/.claude/.ai-brain-starter-drift-check-ignore. Each line
@@ -316,7 +386,18 @@ if [[ -n "$VAULT" && -d "$VAULT/⚙️ Meta/rules" && -d "$STARTER_DIR/templates
 fi
 
 # ── Output ─────────────────────────────────────────────────────────────────
-echo "STATUS: OK"
+# STATUS used to be the literal string OK on every run, so a fully drifted
+# install and a clean one emitted the identical token -- the documented
+# vocabulary at the top of this file had no value meaning "drift", and any
+# consumer keying on STATUS alone read a standing alarm as an all-clear. The
+# exit code stays 0 on purpose (see the exit-contract marker: the consumer
+# parses this block, and a session-start hook must not block a session), so
+# the STATUS token is the ONLY channel that can carry the finding.
+if [ "$DRIFT_COUNT" -gt 0 ]; then
+  echo "STATUS: DRIFT"
+else
+  echo "STATUS: OK"
+fi
 echo "DRIFT_COUNT: $DRIFT_COUNT"
 echo "---DRIFT_FILES---"
 if [[ -n "$DRIFT_LINES" ]]; then

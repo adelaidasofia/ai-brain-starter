@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# exit-contract: ENFORCING
+
 #
 # check-open-core-boundary.sh — allowlist-model guard for ADR-0001 (open-core boundary).
 #

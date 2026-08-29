@@ -14,6 +14,8 @@ Usage:
 The Journals folder is expected at: <vault-root>/Journals/
 Customize JOURNALS_DIR if your vault uses a different name (e.g. "📓 Journals").
 """
+# exit-contract: NOT-A-CHECKER -- moves journal files into month folders
+
 
 import sys
 import argparse

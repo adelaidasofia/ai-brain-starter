@@ -37,6 +37,8 @@ Pure stdlib. Usage:
     python3 scripts/check-nondev-register-sync.py
     python3 scripts/check-nondev-register-sync.py --repo-root PATH
 """
+# exit-contract: ENFORCING
+
 
 from __future__ import annotations
 

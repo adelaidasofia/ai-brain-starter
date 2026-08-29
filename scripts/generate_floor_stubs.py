@@ -15,6 +15,8 @@ does not keep its own divergent floor list. To change the floors, change them in
 this script. `scripts/test_generate_floor_stubs.py` fails if `floors/` drifts
 from this generator's output.
 """
+# exit-contract: NOT-A-CHECKER -- generates floor stub notes; a generator
+
 
 from __future__ import annotations
 

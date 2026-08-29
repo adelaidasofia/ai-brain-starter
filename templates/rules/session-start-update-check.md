@@ -107,7 +107,7 @@ powershell -File "$env:USERPROFILE\.claude\skills\ai-brain-starter\scripts\drift
 The script outputs:
 
 ```
-STATUS: <OK | SKIPPED_TODAY | ERROR>
+STATUS: <OK | DRIFT | SKIPPED_TODAY | ERROR>
 DRIFT_COUNT: <integer>
 ---DRIFT_FILES---
 <scope>|<installed_path>|<repo_source_path>|<note>
@@ -128,7 +128,7 @@ Scopes:
 
 **`ERROR`** — same rule as update-check: a one-time error is normal, surface it only on recurring failures.
 
-**`OK` with `DRIFT_COUNT > 0`** — this is the interesting case. Walk the user through it interactively. NEVER batch-overwrite. NEVER skip the diff display. NEVER skip the backup.
+**`DRIFT` (or, from an older installed copy, `OK` with `DRIFT_COUNT > 0`)** — this is the interesting case. Treat the two identically: `DRIFT` is the current token, and the `OK`-plus-count form is what a copy predating the token change still emits. Walk the user through it interactively. NEVER batch-overwrite. NEVER skip the diff display. NEVER skip the backup.
 
 ### How to walk the user through drift
 

@@ -75,6 +75,9 @@ Config: the dev root resolves from $ABS_DEV_ROOT, else the install config's
 Log dir override: $DEV_BUILD_RECLAIM_LOG_DIR (tests point this at a temp dir so a
 run never writes a manifest into the operator's real audit trail).
 """
+# exit-contract: NOT-A-CHECKER -- deletes regenerable build artifacts from
+#   worktrees
+
 
 from __future__ import annotations
 

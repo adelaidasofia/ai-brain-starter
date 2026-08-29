@@ -17,6 +17,10 @@ Usage:
   python3 decision-outcome-check.py --dry-run    # preview
   python3 decision-outcome-check.py --vault-root /path/to/vault
 """
+# exit-contract: ADVISORY -- its sink is a spliced section in Current
+#   Priorities.md; unfilled outcomes are a standing human backlog, never a
+#   build defect
+
 
 from __future__ import annotations
 

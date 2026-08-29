@@ -51,6 +51,9 @@ Exit codes:
 
 Stdlib + PyYAML only.
 """
+# exit-contract: NOT-A-CHECKER -- writes demotion-candidate files for human
+#   review
+
 
 from __future__ import annotations
 

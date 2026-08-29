@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# exit-contract: NOT-A-CHECKER -- orchestrates the extract, wikilink and
+#   insight phases
+
 # second-brain-mapping.sh
 # Unified vault-mapping pipeline. Runs three steps:
 #   1. journal-metadata-extract   fast, no LLM, always runs

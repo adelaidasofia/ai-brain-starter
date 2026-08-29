@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# exit-contract: ENFORCING
+
 # diagnose.sh - Self-check for an installed AI Brain Starter vault.
 # Runs ~10 checks and prints a green/yellow/red report.
 #

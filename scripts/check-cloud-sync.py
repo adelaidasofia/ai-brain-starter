@@ -34,6 +34,8 @@ Exit codes:
 
 Porcelain first token: OK_LOCAL | CLOUD_SYNC_RISK:<service>
 """
+# exit-contract: ENFORCING
+
 from __future__ import annotations
 
 import sys

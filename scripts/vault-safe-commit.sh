@@ -1,4 +1,6 @@
 #!/bin/bash
+# exit-contract: NOT-A-CHECKER -- performs a lock-safe targeted git commit
+
 # vault-safe-commit.sh — safe targeted commit for a large Obsidian vault.
 #
 # Solves lock-conflict and index-corruption problems from leaked git processes

@@ -31,6 +31,9 @@ Usage:
   dev-worktree-prune.py --idle-days 14     # only worktrees untouched this long
   dev-worktree-prune.py --json
 """
+# exit-contract: ADVISORY -- dry-run by default and its KEEP rows are a
+#   human-decision queue about un-backed-up worktrees
+
 from __future__ import annotations
 
 import argparse

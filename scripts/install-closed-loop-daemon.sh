@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# exit-contract: NOT-A-CHECKER -- installs a launchd plist; a one-shot
+#   installer
+
 # install-closed-loop-daemon.sh
 #
 # One-shot installer for the closed-loop daemon launchd agent on macOS.

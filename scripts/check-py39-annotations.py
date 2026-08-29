@@ -30,6 +30,8 @@ Usage:
   check-py39-annotations.py                # scan tracked Python
   check-py39-annotations.py --self-test    # prove the checker still bites
 """
+# exit-contract: ENFORCING
+
 
 from __future__ import annotations
 

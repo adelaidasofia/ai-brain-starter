@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# exit-contract: NOT-A-CHECKER -- installs a launchd plist; a one-shot
+#   installer
+
 # install-instinct-promote-daemon.sh
 #
 # One-shot installer for the Instinct Engine's daily promotion pass (macOS).

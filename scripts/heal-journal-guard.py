@@ -37,6 +37,8 @@ Registered on SessionStart via hooks.json; OWNED + verified by install-hooks-use
 (ARTIFACT-WITHOUT-ACTIVATION: a self-heal the installer does not register is dormant).
 Bypass: HEAL_JOURNAL_GUARD_BYPASS=1 (env).
 """
+# exit-contract: ENFORCING
+
 from __future__ import annotations
 
 import argparse

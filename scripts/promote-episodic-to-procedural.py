@@ -67,6 +67,9 @@ Cron pattern (every 6 hours, quiet on no-ops):
 
 Stdlib + PyYAML only.
 """
+# exit-contract: NOT-A-CHECKER -- drafts promotion-candidate files for human
+#   review
+
 
 from __future__ import annotations
 

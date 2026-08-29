@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# exit-contract: ENFORCING
+
 # repair-sidecar-note-deletion.sh — find notes an OLD machinery-relocation
 # deleted from a vault's history, and put them back.
 #

@@ -241,6 +241,33 @@ jobs:
       # active - MYC-1017, MYC-1031, and MYC-782 / #371 all shipped that way.
       # Also asserts every hook we wire is installer-OWNED, without which a
       # re-install duplicates a hand-wired copy instead of replacing it.
+      # A checker that prints a finding and exits 0 is, to every caller, a
+      # checker that found nothing -- and a deliberate advisory is
+      # indistinguishable from a gate that forgot to fail. This requires each
+      # one to SAY which it is, in the file. The baseline is capped and may
+      # only shrink, so a new script cannot join the undeclared tail.
+      - name: exit-contract negative controls (the gate must still bite)
+        run: python3 scripts/check-exit-contract.py --self-test
+
+      # The per-checker controls for the exit codes changed alongside the gate.
+      # Each constructs the finding its checker names and asserts it goes RED;
+      # each was mutation-tested (revert the fix, the control must fail AT ITS
+      # OWN SITE). Unwired, they would be files nobody runs.
+      - name: split-meta negative controls (a detected split must go RED)
+        run: python3 scripts/check-split-meta.py --self-test
+
+      - name: stale-rule negative controls (an unevaluable entry must go RED)
+        run: python3 scripts/stale-rule-check.py --self-test
+
+      - name: vault-repo drift negative controls (drift must reach the exit)
+        run: bash scripts/vault-repo-drift-check.sh --self-test
+
+      - name: drift-check negative controls (STATUS must carry the finding)
+        run: bash scripts/drift-check.sh --self-test
+
+      - name: every checker declares whether its findings can fail
+        run: python3 scripts/check-exit-contract.py
+
       - name: hook-activation negative controls (a dormant guard must go RED)
         run: python3 scripts/check-hook-activation.py --selftest
 
@@ -432,6 +459,16 @@ jobs:
       # runner - and still stays quiet on a well-formed one. An auditor that
       # silently stopped detecting would let a client install drift back into an
       # unbounded Actions bill behind a green check.
+      # Without PyYAML the auditor parses NOTHING: every workflow lands in its
+      # "unparsed" branch and every static rule is skipped. Until 2026-08-29
+      # that skip was filed as an advisory finding, so both steps below passed
+      # green having checked nothing -- measured on 8b9038b, where the same
+      # `--fail-on high` command exits 1 on a developer box that has PyYAML.
+      # The auditor now exits 2 when it cannot parse, so this install is what
+      # keeps the two steps below meaningful rather than merely quiet.
+      - name: install PyYAML (the auditor cannot parse a workflow without it)
+        run: python3 -m pip install --user pyyaml
+
       - name: ci-cost-audit negative controls (the auditor must still bite)
         run: python3 scripts/ci-cost-audit.py --self-test
 
@@ -569,6 +606,18 @@ jobs:
   bash32-syntax:
     name: bash 3.2 syntax (macOS /bin/bash)
     runs-on: macos-latest
+    env:
+      # Read by scripts/ci-cost-audit.py. macOS bills 10x Linux, and this job
+      # is ungated on purpose, so the auditor would otherwise flag it HIGH --
+      # correctly, on its own terms. The exemption is declared here rather than
+      # suppressed silently: the rationale is the comment block below, and the
+      # short version is that this is the ONLY surface on which bash 3.2
+      # parsing is proven, the guarantee has to hold on every change, and a
+      # real bug shipped through the gap it closes.
+      CI_COST_DELIBERATE: >-
+        Only surface proving bash 3.2 parsing; the guarantee must hold on every
+        change and a real unrunnable-test bug shipped through this gap before
+        the job existed. Syntax-only, so it is the cheapest form of the check.
     # macOS ships bash 3.2.57 at /bin/bash -- the last GPLv2 release -- and that
     # is the ONLY bash on an unmodified Mac. This repo's install path is a
     # supported dev environment there, so every .sh here has to PARSE under it.

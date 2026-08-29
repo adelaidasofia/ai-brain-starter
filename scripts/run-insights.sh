@@ -1,4 +1,7 @@
 #!/bin/bash
+# exit-contract: NOT-A-CHECKER -- a cron wrapper that invokes the insights
+#   skill
+
 # run-insights.sh -- Generate weekly or monthly journal insight reports via Claude Code CLI
 # Usage: ./run-insights.sh weekly   (Monday mornings via cron)
 #        ./run-insights.sh monthly  (2nd of each month via cron)

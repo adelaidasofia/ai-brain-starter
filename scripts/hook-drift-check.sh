@@ -1,4 +1,8 @@
 #!/bin/bash
+# exit-contract: ADVISORY -- consumed by a SessionStart surface that must not
+#   block a session; drift is reported on stdout for a human to resolve row
+#   by row
+
 # hook-drift-check.sh — detect drift between ai-brain-starter/hooks.json and
 # the vault's live .claude/settings.local.json
 #

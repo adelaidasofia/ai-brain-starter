@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# exit-contract: ADVISORY -- an interactive operator sync whose status action
+#   reports divergence for a human to resolve
+
 # vault-multi-machine-sync.sh — keep two installs of the same vault coherent.
 #
 # Use case: you work from machine A and machine B. Same vault, two clones.

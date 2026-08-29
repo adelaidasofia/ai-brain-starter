@@ -11,7 +11,7 @@
 #   powershell -File drift-check.ps1 -Vault "C:\path\to\vault" -Force
 #
 # Output format (stable, parseable - matches drift-check.sh):
-#   STATUS: <OK | SKIPPED_TODAY | ERROR>
+#   STATUS: <OK | DRIFT | SKIPPED_TODAY | ERROR>
 #   DRIFT_COUNT: <integer>
 #   ---DRIFT_FILES---
 #   <scope>|<installed_path>|<repo_source_path>|<note>
@@ -240,7 +240,15 @@ if ($Vault) {
 }
 
 # ── Output ─────────────────────────────────────────────────────────────────
-Write-Output "STATUS: OK"
+# Mirrors drift-check.sh: STATUS carries the finding, because the exit code
+# here is always 0 (a session-start consumer parses this block and must not be
+# blocked). Emitting OK unconditionally made a fully drifted install and a
+# clean one produce the identical token.
+if ($DriftLines.Count -gt 0) {
+    Write-Output "STATUS: DRIFT"
+} else {
+    Write-Output "STATUS: OK"
+}
 Write-Output "DRIFT_COUNT: $($DriftLines.Count)"
 Write-Output "---DRIFT_FILES---"
 foreach ($line in $DriftLines) {
