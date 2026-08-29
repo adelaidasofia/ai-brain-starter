@@ -199,11 +199,15 @@ of the agent. That selection used to be computed and thrown away; it is now
 appended to `~/.claude/instinct/injections.jsonl`, which is the join key the
 engine never had.
 
-**What it will not do.** It never auto-`correct`s. A correction is not recorded
-anywhere on disk, so automating only the *upward* direction would manufacture
-0.99s across the whole library — a different fiction, and a worse one, because
-it would look measured. Downward pressure comes from decay, which is real and
-observable. `correct` stays human-driven.
+**What it will not do, stated exactly.** An exposure records that the instinct
+was PUT IN FRONT OF THE AGENT — nothing more. No correction signal exists
+anywhere on disk, so this does not and cannot mean "it was used and nothing
+contradicted it"; that predicate is unevaluated. Confidence here measures
+**exercise, not correctness**, which is exactly why `evidence` exists as a
+separate field. It never auto-`correct`s: automating only the *upward*
+direction would manufacture 0.99s across the whole library — a different
+fiction, and a worse one, because it would look measured. Downward pressure
+comes from decay, which is real and observable.
 
 **The gates**, each of which exists because the naive version is dishonest:
 
@@ -216,7 +220,12 @@ observable. `correct` stays human-driven.
 | already-credited sessions tracked in `promote-state.json` | re-runs are idempotent — the same ledger twice credits nothing |
 | a `cursor_ts` high-water mark alongside that set | the set is bounded, so a long-lived install drops its oldest ids; without the cursor, a ledger record that outlived its own id would be credited again |
 | a **corrupt** state file raises; only an **absent** one is a fresh start | reading "unreadable" as "nothing credited yet" would re-credit every session still in the ledger. Absent and failed are different answers — pass `--reset-state` to start over deliberately |
-| an `O_EXCL` lock around the pass | the daily job and a hand-run overlapping would both credit the same records |
+| an `O_EXCL` lock around the pass, with an atomic rename-aside stale break | the daily job and a hand-run overlapping would both credit the same records. `stat` → `unlink` → `create` is not enough: a loser can delete the winner's fresh lock |
+| the state is written **before** the instinct files, and a failed write **raises** | the state write is what makes a re-run idempotent, so it must land before the changes it accounts for. Written last and fail-open, any crash after the first file leaves those files bumped and the sessions uncredited — measured at +0.015 confidence per repeat, climbing to the ceiling while every log line reads healthy |
+| an existing-but-unreadable ledger raises | "cannot read" is not "no evidence yet"; a scheduled caller reads the second as healthy forever |
+| a record with no parseable `ts` is skipped once a cursor exists | it cannot be checked against the cursor, so it is unverifiable rather than exempt — otherwise this class re-credits forever after the session set truncates |
+| ledger slugs matching no file are named and NOT counted | otherwise the headline asserts exposures that landed nowhere |
+| `--every` must be >= 1 | a gate of 0 accumulates exposures, promotes nothing, and reports a clean run |
 
 **Exploration.** Ranking purely by confidence is a closed loop: only injected
 instincts earn exposures, only exposed instincts get promoted, so the top-N
@@ -224,7 +233,11 @@ freezes and the rest of the library can never acquire evidence no matter how
 good it is. The injection hook therefore spends a minority of its budget
 (`INSTINCT_INJECT_EXPLORE`, default 3 of 12) on in-scope instincts *below* the
 floor with the fewest exposures, rotated by session id so different sessions
-sample different candidates. Explore picks are **labelled as unproven** in the
+sample different candidates. That rotation is bounded to a pool of the
+least-exercised (`INSTINCT_INJECT_EXPLORE_POOL`, default 24) — rotating the
+*whole* sorted list makes the sort inert: measured over 4000 sessions against
+650 below-floor candidates, only 3.5% of picks landed on the 24 least-exercised
+and rank 649 was sampled as often as rank 0. Bounded, that figure is 100%. Explore picks are **labelled as unproven** in the
 injected block — an instinct under evaluation must not read like a confirmed
 one.
 

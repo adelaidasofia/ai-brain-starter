@@ -62,6 +62,12 @@ SCRIPTS = os.environ.get(
 MIN_CONF = float(os.environ.get("INSTINCT_INJECT_MIN_CONFIDENCE", "0.80"))
 LIMIT = int(os.environ.get("INSTINCT_INJECT_LIMIT", "12"))
 EXPLORE = int(os.environ.get("INSTINCT_INJECT_EXPLORE", "3"))
+# How many of the least-exercised candidates the explore rotation draws
+# from. Bounded so the bias toward never-exercised instincts survives.
+EXPLORE_POOL = int(os.environ.get("INSTINCT_INJECT_EXPLORE_POOL", "24"))
+# Match the observation ledger's rotation so `promote`'s single `.prev`
+# read covers the same span on both.
+INJECTIONS_MAX_BYTES = int(os.environ.get("INSTINCT_INJECTIONS_MAX_BYTES", "5000000"))
 INJECTIONS_PATH = os.environ.get(
     "INSTINCT_INJECTIONS",
     os.path.join(os.path.expanduser("~"), ".claude", "instinct", "injections.jsonl"),
@@ -83,6 +89,15 @@ def _record(session: str, project: str, exploit: list, explore: list) -> None:
     """Append one injection record. Best-effort: never raises to the caller."""
     try:
         os.makedirs(os.path.dirname(INJECTIONS_PATH), exist_ok=True)
+        # Rotate, exactly like the observation ledger does. One line per
+        # session-segment is small, but "small and unbounded" still grows
+        # forever on a long-lived install, and `promote` reads the whole file
+        # on every run. One `.prev` generation is what the reader expects.
+        try:
+            if os.path.getsize(INJECTIONS_PATH) > INJECTIONS_MAX_BYTES:
+                os.replace(INJECTIONS_PATH, INJECTIONS_PATH + ".prev")
+        except OSError:
+            pass  # missing file on first run, or a racing sibling: not fatal
         line = json.dumps({
             "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "session": session,
@@ -143,14 +158,20 @@ def main() -> None:
 
         explore = []
         if n_explore:
-            # Least-exercised first; rotate by session so different sessions
-            # sample different candidates instead of all re-picking the head.
             under.sort(key=lambda r: (r[0], r[4]))
+            # Rotate WITHIN a bounded prefix, not the whole list. Rotating
+            # everything makes the sort inert -- measured flat across all
+            # ranks, so a never-exercised instinct was sampled no more often
+            # than a well-exercised one, and "least-exercised first" described
+            # a sort the next line threw away. The prefix keeps the bias; the
+            # rotation inside it keeps different sessions sampling different
+            # candidates.
+            pool = under[: min(len(under), max(n_explore * 8, EXPLORE_POOL))]
             # crc32, NOT hash(): str hashing is salted per-process
             # (PYTHONHASHSEED), so hash() would make the rotation differ
             # between two runs of the SAME session and untestable.
-            off = (zlib.crc32(session.encode()) % len(under)) if session else 0
-            rotated = under[off:] + under[:off]
+            off = (zlib.crc32(session.encode()) % len(pool)) if session else 0
+            rotated = pool[off:] + pool[:off]
             explore = [(r[1], r[2], r[3], r[4]) for r in rotated[:n_explore]]
 
         if not exploit and not explore:

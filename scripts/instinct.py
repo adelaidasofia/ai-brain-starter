@@ -56,6 +56,9 @@ PROMOTE_STATE_PATH = Path(os.environ.get(
 # instincts it has injected SO FAR and then never revisited, silently losing
 # every later segment. Leave recent sessions alone; the next run takes them.
 PROMOTE_SETTLE_MINUTES = int(os.environ.get("INSTINCT_PROMOTE_SETTLE_MINUTES", "60"))
+# A crashed run must not wedge the daily job forever; an hour is far longer
+# than this pass can legitimately take.
+LOCK_STALE_SECONDS = int(os.environ.get("INSTINCT_LOCK_STALE_SECONDS", "3600"))
 
 
 # ---------------------------------------------------------------------------
@@ -224,18 +227,21 @@ def cmd_decay(args, memory_dir: Path) -> int:
     return 0
 
 
-def _read_ledger(path: Path) -> tuple[list[dict], int]:
+def _read_ledger(path: Path) -> tuple[list[dict], int, list[str]]:
     """Read a JSONL ledger plus its rotated `.prev` sibling.
 
-    Returns (records, malformed_count). Malformed lines are COUNTED and
-    reported by the caller, never silently dropped -- a ledger that quietly
-    loses half its lines and still exits 0 is the SILENT-NO-OP bug class, and
-    it would read exactly like "there was no evidence".
+    Returns (records, malformed_count, unreadable_paths). Malformed lines are
+    COUNTED and unreadable FILES are named, never silently dropped -- a ledger
+    that quietly loses half its lines and still exits 0 is the SILENT-NO-OP bug
+    class, and it reads exactly like "there was no evidence". A file that
+    EXISTS but cannot be read is a third state: not absent, not empty, and the
+    caller must refuse rather than conclude anything from it.
     """
     records: list[dict] = []
     malformed = 0
+    unreadable: list[str] = []
     for p in (Path(str(path) + ".prev"), path):
-        if not p.is_file():
+        if not p.exists():
             continue
         try:
             with p.open(encoding="utf-8", errors="replace") as fh:
@@ -253,8 +259,8 @@ def _read_ledger(path: Path) -> tuple[list[dict], int]:
                     else:
                         malformed += 1
         except OSError as exc:
-            print(f"WARNING: could not read {p}: {exc}", file=sys.stderr)
-    return records, malformed
+            unreadable.append(f"{p}: {exc}")
+    return records, malformed, unreadable
 
 
 def _parse_ts(s: str | None) -> datetime | None:
@@ -308,29 +314,62 @@ class _PromoteLock:
         self.fd = None
 
     def __enter__(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise PromoteStateError(
+                f"cannot create the lock directory {self.path.parent}: {exc}") from exc
         try:
             self.fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(self.fd, f"{os.getpid()}\n".encode())
+            return self
         except FileExistsError:
-            age = None
+            pass
+        except OSError as exc:
+            # Anything other than "already held" -- a read-only directory, a
+            # bad path -- is a refusal to run, not a crash. A raw traceback
+            # out of a daily job is far less legible than the module saying
+            # what it would not do.
+            raise PromoteStateError(
+                f"cannot take the promotion lock at {self.path}: {exc}") from exc
+
+        age = None
+        try:
+            age = datetime.now(timezone.utc).timestamp() - self.path.stat().st_mtime
+        except OSError:
+            pass
+        if age is not None and age > LOCK_STALE_SECONDS:
+            # A crashed run leaves the lock behind forever. Break it by RENAMING
+            # it aside first: os.rename on a single path is atomic, so exactly
+            # one racing process can succeed and the losers get ENOENT. The
+            # obvious stat -> unlink -> create instead lets a loser delete the
+            # WINNER's fresh lock and create its own, and then both passes run.
+            claim = self.path.with_name(f"{self.path.name}.claim-{os.getpid()}")
             try:
-                age = datetime.now(timezone.utc).timestamp() - self.path.stat().st_mtime
+                os.rename(str(self.path), str(claim))
             except OSError:
-                pass
-            if age is not None and age > 3600:
-                # A crashed run leaves the lock behind forever; an hour is far
-                # longer than this pass can legitimately take.
+                claim = None  # someone else won the break; fall through to refuse
+            if claim is not None:
                 try:
-                    self.path.unlink()
-                    self.fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    claim.unlink()
+                except OSError:
+                    pass
+                try:
+                    self.fd = os.open(str(self.path),
+                                      os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    os.write(self.fd, f"{os.getpid()}\n".encode())
                     return self
                 except OSError:
                     pass
-            raise PromoteStateError(
-                f"another promotion pass holds {self.path}"
-                + (f" (age {int(age)}s)" if age is not None else "")
-                + ". Refusing to run concurrently.")
-        return self
+        holder = ""
+        try:
+            holder = " held by pid " + self.path.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+        raise PromoteStateError(
+            f"another promotion pass holds {self.path}{holder}"
+            + (f" (age {int(age)}s)" if age is not None else "")
+            + ". Refusing to run concurrently.")
 
     def __exit__(self, *exc):
         if self.fd is not None:
@@ -346,11 +385,38 @@ class _PromoteLock:
 
 
 def _save_promote_state(state: dict) -> None:
+    """Persist the credit ledger, or RAISE.
+
+    This is the half that actually prevents double-counting, so it fails
+    CLOSED. A warn-and-continue here mutates every instinct file, exits 0, and
+    lets the next run credit the identical sessions again -- measured at
+    +0.015 confidence per repeat, climbing to the ceiling while every log line
+    reads healthy, and flipping `evidence` to "reinforced" on evidence that
+    was never gathered. The load path refuses an unreadable state file for the
+    same reason; guarding only one end guards neither.
+
+    Written atomically: a half-written state file is unreadable JSON, which
+    the load path then refuses -- turning a torn write into a loud stop
+    instead of a silent reset of the credit history.
+    """
     try:
         PROMOTE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        PROMOTE_STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
     except OSError as exc:
-        print(f"WARNING: could not persist promote state: {exc}", file=sys.stderr)
+        raise PromoteStateError(
+            f"cannot create {PROMOTE_STATE_PATH.parent}: {exc}") from exc
+    tmp = PROMOTE_STATE_PATH.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        os.replace(str(tmp), str(PROMOTE_STATE_PATH))
+    except OSError as exc:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise PromoteStateError(
+            f"could not persist promote state to {PROMOTE_STATE_PATH}: {exc}. "
+            f"Refusing to continue: crediting sessions we cannot record means "
+            f"the next run credits them again.") from exc
 
 
 def cmd_promote(args, memory_dir: Path) -> int:
@@ -362,12 +428,16 @@ def cmd_promote(args, memory_dir: Path) -> int:
     happened to contain "never" or "codified". This closes the loop on the half
     that IS deterministically observable.
 
-    Reinforce, not correct. An exposure that produced no correction is weak
-    positive evidence and it is genuinely in the ledger. A CORRECTION is not
-    recorded anywhere on disk, so automating only the upward direction with no
-    gate would manufacture 0.99s across the whole store. Hence, mirroring the
-    shipped runtime loop (MYC-818 / MYC-916): promotion is gated on a COUNT of
-    exposures, the climb is asymptotic, and `correct` stays human-driven.
+    Reinforce, not correct, and be exact about what that buys. An exposure
+    records that the instinct was PUT IN FRONT OF THE AGENT -- nothing more. No
+    correction signal exists anywhere on disk, so this does NOT and cannot mean
+    "it was used and nothing contradicted it"; that predicate is unevaluated.
+    Confidence here is therefore a measure of exercise, not of correctness, and
+    the `evidence` field exists so a reader can tell those apart. Automating
+    only the upward direction with no gate would manufacture 0.99s across the
+    whole store, so -- mirroring the shipped runtime loop (MYC-818 / MYC-916) --
+    promotion is gated on a COUNT of exposures, the climb is asymptotic, and
+    `correct` stays human-driven.
 
     An exposure counts only when the session did real work (>= --min-session-calls
     tool calls in the observation ledger). A session that started and died
@@ -382,10 +452,23 @@ def _promote_locked(args, memory_dir: Path) -> int:
     today = _today()
     now = datetime.now(timezone.utc)
 
-    obs, obs_bad = _read_ledger(OBSERVATIONS_PATH)
+    if args.every < 1:
+        raise PromoteStateError(
+            f"--every must be >= 1 (got {args.every}); a gate of {args.every} "
+            f"would accumulate exposures and never promote, while reporting "
+            f"a clean run.")
+
+    obs, obs_bad, obs_unreadable = _read_ledger(OBSERVATIONS_PATH)
     work = collections.Counter(str(o.get("session", "")) for o in obs)
 
-    inj, inj_bad = _read_ledger(INJECTIONS_PATH)
+    inj, inj_bad, inj_unreadable = _read_ledger(INJECTIONS_PATH)
+    # A ledger that EXISTS but cannot be read is not an absent one. Reporting
+    # "nothing to promote yet" for a permanently unreadable file is a false
+    # clean that a scheduled caller reads as healthy forever.
+    if obs_unreadable or inj_unreadable:
+        raise PromoteStateError(
+            "ledger file(s) exist but could not be read; refusing to conclude "
+            "anything from a partial view:\n  " + "\n  ".join(obs_unreadable + inj_unreadable))
     if not inj:
         print(f"promote: no injection records at {INJECTIONS_PATH}.")
         print("  The SessionStart hook writes them. If the engine was installed "
@@ -410,6 +493,7 @@ def _promote_locked(args, memory_dir: Path) -> int:
     seen_pairs: set[tuple[str, str]] = set()
     fresh_sessions: set[str] = set()
     n_already = n_idle = n_unsettled = n_unattributed = 0
+    n_behind_cursor = n_undated = 0
 
     for rec in inj:
         sess = str(rec.get("session", ""))
@@ -425,7 +509,14 @@ def _promote_locked(args, memory_dir: Path) -> int:
         # session set (not the cursor) is what dedupes them. The cursor is only
         # the backstop for when that bounded set eventually truncates.
         if ts and cursor and ts < cursor:
-            n_already += 1
+            n_behind_cursor += 1
+            continue
+        # An unparseable/absent ts cannot be checked against the cursor, so
+        # once the cursor is in play it is UNVERIFIABLE, not exempt. Crediting
+        # it would let exactly this class re-credit forever after the bounded
+        # session set truncates -- the hole the cursor exists to close.
+        if ts is None and cursor is not None:
+            n_undated += 1
             continue
         if ts and (now - ts).total_seconds() < PROMOTE_SETTLE_MINUTES * 60:
             n_unsettled += 1
@@ -444,7 +535,23 @@ def _promote_locked(args, memory_dir: Path) -> int:
             seen_pairs.add(pair)
             deltas[str(slug)] += 1
 
+    # CLAIM THE SESSIONS FIRST, THEN MUTATE. The state write is what makes a
+    # re-run idempotent, so it must land before the changes it accounts for.
+    # Written last, any failure after the first instinct file -- a crash, a
+    # kill, a full disk -- leaves those files bumped and the sessions
+    # uncredited, and the next run credits them all over again. This ordering
+    # trades that for the safe failure: a crash mid-apply loses some credit,
+    # and losing credit is recoverable in a way that inventing it is not.
+    if not args.dry_run and fresh_sessions:
+        credited.extend(sorted(fresh_sessions))
+        state["credited_sessions"] = credited[-il.PROMOTE_SESSION_MEMORY:]
+        if max_credited_ts is not None:
+            state["cursor_ts"] = max_credited_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+        state["last_run"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        _save_promote_state(state)   # raises -> nothing below runs
+
     touched = promoted = unbackfilled = 0
+    matched_slugs: set[str] = set()
     for path in il.iter_instinct_paths(memory_dir):
         inst = il.parse_instinct(path)
         fm = inst.fm
@@ -453,6 +560,8 @@ def _promote_locked(args, memory_dir: Path) -> int:
             unbackfilled += 1
             continue
         delta = deltas.get(inst.slug, 0)
+        if delta:
+            matched_slugs.add(inst.slug)
         prev_exp = il.parse_int(fm.get("exposures"), 0)
         new_exp = prev_exp + delta
         steps = il.promotion_steps(prev_exp, new_exp, args.every)
@@ -495,22 +604,24 @@ def _promote_locked(args, memory_dir: Path) -> int:
         if steps:
             promoted += 1
 
-    if not args.dry_run and fresh_sessions:
-        credited.extend(sorted(fresh_sessions))
-        state["credited_sessions"] = credited[-il.PROMOTE_SESSION_MEMORY:]
-        if max_credited_ts is not None:
-            state["cursor_ts"] = max_credited_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
-        state["last_run"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        _save_promote_state(state)
-
     verb = "would credit" if args.dry_run else "credited"
+    landed = sum(v for k, v in deltas.items() if k in matched_slugs)
     print(f"promote: {verb} {len(fresh_sessions)} session(s) -> "
-          f"{sum(deltas.values())} exposure(s) across {len(deltas)} instinct(s); "
+          f"{landed} exposure(s) across {len(matched_slugs)} instinct(s); "
           f"{touched} file(s) updated, {promoted} reinforced "
           f"(gate: 1 step per {args.every} exposures).")
-    print(f"  skipped: {n_already} already-credited, {n_unsettled} still-recent "
+    print(f"  skipped: {n_already} already-credited, {n_behind_cursor} behind the "
+          f"cursor, {n_undated} undated, {n_unsettled} still-recent "
           f"(< {PROMOTE_SETTLE_MINUTES}m), {n_idle} idle "
           f"(< {args.min_session_calls} tool calls), {n_unattributed} unattributed.")
+    ghosts = sorted(set(deltas) - matched_slugs)
+    if ghosts:
+        # Counting these into the headline would assert exposures that landed
+        # nowhere. Name them: a slug in the ledger with no file behind it is
+        # a renamed or deleted memory, not evidence.
+        print(f"  {len(ghosts)} ledger slug(s) matched no instinct file and were "
+              f"NOT credited: {', '.join(ghosts[:5])}"
+              + (" ..." if len(ghosts) > 5 else ""), file=sys.stderr)
     if obs_bad or inj_bad:
         print(f"  WARNING: {inj_bad} malformed injection line(s), "
               f"{obs_bad} malformed observation line(s) skipped.", file=sys.stderr)
