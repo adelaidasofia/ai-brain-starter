@@ -107,7 +107,10 @@ def noop():
 # --- file discovery (generic, name-free) --------------------------------------
 def _memory_md(cwd: str) -> Path | None:
     """Locate MEMORY.md the way Claude Code loads it (sanitized-cwd projects dir),
-    falling back to the in-vault canonical path. Mirrors session-start-context.py."""
+    falling back to the in-vault canonical path. NOT the same resolver as
+    _lib/memory_index.memory_dirs(), which globs every ~/.claude/projects/*/memory
+    dir; this resolves THIS project only. memory_index covers a superset, so the
+    defer_to below still holds."""
     cands: list[Path] = []
     env = os.environ.get("CLAUDE_PROJECT_DIR")
     if env:

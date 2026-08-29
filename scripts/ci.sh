@@ -87,9 +87,9 @@
 #                           scripts/test_ps1_encoding_gate.py pins that.
 #   (e9) defer targets    - scripts/check-defer-targets.py fails a hook/script
 #                           under hooks/ or scripts/ that names a sibling as the
-#                           owner of a responsibility (`defer_to="x.py"`, or
-#                           prose "owned by x.py" / "handled by x.py" / "delegates
-#                           to x.py" / "deferred to x.py") when no tracked file in
+#                           owner of a responsibility (`defer_to="<owner>.py"`, or
+#                           prose "owned by <owner>.py" / "handled by <owner>.py" / "delegates
+#                           to <owner>.py" / "deferred to <owner>.py") when no tracked file in
 #                           the repo has that basename. A dangling deferral is
 #                           worse than a dormant guard: a dormant guard is absent
 #                           and looks absent, a dangling deferral is absent and
@@ -1157,8 +1157,8 @@ echo "==> (e8) file I/O encoding: $PY scripts/check-utf8-file-io.py"
 # ---- (e9) Dangling defer targets --------------------------------------------
 # scripts/check-defer-targets.py fails a hook/script under hooks/ or scripts/
 # that names a sibling guard as the owner of a responsibility -- structurally
-# (`defer_to="x.py"`) or in prose ("owned by x.py" / "handled by x.py" /
-# "delegates to x.py" / "deferred to x.py") -- when no tracked file in the repo
+# (`defer_to="<owner>.py"`) or in prose ("owned by <owner>.py" / "handled by <owner>.py" /
+# "delegates to <owner>.py" / "deferred to <owner>.py") -- when no tracked file in the repo
 # has that basename. Bug class: DEFERRAL-TO-AN-UNSHIPPED-OWNER, and it is worse
 # than plain dormancy: a dormant guard is absent and looks absent, a dangling
 # deferral is absent and looks COVERED. Caught live: context-budget-measure.py
