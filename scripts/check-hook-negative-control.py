@@ -39,6 +39,21 @@ the repo NAMES the hook. That is a FLOOR, not proof:
 Claiming more than this would be the same error the check is about, so the
 message says "no test surface", never "untested" or "unproven".
 
+A CONTROL CAN ALSO FAIL FOR THE WRONG REASON, which is subtler than vacuous
+and reads as more rigorous. Measured 2026-08-28 (PR #610): a test with four
+real assertions, naming the right function, still passed with the fix reverted
+-- three fixtures running, because each tripped a DIFFERENT guard in the same
+call path (the mkdir guard, then the load guard, then the lock) and every one
+of them raised the expected exception TYPE from the wrong SITE. The assertion
+was about an outcome, and several distinct failures produce that same outcome;
+the more fail-closed guards a function has, the likelier a crude fixture trips
+an earlier one. So: revert the specific fix and require RED, and when it stays
+green find which guard actually fired instead of adjusting the assertion. Two
+harness traps in the same family -- a mutation whose search string no longer
+matches silently mutates nothing, and `grep -c '[FAIL]'` scores a CRASHED suite
+as zero failures, identical to a clean pass. Assert the mutation applied; read
+the exit code.
+
   * The name match is a SUBSTRING match, so a hook named `retry-budget` counts
     as covered by a test that only mentions `retry-budget-v2`. That error runs
     in the PERMISSIVE direction (a false GREEN, never a false accusation),

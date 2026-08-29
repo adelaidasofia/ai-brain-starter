@@ -65,6 +65,9 @@ EXPLORE = int(os.environ.get("INSTINCT_INJECT_EXPLORE", "3"))
 # How many of the least-exercised candidates the explore rotation draws
 # from. Bounded so the bias toward never-exercised instincts survives.
 EXPLORE_POOL = int(os.environ.get("INSTINCT_INJECT_EXPLORE_POOL", "24"))
+# Match the observation ledger's rotation so `promote`'s single `.prev`
+# read covers the same span on both.
+INJECTIONS_MAX_BYTES = int(os.environ.get("INSTINCT_INJECTIONS_MAX_BYTES", "5000000"))
 INJECTIONS_PATH = os.environ.get(
     "INSTINCT_INJECTIONS",
     os.path.join(os.path.expanduser("~"), ".claude", "instinct", "injections.jsonl"),
@@ -86,6 +89,15 @@ def _record(session: str, project: str, exploit: list, explore: list) -> None:
     """Append one injection record. Best-effort: never raises to the caller."""
     try:
         os.makedirs(os.path.dirname(INJECTIONS_PATH), exist_ok=True)
+        # Rotate, exactly like the observation ledger does. One line per
+        # session-segment is small, but "small and unbounded" still grows
+        # forever on a long-lived install, and `promote` reads the whole file
+        # on every run. One `.prev` generation is what the reader expects.
+        try:
+            if os.path.getsize(INJECTIONS_PATH) > INJECTIONS_MAX_BYTES:
+                os.replace(INJECTIONS_PATH, INJECTIONS_PATH + ".prev")
+        except OSError:
+            pass  # missing file on first run, or a racing sibling: not fatal
         line = json.dumps({
             "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "session": session,

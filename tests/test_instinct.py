@@ -578,6 +578,20 @@ def test_injection_hook_writes_stems():
         ctx = block.get("hookSpecificOutput", {}).get("additionalContext", "")
         check("Under evaluation" in ctx, "explore picks are LABELLED as unproven in the block")
 
+        # The ledger must rotate like its sibling. "Small and unbounded" still
+        # grows forever, and `promote` reads the whole file every run.
+        before = inj.read_text(encoding="utf-8")
+        r2 = subprocess.run(
+            [sys.executable, str(ROOT / "hooks" / "inject-instinct-context.py")],
+            input=_json.dumps({"session_id": "secondrun", "hook_event_name": "SessionStart"}),
+            capture_output=True, text=True,
+            env=dict(env, INSTINCT_INJECTIONS_MAX_BYTES="1"))
+        prev = Path(str(inj) + ".prev")
+        check(r2.returncode == 0 and prev.is_file(),
+              "the injection ledger rotates to .prev past its size cap")
+        check(prev.read_text(encoding="utf-8") == before,
+              "rotation preserves the prior generation verbatim (promote reads .prev)")
+
 
 def test_promote_reports_unbackfilled():
     print("test_promote_reports_unbackfilled")
