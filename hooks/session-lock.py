@@ -102,17 +102,6 @@ IDLE_EXPIRE_SEC = 1800      # prune entries idle > 30 min (stale-lock safety val
 CACHE_TTL_SEC = 604_800     # prune per-session cache pointers older than 7 days
 GIT_TIMEOUT_SEC = 6
 SCHEMA_VERSION = 2
-# Env for _index_is_empty's internal `git -C dirpath diff --cached` probe: the
-# GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE family override `-C` and would redirect
-# this diagnostic call at whatever repo the CALLER's environment points to,
-# defeating the explicit `-C dirpath` and misreading a different repo's index
-# as this one's -- the same GIT_DIR-confusion class this file exists to catch
-# in sibling commands, just self-inflicted here instead. Referenced but never
-# defined since #478 (2026-08-12); every call site passed `_GIT_CLEAN_ENV` and
-# it silently NameError'd -- caught by ruff --select F821, which nothing in
-# this repo's own CI runs over hooks/*.py (only the phase-doc Python blocks).
-_GIT_ENV_STRIP = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
-_GIT_CLEAN_ENV = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_STRIP}
 FLOCK_RETRIES = 20          # 20 * 10ms = 200ms max wait, then fail-open (unlocked)
 FLOCK_SLEEP_SEC = 0.01
 # Test-only determinism knob. When set, acquire the sidecar lock with a BLOCKING
@@ -148,19 +137,48 @@ ALWAYS_MUTATING = {
 # git global options that consume the FOLLOWING token as their value.
 GIT_GLOBAL_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
 
-# Ambient env vars that override an explicit `-C <path>` argument (GIT_DIR wins
-# over -C; GIT_WORK_TREE / GIT_INDEX_FILE / the object-dir pair follow the same
-# way). _index_is_empty's `git -C dirpath diff --cached --quiet` must always
-# read dirpath's OWN index -- never a repo an inherited env var points at --
-# stripped once at import so no subprocess call in this file can be silently
-# retargeted by the calling shell's environment.
+# git honors the location/index/object env family OVER an explicit `-C <path>`,
+# so a single leaked var silently retargets a probe at a DIFFERENT repo. That is
+# not hypothetical here: `_main_root` (via `_git_common_dir`) resolves the ONE
+# identity this whole hook keys off -- the SessionStart sibling warning and the
+# PreToolUse git-mutation DENY both decide, and write, against it. A git-hook
+# context exports GIT_DIR; a concurrent worktree session can leak one in.
+# Bug class RESOLVES-WRONG-REPO-FROM-AMBIENT-GIT-ENV.
+#
+# Measured (git 2.50.1, hooks/test_session_lock_git_env.py) against `git -C real`
+# with GIT_* pointed at a decoy repo -- which var actually bites which probe:
+#   GIT_DIR         -> ALL THREE (--git-common-dir, --abbrev-ref HEAD, diff --cached)
+#   GIT_COMMON_DIR  -> --git-common-dir
+#   GIT_INDEX_FILE  -> diff --cached
+#   GIT_WORK_TREE   -> none of these three (it relocates only the working tree)
+# GIT_WORK_TREE and the rest (object dirs, namespace, ceiling/discovery, all
+# documented in git(1)) are stripped anyway: same location family, and the cost
+# of stripping a var that does not currently bite is zero. GIT_PREFIX and CDPATH
+# are belt-and-braces only -- neither is documented in git(1) as a `-C` override,
+# and CDPATH was measured NOT to affect `git -C` (nothing here uses shell=True).
+#
+# Stripped once at import, and passed EXPLICITLY at all three call sites. A strip
+# set is inert unless `env=` is threaded through, which is exactly how
+# `_git_common_dir` stayed unprotected while this comment claimed otherwise.
 _GIT_CLEAN_ENV = {
     k: v for k, v in os.environ.items()
     if k not in (
-        "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
-        "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR",
+        "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_PREFIX", "CDPATH",
     )
 }
+# History, because it explains why a SECOND definition of this name existed here
+# and why the duplicate was the dangerous part. #478 (2026-08-12) referenced
+# `_GIT_CLEAN_ENV` without defining it, so it silently NameError'd. #492 defined
+# it (2026-08-25 22:12). #530 defined it AGAIN 31 minutes later (22:43) with a
+# narrower 3-var set, fixing a NameError #492 had already fixed. Python keeps the
+# LAST binding, so #492's wider set won and the duplicate was inert -- but only by
+# ordering luck: land them the other way round and the strip set silently narrows
+# to three vars with no test, no lint and no reviewer able to see it. Neither
+# guard could catch it: this repo's CI runs ruff F821 over phase-doc blocks only,
+# never hooks/*.py, and py_compile cannot see an undefined name at all.
 
 # ---- `git commit` option tables (for the scoped-commit exemption) -----------
 # The parse has ONE catastrophic failure mode: mistaking an option's VALUE for a
@@ -240,6 +258,7 @@ def _git_common_dir(cwd):
                 ["git", "-C", cwd] + args,
                 capture_output=True, text=True,
                 encoding="utf-8", errors="replace", timeout=GIT_TIMEOUT_SEC,
+                env=_GIT_CLEAN_ENV,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             return ""
@@ -381,6 +400,10 @@ def _current_branch(cwd):
             # brain ships cross-platform with emoji-named vault folders. Caught
             # by scripts/check-utf8-subprocess.py, not by review.
             encoding="utf-8", errors="replace",
+            # Same ambient-git-env strip as _git_common_dir: measured, a leaked
+            # GIT_DIR returns ANOTHER repo's branch, and this value is compared
+            # across sessions to decide the same-branch warning.
+            env=_GIT_CLEAN_ENV,
         )
     except Exception:
         return ""
