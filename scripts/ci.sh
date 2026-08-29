@@ -1236,7 +1236,7 @@ PY_DIRECT=(
   # all matched NO rule and exited 0 -- a destructive-command guard, silently
   # unguarded on the spellings an agent actually writes. Its cwd walk was also
   # quote-blind, so a `cd` inside a quoted string moved the guard off the vault.
-  # 18 of these 39 legs fail against the pre-fix revision; the ALLOW legs are
+  # 20 of these 43 legs fail against the pre-fix revision; the ALLOW legs are
   # half the suite, because the fail-closed cwd SET that fixes the walk is
   # exactly the change that would otherwise start over-blocking.
   hooks/test_vault_command_nudges_lead.py
