@@ -46,6 +46,19 @@ except Exception:  # fail-open: never block a git op on an import error
     def vault_root_for(target: Path):  # type: ignore
         return None
 
+# Shared, quote-aware command parsing. This guard hand-rolled its own `cd` walk
+# and inherited every fail-open that copy had.
+try:
+    from _lib.shell_parse import (  # noqa: E402
+        cwd_candidates, expand_vars, split_segments_with_seps,
+        strip_heredoc_bodies, strip_noncode,
+    )
+    _LIB_OK = True
+except Exception:
+    # FAIL CLOSED: keep the session cwd as the only candidate rather than
+    # widening to "allow".
+    _LIB_OK = False
+
 
 def _vault_git_dir_for(target: str) -> str | None:
     """realpath of the `.git` of the vault governing `target`, or None.
@@ -79,16 +92,19 @@ def _vault_git_dir_for(target: str) -> str | None:
     return os.path.realpath(os.path.join(str(root), ".git"))
 
 
-def _effective_cwd(command: str, initial: str) -> str:
-    """Resolve cwd after any leading `cd <path>` commands in the command string."""
-    cwd = os.path.expanduser(initial) if initial else ""
-    for chunk in re.split(r"\s*(?:&&|\|\||;)\s*", command):
-        chunk = chunk.strip()
-        m = re.match(r"cd\s+(?:\"([^\"]+)\"|'([^']+)'|(\S+))", chunk)
-        if m:
-            new_path = os.path.expanduser(next(g for g in m.groups() if g is not None))
-            cwd = new_path if os.path.isabs(new_path) else os.path.normpath(os.path.join(cwd, new_path))
-    return cwd
+# What may sit between a command start and its verb without changing which
+# program runs: transparent wrappers (with their own bounded options, so
+# `sudo -u root git add -A` is seen), one-shot `VAR=` assignments in ANY case,
+# an explicit path to the binary, and a brace-group opener. Matching a bare
+# `git` token at a regex boundary instead let `env git add -A`, `sudo git add
+# -A`, `/usr/bin/git add -A`, `command git add -A`, lowercase `foo=1 git add -A`
+# and `(git add -A)` run completely unguarded -- measured exit 0 against a
+# proven positive control.
+_ASSIGN_TOK = r'[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|\'[^\']*\'|\S*)'
+_WRAPPER_TOK = r'(?:env|command|exec|builtin|nohup|sudo|time)'
+_LEAD = (r'\s*(?:[({]\s+)*'
+         r'(?:' + _ASSIGN_TOK + r'\s+|' + _WRAPPER_TOK + r'\s+(?:\S+\s+){0,3})*'
+         r'(?:\S*/)?')
 
 
 # A git option's value argument:
@@ -127,7 +143,7 @@ _GIT_OPT = '|'.join([
 _GIT_OPTS_CAP = r'((?:' + _GIT_OPT + r')*)'   # capturing group: the whole options blob
 
 
-def _dash_c_target(opts_blob: str, base_cwd: str) -> str:
+def _dash_c_target(opts_blob: str, base_cwd: str, variables=None) -> str:
     """Fold any `git -C <dir>` options from a git options blob onto base_cwd,
     following git's cumulative -C semantics (each -C is relative to the
     previous one). Returns base_cwd unchanged when the blob has no -C."""
@@ -135,6 +151,12 @@ def _dash_c_target(opts_blob: str, base_cwd: str) -> str:
     for m in re.finditer(r'-C\s*(?:"([^"]*)"|\'([^\']*)\'|(\S+))', opts_blob):
         raw = next((g for g in m.groups() if g is not None), None)
         if raw is None:
+            continue
+        if _LIB_OK:
+            raw = expand_vars(raw, variables or {})
+        if "$" in raw:
+            # UNRESOLVED target: folding a literal `$W` onto the cwd yields a
+            # path that resolves to no repo -- "not the vault", a silent allow.
             continue
         path = os.path.expanduser(raw)
         cwd = path if os.path.isabs(path) else os.path.normpath(os.path.join(cwd, path))
@@ -200,12 +222,12 @@ def _git_dir_is_vault(git_dir: str) -> bool:
     return any(os.path.realpath(c) == vault_git_dir for c in cands)
 
 
-def _targets_vault(opts_blob: str, base_cwd: str) -> bool:
+def _targets_vault(opts_blob: str, base_cwd: str, variables=None) -> bool:
     """True iff a git invocation carrying this options blob, run from
     base_cwd, would touch the personal vault repo. An explicit --git-dir
     is authoritative; otherwise targeting follows -C / cwd. Fails open
     (False) when the repo cannot be determined."""
-    eff_cwd = _dash_c_target(opts_blob, base_cwd)
+    eff_cwd = _dash_c_target(opts_blob, base_cwd, variables)
     git_dir = _git_dir_arg(opts_blob)
     if git_dir is not None:
         path = os.path.expanduser(git_dir)
@@ -223,34 +245,56 @@ except Exception:
 command = data.get("tool_input", {}).get("command", "")
 
 # Block git add -A / --all / bare dot.
-# Only match at command-start positions (line start, after &&, ;, or |)
-# to avoid false positives inside commit messages, heredocs, or comments.
-# Group 1 captures the git options blob (incl. any `-C <dir>`); group 2
-# the dangerous argument.
-# Does NOT match: git add ./relative/path, git add .gitignore, or
-#   mentions of "git add -A" inside quoted strings/heredocs.
+# Matched PER SEGMENT against a quote-aware split, so command-start is decided
+# structurally rather than by a regex alternation over operators. That keeps the
+# old false-positive protection (a mention inside a commit message, a heredoc
+# BODY or a comment tail is no longer even in the input) while ALSO seeing the
+# spellings the alternation missed entirely -- a subshell, a brace group, a
+# wrapper, an assignment prefix, an explicit path to the binary.
+# Still does NOT match: `git add ./relative/path` or `git add .gitignore`.
+# The lone-dot arm no longer lists `&&`/`;`/`|` as terminators: the splitter has
+# already removed every unquoted separator, so end-of-segment IS the terminator.
 DANGEROUS = re.compile(
-    r'(?:^|&&|;(?!;)|\|\|?)\s*git\s+'
-    + _GIT_OPTS_CAP +                       # group 1: git options blob
-    r'add\s+('                              # group 2: the dangerous argument
-    r'-A\b'
-    r'|--all\b'
-    r'|\.\s*(?:$|&&|;|2>|>>|>|\|)'          # lone dot (not ./path or .gitignore)
-    r')',
-    re.MULTILINE
+    _LEAD
+    + r'git\s+'
+    + _GIT_OPTS_CAP                         # group 1: git options blob
+    + r'add\s+('                            # group 2: the dangerous argument
+      r'-A\b'
+      r'|--all\b'
+      r'|\.\s*(?:$|2>|>>|>)'                 # lone dot (not ./path or .gitignore)
+      r')'
 )
 
-matches = list(DANGEROUS.finditer(command))
+cwd = os.environ.get("CLAUDE_CWD", data.get("cwd", "")) or os.getcwd()
+
+# Heredoc bodies and comment tails are text the shell never runs, yet both carry
+# operators that would forge segment boundaries. Strip before splitting.
+if _LIB_OK:
+    segs = split_segments_with_seps(strip_noncode(strip_heredoc_bodies(command)))
+else:
+    segs = [("", command)]
+
+matches = []
+for _sep, seg in segs:
+    m = DANGEROUS.match(seg.lstrip())
+    if m:
+        matches.append(m)
 if not matches:
     sys.exit(0)
 
-# A full-tree `git add` is present. Resolve which repo each invocation
-# targets -- the 60K walk only hurts the vault repo; ~/dev/* repos stage
-# instantly. `git -C <dir>` retargets the op, so fold it onto the cwd.
-cwd = os.environ.get("CLAUDE_CWD", data.get("cwd", ""))
-base_cwd = _effective_cwd(command, cwd) or os.getcwd()
+# A full-tree `git add` is present. Resolve which repo each invocation targets --
+# the full walk only hurts the vault repo. `git -C <dir>` retargets the op, so
+# fold it onto every candidate cwd. A SET, not one guess: block if ANY member is
+# the vault (see cwd_candidates for the fail-closed rationale).
+if _LIB_OK:
+    bases, variables = cwd_candidates(segs, cwd)
+else:
+    bases, variables = set(), {}
+if not bases:
+    bases = {os.path.expanduser(cwd)}
 
-if not any(_targets_vault(m.group(1) or "", base_cwd) for m in matches):
+if not any(_targets_vault(m.group(1) or "", b, variables)
+           for m in matches for b in sorted(bases)):
     sys.exit(0)
 
 print(

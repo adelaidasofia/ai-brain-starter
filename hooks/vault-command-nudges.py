@@ -77,14 +77,12 @@ except Exception:  # fail-open: never block a command on an import error
 # fail-closed candidate-set POLICY below is this guard's own.
 try:
     from _lib.shell_parse import (  # noqa: E402
-        ASSIGN_RE,
-        WRAPPER_PREFIXES,
+        cwd_candidates,
         expand_vars,
         segment_bypass_flags,
         split_segments_with_seps,
         strip_heredoc_bodies,
         strip_noncode,
-        tokens as shell_tokens,
     )
     _LIB_OK = True
 except Exception:
@@ -221,122 +219,6 @@ def _seg_in_vault_namespace(seg: str, bases) -> bool:
         if root is not None and _is_under(token, root):
             return True
     return False
-
-
-def _cd_operand(rest):
-    """The single directory operand of a `cd`, or None when it is unresolvable.
-
-    None means "this cd may have gone somewhere I cannot name", which callers
-    must treat as AMBIGUOUS (keep the previous cwd in play), never as "no cd
-    happened". `cd -` (OLDPWD) and a multi-operand `cd` land here on purpose.
-    """
-    if "-" in rest[1:]:
-        # `cd -` goes to OLDPWD, which this process cannot know. It must be
-        # UNRESOLVABLE; the option filter below would otherwise discard the "-"
-        # as a flag and silently resolve the cd to HOME -- and if OLDPWD was the
-        # vault, that is a fail-open dressed as a confident answer.
-        return None
-    operands = [t for t in rest[1:] if not t.startswith("-")]
-    if not operands:
-        return os.path.expanduser("~")          # bare `cd` -> HOME
-    if len(operands) > 1:
-        return None
-    return operands[0]
-
-
-def _cwd_candidates(segs, base: str):
-    """Every cwd a command could actually run in, plus the literal `VAR=`
-    assignments seen along the way.
-
-    FAIL-CLOSED BY CONSTRUCTION. This returns a SET, not a single cwd, and the
-    caller blocks when ANY member is a vault. A single "effective cwd" forces a
-    guess at each ambiguity, and every wrong guess in the old walk pointed the
-    same way -- off the vault, i.e. open. Concretely, the old walk allowed all
-    of these vault pushes:
-
-        W=<vault>; cd "$W" && git push       -- `$W` never expanded
-        echo "hi; cd /tmp" && git push       -- `cd` cut out of a QUOTED string
-        cd /tmp || git push                  -- `||` treated as an unconditional cd
-
-    Ambiguity now UNIONS instead of overwriting, so the vault stays in the set
-    and the block stands. The cost is a possible over-block on a genuinely
-    ambiguous command, which is loud and bypassable; the old cost was a silent
-    allow on the one command the guard exists to stop.
-    """
-    base = os.path.expanduser(base) if base else ""
-    cur = {base} if base else set()
-    variables: dict[str, str] = {}
-    if not _LIB_OK:
-        return cur, variables
-
-    depth = 0
-    for idx, (sep, seg) in enumerate(segs):
-        # `(` and `)` arrive as separators, so paren depth is just a running
-        # count -- and it covers BOTH `( cd X ; ... )` and `$( cd X && ... )`,
-        # because a command substitution opens the same paren. A cd below the
-        # top level changes only the SUBSHELL's cwd and is invisible to the
-        # parent, so it must not move the candidate set. Tracking only the
-        # separator IMMEDIATELY after the cd was not enough: in
-        # `(cd /tmp; true) && git push` the cd is followed by `;`, so it looked
-        # top-level and escaped its own subshell.
-        if sep == "(":
-            depth += 1
-        elif sep == ")":
-            depth = max(0, depth - 1)
-        if depth > 0:
-            continue
-        toks = shell_tokens(seg.strip())
-        if not toks:
-            continue
-        k = 1 if toks[0] == "export" else 0
-        while k < len(toks) and ASSIGN_RE.match(toks[k]):
-            name, _, val = toks[k].partition("=")
-            variables[name] = expand_vars(val, variables)
-            k += 1
-        while k < len(toks) and toks[k] in WRAPPER_PREFIXES:
-            k += 1
-        rest = toks[k:]
-        if not rest or rest[0] != "cd":
-            continue
-
-        raw = _cd_operand(rest)
-        target = expand_vars(raw, variables) if raw else None
-        # An unexpanded `$`, a command substitution or a glob is a target we
-        # cannot name -- treat as unresolved rather than resolving it wrongly.
-        if target and ("$" in target or set(target) & _GLOB_CHARS):
-            target = None
-
-        if target is None:
-            moved: set[str] = set()            # unknown destination
-        else:
-            t = os.path.expanduser(target)
-            moved = ({t} if os.path.isabs(t)
-                     else {os.path.normpath(os.path.join(b, t)) for b in (cur or {""})})
-
-        # The operator JOINING this cd to what follows decides whether the cd is
-        # in effect for it. See split_segments_with_seps for the full table.
-        nxt = segs[idx + 1][0] if idx + 1 < len(segs) else ""
-        if not moved:
-            continue                           # destination unknown -> keep old cwd
-        if nxt == "&&":
-            # The right-hand side runs IF AND ONLY IF the cd succeeded, so where
-            # it runs is not in doubt. No existence check: an earlier segment may
-            # legitimately create the directory (`git worktree add W && cd W`).
-            cur = moved
-        elif nxt in (";", "\n", ""):
-            # `cd X ; cmd` runs cmd in X when the cd succeeds and in the OLD cwd
-            # when it fails. That is DECIDABLE, not a coin flip: a cd fails when
-            # the target is not a directory. Deciding it matters -- unioning
-            # unconditionally would keep the vault in the set for the everyday
-            # `cd /repo` + newline + `git push` shape and false-block every one
-            # of them, which is precisely what teaches the bypass.
-            if all(os.path.isdir(m) for m in moved):
-                cur = moved
-            else:
-                cur = cur | {m for m in moved if os.path.isdir(m)}
-        # "||", "|", "&", "(", ")" -> the next command runs in the OLD cwd:
-        # leave `cur` alone.
-    return cur, variables
 
 
 # ---------------------------------------------------------------------------
@@ -785,7 +667,10 @@ def main():
     seg_texts = [t for _, t in segs]
 
     # A SET of possible cwds, not one guess. Block if ANY member is a vault.
-    bases, variables = _cwd_candidates(segs, session_cwd)
+    if _LIB_OK:
+        bases, variables = cwd_candidates(segs, session_cwd)
+    else:
+        bases, variables = set(), {}
     if not bases:
         bases = {os.path.expanduser(session_cwd)}
 

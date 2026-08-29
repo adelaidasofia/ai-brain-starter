@@ -30,11 +30,13 @@ fail-open/fail-closed decisions, which differ by guard.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 
 __all__ = [
     "ASSIGN_RE",
+    "cwd_candidates",
     "ENV_ASSIGN_RE",
     "WRAPPER_PREFIXES",
     "expand_vars",
@@ -301,3 +303,128 @@ def segment_bypass_flags(segments, var, value="1"):
             here = True
         flags.append(here)
     return flags
+
+
+_GLOB_CHARS = set("*?[")
+
+
+def _cd_operand(rest):
+    """The single directory operand of a `cd`, or None when unresolvable.
+
+    None means "this cd may have gone somewhere I cannot name", which callers
+    must treat as AMBIGUOUS (keep the previous cwd in play), never as "no cd
+    happened". `cd -` (OLDPWD, which this process cannot know) and a
+    multi-operand `cd` land here on purpose -- resolving `cd -` to HOME by
+    discarding the "-" as a flag is a fail-open dressed as a confident answer.
+    """
+    if "-" in rest[1:]:
+        return None
+    operands = [t for t in rest[1:] if not t.startswith("-")]
+    if not operands:
+        return os.path.expanduser("~")          # bare `cd` -> HOME
+    if len(operands) > 1:
+        return None
+    return operands[0]
+
+
+def cwd_candidates(segs, base):
+    """Every cwd a command could run in, plus the literal `VAR=` assignments.
+
+    Returns ``(set_of_cwds, variables)``. A guard blocks when ANY member is a
+    directory it protects.
+
+    FAIL-CLOSED BY CONSTRUCTION, and that is the whole point. A single
+    "effective cwd" forces a guess at each ambiguity, and every wrong guess in
+    the walks this replaces pointed the same way -- off the protected tree, i.e.
+    open. Measured shapes that a single-guess walk let through:
+
+        W=<protected>; cd "$W" && git push   -- `$W` never expanded
+        echo "hi; cd /tmp" && git push       -- `cd` cut out of a QUOTED string
+        cd /tmp || git push                  -- `||` treated as unconditional
+
+    Ambiguity UNIONS instead of overwriting, so the protected path stays in the
+    set and the block stands. The cost is a possible over-block on a genuinely
+    ambiguous command, which is loud and bypassable; the old cost was a silent
+    allow on the exact command the guard exists to stop.
+
+    This also subsumes the "ignore a `cd` whose target does not exist" clause
+    some callers carried: unioning cannot move the set OFF the protected tree,
+    so a bogus `cd` can no longer disarm a guard that fails open on an
+    unresolvable repo.
+
+    `segs` is the output of split_segments_with_seps on ALREADY-SANITIZED text
+    (heredoc bodies and comment tails stripped) -- both carry operators that
+    would otherwise forge segment boundaries.
+    """
+    base = os.path.expanduser(base) if base else ""
+    cur = {base} if base else set()
+    variables = {}
+
+    depth = 0
+    for idx, (sep, seg) in enumerate(segs):
+        # `(` and `)` arrive as separators, so paren depth is a running count --
+        # and it covers BOTH `( cd X ; ... )` and `$( cd X && ... )`, because a
+        # command substitution opens the same paren. A cd below the top level
+        # changes only the SUBSHELL's cwd and is invisible to the parent.
+        # Tracking only the separator IMMEDIATELY after the cd was not enough:
+        # in `(cd /tmp; true) && git push` the cd is followed by `;`, so it
+        # looked top-level and escaped its own subshell.
+        # A brace group is deliberately NOT counted: `{ cd X; }` runs in the
+        # CURRENT shell and its cd really does move the caller.
+        if sep == "(":
+            depth += 1
+        elif sep == ")":
+            depth = max(0, depth - 1)
+        if depth > 0:
+            continue
+        toks = tokens(seg.strip())
+        if not toks:
+            continue
+        k = 1 if toks[0] == "export" else 0
+        while k < len(toks) and ASSIGN_RE.match(toks[k]):
+            name, _, val = toks[k].partition("=")
+            variables[name] = expand_vars(val, variables)
+            k += 1
+        while k < len(toks) and toks[k] in WRAPPER_PREFIXES:
+            k += 1
+        rest = toks[k:]
+        if not rest or rest[0] != "cd":
+            continue
+
+        raw = _cd_operand(rest)
+        target = expand_vars(raw, variables) if raw else None
+        # An unexpanded `$`, a command substitution or a glob is a target that
+        # cannot be named -- treat as unresolved rather than resolving it wrongly.
+        if target and ("$" in target or set(target) & _GLOB_CHARS):
+            target = None
+
+        if target is None:
+            moved = set()                      # unknown destination
+        else:
+            t = os.path.expanduser(target)
+            moved = ({t} if os.path.isabs(t)
+                     else {os.path.normpath(os.path.join(b, t)) for b in (cur or {""})})
+
+        # The operator JOINING this cd to what follows decides whether the cd is
+        # in effect for it. See split_segments_with_seps for the full table.
+        nxt = segs[idx + 1][0] if idx + 1 < len(segs) else ""
+        if not moved:
+            continue                           # destination unknown -> keep old cwd
+        if nxt == "&&":
+            # The right-hand side runs IF AND ONLY IF the cd succeeded, so where
+            # it runs is not in doubt. No existence check: an earlier segment may
+            # legitimately create the directory (`git worktree add W && cd W`).
+            cur = moved
+        elif nxt in (";", "\n", ""):
+            # `cd X ; cmd` runs cmd in X when the cd succeeds and in the OLD cwd
+            # when it fails. That is DECIDABLE, not a coin flip: a cd fails when
+            # the target is not a directory. Deciding it matters -- unioning
+            # unconditionally would keep the protected path in the set for the
+            # everyday `cd /repo` + newline + command shape and false-block every
+            # one of them, which is precisely what teaches the bypass.
+            if all(os.path.isdir(m) for m in moved):
+                cur = moved
+            else:
+                cur = cur | {m for m in moved if os.path.isdir(m)}
+        # "||", "|", "&", "(", ")" -> the next command runs in the OLD cwd.
+    return cur, variables
