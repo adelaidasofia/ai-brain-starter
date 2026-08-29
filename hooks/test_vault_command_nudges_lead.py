@@ -49,9 +49,15 @@ def run(command, cwd, hook=HOOK, env=None):
     """
     payload = json.dumps({"tool_name": "Bash", "cwd": cwd,
                           "tool_input": {"command": command}})
+    # USERPROFILE is set alongside HOME, never instead of it: Path.home() reads
+    # USERPROFILE on Windows, so a HOME-only redirect silently runs the child
+    # against the REAL ~/.claude there while looking sandboxed on POSIX.
+    # scripts/ enforces this pairing fleet-wide.
+    home = os.environ.get("HOME") or os.environ.get("USERPROFILE") or tempfile.gettempdir()
     base = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "HOME": os.environ.get("HOME", "/tmp"),
+        "HOME": home,
+        "USERPROFILE": home,
         # Deliberately NOT the fixture vault: per-target detection must win.
         "VAULT_ROOT": os.path.join(tempfile.gettempdir(), "vcn-not-a-vault"),
         "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),   # git needs it on Windows
