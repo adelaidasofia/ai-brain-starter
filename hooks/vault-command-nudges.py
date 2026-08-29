@@ -66,8 +66,30 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from _lib.vault_root import vault_root_for  # noqa: E402
-except Exception:  # fail-open: never block a command on an import error
+except Exception:
+    # DEGRADE, never disarm. This fallback used to `return None`, and None here
+    # means "no vault anywhere" -- which silently switched off EVERY vault-scoped
+    # rule in this file, including `rm -rf <vault>`. Measured: with _lib absent
+    # the guard allowed `git push` in the vault, `git status`, and an rm against
+    # the vault root. The FAIL-CLOSED comment below applies to _LIB_OK only, and
+    # this import fails first, so it decided the outcome.
+    #
+    # A partial install is the realistic cause (two installers write ~/.claude/
+    # hooks/_lib, and a client machine gets whichever landed), which is exactly
+    # when a guard must still hold. Name-free by construction: a vault is any
+    # ancestor holding a Meta-suffixed folder -- the same rule
+    # validate-handoff-frontmatter.py already applies in this repo.
     def vault_root_for(target: Path):  # type: ignore
+        try:
+            here = Path(target).resolve()
+        except (OSError, RuntimeError):
+            return None
+        for cand in (here, *here.parents):
+            try:
+                if any(c.is_dir() and c.name.endswith("Meta") for c in cand.iterdir()):
+                    return cand
+            except (OSError, PermissionError):
+                continue
         return None
 
 # The quote-aware splitter, the `$VAR` expander, the heredoc-body stripper and

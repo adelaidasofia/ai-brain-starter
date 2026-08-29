@@ -220,6 +220,30 @@ try:
           "git push", VAULT, hook=dhook)
     check(False, "39. degraded parse still allows a non-vault push",
           "git push", PLAIN, hook=dhook)
+
+    print("--- degraded mode: NO _lib at all (a partial install) ---")
+    # Cases 38-39 copy _lib/vault_root.py IN, so they only ever remove
+    # shell_parse.py -- the half that already failed closed. The other import
+    # fell back to `return None`, which means "no vault anywhere", and that
+    # silently switched off EVERY vault-scoped rule in the file. Measured
+    # before the fix: this fixture allowed a vault push, a vault-root rm, and
+    # an unscoped git status. A fixture named for "_lib missing" that supplies
+    # half of _lib is a claim about a scope it never covered.
+    bare = os.path.join(TMP, "bare")
+    os.makedirs(bare)
+    shutil.copy2(os.path.join(hooks_dir, "vault-command-nudges.py"),
+                 os.path.join(bare, "vault-command-nudges.py"))
+    bhook = os.path.join(bare, "vault-command-nudges.py")
+    check(True,  "40. no _lib at all still blocks a vault push",
+          "git push", VAULT, hook=bhook)
+    check(True,  "41. no _lib at all still blocks an rm of the vault root",
+          f'rm -rf "{VAULT}"', os.path.dirname(VAULT), hook=bhook)
+    check(True,  "42. no _lib at all still blocks an unscoped git status",
+          "git status", VAULT, hook=bhook)
+    check(False, "43. no _lib at all still allows a non-vault push",
+          "git push", PLAIN, hook=bhook)
+    check(False, "44. no _lib at all still allows an rm outside any vault",
+          "rm -rf build", PLAIN, hook=bhook)
 finally:
     shutil.rmtree(TMP, ignore_errors=True)
 
