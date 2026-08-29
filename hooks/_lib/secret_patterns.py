@@ -54,17 +54,32 @@ _PROVIDER = [
         # as CLAUDE_CODE_OAUTH_TOKEN. Same class as the nvapi- miss below: the one
         # credential shape the product's own auth path uses was the one shape no
         # guard could see, and `redact()` passed it through intact.
-        # Matched by PROPERTY (`sk-ant-` + 3 lowercase + 2 digits) rather than by an
-        # enumerated `api|oat` alternation: the prefix set is open, and enumerating a
-        # known-good list against an open set re-opens this exact gap on the next
-        # shape Anthropic mints. The `{40,}` floor is what keeps prose and
-        # placeholders out, so it is unchanged.
+        #
+        # Matched by PROPERTY -- `sk-ant-` + letters + digits -- not by an enumerated
+        # `api|oat` alternation. The infix set is OPEN, and a known-good list against
+        # an open set re-opens this exact gap on the next shape Anthropic mints.
+        #
+        # An intermediate version of this fix used `[a-z]{3}\d{2}`, which is itself a
+        # CLOSED set wearing the language of an open one: it silently missed
+        # `admin01` (5 letters), `oath01` (4) and `oat1` (1 digit), each of which
+        # survived redaction ENTIRELY. Measured, not hypothesised. `[a-z]{2,}\d+`
+        # is the weakest structure that actually delivers the stated property.
+        #
+        # FALSE POSITIVES ARE THE CHEAP SIDE HERE and are accepted deliberately: a
+        # long placeholder (`sk-ant-oat01-YOUR_OAUTH_TOKEN_GOES_HERE_...`, 40+ chars)
+        # DOES match and gets redacted. The `{40,}` floor suppresses SHORT
+        # placeholders and prose only -- it is not a placeholder filter, and an
+        # earlier comment here claiming otherwise was measurably false. Redacting a
+        # placeholder in a transcript costs nothing; missing a live credential does
+        # not. Measured incidence across 2,030 tracked files: one new match, and it
+        # is this file's own test vector.
         name="anthropic-api-key",
-        regex=re.compile(r"sk-ant-[a-z]{3}\d{2}-[\w\-]{40,}", re.ASCII),
+        regex=re.compile(r"sk-ant-[a-z]{2,}\d+-[\w\-]{40,}", re.ASCII),
         redaction="[REDACTED-anthropic-api-key]",
         description=(
-            "Anthropic API key or OAuth token, format sk-ant-api{NN}-{token} "
-            "(API key) / sk-ant-oat{NN}-{token} (CLAUDE_CODE_OAUTH_TOKEN)."
+            "Anthropic API key or OAuth token: sk-ant-<letters><digits>-<token>. "
+            "Covers api{NN} (API key), oat{NN} (CLAUDE_CODE_OAUTH_TOKEN), and any "
+            "future infix of the same shape. Does NOT match an infix with no digits."
         ),
     ),
     SecretPattern(
@@ -502,14 +517,21 @@ if __name__ == "__main__":
         "real-google-api-key": 'GOOGLE_MAPS_KEY="AIza' + "Y" * 35 + '"',
         # Real Google API key at line start — MUST still match
         "real-google-api-key-bare": "AIza" + "Z" * 35,
-        # Anthropic oat shape (CLAUDE_CODE_OAUTH_TOKEN) — MUST match. This is the
-        # gating half of the fix: the SAMPLES loop above only prints, so without an
-        # asserted vector here the widening would be unproven.
+        # Anthropic oat shape (CLAUDE_CODE_OAUTH_TOKEN) — MUST match. The SAMPLES
+        # loop above only PRINTS, so an asserted vector is required for the widening
+        # to be proven at all. These asserts run under `python3 -m hooks._lib
+        # .secret_patterns`; the CI-registered coverage lives in
+        # hooks/test_secret_patterns_anthropic.py, which scripts/ci.sh executes.
         "real-anthropic-oauth-token": "export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-" + "Kp7Vn2Qr9Xt4Bm6Zc8La1Wd3Hf5Jg0Ys7Ue2Ni4Ao6Br1Cm",
         # Existing api shape — MUST still match (regression guard on the widening).
         "real-anthropic-api-key": "sk-ant-api03-" + "Kp7Vn2Qr9Xt4Bm6Zc8La1Wd3Hf5Jg0Ys7Ue2Ni4Ao6Br1Cm",
-        # Negative controls: the widening is STRUCTURED (3 lowercase + 2 digits),
-        # not a blanket `sk-ant-*`. Each of these must stay silent.
+        # Shapes the intermediate `[a-z]{3}\d{2}` silently missed. Each of these
+        # survived redaction ENTIRELY before the infix was opened to `[a-z]{2,}\d+`.
+        "real-anthropic-admin-key": "sk-ant-admin01-" + "Kp7Vn2Qr9Xt4Bm6Zc8La1Wd3Hf5Jg0Ys7Ue2Ni4Ao6Br1Cm",
+        "real-anthropic-4letter-infix": "sk-ant-oath01-" + "Kp7Vn2Qr9Xt4Bm6Zc8La1Wd3Hf5Jg0Ys7Ue2Ni4Ao6Br1Cm",
+        "real-anthropic-1digit-infix": "sk-ant-oat1-" + "Kp7Vn2Qr9Xt4Bm6Zc8La1Wd3Hf5Jg0Ys7Ue2Ni4Ao6Br1Cm",
+        # Negative controls: the match is STRUCTURED (letters then digits), not a
+        # blanket `sk-ant-*`. Each of these must stay silent.
         "anthropic-oat-placeholder": "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-YOUR_TOKEN_HERE",
         "anthropic-oat-too-short": "sk-ant-oat01-abc123",
         "anthropic-prose-mention": "The OAuth token is shaped sk-ant-oat01- plus a long token.",
@@ -534,7 +556,13 @@ if __name__ == "__main__":
         "anthropic-oat-placeholder": [],   # <40 chars after prefix
         "anthropic-oat-too-short": [],     # <40 chars after prefix
         "anthropic-prose-mention": [],     # bare shape, no token
-        "anthropic-no-digit-infix": [],    # `oauth` is not [a-z]{3}\d{2}
+        "real-anthropic-admin-key": ["anthropic-api-key"],
+        "real-anthropic-4letter-infix": ["anthropic-api-key"],
+        "real-anthropic-1digit-infix": ["anthropic-api-key"],
+        # `oauth` has NO digits, so it is not the credential shape. This stays a
+        # legitimate boundary: it separates a credential from a word, and unlike
+        # the letter-count boundary it does not hide a real token shape.
+        "anthropic-no-digit-infix": [],
     }
     failures = 0
     for label, sample in FP_SAMPLES.items():
