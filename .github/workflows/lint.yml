@@ -283,6 +283,50 @@ jobs:
       - name: every hook is wired on both POSIX and Windows, or reviewed as not
         run: python3 scripts/check-hook-parity.py
 
+      # The cross-REPO sibling of the gate above. That one asks whether one
+      # behaviour reaches both PLATFORMS; this asks whether one contract's several
+      # hand-written IMPLEMENTATIONS know about each other.
+      #
+      # machinery-sidecar/1 drifted three times: Google Drive Mirror roots taught
+      # here and not in the Rust twin (MYC-1088), the vault-target guard that let
+      # Studio git-init a repo over a founder's $HOME (MYC-4035), and the python
+      # interpreter probe the Windows leg had already solved correctly while the
+      # POSIX leg kept the weaker check. Every check on both sides stayed green
+      # each time, because each implementation is internally consistent and no
+      # gate had ever seen another.
+      #
+      # G4 is the load-bearing one: a sentence in THIS repo asserting the current
+      # state of code in ANOTHER repo cannot stay true, because nothing here runs
+      # when that repo merges. ADR-0007 carried exactly such a sentence; it was
+      # accurate for 29 minutes and wrong for the following eight days.
+      # Self-test first (cheap, and proves the gate bites a synthetic mismatch).
+      - name: paired-implementation negative controls (the gate must bite)
+        run: python3 scripts/check-paired-implementations.py --self-test
+
+      - name: paired implementations are declared, present, and claim-free
+        run: python3 scripts/check-paired-implementations.py
+
+      # The advisory half. A PR touching one side of a paired contract gets the
+      # other side named inline on its Files tab. ADVISORY, never blocking: the
+      # repos have different release cadences and a hard cross-repo gate would
+      # only get bypassed. This is the step that would have said "the Rust twin
+      # also implements this" on the PR that shipped the vault-target guard here
+      # and not there (MYC-4028 -> MYC-4035).
+      #
+      # Security note: github.base_ref is bound to an env var per the SAFE pattern
+      # documented at the top of this file, never interpolated into the shell.
+      # Paths go through a FILE, not word-splitting, so a path with a space
+      # cannot silently become two arguments.
+      - name: name the counterparts of any paired file this PR touches (advisory)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --quiet origin "$BASE_REF"
+          git diff --name-only "origin/$BASE_REF...HEAD" > "$RUNNER_TEMP/changed.txt"
+          python3 scripts/check-paired-implementations.py \
+            --changed-from "$RUNNER_TEMP/changed.txt"
+
       # The READ half of the UTF-8 console guard below. That one fails a CLI that
       # PRINTS non-ASCII without reconfiguring stdout; this fails one that READS a
       # child's output with text=True and no encoding=, so the decode uses the

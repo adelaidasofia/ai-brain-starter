@@ -3,6 +3,13 @@
 # cloud-sync folder by moving every churning machinery dir OUT of the synced
 # tree into a local sidecar, leaving only tiny static pointers/symlinks behind.
 #
+# PAIRED IMPLEMENTATION. This behaviour is implemented more than once by hand.
+# Every implementation is listed in scripts/paired-implementations.json under
+# `machinery-sidecar/1`. Check that list before changing behaviour here: this
+# contract has drifted three times (MYC-1088, MYC-4035, and the python
+# interpreter probe), and every time it was this file — the original — that got
+# edited by someone with no idea a twin existed.
+#
 # WHY
 # ---
 # A git-backed Obsidian vault inside iCloud Drive / Desktop & Documents melts the
