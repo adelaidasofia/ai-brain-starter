@@ -19,17 +19,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Detect vault root (look for ⚙️ Meta/ folder)
-if [ -n "${VAULT_ROOT:-}" ] && [ -d "$VAULT_ROOT" ]; then
-  VAULT="$VAULT_ROOT"
-else
-  echo "ERROR: Set VAULT_ROOT to your vault path" >&2
-  exit 1
-fi
-
-META="$VAULT/⚙️ Meta"
-DRIFT_FOUND=0
-
 # --- negative control -------------------------------------------------------
 # The defect this covers: DRIFT_FOUND was computed on every branch and then
 # thrown away, because the script simply ended. A fully drifted vault exited 0
@@ -75,6 +64,18 @@ if [ "${1:-}" = "--self-test" ]; then
   echo "OK - self-test: a vault-only rule file exits 1, an empty vault exits 0."
   exit 0
 fi
+
+# Detect vault root (look for ⚙️ Meta/ folder)
+if [ -n "${VAULT_ROOT:-}" ] && [ -d "$VAULT_ROOT" ]; then
+  VAULT="$VAULT_ROOT"
+else
+  echo "ERROR: Set VAULT_ROOT to your vault path" >&2
+  exit 1
+fi
+
+META="$VAULT/⚙️ Meta"
+DRIFT_FOUND=0
+
 
 # Load .driftignore patterns (one substring per line, # comments allowed).
 # A drift line is suppressed if any pattern is a substring of the emitted path.
