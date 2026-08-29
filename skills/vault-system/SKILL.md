@@ -1,5 +1,9 @@
 ---
 name: vault-system
+umbrella: true
+umbrella_group: 'Information layer'
+umbrella_order: 54
+umbrella_domain: 'graph + drift + rules + memory + Obsidian + skill repos'
 description: 'Use when maintaining the vault ITSELF as a system, not its content: knowledge-graph build/rebuild/query (graphify), second-brain mapping, vault diagnose/audit/hygiene, drift detection, extract rules from vault, backfill journals, setup vault types, consolidate memory (index over cap), Obsidian tooling (CLI/Bases/Markdown/JSON Canvas), vault bloat or Obsidian slow. Answering questions FROM the graph, use graph-query tools; daily journal/coaching/pattern detection, use those skills.'
 trigger: /vault-system
 ---
