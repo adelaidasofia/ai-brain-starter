@@ -45,8 +45,9 @@ reader does not mistake a green for proof of absence):
   - Detection is LINE-BY-LINE. A deferral whose verb and filename wrap onto
     different lines is NOT seen.
   - Only string LITERALS are seen. `defer_to=SOME_CONST` is not.
-  - Resolution is by BASENAME anywhere in the repo, not by path. A deferral to
-    "x.py" resolves against an unrelated tests/fixtures/x.py.
+  - A BARE target resolves by basename anywhere in the repo, so a deferral to
+    "x.py" resolves against an unrelated tests/fixtures/x.py. A PATH-qualified
+    target is matched against tracked paths exactly, so it does not.
   - Documentation that quotes a real-looking deferral string will trip this
     check. Write examples as `<owner>.py` -- the angle brackets fall outside
     the basename class, so they cannot parse as a real target.
@@ -83,10 +84,19 @@ READ_MAX_BYTES = 4_000_000
 
 SCAN_DIRS = ("hooks", "scripts")
 
-BASENAME = r"[A-Za-z0-9_.-]+\.(?:py|sh)"
-STRUCTURAL_RE = re.compile(r"""defer_to\s*=\s*(['"])(""" + BASENAME + r""")\1""")
+# Extensions actually shipped under hooks/ + scripts/ in this repo: py (335),
+# sh (80), ps1 (11). A deferral to a .ps1 owner used to be invisible in BOTH
+# directions -- never flagged dangling, never confirmed resolved.
+_EXT = r"(?:py|sh|ps1)"
+# A target may be written bare ("session-start-context.py") or path-qualified
+# ("hooks/session-start-context.py"). The path-qualified form is the natural way
+# to write it -- and used to match NOTHING, so a deferral to a path that did not
+# exist produced zero hits and the run reported "all resolve".
+_SEG = r"[A-Za-z0-9_.-]+"
+TARGET = r"(?:" + _SEG + r"/)*" + _SEG + r"\." + _EXT
+STRUCTURAL_RE = re.compile(r"""defer_to\s*=\s*(['"])(""" + TARGET + r""")\1""")
 PROSE_RE = re.compile(
-    r"\b(?:owned by|handled by|delegates to|deferred to)\s+(" + BASENAME + r")\b"
+    r"\b(?:owned by|handled by|delegates to|deferred to)\s+(" + TARGET + r")\b"
 )
 
 
@@ -121,7 +131,22 @@ def walk_files() -> List[str]:
 
 
 def resolvable_basenames(paths: List[str]) -> Set[str]:
-    return {Path(p).name for p in paths}
+    """Both spellings a deferral may use: every tracked path verbatim, and every
+    tracked basename. A path-qualified target ("hooks/x.py") must match a real
+    PATH -- matching it on basename alone would let a wrong directory pass."""
+    out: Set[str] = set()
+    for p in paths:
+        out.add(p)
+        out.add(Path(p).name)
+    return out
+
+
+def target_resolves(target: str, known: Set[str]) -> bool:
+    """Path-qualified -> must match a tracked path exactly (a wrong directory is
+    a real defect). Bare basename -> must match some tracked basename."""
+    if "/" in target:
+        return target in known
+    return target in known
 
 
 def scan_targets(paths: List[str]) -> List[str]:
@@ -160,7 +185,7 @@ def dangling(hits_by_path: Dict[str, List[Tuple[int, str]]],
     out = []
     for path in sorted(hits_by_path):
         for lineno, target in sorted(hits_by_path[path]):
-            if target not in known_basenames:
+            if not target_resolves(target, known_basenames):
                 out.append(f"{path}:{lineno} -> {target}")
     return out
 
@@ -204,10 +229,18 @@ def main() -> int:
     if skipped:
         # INCOMPLETE is not CLEAN. Exit 2 so a partial scan can never be read
         # as a pass (a scanner states how much of its input it actually read).
+        # Print any dangling targets found in the files we DID read, so an
+        # unreadable file never costs the operator a second round-trip to
+        # discover a real finding that was already in hand.
         print(f"::error::incomplete scan - {len(skipped)} file(s) could not be "
               f"read, so this run cannot claim every deferral resolves:")
         for s in skipped:
             print(f"  {s}")
+        if problems:
+            print(f"::error::also, {len(problems)} dangling defer target(s) in "
+                  f"the files that WERE read:")
+            for pr in problems:
+                print(f"  {pr}")
         return 2
 
     if problems:
@@ -296,6 +329,36 @@ def self_test() -> int:
     if found != expected:
         fails.append(f"DETECTOR: expected {sorted(expected)}, got {sorted(found)}")
 
+    # 4b. PATH-QUALIFIED + .ps1 RESOLUTION. Regression pins for an adversarial
+    #     review finding: a directory-qualified target used to match NOTHING, so
+    #     `owned by hooks/does-not-exist.py` produced zero hits and the run
+    #     printed "all resolve" -- reproducing the exact reads-as-covered failure
+    #     this guard exists to catch. A wrong directory must also NOT resolve.
+    qualified_src = (
+        'add(x, defer_to="hooks/session-start-context.py")\n'
+        "owned by hooks/does-not-exist-at-all.py\n"
+        'defer_to="relocate-vault.ps1"\n'
+        "handled by WRONGDIR/session-start-context.py\n"
+    )
+    qhits = find_deferrals(qualified_src)
+    qtargets = [tg for _, tg in qhits]
+    q_expected = ["hooks/session-start-context.py", "hooks/does-not-exist-at-all.py",
+                  "relocate-vault.ps1", "WRONGDIR/session-start-context.py"]
+    if qtargets != q_expected:
+        fails.append(f"PATH-QUALIFIED: expected {q_expected}, got {qtargets}")
+    else:
+        q_known = {"hooks/session-start-context.py", "session-start-context.py",
+                   "scripts/relocate-vault.ps1", "relocate-vault.ps1"}
+        q_dangling = dangling({"hooks/q.py": qhits}, q_known)
+        q_missing = sorted(d.split(" -> ")[1] for d in q_dangling)
+        q_want = sorted(["hooks/does-not-exist-at-all.py",
+                         "WRONGDIR/session-start-context.py"])
+        if q_missing != q_want:
+            fails.append(
+                f"PATH-QUALIFIED: expected exactly {q_want} to be dangling, got "
+                f"{q_missing} - a path-qualified target must resolve as a PATH, "
+                f"so a right basename in a wrong directory does not pass")
+
     # 5. SELF-EXCLUSION: this checker's own path must never be part of a real
     #    scan (its docstring/self-test are a guaranteed false positive).
     real_paths = tracked_files()
@@ -314,13 +377,26 @@ def self_test() -> int:
     import tempfile
     tmpd = tempfile.mkdtemp(prefix="defer-targets-selftest-")
     try:
-        fifo = os.path.join(tmpd, "a-fifo")
-        os.mkfifo(fifo)
-        fifo_result = safe_read_text(fifo, timeout=1.0, max_bytes=READ_MAX_BYTES,
-                                     encoding="utf-8", errors="replace")
-        if fifo_result.ok:
-            fails.append("INCOMPLETE-CONTROL: a FIFO read as ok - the skipped-read "
-                         "branch would never fire and a partial scan would print clean")
+        # os.mkfifo does not exist on Windows. Guarded the way this repo already
+        # guards it in check-sync-folder-machinery.py, test_safe_read.py,
+        # test_worktree_cloud_safe_recovery.py and test-relocate-sweep.py.
+        if hasattr(os, "mkfifo"):
+            fifo = os.path.join(tmpd, "a-fifo")
+            os.mkfifo(fifo)
+            fifo_result = safe_read_text(fifo, timeout=1.0, max_bytes=READ_MAX_BYTES,
+                                         encoding="utf-8", errors="replace")
+            if fifo_result.ok:
+                fails.append("INCOMPLETE-CONTROL: a FIFO read as ok - the skipped-read "
+                             "branch would never fire and a partial scan would print clean")
+        else:
+            # No FIFO available: use a directory, which is also not a regular file.
+            notfile = os.path.join(tmpd, "a-dir")
+            os.mkdir(notfile)
+            dir_result = safe_read_text(notfile, timeout=1.0, max_bytes=READ_MAX_BYTES,
+                                        encoding="utf-8", errors="replace")
+            if dir_result.ok:
+                fails.append("INCOMPLETE-CONTROL: a directory read as ok - the "
+                             "skipped-read branch would never fire")
         plain = os.path.join(tmpd, "plain.py")
         with open(plain, "w", encoding="utf-8") as fh:
             fh.write('defer_to="whatever.py"\n')

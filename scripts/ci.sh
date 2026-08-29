@@ -85,6 +85,14 @@
 #                           so the class was caught one full CI round-trip AFTER
 #                           the push. Both callers now run the same script and
 #                           scripts/test_ps1_encoding_gate.py pins that.
+#   (e8) file I/O encoding - scripts/check-utf8-file-io.py fails a file read or
+#                           write in text mode with no encoding=, which uses the
+#                           LOCALE encoding: identical source then produces UTF-8
+#                           artifacts on macOS and cp1252 artifacts on Windows.
+#                           The read half is the quiet one -- it usually does not
+#                           raise, it decodes into mojibake. (Summary bullet was
+#                           missing while the step itself has always run, so a
+#                           top-to-bottom reader saw e7 jump straight to e9.)
 #   (e9) defer targets    - scripts/check-defer-targets.py fails a hook/script
 #                           under hooks/ or scripts/ that names a sibling as the
 #                           owner of a responsibility (`defer_to="<owner>.py"`, or

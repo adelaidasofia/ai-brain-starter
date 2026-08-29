@@ -51,8 +51,9 @@ Modes:
   --self-test                  positive + negative control; exit 0 iff all pass
 
 Bug class: ALWAYS-LOADED-TEXT-UNMEASURED (sibling of ARTIFACT-WITHOUT-MEASUREMENT).
-MEMORY.md remediation is owned by session-start-context.py — this hook measures
-MEMORY.md for the total but does NOT duplicate its cliff warning.
+MEMORY.md's cliff warning is owned by session-start-context.py (it reports and
+advises; it does not auto-fix) — this hook measures MEMORY.md for the total but
+does NOT duplicate that warning. Coverage is not total: see MYC-4239.
 """
 from __future__ import annotations
 
@@ -106,11 +107,18 @@ def noop():
 
 # --- file discovery (generic, name-free) --------------------------------------
 def _memory_md(cwd: str) -> Path | None:
-    """Locate MEMORY.md the way Claude Code loads it (sanitized-cwd projects dir),
-    falling back to the in-vault canonical path. NOT the same resolver as
-    _lib/memory_index.memory_dirs(), which globs every ~/.claude/projects/*/memory
-    dir; this resolves THIS project only. memory_index covers a superset, so the
-    defer_to below still holds."""
+    """Locate MEMORY.md: CLAUDE_PROJECT_DIR's in-vault path, then the
+    sanitized-cwd projects dir, then a walk-up for the in-vault canonical path.
+
+    This is NOT the resolver _lib/memory_index.memory_dirs() uses, and NEITHER
+    COVERS THE OTHER. memory_index globs only ~/.claude/projects/*/memory (a
+    superset of candidate 2, blind to the in-vault candidates 1 and 3), and an
+    AGENT_MEMORY_DIR override narrows it to a single dir this function never
+    reads. So the defer_to below holds only when MEMORY.md is reached via the
+    projects dir; an in-vault MEMORY.md is measured here and warned about by
+    nobody. Measured, not assumed -- see MYC-4239. Do not restate this as a
+    superset: that sentence was here, it was false, and an adversarial review
+    reproduced two configurations that refute it."""
     cands: list[Path] = []
     env = os.environ.get("CLAUDE_PROJECT_DIR")
     if env:
