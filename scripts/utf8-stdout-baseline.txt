@@ -100,7 +100,7 @@
 # to trust a hand-written count; `python3 scripts/check-utf8-stdout.py` prints
 # the live split.)
 
-# ---- SEV-3-doc-only  (2 file(s)) ----
+# ---- SEV-3-doc-only  (1 file(s)) ----
 ed1d68dba02ab76c99907e8efc27ac0aac8c98a14dad261da73fa5d8e1610369 SEV-3-doc-only hooks/_lib/template_purity.py
 
 # ---- SEV-4-json-encoded  (22 file(s)) ----
