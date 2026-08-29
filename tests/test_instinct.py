@@ -118,7 +118,10 @@ def test_backfill_and_correct():
         # every instinct now has all managed keys
         for p in il.iter_instinct_paths(md):
             fm = il.parse_instinct(p).fm
-            check(all(k in fm for k in il.MANAGED_KEYS), f"{p.name} has all managed keys")
+            check(all(k in fm for k in il.SEED_KEYS), f"{p.name} has all seed keys")
+            check("last_exercised" not in fm,
+                  f"{p.name} gets NO invented last_exercised at seed time")
+            check(fm.get("evidence") == "seed", f"{p.name} is labelled a seed")
         # explicit memory seeded 0.90
         em = il.parse_instinct(md / "feedback_voice_no_em_dash.md")
         check(il.parse_float(em.get("confidence")) == 0.9, "explicit backfilled to 0.90")
@@ -395,6 +398,203 @@ def test_cli_invocation():
         check(not list(md.glob("*.bak-instinct")), "--no-backup leaves no .bak-instinct siblings")
 
 
+
+# ---------------------------------------------------------------------------
+# promotion: ledger -> confidence
+# ---------------------------------------------------------------------------
+def _write_ledgers(tmp: Path, injections, observations):
+    """Point the CLI's module-level ledger paths at temp files."""
+    import json as _json
+    inj = tmp / "injections.jsonl"
+    obs = tmp / "observations.jsonl"
+    inj.write_text("".join(_json.dumps(r) + "\n" for r in injections), encoding="utf-8")
+    obs.write_text("".join(_json.dumps(r) + "\n" for r in observations), encoding="utf-8")
+    cli.INJECTIONS_PATH = inj
+    cli.OBSERVATIONS_PATH = obs
+    cli.PROMOTE_STATE_PATH = tmp / "promote-state.json"
+    return inj, obs
+
+
+def _old_ts(minutes_ago=1440):
+    from datetime import datetime, timezone, timedelta
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _promote_args(**kw):
+    a = Args(every=il.PROMOTE_EVERY,
+             min_session_calls=il.PROMOTE_MIN_SESSION_CALLS,
+             no_decay=True)
+    a.__dict__.update(kw)
+    return a
+
+
+def _busy(session, n=10):
+    return [{"ts": _old_ts(), "session": session, "tool": "Bash"} for _ in range(n)]
+
+
+def test_promotion_math():
+    print("test_promotion_math")
+    check(il.promotion_steps(0, 2) == 0, "2 exposures does not cross the 3-gate")
+    check(il.promotion_steps(0, 3) == 1, "3 exposures earns exactly one step")
+    check(il.promotion_steps(2, 4) == 1, "crossing 3 from 2->4 earns one step")
+    check(il.promotion_steps(0, 7) == 2, "7 exposures earns two steps, not seven")
+    check(il.promotion_steps(5, 5) == 0, "no exposures, no steps")
+    check(il.promotion_steps(0, 9, every=0) == 0, "every=0 cannot divide by zero")
+    check(il.evidence_state({}) == "seed", "no exposures -> seed")
+    check(il.evidence_state({"exposures": "2"}) == "exercised", "exposures -> exercised")
+    check(il.evidence_state({"observations": "4"}) == "reinforced",
+          "observations>1 -> reinforced")
+    check(il.evidence_state({"observations": "4", "corrections": "1"}) == "corrected",
+          "a correction outranks a reinforce")
+
+
+def test_promote_gate_and_liveness():
+    print("test_promote_gate_and_liveness")
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        md = make_memory(tmp)
+        cli.cmd_backfill(Args(no_backup=True), md)
+        slug = "feedback_voice_humanizer"
+        before = il.parse_float(il.parse_instinct(md / f"{slug}.md").fm["confidence"])
+
+        # two qualifying sessions -> exposure recorded, gate NOT crossed
+        inj = [{"ts": _old_ts(), "session": "s1", "injected": [slug], "explored": []},
+               {"ts": _old_ts(), "session": "s2", "injected": [slug], "explored": []}]
+        _write_ledgers(tmp, inj, _busy("s1") + _busy("s2"))
+        cli.cmd_promote(_promote_args(), md)
+        fm = il.parse_instinct(md / f"{slug}.md").fm
+        check(il.parse_int(fm.get("exposures"), 0) == 2, "two sessions -> 2 exposures")
+        check(abs(il.parse_float(fm["confidence"]) - before) < 1e-9,
+              "confidence UNCHANGED below the gate")
+        check(fm.get("evidence") == "exercised", "below the gate reads as `exercised`")
+
+        # third qualifying session crosses the gate exactly once
+        inj.append({"ts": _old_ts(), "session": "s3", "injected": [slug], "explored": []})
+        _write_ledgers(tmp, inj, _busy("s1") + _busy("s2") + _busy("s3"))
+        cli.cmd_promote(_promote_args(), md)
+        fm = il.parse_instinct(md / f"{slug}.md").fm
+        after = il.parse_float(fm["confidence"])
+        check(il.parse_int(fm.get("exposures"), 0) == 3, "third session -> 3 exposures")
+        check(abs(after - round(il.reinforce_confidence(before), 3)) < 1e-9,
+              f"gate crossed -> exactly ONE reinforce step ({before} -> {after})")
+        check(fm.get("evidence") == "reinforced", "past the gate reads as `reinforced`")
+
+        # idempotent: the same ledger a second time credits nothing
+        cli.cmd_promote(_promote_args(), md)
+        fm2 = il.parse_instinct(md / f"{slug}.md").fm
+        check(il.parse_int(fm2.get("exposures"), 0) == 3,
+              "re-running over the same ledger does NOT double-count")
+        check(abs(il.parse_float(fm2["confidence"]) - after) < 1e-9,
+              "re-run leaves confidence untouched")
+
+
+def test_promote_rejects_weak_evidence():
+    print("test_promote_rejects_weak_evidence")
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        md = make_memory(tmp)
+        cli.cmd_backfill(Args(no_backup=True), md)
+        slug = "feedback_voice_no_em_dash"
+
+        # THREE injections, but each session did almost no work: an aborted
+        # session proves nothing about the instincts it loaded.
+        inj = [{"ts": _old_ts(), "session": f"idle{i}", "injected": [slug], "explored": []}
+               for i in range(3)]
+        obs = []
+        for i in range(3):
+            obs += _busy(f"idle{i}", n=1)
+        _write_ledgers(tmp, inj, obs)
+        cli.cmd_promote(_promote_args(), md)
+        fm = il.parse_instinct(md / f"{slug}.md").fm
+        check(il.parse_int(fm.get("exposures"), 0) == 0,
+              "idle sessions contribute ZERO exposures")
+        check(fm.get("evidence") == "seed", "never exercised still reads as `seed`")
+
+        # a record from a session that may still be running is left for next run
+        _write_ledgers(tmp, [{"ts": _old_ts(minutes_ago=1), "session": "live",
+                              "injected": [slug], "explored": []}], _busy("live"))
+        cli.cmd_promote(_promote_args(), md)
+        fm = il.parse_instinct(md / f"{slug}.md").fm
+        check(il.parse_int(fm.get("exposures"), 0) == 0,
+              "a still-recent session is not credited yet (settle window)")
+
+
+def test_promote_credits_explored_slots():
+    print("test_promote_credits_explored_slots")
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        md = make_memory(tmp)
+        cli.cmd_backfill(Args(no_backup=True), md)
+        slug = "discovery_some_tool"
+        # An EXPLORE pick was genuinely put in front of the agent, so it earns
+        # exposure the same way an exploit pick does -- otherwise a below-floor
+        # instinct could never acquire evidence and the top-N would freeze.
+        inj = [{"ts": _old_ts(), "session": f"x{i}", "injected": [], "explored": [slug]}
+               for i in range(3)]
+        obs = []
+        for i in range(3):
+            obs += _busy(f"x{i}")
+        _write_ledgers(tmp, inj, obs)
+        cli.cmd_promote(_promote_args(), md)
+        fm = il.parse_instinct(md / f"{slug}.md").fm
+        check(il.parse_int(fm.get("exposures"), 0) == 3, "explored slots earn exposure")
+        check(fm.get("evidence") == "reinforced", "an explored instinct can be promoted")
+
+
+def test_injection_hook_writes_stems():
+    print("test_injection_hook_writes_stems")
+    import json as _json
+    import subprocess
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        md = make_memory(tmp)
+        cli.cmd_backfill(Args(no_backup=True), md)
+        inj = tmp / "injections.jsonl"
+        env = dict(os.environ,
+                   INSTINCT_SCRIPTS_DIR=str(ROOT / "scripts"),
+                   INSTINCT_MEMORY_DIR=str(md),
+                   INSTINCT_INJECTIONS=str(inj),
+                   INSTINCT_INJECT_MIN_CONFIDENCE="0.80",
+                   INSTINCT_INJECT_LIMIT="12",
+                   INSTINCT_INJECT_EXPLORE="2")
+        r = subprocess.run(
+            [sys.executable, str(ROOT / "hooks" / "inject-instinct-context.py")],
+            input=_json.dumps({"session_id": "deadbeefcafe", "hook_event_name": "SessionStart"}),
+            capture_output=True, text=True, env=env)
+        check(r.returncode == 0, f"hook exits 0 (rc={r.returncode}; {r.stderr.strip()[:120]})")
+        check(inj.is_file(), "hook wrote an injection ledger record")
+        rec = _json.loads(inj.read_text(encoding="utf-8").strip().splitlines()[-1])
+        check(rec.get("session") == "deadbeef", "record carries the 8-char session id")
+        every = list(rec.get("injected", [])) + list(rec.get("explored", []))
+        check(bool(every), "record names at least one instinct")
+        stems = {p.stem for p in il.iter_instinct_paths(md)}
+        check(all(x in stems for x in every),
+              f"every ledger entry is a resolvable FILE STEM, not a display name ({every})")
+        # the explore half must actually surface something below the floor
+        check(bool(rec.get("explored")), "explore slots are populated below the floor")
+        block = _json.loads(r.stdout)
+        ctx = block.get("hookSpecificOutput", {}).get("additionalContext", "")
+        check("Under evaluation" in ctx, "explore picks are LABELLED as unproven in the block")
+
+
+def test_promote_reports_unbackfilled():
+    print("test_promote_reports_unbackfilled")
+    import io, contextlib
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        md = make_memory(tmp)  # deliberately NOT backfilled
+        _write_ledgers(tmp, [{"ts": _old_ts(), "session": "s1",
+                              "injected": ["feedback_voice_humanizer"], "explored": []}],
+                       _busy("s1"))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            cli.cmd_promote(_promote_args(), md)
+        msg = err.getvalue()
+        check("no stored confidence" in msg and "backfill" in msg,
+              "un-backfilled instincts are reported LOUDLY, not silently skipped")
+
+
 def main():
     print("=== Instinct Engine regression tests ===")
     test_confidence_math()
@@ -406,6 +606,12 @@ def main():
     test_project_scoping()
     test_reseed()
     test_cli_invocation()
+    test_promotion_math()
+    test_promote_gate_and_liveness()
+    test_promote_rejects_weak_evidence()
+    test_promote_credits_explored_slots()
+    test_injection_hook_writes_stems()
+    test_promote_reports_unbackfilled()
     print(f"\n{'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILURE(S): ' + '; '.join(FAILS)}")
     return 1 if FAILS else 0
 

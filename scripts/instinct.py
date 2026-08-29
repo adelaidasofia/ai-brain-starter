@@ -29,6 +29,7 @@ second identical run writes nothing.
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import os
 import re
@@ -43,6 +44,18 @@ OBSERVATIONS_PATH = Path(os.environ.get(
     "INSTINCT_OBSERVATIONS",
     str(Path.home() / ".claude" / "instinct" / "observations.jsonl"),
 ))
+INJECTIONS_PATH = Path(os.environ.get(
+    "INSTINCT_INJECTIONS",
+    str(Path.home() / ".claude" / "instinct" / "injections.jsonl"),
+))
+PROMOTE_STATE_PATH = Path(os.environ.get(
+    "INSTINCT_PROMOTE_STATE",
+    str(Path.home() / ".claude" / "instinct" / "promote-state.json"),
+))
+# A session still running when `promote` fires would be credited for the
+# instincts it has injected SO FAR and then never revisited, silently losing
+# every later segment. Leave recent sessions alone; the next run takes them.
+PROMOTE_SETTLE_MINUTES = int(os.environ.get("INSTINCT_PROMOTE_SETTLE_MINUTES", "60"))
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +93,7 @@ def cmd_backfill(args, memory_dir: Path) -> int:
     for path in il.iter_instinct_paths(memory_dir):
         inst = il.parse_instinct(path)
         fm = inst.fm
-        if all(k in fm for k in il.MANAGED_KEYS):
+        if all(k in fm for k in il.SEED_KEYS):
             skipped += 1
             continue
         updates: dict[str, object] = {}
@@ -97,6 +110,12 @@ def cmd_backfill(args, memory_dir: Path) -> int:
             updates["last_seen"] = _today()
         if "project_id" not in fm:
             updates["project_id"] = il.PROJECT_GLOBAL
+        if "exposures" not in fm:
+            updates["exposures"] = 0
+        if "evidence" not in fm:
+            # Say out loud what the number is: a seed until something
+            # exercises it.
+            updates["evidence"] = il.evidence_state(fm)
         if args.dry_run:
             print(f"WOULD backfill {path.name}: {updates}")
             touched += 1
@@ -202,6 +221,209 @@ def cmd_decay(args, memory_dir: Path) -> int:
         if il.write_instinct(inst, new_text):
             changed += 1
     print(f"decay: {changed} instinct(s) {'would ' if args.dry_run else ''}decayed")
+    return 0
+
+
+def _read_ledger(path: Path) -> tuple[list[dict], int]:
+    """Read a JSONL ledger plus its rotated `.prev` sibling.
+
+    Returns (records, malformed_count). Malformed lines are COUNTED and
+    reported by the caller, never silently dropped -- a ledger that quietly
+    loses half its lines and still exits 0 is the SILENT-NO-OP bug class, and
+    it would read exactly like "there was no evidence".
+    """
+    records: list[dict] = []
+    malformed = 0
+    for p in (Path(str(path) + ".prev"), path):
+        if not p.is_file():
+            continue
+        try:
+            with p.open(encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        malformed += 1
+                        continue
+                    if isinstance(obj, dict):
+                        records.append(obj)
+                    else:
+                        malformed += 1
+        except OSError as exc:
+            print(f"WARNING: could not read {p}: {exc}", file=sys.stderr)
+    return records, malformed
+
+
+def _parse_ts(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _load_promote_state() -> dict:
+    try:
+        return json.loads(PROMOTE_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_promote_state(state: dict) -> None:
+    try:
+        PROMOTE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PROMOTE_STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    except OSError as exc:
+        print(f"WARNING: could not persist promote state: {exc}", file=sys.stderr)
+
+
+def cmd_promote(args, memory_dir: Path) -> int:
+    """Ledger -> confidence. The step that never ran.
+
+    `reinforce`/`correct` are the engine's bidirectional update, but both are
+    manual, so in practice neither fires and every stored confidence stays the
+    seed it was born with -- a number derived from whether the memory's prose
+    happened to contain "never" or "codified". This closes the loop on the half
+    that IS deterministically observable.
+
+    Reinforce, not correct. An exposure that produced no correction is weak
+    positive evidence and it is genuinely in the ledger. A CORRECTION is not
+    recorded anywhere on disk, so automating only the upward direction with no
+    gate would manufacture 0.99s across the whole store. Hence, mirroring the
+    shipped runtime loop (MYC-818 / MYC-916): promotion is gated on a COUNT of
+    exposures, the climb is asymptotic, and `correct` stays human-driven.
+
+    An exposure counts only when the session did real work (>= --min-session-calls
+    tool calls in the observation ledger). A session that started and died
+    immediately proves nothing about the instincts it loaded.
+    """
+    today = _today()
+    now = datetime.now(timezone.utc)
+
+    obs, obs_bad = _read_ledger(OBSERVATIONS_PATH)
+    work = collections.Counter(str(o.get("session", "")) for o in obs)
+
+    inj, inj_bad = _read_ledger(INJECTIONS_PATH)
+    if not inj:
+        print(f"promote: no injection records at {INJECTIONS_PATH}.")
+        print("  The SessionStart hook writes them. If the engine was installed "
+              "before this ledger existed, re-run the installer and let one "
+              "session start; there is nothing to promote from yet.")
+        return 0
+
+    state = _load_promote_state()
+    credited: list[str] = list(state.get("credited_sessions", []))
+    credited_set = set(credited)
+
+    deltas: collections.Counter = collections.Counter()
+    seen_pairs: set[tuple[str, str]] = set()
+    fresh_sessions: set[str] = set()
+    n_already = n_idle = n_unsettled = n_unattributed = 0
+
+    for rec in inj:
+        sess = str(rec.get("session", ""))
+        if not sess:
+            n_unattributed += 1
+            continue
+        if sess in credited_set:
+            n_already += 1
+            continue
+        ts = _parse_ts(rec.get("ts"))
+        if ts and (now - ts).total_seconds() < PROMOTE_SETTLE_MINUTES * 60:
+            n_unsettled += 1
+            continue
+        if work.get(sess, 0) < args.min_session_calls:
+            n_idle += 1
+            continue
+        fresh_sessions.add(sess)
+        slugs = list(rec.get("injected") or []) + list(rec.get("explored") or [])
+        for slug in slugs:
+            pair = (sess, str(slug))
+            if pair in seen_pairs:
+                continue  # one exposure per instinct per session, not per segment
+            seen_pairs.add(pair)
+            deltas[str(slug)] += 1
+
+    touched = promoted = unbackfilled = 0
+    for path in il.iter_instinct_paths(memory_dir):
+        inst = il.parse_instinct(path)
+        fm = inst.fm
+        cur_conf = il.parse_float(fm.get("confidence"))
+        if cur_conf is None:
+            unbackfilled += 1
+            continue
+        delta = deltas.get(inst.slug, 0)
+        prev_exp = il.parse_int(fm.get("exposures"), 0)
+        new_exp = prev_exp + delta
+        steps = il.promotion_steps(prev_exp, new_exp, args.every)
+
+        updates: dict[str, object] = {}
+        if delta:
+            updates["exposures"] = new_exp
+            updates["last_exercised"] = today
+        if steps:
+            c = cur_conf
+            for _ in range(steps):
+                c = il.reinforce_confidence(c)
+            updates["confidence"] = round(c, 3)
+            updates["observations"] = il.parse_int(fm.get("observations"), 0) + steps
+            updates["last_seen"] = today
+
+        # Provenance is recomputed for EVERY instinct, not just the touched
+        # ones, so `evidence` is populated store-wide and a seed can never be
+        # exported as though it were a measurement.
+        merged = dict(fm)
+        merged.update({k: str(v) for k, v in updates.items()})
+        ev = il.evidence_state(merged)
+        if fm.get("evidence") != ev:
+            updates["evidence"] = ev
+        if not updates:
+            continue
+
+        if args.dry_run:
+            bits = [f"exposures {prev_exp}->{new_exp}"] if delta else []
+            if steps:
+                bits.append(f"confidence {cur_conf}->{updates['confidence']} "
+                            f"(+{steps} step(s))")
+            if "evidence" in updates:
+                bits.append(f"evidence={updates['evidence']}")
+            print(f"WOULD promote {path.name}: " + ", ".join(bits))
+        else:
+            if not il.write_instinct(inst, il.set_managed_fields(inst, updates)):
+                continue
+        touched += 1
+        if steps:
+            promoted += 1
+
+    if not args.dry_run and fresh_sessions:
+        credited.extend(sorted(fresh_sessions))
+        state["credited_sessions"] = credited[-il.PROMOTE_SESSION_MEMORY:]
+        state["last_run"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        _save_promote_state(state)
+
+    verb = "would credit" if args.dry_run else "credited"
+    print(f"promote: {verb} {len(fresh_sessions)} session(s) -> "
+          f"{sum(deltas.values())} exposure(s) across {len(deltas)} instinct(s); "
+          f"{touched} file(s) updated, {promoted} reinforced "
+          f"(gate: 1 step per {args.every} exposures).")
+    print(f"  skipped: {n_already} already-credited, {n_unsettled} still-recent "
+          f"(< {PROMOTE_SETTLE_MINUTES}m), {n_idle} idle "
+          f"(< {args.min_session_calls} tool calls), {n_unattributed} unattributed.")
+    if obs_bad or inj_bad:
+        print(f"  WARNING: {inj_bad} malformed injection line(s), "
+              f"{obs_bad} malformed observation line(s) skipped.", file=sys.stderr)
+    if unbackfilled:
+        print(f"  {unbackfilled} instinct(s) have no stored confidence and were "
+              f"SKIPPED -- they can never be promoted until backfilled. Run: "
+              f"python3 {Path(__file__).name} backfill", file=sys.stderr)
+
+    if not args.no_decay:
+        print("---")
+        cmd_decay(args, memory_dir)
     return 0
 
 
@@ -395,6 +617,11 @@ def cmd_export(args, memory_dir: Path) -> int:
             "confidence": eff,
             "domain": il.infer_domain(inst),
             "source_repo": p,
+            # What the number is BASED ON. Without it a seeded 0.82 and an
+            # earned 0.82 export identically, and the pack claims evidence it
+            # does not have.
+            "evidence_state": il.evidence_state(fm),
+            "exposures": il.parse_int(fm.get("exposures"), 0),
             "action": (fm.get("description", "") or "").strip(),
             "evidence": inst.body.strip()[:1200],
         })
@@ -616,6 +843,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("correct", parents=[common]); sp.add_argument("ident"); sp.add_argument("--dry-run", action="store_true")
     sp = sub.add_parser("decay", parents=[common]); sp.add_argument("--dry-run", action="store_true")
 
+    sp = sub.add_parser("promote", parents=[common])
+    sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--every", type=int, default=il.PROMOTE_EVERY,
+                    help="qualifying exposures per reinforce step "
+                         f"(default {il.PROMOTE_EVERY})")
+    sp.add_argument("--min-session-calls", type=int, default=il.PROMOTE_MIN_SESSION_CALLS,
+                    help="tool calls a session must have made for its exposures "
+                         f"to count (default {il.PROMOTE_MIN_SESSION_CALLS})")
+    sp.add_argument("--no-decay", action="store_true",
+                    help="skip the decay pass that normally follows")
+
     sp = sub.add_parser("recompute", parents=[common])
     sp.add_argument("--dry-run", action="store_true"); sp.add_argument("--limit", type=int, default=20)
 
@@ -639,6 +877,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 DISPATCH = {
+    "promote": cmd_promote,
     "backfill": cmd_backfill, "reseed": cmd_reseed,
     "reinforce": cmd_reinforce, "correct": cmd_correct,
     "decay": cmd_decay, "recompute": cmd_recompute, "report": cmd_report,
