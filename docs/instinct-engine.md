@@ -157,7 +157,7 @@ python3 scripts/instinct.py reseed   [--dry-run] [--no-backup]
 python3 scripts/instinct.py reinforce <slug>
 python3 scripts/instinct.py correct   <slug>
 python3 scripts/instinct.py decay     [--dry-run]
-python3 scripts/instinct.py promote   [--dry-run] [--every N] [--min-session-calls N] [--no-decay]
+python3 scripts/instinct.py promote   [--dry-run] [--every N] [--min-session-calls N] [--no-decay] [--reset-state]
 python3 scripts/instinct.py recompute [--limit N]      # decay + report
 python3 scripts/instinct.py report    [--project P] [--min-confidence F] [--stale] [--json] [--limit N]
 python3 scripts/instinct.py export    [--project P] [--min-confidence F] [--all] [--out FILE]
@@ -214,6 +214,9 @@ observable. `correct` stays human-driven.
 | one exposure per instinct **per session** | multi-segment sessions (resume, post-compact) cannot triple-count |
 | records younger than **60 min** are skipped | a still-running session would be credited for what it has loaded so far and never revisited |
 | already-credited sessions tracked in `promote-state.json` | re-runs are idempotent — the same ledger twice credits nothing |
+| a `cursor_ts` high-water mark alongside that set | the set is bounded, so a long-lived install drops its oldest ids; without the cursor, a ledger record that outlived its own id would be credited again |
+| a **corrupt** state file raises; only an **absent** one is a fresh start | reading "unreadable" as "nothing credited yet" would re-credit every session still in the ledger. Absent and failed are different answers — pass `--reset-state` to start over deliberately |
+| an `O_EXCL` lock around the pass | the daily job and a hand-run overlapping would both credit the same records |
 
 **Exploration.** Ranking purely by confidence is a closed loop: only injected
 instincts earn exposures, only exposed instincts get promoted, so the top-N

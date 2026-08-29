@@ -8,6 +8,7 @@ temp dir — never touches real memory.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -424,7 +425,7 @@ def _old_ts(minutes_ago=1440):
 def _promote_args(**kw):
     a = Args(every=il.PROMOTE_EVERY,
              min_session_calls=il.PROMOTE_MIN_SESSION_CALLS,
-             no_decay=True)
+             no_decay=True, reset_state=False)
     a.__dict__.update(kw)
     return a
 
@@ -595,6 +596,78 @@ def test_promote_reports_unbackfilled():
               "un-backfilled instincts are reported LOUDLY, not silently skipped")
 
 
+
+def test_promote_state_three_ways():
+    print("test_promote_state_three_ways")
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        md = make_memory(tmp)
+        cli.cmd_backfill(Args(no_backup=True), md)
+        slug = "feedback_voice_humanizer"
+        inj = [{"ts": _old_ts(), "session": f"s{i}", "injected": [slug], "explored": []}
+               for i in range(3)]
+        obs = []
+        for i in range(3):
+            obs += _busy(f"s{i}")
+        _write_ledgers(tmp, inj, obs)
+        cli.cmd_promote(_promote_args(), md)
+        exp1 = il.parse_int(il.parse_instinct(md / f"{slug}.md").fm.get("exposures"), 0)
+        check(exp1 == 3, "baseline: 3 exposures credited")
+
+        # ABSENT state is a legitimate first run; CORRUPT state is not the
+        # same answer. Reading a corrupt file as "nothing credited yet" would
+        # re-credit every session still in the ledger.
+        cli.PROMOTE_STATE_PATH.write_text("{ this is not json", encoding="utf-8")
+        raised = False
+        try:
+            cli.cmd_promote(_promote_args(), md)
+        except cli.PromoteStateError:
+            raised = True
+        check(raised, "a CORRUPT state file raises instead of silently re-crediting")
+        exp2 = il.parse_int(il.parse_instinct(md / f"{slug}.md").fm.get("exposures"), 0)
+        check(exp2 == exp1, "the refused run mutated nothing")
+        rc = cli.main(["promote", "--memory-dir", str(md)])
+        check(rc == 2, f"a refusal exits NON-ZERO so a cron log shows it (rc={rc})")
+
+        # the cursor makes a truncated session set harmless
+        cli.PROMOTE_STATE_PATH.write_text(
+            json.dumps({"credited_sessions": [], "cursor_ts": _old_ts(minutes_ago=60)}),
+            encoding="utf-8")
+        cli.cmd_promote(_promote_args(), md)
+        exp3 = il.parse_int(il.parse_instinct(md / f"{slug}.md").fm.get("exposures"), 0)
+        check(exp3 == exp1,
+              "records at/behind the cursor are NOT re-credited when the "
+              f"session set is empty (got {exp3}, want {exp1})")
+
+
+def test_promote_refuses_concurrent_run():
+    print("test_promote_refuses_concurrent_run")
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        md = make_memory(tmp)
+        cli.cmd_backfill(Args(no_backup=True), md)
+        _write_ledgers(tmp, [{"ts": _old_ts(), "session": "s1",
+                              "injected": ["feedback_voice_humanizer"], "explored": []}],
+                       _busy("s1"))
+        lock = cli.PROMOTE_STATE_PATH.with_suffix(".lock")
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text("", encoding="utf-8")
+        raised = False
+        try:
+            cli.cmd_promote(_promote_args(), md)
+        except cli.PromoteStateError:
+            raised = True
+        check(raised, "a held lock refuses a second concurrent pass")
+        fm = il.parse_instinct(md / "feedback_voice_humanizer.md").fm
+        check(il.parse_int(fm.get("exposures"), 0) == 0, "the refused pass credited nothing")
+        lock.unlink()
+        cli.cmd_promote(_promote_args(), md)
+        fm = il.parse_instinct(md / "feedback_voice_humanizer.md").fm
+        check(il.parse_int(fm.get("exposures"), 0) == 1,
+              "once the lock is released the pass runs normally")
+        check(not lock.exists(), "the lock is released on exit")
+
+
 def main():
     print("=== Instinct Engine regression tests ===")
     test_confidence_math()
@@ -612,6 +685,8 @@ def main():
     test_promote_credits_explored_slots()
     test_injection_hook_writes_stems()
     test_promote_reports_unbackfilled()
+    test_promote_state_three_ways()
+    test_promote_refuses_concurrent_run()
     print(f"\n{'ALL PASS' if not FAILS else str(len(FAILS)) + ' FAILURE(S): ' + '; '.join(FAILS)}")
     return 1 if FAILS else 0
 

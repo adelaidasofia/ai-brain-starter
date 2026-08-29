@@ -266,11 +266,83 @@ def _parse_ts(s: str | None) -> datetime | None:
         return None
 
 
+class PromoteStateError(RuntimeError):
+    """The state file exists but could not be read. NOT the same as absent."""
+
+
 def _load_promote_state() -> dict:
-    try:
-        return json.loads(PROMOTE_STATE_PATH.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    """Absent -> {} (a legitimate first run). Corrupt -> raise.
+
+    Collapsing those two into {} is the bug that matters here: an unreadable
+    state file would read as "nothing has ever been credited", and every
+    session still sitting in the ledger would be credited a second time --
+    silently inflating exposures across the whole store, in the one direction
+    this command is allowed to move. Absent and failed are different answers.
+    """
+    if not PROMOTE_STATE_PATH.exists():
         return {}
+    try:
+        data = json.loads(PROMOTE_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise PromoteStateError(
+            f"{PROMOTE_STATE_PATH} exists but could not be read ({exc}). "
+            f"Refusing to run: treating this as a first run would re-credit "
+            f"every session still in the ledger. Inspect it, or delete it and "
+            f"re-run with --reset-state to deliberately start over.") from exc
+    if not isinstance(data, dict):
+        raise PromoteStateError(
+            f"{PROMOTE_STATE_PATH} is not a JSON object. Refusing to run.")
+    return data
+
+
+class _PromoteLock:
+    """Refuse to run two promotion passes at once.
+
+    The daily job and a hand-run overlapping would both read the same state,
+    both credit the same records, and both write -- double-counting evidence.
+    O_EXCL is enough; this is a single-machine maintenance pass.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.fd = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            age = None
+            try:
+                age = datetime.now(timezone.utc).timestamp() - self.path.stat().st_mtime
+            except OSError:
+                pass
+            if age is not None and age > 3600:
+                # A crashed run leaves the lock behind forever; an hour is far
+                # longer than this pass can legitimately take.
+                try:
+                    self.path.unlink()
+                    self.fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    return self
+                except OSError:
+                    pass
+            raise PromoteStateError(
+                f"another promotion pass holds {self.path}"
+                + (f" (age {int(age)}s)" if age is not None else "")
+                + ". Refusing to run concurrently.")
+        return self
+
+    def __exit__(self, *exc):
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+        try:
+            self.path.unlink()
+        except OSError:
+            pass
+        return False
 
 
 def _save_promote_state(state: dict) -> None:
@@ -301,6 +373,12 @@ def cmd_promote(args, memory_dir: Path) -> int:
     tool calls in the observation ledger). A session that started and died
     immediately proves nothing about the instincts it loaded.
     """
+    lock = PROMOTE_STATE_PATH.with_suffix(".lock")
+    with _PromoteLock(lock):
+        return _promote_locked(args, memory_dir)
+
+
+def _promote_locked(args, memory_dir: Path) -> int:
     today = _today()
     now = datetime.now(timezone.utc)
 
@@ -318,6 +396,15 @@ def cmd_promote(args, memory_dir: Path) -> int:
     state = _load_promote_state()
     credited: list[str] = list(state.get("credited_sessions", []))
     credited_set = set(credited)
+    # High-water mark. `credited_sessions` is bounded, so a long-lived install
+    # eventually drops its oldest ids; without this, any ledger record that
+    # outlived its own session id in that set would be credited all over
+    # again. The cursor makes the truncation harmless.
+    cursor = _parse_ts(state.get("cursor_ts"))
+    if args.reset_state:
+        credited, credited_set, cursor = [], set(), None
+        print("promote: --reset-state -- ignoring prior credit history.")
+    max_credited_ts = cursor
 
     deltas: collections.Counter = collections.Counter()
     seen_pairs: set[tuple[str, str]] = set()
@@ -333,6 +420,13 @@ def cmd_promote(args, memory_dir: Path) -> int:
             n_already += 1
             continue
         ts = _parse_ts(rec.get("ts"))
+        # STRICT <: records sharing the cursor's exact second must still be
+        # considered -- several sessions can start inside one second, and the
+        # session set (not the cursor) is what dedupes them. The cursor is only
+        # the backstop for when that bounded set eventually truncates.
+        if ts and cursor and ts < cursor:
+            n_already += 1
+            continue
         if ts and (now - ts).total_seconds() < PROMOTE_SETTLE_MINUTES * 60:
             n_unsettled += 1
             continue
@@ -340,6 +434,8 @@ def cmd_promote(args, memory_dir: Path) -> int:
             n_idle += 1
             continue
         fresh_sessions.add(sess)
+        if ts and (max_credited_ts is None or ts > max_credited_ts):
+            max_credited_ts = ts
         slugs = list(rec.get("injected") or []) + list(rec.get("explored") or [])
         for slug in slugs:
             pair = (sess, str(slug))
@@ -402,6 +498,8 @@ def cmd_promote(args, memory_dir: Path) -> int:
     if not args.dry_run and fresh_sessions:
         credited.extend(sorted(fresh_sessions))
         state["credited_sessions"] = credited[-il.PROMOTE_SESSION_MEMORY:]
+        if max_credited_ts is not None:
+            state["cursor_ts"] = max_credited_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
         state["last_run"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
         _save_promote_state(state)
 
@@ -845,6 +943,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("promote", parents=[common])
     sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--reset-state", action="store_true",
+                    help="deliberately discard prior credit history and start over")
     sp.add_argument("--every", type=int, default=il.PROMOTE_EVERY,
                     help="qualifying exposures per reinforce step "
                          f"(default {il.PROMOTE_EVERY})")
@@ -892,7 +992,13 @@ def main(argv=None) -> int:
         print("ERROR: could not locate Agent Memory dir. Pass --memory-dir or set "
               "$INSTINCT_MEMORY_DIR.", file=sys.stderr)
         return 2
-    return DISPATCH[args.cmd](args, memory_dir)
+    try:
+        return DISPATCH[args.cmd](args, memory_dir)
+    except PromoteStateError as exc:
+        # A refusal to measure is not a clean run. Exit non-zero so a scheduled
+        # caller's log shows a failure rather than an empty, healthy-looking pass.
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
