@@ -161,6 +161,33 @@ SHIM
     echo "  SKIP [parse error] pwsh absent -- this control did NOT run"
   fi
 
+  # A file tracked in the index but MISSING from disk makes the analyzer throw.
+  # That must classify as UNEVALUATED (2), never as findings (1): an uncaught
+  # throw exits 1, and reporting a dead analyzer as bad code is the exact
+  # confusion this script's three-state contract exists to prevent.
+  if command -v pwsh >/dev/null 2>&1; then
+    st_gone="$st_tmp/gonerepo"
+    mkdir -p "$st_gone/scripts"
+    ( cd "$st_gone" && git init -q . ) >/dev/null 2>&1
+    printf '\xef\xbb\xbfWrite-Output "ok"\n' > "$st_gone/scripts/vanishes.ps1"
+    cp "$REPO_ROOT/scripts/psscriptanalyzer.sh" "$st_gone/scripts/psscriptanalyzer.sh"
+    ( cd "$st_gone" && git update-index --add scripts/vanishes.ps1 ) >/dev/null 2>&1
+    rm -f "$st_gone/scripts/vanishes.ps1"
+    set +e
+    ( cd "$st_gone" && bash scripts/psscriptanalyzer.sh ) >/dev/null 2>&1
+    st_gone_rc=$?
+    set -e
+    if [ "$st_gone_rc" -ne 2 ]; then
+      echo "  FAIL [analyzer throws] tracked-but-missing *.ps1 exited $st_gone_rc, expected 2."
+      echo "       A crashed analyzer must not be reported as a lint finding."
+      st_fail=1
+    else
+      echo "  ok   [analyzer throws] tracked-but-missing *.ps1 -> exit 2, not findings"
+    fi
+  else
+    echo "  SKIP [analyzer throws] pwsh absent -- this control did NOT run"
+  fi
+
   if [ "$st_fail" -ne 0 ]; then
     echo "psscriptanalyzer.sh self-test FAILED" >&2
     exit 1
@@ -227,7 +254,19 @@ $files = [System.IO.File]::ReadAllLines($FileList) | Where-Object { $_ }
 $ver = (Get-Module -ListAvailable PSScriptAnalyzer | Select-Object -First 1).Version
 Write-Output "==> PSScriptAnalyzer over $($files.Count) tracked *.ps1, $($rules.Count) enforced rule(s)  [$ver]"
 $found = @()
-foreach ($f in $files) { $found += Invoke-ScriptAnalyzer -Path $f -IncludeRule $rules }
+# The scan is wrapped because an UNCAUGHT terminating error exits 1, which the
+# caller reads as "found issues" -- mislabelling a dead analyzer as bad code and
+# sending the reader hunting a defect that does not exist. A file tracked in the
+# index but missing from disk throws ItemNotFoundException here, and so does an
+# unreadable or mangled path. Exit 3 = could-not-evaluate, which the caller maps
+# to UNEVALUATED instead.
+try {
+  foreach ($f in $files) { $found += Invoke-ScriptAnalyzer -Path $f -IncludeRule $rules }
+} catch {
+  [Console]::Error.WriteLine("SCAN FAILED: $($_.Exception.GetType().Name): $($_.Exception.Message)")
+  [Console]::Error.WriteLine("The analyzer did not finish, so the tree was NOT verified.")
+  exit 3
+}
 if ($found.Count -eq 0) { exit 0 }
 foreach ($d in $found) {
   if ($env:GITHUB_ACTIONS) {
