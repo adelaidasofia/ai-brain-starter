@@ -68,7 +68,7 @@ from _meta_resolver import find_meta_dir  # noqa: E402
 # reach the ONE audited primitive, or the guarantee is only as good as the copy.
 # safe_read.py is stdlib-only, so mirroring it costs the vault nothing.
 from _lib.safe_read import safe_read_text  # noqa: E402
-from _floors import Floors  # noqa: E402
+from _floors import Floors, strip_wikilink  # noqa: E402
 
 # Read bounds for the shared safe_read primitive. Journal frontmatter sits in
 # the first lines; safe_read hands back the whole (size-capped) file. 1 MB is
@@ -268,11 +268,14 @@ def main():
                     "date": meta["creationDate"][:10],
                 }
                 if "floor" in meta:
-                    entry["floor"] = meta["floor"]
+                    entry["floor"] = strip_wikilink(meta["floor"])
                 if "floor_level" in meta:
-                    entry["floor_level"] = meta["floor_level"]
+                    entry["floor_level"] = strip_wikilink(meta["floor_level"])
                 if "floor_arc" in meta:
-                    entry["floor_arc"] = _parse_inline_list(meta["floor_arc"])
+                    _arc = _parse_inline_list(meta["floor_arc"])
+                    entry["floor_arc"] = (
+                        [strip_wikilink(x) for x in _arc]
+                        if isinstance(_arc, list) else strip_wikilink(_arc))
                 entries.append(entry)
                 inconsistencies.extend(
                     floors.check(meta, label=os.path.relpath(fpath, journal_dir)))
