@@ -78,7 +78,17 @@ SHIM
   # production reaches this state via a broken pathspec or an empty checkout.
   st_empty="$st_tmp/emptyrepo"
   mkdir -p "$st_empty"
-  ( cd "$st_empty" && git init -q . && git commit -q --allow-empty -m init ) >/dev/null 2>&1
+  # `git init` ONLY -- no commit. A commit needs user.name/user.email, which a
+  # developer box has globally and a CI runner does not: the first version of
+  # this control ran `git commit --allow-empty`, died with git's exit 128 under
+  # `set -e`, and so passed locally while failing in CI (PR #625, run at
+  # 03:29:41Z). `git ls-files` returns nothing in a repo with no commits, which
+  # is the only property this fixture needs.
+  if ! ( cd "$st_empty" && git init -q . ) >/dev/null 2>&1; then
+    echo "  FAIL [empty enumeration] could not create the fixture repo -- the"
+    echo "       control did not run, which is not a pass."
+    st_fail=1
+  fi
   # The script resolves REPO_ROOT from its OWN location and cd's there, so
   # running the real one from another cwd still scans THIS repo. Copy it into
   # the empty repo so its own resolution lands on a tree with no tracked *.sh.
