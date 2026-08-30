@@ -1246,6 +1246,7 @@ PY_DIRECT=(
   tests/test_instinct.py
   tests/test_entity_disambiguator_clustering.py
   tests/test_graphify_stage_select_cache_key.py
+  tests/test_claude_project_key.py
   hooks/test_live_session_reap.py
   hooks/test_relocation_orphan_reclaim.py
   hooks/test_worktree_remove_verifies_side_effect.py

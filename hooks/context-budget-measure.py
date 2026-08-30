@@ -67,6 +67,20 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
+# Single source of truth for the ~/.claude/projects key. Six call sites used to
+# hand-roll this and no two agreed; two matched nothing at all. See
+# hooks/_lib/claude_project_key.py.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from _lib.claude_project_key import claude_project_key  # noqa: E402
+except Exception:  # fail-open: a deployed hook must never crash the prompt if
+    # _lib was not copied (an install that updates hooks but not _lib/). Inline
+    # the SAME rule rather than degrading to a wrong key -- a wrong key here is
+    # silent, and silence is the bug this file is fixing.
+    def claude_project_key(cwd) -> str:  # type: ignore[misc]
+        return re.sub(r"[^a-zA-Z0-9]", "-", str(cwd))
+
+
 # --- tunables (env-overridable) ------------------------------------------------
 GLOBAL_CEILING = int(os.environ.get("CONTEXT_BUDGET_GLOBAL_CEILING", 40000))
 # growth tolerance: absorb normal small adds, catch real drift
@@ -124,7 +138,7 @@ def _memory_md(cwd: str) -> Path | None:
     if env:
         cands.append(Path(env) / "⚙️ Meta/Agent Memory/MEMORY.md")
     try:
-        san = "-" + str(Path(cwd)).replace("/", "-")
+        san = claude_project_key(cwd)
         cands.append(HOME / ".claude/projects" / san / "memory/MEMORY.md")
         m = re.match(r"(.*)--claude-worktrees-[^/]+$", san)
         if m:

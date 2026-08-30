@@ -398,6 +398,7 @@ HOME_HOOKS_LIB_DEPS = {
     "vault_root.py",   # vault-context.py -> vault_root_for()
     "standing_report.py",  # dev-hub-refresh + orphan-claude-branches -> condense()
     "session_echo.py",     # available to any per-prompt injector -> should_emit()
+    "claude_project_key.py",  # context-budget-measure.py -> claude_project_key()
 }
 
 # Hooks ai-brain-starter USED TO ship and has deliberately RETIRED. The
