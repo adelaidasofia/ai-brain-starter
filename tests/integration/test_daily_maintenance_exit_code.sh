@@ -17,6 +17,15 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# HOME alone does NOT sandbox on Windows: ntpath.expanduser reads USERPROFILE and
+# ignores HOME, so a bare `HOME=... bash ...` here would write this test's state
+# file into the developer's REAL ~/.claude on Git Bash. That exact class once
+# rewrote a real settings.json and denied every tool call in later sessions
+# (MYC-3536). The shared helper sets HOME + USERPROFILE and neutralises the
+# HOMEDRIVE/HOMEPATH fallback; scripts/ci.sh has a guard that fails this file if
+# it drifts back to a bare HOME= redirect, and that guard is what caught it.
+# shellcheck source=tests/integration/lib/sandbox_home.sh
+. "$SCRIPT_DIR/lib/sandbox_home.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="$REPO_ROOT/scripts/vault-daily-maintenance.sh"
 FAILED=0
@@ -66,7 +75,7 @@ build_harness <<'STEPS'
 run "deliberately-failing-leg" false
 STEPS
 set +e
-HOME="$tmp/home1" bash "$tmp/h.sh" > "$tmp/o1" 2>&1
+run_sandboxed "$tmp/home1" bash "$tmp/h.sh" > "$tmp/o1" 2>&1
 rc1=$?
 set -e
 if [ "$rc1" -eq 0 ]; then
@@ -90,7 +99,7 @@ build_harness <<'STEPS'
 run "healthy-leg" true
 STEPS
 set +e
-HOME="$tmp/home2" bash "$tmp/h.sh" > "$tmp/o2" 2>&1
+run_sandboxed "$tmp/home2" bash "$tmp/h.sh" > "$tmp/o2" 2>&1
 rc2=$?
 set -e
 if [ "$rc2" -ne 0 ]; then
@@ -107,7 +116,7 @@ run "first-leg-fails" false
 run "second-leg-still-runs" true
 STEPS
 set +e
-HOME="$tmp/home3" bash "$tmp/h.sh" > "$tmp/o3" 2>&1
+run_sandboxed "$tmp/home3" bash "$tmp/h.sh" > "$tmp/o3" 2>&1
 rc3=$?
 set -e
 grep -q 'second-leg-still-runs' "$tmp/o3" \
