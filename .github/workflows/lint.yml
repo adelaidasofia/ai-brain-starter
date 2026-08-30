@@ -548,6 +548,13 @@ jobs:
       - name: ensure shellcheck present
         run: command -v shellcheck >/dev/null || { sudo apt-get update && sudo apt-get install -y shellcheck; }
 
+      # A signal death and a lint finding used to be the same exit here, so a
+      # shellcheck the kernel killed reported "found issues" and a reader went
+      # hunting for a defect that did not exist (MYC-4259). These controls shim
+      # a fake shellcheck to drive each documented status.
+      - name: shellcheck exit-code negative controls (a killed linter is not a finding)
+        run: bash scripts/shellcheck.sh --self-test
+
       - name: shellcheck (.sh, -S warning)
         run: bash scripts/shellcheck.sh
 
