@@ -150,7 +150,9 @@ ALLOWED = {                      # the helper itself, and this test
 try:
     tracked = subprocess.run(
         ["git", "-C", str(REPO), "ls-files", "*.py"],
-        capture_output=True, text=True, timeout=30,
+        # utf-8 explicitly: locale decoding raises UnicodeDecodeError on a
+        # non-UTF-8 Windows console for any path containing "⚙️".
+        capture_output=True, encoding="utf-8", errors="replace", timeout=30,
     ).stdout.split()
 except Exception as exc:                                  # pragma: no cover
     tracked = []
@@ -191,12 +193,8 @@ check("guard can see the repo (control: >20 tracked .py files)",
 # ratchet requires adopting _resolve_vault_root() before their bytes may change --
 # a behaviour change (which vault the script operates on) that needs its own
 # review. They are fixed together in a follow-up, not smuggled in here.
-PENDING_MIGRATION = sorted([
-    "scripts/context-audit.py",
-    "scripts/hallucination-sample-audit.py",
-    "scripts/passive-capture.py",
-    "scripts/token-usage-report.py",
-])
+PENDING_MIGRATION: list[str] = []  # emptied by the follow-up: all four adopted
+                                   # _resolve_vault_root() AND the shared key helper.
 
 check("hand-rolled key sites are EXACTLY the known-pending set "
       "(a new one is a regression; a fixed one must delete its row)",

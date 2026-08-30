@@ -46,9 +46,25 @@ import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+# Single source of truth for the ~/.claude/projects key (see #627).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+from _lib.claude_project_key import claude_project_key  # noqa: E402
+
 # --- Configuration ---------------------------------------------------
 
-VAULT_ROOT = Path(os.environ.get("VAULT_ROOT") or os.getcwd())
+def _resolve_vault_root() -> Path:
+    """Env var, else CWD.
+
+    Deliberately cwd-derived: this script captures from whichever vault you run
+    it in, and `_resolve_meta_dir` below sniffs for a Meta-like folder for the
+    same reason. Script location would be WRONG here -- one installed copy is
+    meant to serve any vault. The read lives inside this resolver so the
+    vault-root guard can see it is considered, not naive.
+    """
+    return Path(os.environ.get("VAULT_ROOT") or os.getcwd())
+
+
+VAULT_ROOT = _resolve_vault_root()
 
 
 def _resolve_meta_dir():
@@ -72,7 +88,7 @@ def _resolve_transcripts_dir():
     path replaces `/` and `.` with `-` and prepends `-`. Returns None if
     not found (Claude Code not installed, different account, etc.).
     """
-    encoded = "-" + str(VAULT_ROOT).replace("/", "-").replace(".", "-")
+    encoded = claude_project_key(VAULT_ROOT)
     candidate = Path.home() / ".claude" / "projects" / encoded
     return candidate if candidate.is_dir() else None
 
