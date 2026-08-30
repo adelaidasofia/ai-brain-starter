@@ -30,6 +30,14 @@
 #                           py_compile does not catch undefined names). A dedicated
 #                           lint.yml job enforces this in CI (as the shellcheck job
 #                           does); here it is best-effort, skipped without a linter.
+#   (d2) Repo Python      - scripts/ruff-gate.sh runs the SAME undefined-name check
+#                           over every tracked *.py (not just the phase docs).
+#                           Gate (a) py_compiles them, but py_compile parses and
+#                           cannot see a name that does not exist: env=_GIT_CLEAN_ENV
+#                           shipped undefined in hooks/session-lock.py and sat on
+#                           main for 13 days (2026-08-12 4a2bf7c -> 2026-08-25
+#                           5952dac) because no CI check linted hooks/*.py at all.
+#                           lint.yml runs the same script; local + CI cannot drift.
 #   (e) UTF-8 console guard - scripts/check-utf8-stdout.py fails a runnable
 #                           scripts/*.py or hooks/*.py CLI that print()s non-ASCII
 #                           (the "gear Meta" emoji, an em dash, an accented name)
@@ -1014,6 +1022,24 @@ else
   echo "    install: pip install ruff"
 fi
 
+# ---- (d2) Repo-wide Python undefined-name gate -----------------------------
+# Same linter as (d), different corpus: every tracked *.py rather than the Python
+# embedded in phases/*.md. Runs the canonical scripts/ruff-gate.sh, which lint.yml
+# also runs, so the local pre-push gate and CI cannot drift. Warn-skipped locally
+# without ruff (CI enforces it), matching (c) and (d).
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+  ruffgate_note="skipped in CI (the lint job's 'repo Python' step runs scripts/ruff-gate.sh)"
+  echo "==> (d2) repo python: $ruffgate_note"
+elif command -v ruff >/dev/null 2>&1; then
+  echo "==> (d2) repo python: bash scripts/ruff-gate.sh"
+  bash scripts/ruff-gate.sh
+  ruffgate_note="passed"
+else
+  ruffgate_note="skipped (no ruff locally; CI enforces it)"
+  echo "==> (d2) repo python: $ruffgate_note"
+  echo "    install: pip install ruff"
+fi
+
 # ---- (e) UTF-8 console guard -----------------------------------------------
 # scripts/check-utf8-stdout.py fails a runnable scripts/*.py or hooks/*.py CLI
 # that print()s non-ASCII without the UTF-8 stdout/stderr reconfigure guard - the
@@ -1357,4 +1383,4 @@ done
 echo "    OK - ${#PY_DIRECT[@]} hooks/+tests/ direct suite(s) passed; dormancy invariant clean"
 
 echo
-echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed] + home-hook deploy [passed] + subprocess decode [passed] + py3.9 annotation parity [passed] + ps1 encoding [passed]."
+echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + repo python [$ruffgate_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed] + home-hook deploy [passed] + subprocess decode [passed] + py3.9 annotation parity [passed] + ps1 encoding [passed]."

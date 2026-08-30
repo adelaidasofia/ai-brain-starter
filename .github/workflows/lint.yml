@@ -616,6 +616,23 @@ jobs:
       - name: phase-doc Python (no undefined names / F821)
         run: python3 scripts/check-phase-python.py
 
+      # The step above lints Python embedded in phases/*.md. THIS one lints the
+      # repo's own tracked *.py -- which nothing in CI did until it landed. The
+      # `ci` job py_compiles every tracked *.py, but py_compile parses: it cannot
+      # see a name that does not exist. `env=_GIT_CLEAN_ENV` shipped in
+      # hooks/session-lock.py on 2026-08-12 (4a2bf7c) with the constant never
+      # defined and sat on main for thirteen days (fixed 2026-08-25, 5952dac).
+      # session-lock.py is the concurrency gate and settings.json registers it
+      # behind an allow-fallback wrapper, so that NameError did not fail loudly --
+      # the hook crashed, the wrapper answered "allow", and the gate was open.
+      # Reuses the ruff installed two steps above (fail-closed), so this costs no
+      # extra install and no extra billed job.
+      - name: repo Python (no undefined names / E9,F63,F7,F82)
+        run: bash scripts/ruff-gate.sh
+
+      - name: ruff-gate negative controls (a dead linter must not read as clean)
+        run: bash scripts/ruff-gate.sh --self-test
+
   bash32-syntax:
     name: bash 3.2 syntax (macOS /bin/bash)
     runs-on: macos-latest
