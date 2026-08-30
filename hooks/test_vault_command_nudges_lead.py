@@ -149,6 +149,17 @@ try:
     print("--- rm -rf: _RM_LEAD covered wrappers but NOT these two ---")
     check(True,  "16. assignment prefix on rm",
           f'FOO=bar rm -rf "{VAULT}"', TMP)
+    # 16a/16b/16c: an operand carrying `$VAR`. This guard hard-blocked its own
+    # author on `N=/some/path; rm -rf "$N"` -- the literal `$N` was joined onto
+    # the cwd and `<cwd>/$N`, a path that exists nowhere, landed one level under
+    # a vault root and was reported as a top-level folder. A block naming a
+    # non-existent path is the shape that reads as broken and teaches the bypass.
+    check(False, "16a. $VAR expanding to a NON-vault must not block",
+          f'W={PLAIN}; rm -rf "$W"', TMP)
+    check(True,  "16b. $VAR expanding TO a vault must still block",
+          f'W={VAULT}; rm -rf "$W"', TMP)
+    check(False, "16c. an unresolvable $VAR is skipped, never invented",
+          'rm -rf "$SOMETHING_NEVER_SET"', TMP)
     check(True,  "17. absolute path to rm",
           f'/bin/rm -rf "{VAULT}"', TMP)
     check(True,  "17a. wrapper flag+value on rm (sudo -u root rm)",

@@ -1320,6 +1320,14 @@ PY_DIRECT=(
   # half the suite, because the fail-closed cwd SET that fixes the walk is
   # exactly the change that would otherwise start over-blocking.
   hooks/test_vault_command_nudges_lead.py
+  # The same recognition-layer defect in the two guards a user actually RUNS.
+  # vault-command-nudges is documented-dormant (0 matches in hooks.json);
+  # block-raw-vault-git and block-vault-git-fullwalk activate through the
+  # phase-doc channel and are wired, so this is the suite covering the deployed
+  # surface. 23 of its 43 legs fail against the pre-fix revision. Half are ALLOW
+  # legs -- these guards sit in front of commands people run constantly, and the
+  # fail-closed cwd SET is exactly the change that would start over-blocking.
+  hooks/test_live_vault_git_guards_lead.py
 )
 dormant_py=()
 while IFS= read -r -d '' f; do
