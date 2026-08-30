@@ -1310,6 +1310,16 @@ PY_DIRECT=(
   hooks/test_block_raw_vault_git_cd.py
   # Where _floors.py looks for a vault's floor notes (emoji-prefixed folder names).
   tests/test_floors_folder_discovery.py
+  # vault-command-nudges recognised its verbs as BARE tokens at a regex
+  # alternation boundary, so `env git push`, `sudo git push`, `/usr/bin/git
+  # push`, `FOO=bar git push`, `(git push)` and `FOO=bar rm -rf <vault root>`
+  # all matched NO rule and exited 0 -- a destructive-command guard, silently
+  # unguarded on the spellings an agent actually writes. Its cwd walk was also
+  # quote-blind, so a `cd` inside a quoted string moved the guard off the vault.
+  # 18 of these 39 legs fail against the pre-fix revision; the ALLOW legs are
+  # half the suite, because the fail-closed cwd SET that fixes the walk is
+  # exactly the change that would otherwise start over-blocking.
+  hooks/test_vault_command_nudges_lead.py
 )
 dormant_py=()
 while IFS= read -r -d '' f; do
