@@ -42,9 +42,15 @@ ok()   { echo "  ok   $*"; }
 # `run()` ... its closing brace, and the summary block from MAINT_STATE_DIR to
 # the final `exit 0`. Both extractions are asserted below: an empty lift means
 # the block moved, and a control that tests an empty string always passes.
+crit_block="$(awk '/^_is_critical\(\) \{/,/^\}/' "$TARGET")"
 run_block="$(awk '/^run\(\) \{/,/^\}/' "$TARGET")"
 summary_block="$(awk '/^MAINT_STATE_DIR=/,/^exit 0$/' "$TARGET")"
 
+if ! printf '%s' "$crit_block" | grep -q 'CRITICAL_STEPS'; then
+  fail "could not lift _is_critical() -- the allowlist machinery moved, so the"
+  fail "advisory-vs-critical cases below would prove nothing."
+  exit 1
+fi
 if ! printf '%s' "$run_block" | grep -q 'FAILED_STEPS+='; then
   fail "could not lift run() with its FAILED_STEPS accounting -- the block moved,"
   fail "so this control would have tested nothing. Fix the extraction, not the assert."
@@ -62,7 +68,10 @@ build_harness() { # build_harness <steps...>  -> a runnable script at $tmp/h.sh
     echo '#!/usr/bin/env bash'
     echo 'set -uo pipefail'
     echo 'log() { printf "%s\n" "$*"; }'
+    echo "CRITICAL_STEPS=(${HARNESS_CRITICAL:-})"
     echo 'FAILED_STEPS=()'
+    echo 'FAILED_CRITICAL=()'
+    printf '%s\n' "$crit_block"
     printf '%s\n' "$run_block"
     cat                      # caller pipes in the step invocations
     printf '%s\n' "$summary_block"
@@ -70,7 +79,9 @@ build_harness() { # build_harness <steps...>  -> a runnable script at $tmp/h.sh
   chmod +x "$tmp/h.sh"
 }
 
-# CASE 1 -- a FAILING step must reach the exit code. This is the defect.
+# CASE 1 -- a failing CRITICAL step must reach the exit code. This is the defect
+# MYC-4116 was filed for.
+HARNESS_CRITICAL='"deliberately-failing-leg"'
 build_harness <<'STEPS'
 run "deliberately-failing-leg" false
 STEPS
@@ -79,11 +90,11 @@ run_sandboxed "$tmp/home1" bash "$tmp/h.sh" > "$tmp/o1" 2>&1
 rc1=$?
 set -e
 if [ "$rc1" -eq 0 ]; then
-  fail "a failing step still exited 0 -- the swallow is back (MYC-4116)"
+  fail "a failing CRITICAL step still exited 0 -- the swallow is back (MYC-4116)"
 else
-  ok "failing step -> exit $rc1"
+  ok "failing CRITICAL step -> exit $rc1"
 fi
-grep -q 'FAILED STEP' "$tmp/o1" || fail "the log line does not name the failed step"
+grep -q 'CRITICAL STEP' "$tmp/o1" || fail "the log line does not name the failed critical step"
 if [ -f "$tmp/home1/.claude/state/vault-daily-maintenance-last.json" ]; then
   grep -q 'deliberately-failing-leg' \
     "$tmp/home1/.claude/state/vault-daily-maintenance-last.json" \
@@ -95,6 +106,7 @@ fi
 
 # CASE 2 -- the inverse. Without this, a harness that exited non-zero for ANY
 # reason would satisfy CASE 1 and the control would be theatre.
+HARNESS_CRITICAL='"healthy-leg"'
 build_harness <<'STEPS'
 run "healthy-leg" true
 STEPS
@@ -111,6 +123,7 @@ fi
 # CASE 3 -- a failing step must NOT abort the remaining steps. That behaviour
 # was correct before and is the reason run() swallows rather than `set -e`s;
 # breaking it while fixing the exit code would trade one defect for a worse one.
+HARNESS_CRITICAL='"first-leg-fails"'
 build_harness <<'STEPS'
 run "first-leg-fails" false
 run "second-leg-still-runs" true
@@ -123,6 +136,34 @@ grep -q 'second-leg-still-runs' "$tmp/o3" \
   || fail "a failing leg aborted the pass -- later legs must still run"
 [ "$rc3" -ne 0 ] || fail "mixed pass should still exit non-zero"
 ok "a failing leg does not abort the legs after it (exit $rc3)"
+
+# CASE 4 -- an ADVISORY failure must NOT red. Most legs of the real pass are
+# surfacers whose non-zero is a findings count (aggregate-sessions,
+# relocate-watch, check-rule-conflicts...). A blanket rule shipped briefly in
+# b27fd6e and would have reported failure EVERY day, which is how a real alarm
+# becomes background. This is the case that keeps the allowlist honest.
+HARNESS_CRITICAL=''            # nothing is critical
+build_harness <<'STEPS'
+run "surfacer-with-findings" false
+STEPS
+set +e
+run_sandboxed "$tmp/home4" bash "$tmp/h.sh" > "$tmp/o4" 2>&1
+rc4=$?
+set -e
+if [ "$rc4" -ne 0 ]; then
+  fail "a NON-critical failing step exited $rc4 -- a blanket rule is back, and"
+  fail "the real pass has several legs that exit non-zero while healthy."
+else
+  ok "advisory (non-critical) failure -> exit 0, logged but not alarmed"
+fi
+grep -q 'surfacer-with-findings' "$tmp/o4" \
+  || fail "an advisory failure must still be RECORDED even though it does not red"
+if [ -f "$tmp/home4/.claude/state/vault-daily-maintenance-last.json" ]; then
+  grep -q '"failed_critical":\[\]' \
+    "$tmp/home4/.claude/state/vault-daily-maintenance-last.json" \
+    || fail "failed_critical should be empty for an advisory-only failure"
+  ok "state file separates failed_steps from an empty failed_critical"
+fi
 
 if [ "$FAILED" -ne 0 ]; then
   echo "test_daily_maintenance_exit_code: FAILED" >&2
