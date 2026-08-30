@@ -60,13 +60,12 @@
 # missing; #404's bug survived because the suite only ever ran on the
 # env-named vault.
 
-# ---- SEV-B-cwd  (12 file(s), 12 read(s)) ----
+# ---- SEV-B-cwd  (11 file(s), 11 read(s)) ----
 dd3795425a250401136ea1739bbc0090324a54ca2ac737fcb7ed36f7268d66a3 SEV-B-cwd scripts/check-claude-md-drift.py
 ecf437791a2199e922f3b4ea83fd5541e1f9b2852b6323243791ba827770a243 SEV-B-cwd scripts/crm-collision-check.py
 113b61af71c96cce33c625f6865f16050662270b509619ef3d032a5452aaab2a SEV-B-cwd scripts/decision-retrospective.py
 926b37dcb6f6b689dab5c69b74f169a74e911887f20e7ed6aeb3c1b51e507b58 SEV-B-cwd scripts/drift-detection.py
 b461174f186d1a5bee479caf657c50c002324a09336324aa1bfef88090bfc8f1 SEV-B-cwd scripts/mcp-config-check.py
-601e5c47d84531274d14e3d0211c411fe4d37d1293879aa9c3c3fa163dd62883 SEV-B-cwd scripts/passive-capture.py
 3c41956000c24ca559be548481031b53a6fc269ef980af1bfedcd3c0bab133f0 SEV-B-cwd scripts/proposed-update-drafter.py
 2bf61214c177290c2408dd5b404d35bce060d22dbd9c06b10792ab4d286df3b9 SEV-B-cwd scripts/resolver-branch-merge-prompt.py
 8484cdc3aaea0a7882dd1f1c1c8d8a0b46c9977995a3c09563ebf74611fb8dd9 SEV-B-cwd scripts/resolver-build.py
@@ -74,24 +73,21 @@ a826003cdacfbeefdfe8019947632e71fb369ae9a5905d7dcce5a947b94b60ee SEV-B-cwd scrip
 c27dc2a06172b75ca4ed910c9da19b8e45761fd44908161a1fb42afdfd65fcd7 SEV-B-cwd scripts/undo-last-close.py
 8a1bf7b92664f946386b6af0e61b03042422f132d8f0f79b830aecd314385b17 SEV-B-cwd scripts/vault-hygiene.py
 
-# ---- SEV-C-script-loc  (5 file(s), 5 read(s)) ----
+# ---- SEV-C-script-loc  (3 file(s), 3 read(s)) ----
 f874491253a72291559c34c46187adf5b74c2ea305ef8ae59343debc784410ee SEV-C-script-loc scripts/compress-vault-doc.py
-c608cc6897ce3366e45301acd6c6bfe46eac6c4bfa2a1d066b1fa931eef97e6e SEV-C-script-loc scripts/context-audit.py
 fd7dcaf462d1fe6a8a3d350573c2b63c896ca4089a02b7888048b70e9807b459 SEV-C-script-loc scripts/rotate-meta-archives.py
-3c1a5e886fc162733d9f2c3a7575b17e4dd7a3591c45aefaf03882179d97ee09 SEV-C-script-loc scripts/token-usage-report.py
 6f3b4bf43bfe2f4edd00db13a4892399cded87e0b3cf02fb84f5f7f925d2ae50 SEV-C-script-loc scripts/worktree-archive-prep.py
 
 # ---- SEV-D-cli-default  (1 file(s), 1 read(s)) ----
 36aafbca40f8381430c029bb0a53794a679a102007dfe0b06a174d4d72955576 SEV-D-cli-default scripts/whatsapp/rename-contacts.py
 
-# ---- SEV-E-no-default  (12 file(s), 14 read(s)) ----
+# ---- SEV-E-no-default  (11 file(s), 13 read(s)) ----
 85006d7e25f42ba787b2ce616bd1c71590c3990f89f3153a6f958156c93029ed SEV-E-no-default hooks/coach-auto-prescribe-on-journal.py
 33804a89b8c6ac80575f93ea2a5e0f9f6e47aeb3bb6e8dab0413729fd3fc8c94 SEV-E-no-default hooks/inject-love-language-context.py
 d11e46cfd26ba07935e39f6bd73c36095e242d4a2a5a6856d12a07f7b929195b SEV-E-no-default scripts/backfill-journal-body-context.py
 66295b6759ce0653131ffa32fcbdb4e2c467fb833fe9770f1d72948ece7df513 SEV-E-no-default scripts/extractors/_base.py
 9ceedddb923461f4c803b48b1d8349c9e54f9f6ff73e40969aeb3332206c8824 SEV-E-no-default scripts/granola_core.py
 63fb9c590ff9d6f690249a4238094e595229adda50a5cfc8d55e87c1115b7a9d SEV-E-no-default scripts/graph-to-neo4j.py
-c41c1955f5ecc763a067cff06cd3c6cbe0a8aa47ad20625dd8eb7e779f8fd20d SEV-E-no-default scripts/hallucination-sample-audit.py
 24f7876383293d84f9524173e1e1b795b90eb4f18cee25dc64f5adaa57f59783 SEV-E-no-default scripts/hallucination-watch.py
 6082be21cce7a61305998c0b07dd6c1148aebe660dcf364d8998d317b7cdcc57 SEV-E-no-default scripts/insight-fact-check.py
 a5aed49db53aae2474b33dd27da96d15a3fb4d13676974aa3d43e6c7d1d900c9 SEV-E-no-default scripts/rotate-last-session.py

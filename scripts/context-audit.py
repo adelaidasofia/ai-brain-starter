@@ -25,12 +25,41 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Single source of truth for the ~/.claude/projects key (see #627).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+from _lib.claude_project_key import claude_project_key  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-VAULT_ROOT = Path(os.environ.get("VAULT_ROOT", str(_SCRIPT_DIR.parent.parent)))
+def _resolve_vault_root() -> Path:
+    """Prefer this script's OWN vault; honour VAULT_ROOT only when it agrees.
+
+    Mirrors scripts/aggregate-sessions.py. A machine-wide VAULT_ROOT (set once in
+    a settings env block, so every subprocess sees it) otherwise wins forever and
+    a copy installed in a DIFFERENT vault silently operates on the wrong one.
+    """
+    auto_root = _SCRIPT_DIR.parent.parent
+    env_raw = os.environ.get("VAULT_ROOT")
+    if not env_raw:
+        return auto_root
+    env_root = Path(os.path.expanduser(env_raw)).resolve()
+    if env_root == auto_root:
+        return env_root
+    if os.environ.get("VAULT_ROOT_FORCE", "").strip().lower() in ("1", "true", "yes"):
+        return env_root
+    print(
+        f"WARNING: VAULT_ROOT env points at {env_root}, but this script lives in "
+        f"{auto_root}. Operating on the script's own vault ({auto_root}). "
+        f"Set VAULT_ROOT_FORCE=1 to override.",
+        file=sys.stderr,
+    )
+    return auto_root
+
+
+VAULT_ROOT = _resolve_vault_root()
 META_DIR = VAULT_ROOT / "\u2699\ufe0f Meta"
 RULES_DIR = META_DIR / "rules"
 LAST_SESSION = META_DIR / "Last Session.md"
@@ -39,7 +68,7 @@ ROOT_CLAUDE_MD = VAULT_ROOT / "CLAUDE.md"
 # Memory directory for the vault project — auto-detect from vault path
 # Claude Code encodes the vault path as the project directory name
 # Claude Code encodes paths: / → -, spaces → -, leading dash kept
-_vault_path_encoded = str(VAULT_ROOT).replace("/", "-").replace(" ", "-")
+_vault_path_encoded = claude_project_key(VAULT_ROOT)
 MEMORY_DIR = Path.home() / ".claude" / "projects" / _vault_path_encoded / "memory"
 
 AGGREGATOR_MARKER = "<!-- aggregate-sessions:BEGIN -->"
@@ -219,7 +248,10 @@ def check_zombie_worktrees(result: AuditResult) -> None:
         out = subprocess.run(
             ["git", "worktree", "list"],
             capture_output=True,
-            text=True,
+            # utf-8 explicitly: a vault path contains "⚙️", and locale decoding
+            # raises UnicodeDecodeError on a non-UTF-8 Windows console.
+            encoding="utf-8",
+            errors="replace",
             cwd=str(VAULT_ROOT),
             timeout=10,
         )

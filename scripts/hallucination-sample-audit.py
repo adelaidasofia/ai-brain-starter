@@ -41,6 +41,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+# Single source of truth for the ~/.claude/projects key (see #627).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+from _lib.claude_project_key import claude_project_key  # noqa: E402
+
 SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(SCRIPT_DIR))
 from _claude_router import call_claude_text, RouterUnavailable  # noqa: E402
@@ -48,7 +52,7 @@ from _claude_router import call_claude_text, RouterUnavailable  # noqa: E402
 def _derive_sessions_dir(vault: Path) -> Path:
     """Claude Code projects dir = ~/.claude/projects/<sanitized vault path>/"""
     base = Path.home() / ".claude" / "projects"
-    sanitized = str(vault).replace("/", "-")
+    sanitized = claude_project_key(vault)
     candidate = base / sanitized
     if candidate.exists():
         return candidate
@@ -59,7 +63,7 @@ def _derive_sessions_dir(vault: Path) -> Path:
     return candidate
 
 
-def _resolve_vault() -> Path:
+def _resolve_vault_root() -> Path:  # sanctioned name; logic unchanged
     """VAULT_ROOT env var, or cwd if it's an Obsidian vault, else fail loud."""
     env = os.environ.get("VAULT_ROOT")
     if env:
@@ -73,7 +77,7 @@ def _resolve_vault() -> Path:
     )
 
 
-VAULT = _resolve_vault()
+VAULT = _resolve_vault_root()
 SESSIONS_DIR = _derive_sessions_dir(VAULT)
 OUTPUT = VAULT / "⚙️ Meta" / "Hallucination Sample Audit.md"
 HISTORY = VAULT / "⚙️ Meta" / "Hallucination Sample Audit History.jsonl"
@@ -226,7 +230,10 @@ def vault_grep(keywords: list[str], max_excerpts: int = 5) -> list[str]:
                     "rg", "-F", "--no-heading", "--max-count", "3",
                     "-C", "1", "-i", kw, str(VAULT),
                 ],
-                capture_output=True, text=True, timeout=20,
+                # utf-8 explicitly: rg output carries vault paths containing "⚙️",
+                # and locale decoding raises UnicodeDecodeError on a non-UTF-8
+                # Windows console.
+                capture_output=True, encoding="utf-8", errors="replace", timeout=20,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):
             continue
