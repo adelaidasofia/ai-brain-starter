@@ -73,6 +73,29 @@ SHIM
     fi
   }
 
+  # The empty-enumeration refusal. Driven by pointing the scan at a directory
+  # with no tracked *.sh, so `git ls-files` legitimately returns nothing --
+  # production reaches this state via a broken pathspec or an empty checkout.
+  st_empty="$st_tmp/emptyrepo"
+  mkdir -p "$st_empty"
+  ( cd "$st_empty" && git init -q . && git commit -q --allow-empty -m init ) >/dev/null 2>&1
+  # The script resolves REPO_ROOT from its OWN location and cd's there, so
+  # running the real one from another cwd still scans THIS repo. Copy it into
+  # the empty repo so its own resolution lands on a tree with no tracked *.sh.
+  mkdir -p "$st_empty/scripts"
+  cp "$REPO_ROOT/scripts/shellcheck.sh" "$st_empty/scripts/shellcheck.sh"
+  set +e
+  ( cd "$st_empty" && PATH="$st_tmp/bin:$PATH" bash scripts/shellcheck.sh ) >/dev/null 2>&1
+  st_got=$?
+  set -e
+  if [ "$st_got" -ne 2 ]; then
+    echo "  FAIL [empty enumeration] expected exit 2 (UNEVALUATED), got $st_got."
+    echo "       A scan of zero files is not a clean tree."
+    st_fail=1
+  else
+    echo "  ok   [empty enumeration] zero tracked *.sh -> exit 2, not a pass"
+  fi
+
   st_case "clean"                0   0
   st_case "real findings"        1   1
   st_case "could-not-process"    2   2
@@ -83,7 +106,7 @@ SHIM
     echo "shellcheck.sh self-test FAILED" >&2
     exit 1
   fi
-  echo "OK - self-test: findings (1) and a killed/failed linter (2) are distinct exits."
+  echo "OK - self-test: findings (1), a killed/failed linter (2), and an empty enumeration (2) are all distinct from a clean pass (0)."
   exit 0
 fi
 
@@ -108,8 +131,18 @@ done < <(git ls-files -z -- '*.sh')
 
 # Empty-array expansion under `set -u` errors on bash 3.2 / 4.3; guard it.
 if [ "${#files[@]}" -eq 0 ]; then
-  echo "no tracked *.sh found - nothing to check"
-  exit 0
+  # REFUSE, do not pass. This repo tracks ~200 *.sh, so an empty enumeration
+  # means the selection broke -- a bad pathspec, a detached/empty checkout, a
+  # `git ls-files` that failed -- never that the work is clean. Exiting 0 here
+  # reported a clean lint over a scan that never happened, which is the same
+  # shape as the killed-linter case below: nothing ran, and the caller was told
+  # everything was fine. "Nothing compared is not parity"
+  # (check-paired-implementations.py). Exit 2 = could-not-evaluate, matching the
+  # classification below so a caller can tell it from real findings (1).
+  echo "UNEVALUATED: zero tracked *.sh found. This repo tracks many, so an" >&2
+  echo "empty file list means the SELECTION failed, not that the tree is" >&2
+  echo "clean. Nothing was linted -- this is not a pass." >&2
+  exit 2
 fi
 
 echo "==> shellcheck -S $SEVERITY over ${#files[@]} tracked *.sh  [$(shellcheck --version | awk '/^version:/{print $2}')]"
