@@ -1,4 +1,6 @@
 #!/bin/bash
+# exit-contract: ENFORCING
+
 # vault-daily-maintenance.sh - heavy vault maintenance, kept OFF the interactive
 # session-close path.
 #
@@ -156,13 +158,27 @@ if ! close_mutex_acquire 60; then
 fi
 log "acquired close-cascade mutex ($$)"
 
+# Every step's status used to be logged and then DISCARDED: this script exited
+# 0 unconditionally, so a step that had been failing for weeks reported success
+# to launchd every night and to anyone reading `launchctl list`. A runner that
+# cannot fail cannot tell you its steps are failing (MYC-4116).
+#
+# Steps still never ABORT the pass -- that part was right, and is why the
+# aggregators keep running when one leg dies. The change is that failures are
+# remembered, named in the log, written to a state file a SessionStart reader
+# can pick up, and reflected in the final exit code.
+FAILED_STEPS=()
+
 run() {
-  # run <label> <command...> - runs at low priority, logs a tail, never aborts.
+  # run <label> <command...> - runs at low priority, logs a tail, never aborts,
+  # and REMEMBERS a non-zero status for the summary + exit code.
   local label="$1"; shift
   local out rc
   out=$(nice -n 10 "$@" 2>&1); rc=$?
   printf '%s\n' "$out" | tail -3
   log "[$label] rc=$rc :: $(printf '%s\n' "$out" | tail -1)"
+  [ "$rc" -ne 0 ] && FAILED_STEPS+=("$label(rc=$rc)")
+  return 0
 }
 
 # === RECONCILE (data safety): aggregators + commit deferred close artifacts ===
@@ -342,5 +358,29 @@ if [ "${ABS_NO_AUTO_GC:-0}" != "1" ] && [ -n "${GC_SEEN_MARKER:-}" ] && [ ! -f "
 fi
 
 close_mutex_release
+
+# Report failed steps to three surfaces that fail differently: the log (a human
+# tailing it), a state file (a SessionStart reader), and the exit code (launchd,
+# cron MAILTO, a hand run). The plist is StartCalendarInterval-only with no
+# KeepAlive/SuccessfulExit, so a non-zero exit records status without provoking
+# a restart loop.
+MAINT_STATE_DIR="${HOME}/.claude/state"
+MAINT_STATE="$MAINT_STATE_DIR/vault-daily-maintenance-last.json"
+mkdir -p "$MAINT_STATE_DIR" 2>/dev/null || true
+{
+  printf '{"finished_at":"%s","failed_count":%d,"failed_steps":[' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${#FAILED_STEPS[@]}"
+  for i in "${!FAILED_STEPS[@]}"; do
+    [ "$i" -gt 0 ] && printf ','
+    printf '"%s"' "${FAILED_STEPS[$i]}"
+  done
+  printf ']}\n'
+} > "$MAINT_STATE" 2>/dev/null || true
+
+if [ "${#FAILED_STEPS[@]}" -gt 0 ]; then
+  log "=== vault-daily-maintenance COMPLETED WITH ${#FAILED_STEPS[@]} FAILED STEP(S): ${FAILED_STEPS[*]} @ $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+  exit 1
+fi
+
 log "=== vault-daily-maintenance COMPLETE @ $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 exit 0

@@ -258,7 +258,6 @@ UNDECLARED_BASELINE: set[str] = {
     "scripts/update-check.ps1",
     "scripts/vault-backup.ps1",
     "scripts/vault-classify-untyped.py",
-    "scripts/vault-daily-maintenance.sh",
     "scripts/vault-hygiene.py",
     "scripts/vault-insight-engine.py",
     "scripts/vault-metadata-extract.py",
@@ -268,7 +267,7 @@ UNDECLARED_BASELINE: set[str] = {
     "scripts/worktree-archive-prep.py",
     "scripts/write-hook.sh",
 }
-UNDECLARED_MAX = 101
+UNDECLARED_MAX = 100
 
 
 def _tracked_scripts() -> tuple[list[Path], int]:

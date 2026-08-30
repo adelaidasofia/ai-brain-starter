@@ -287,6 +287,7 @@ INTEGRATION_TESTS=(
   test_resource_aware_session_close
   test_vault_lock_separated_gitdir
   test_cloud_sync_guard
+  test_daily_maintenance_exit_code
   test_cloud_safe_file_walkers
   test_delegated_task_needs_source
   test_cloud_sync_offer
