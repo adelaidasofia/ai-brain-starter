@@ -22,6 +22,16 @@
 #                           when running inside GitHub Actions (the dedicated job
 #                           already covers it); locally it is warn-and-skipped
 #                           when the shellcheck binary is absent (CI enforces it).
+#   (c2) PowerShell       - scripts/psscriptanalyzer.sh runs PSScriptAnalyzer over
+#                           every tracked *.ps1 with a curated security + real-bug
+#                           rule list. The .ps1 sibling of (c): until it landed,
+#                           .ps1 had an ENCODING check (BOM / em dash) and a PARSE
+#                           check and nothing semantic, on the Windows install path.
+#                           A severity floor was measured and rejected: -Severity
+#                           Warning is 318 findings on this tree, 251 of them
+#                           PSAvoidUsingWriteHost, which is correct in an installer.
+#                           Parse errors still fail it -- an -IncludeRule list does
+#                           not suppress ParseError findings.
 #   (d) Phase-doc Python  - scripts/check-phase-python.py extracts every Python
 #                           block from phases/*.md and runs the undefined-name
 #                           check (ruff F821). Catches a bare-identifier typo in
@@ -1001,6 +1011,23 @@ else
   echo "    install: brew install shellcheck  (macOS)  /  sudo apt-get install -y shellcheck  (Debian/Ubuntu)"
 fi
 
+# ---- (c2) PowerShell static analysis ---------------------------------------
+# Runs the SAME canonical gate as the lint job's 'repo PowerShell' step, so the
+# local pre-push gate and CI cannot drift on .ps1 quality. Warn-skipped locally
+# when pwsh or the module is absent (CI enforces it), matching (c) and (d).
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+  pssa_note="skipped in CI (the lint job's 'repo PowerShell' step runs scripts/psscriptanalyzer.sh)"
+  echo "==> (c2) powershell: $pssa_note"
+elif command -v pwsh >/dev/null 2>&1; then
+  echo "==> (c2) powershell: bash scripts/psscriptanalyzer.sh"
+  bash scripts/psscriptanalyzer.sh
+  pssa_note="passed"
+else
+  pssa_note="skipped (pwsh not installed locally; CI enforces it)"
+  echo "==> (c2) powershell: $pssa_note"
+  echo "    install: brew install --cask powershell  (macOS)"
+fi
+
 # ---- (d) Phase-doc Python undefined-name gate ------------------------------
 # The Phase 2 plugin installer and Phase 10a graph-config block are python3
 # heredocs / ```python fences inside Markdown, so gate (a) py_compile never sees
@@ -1383,4 +1410,4 @@ done
 echo "    OK - ${#PY_DIRECT[@]} hooks/+tests/ direct suite(s) passed; dormancy invariant clean"
 
 echo
-echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + repo python [$ruffgate_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed] + home-hook deploy [passed] + subprocess decode [passed] + py3.9 annotation parity [passed] + ps1 encoding [passed]."
+echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + powershell [$pssa_note] + phase-doc python [$phasepy_note] + repo python [$ruffgate_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed] + home-hook deploy [passed] + subprocess decode [passed] + py3.9 annotation parity [passed] + ps1 encoding [passed]."

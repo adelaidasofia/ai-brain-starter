@@ -633,6 +633,25 @@ jobs:
       - name: ruff-gate negative controls (a dead linter must not read as clean)
         run: bash scripts/ruff-gate.sh --self-test
 
+      # The .ps1 half of the same gap. `.ps1 encoding` above checks BOM + em
+      # dashes, and the pwsh parse step checks syntax -- neither looks at
+      # semantics, on the platform (Windows install) with the fewest local eyes.
+      # Deliberately a curated RULE list, not a severity floor: `-Severity
+      # Warning` would land 318 findings red on day one, 251 of them
+      # PSAvoidUsingWriteHost, which is the CORRECT call in an installer that
+      # talks to a human. See scripts/psscriptanalyzer.sh for the measurement.
+      # The module install has no `|| true`: a gate that cannot run must not
+      # report clean, same reasoning as the ruff install above.
+      - name: install PSScriptAnalyzer (the .ps1 analyzer this gate needs)
+        shell: pwsh
+        run: Install-Module -Name PSScriptAnalyzer -Repository PSGallery -Scope CurrentUser -Force -AcceptLicense
+
+      - name: repo PowerShell (security + real-bug rules over tracked *.ps1)
+        run: bash scripts/psscriptanalyzer.sh
+
+      - name: psscriptanalyzer negative controls (a dead analyzer must not read as clean)
+        run: bash scripts/psscriptanalyzer.sh --self-test
+
   bash32-syntax:
     name: bash 3.2 syntax (macOS /bin/bash)
     runs-on: macos-latest

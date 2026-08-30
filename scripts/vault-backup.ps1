@@ -90,7 +90,16 @@ function Slug-For { param([string]$p)
 }
 
 # Passphrase at rest via DPAPI (current-user scoped). Never plaintext on disk.
-function Store-Passphrase { param([string]$slug, [string]$plain)
+function Store-Passphrase {
+  # PSScriptAnalyzer flags ConvertTo-SecureString -AsPlainText as leaking a
+  # secret. Here it does the opposite: the passphrase arrives as a plain
+  # string (the user just typed it), and this is the ONLY API path that gets
+  # it into DPAPI -- the very next line, ConvertFrom-SecureString, is what
+  # produces the encrypted standard string the rule asks for, and that blob
+  # is what reaches disk. The plaintext never leaves memory. Suppressed
+  # here rather than gate-wide so any OTHER file that does leak one still reds.
+  [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingConvertToSecureStringWithPlainText', '', Justification = 'Plaintext is the user-typed passphrase being sealed INTO DPAPI; ConvertFrom-SecureString on the next line is what is written to disk.')]
+  param([string]$slug, [string]$plain)
   $secure = ConvertTo-SecureString $plain -AsPlainText -Force
   $enc = $secure | ConvertFrom-SecureString
   $pf = Join-Path $env:USERPROFILE ".claude\.vault-backup-pass-$slug"
