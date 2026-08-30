@@ -144,7 +144,25 @@ _maybe_die() {
   return 0
 }
 
-PYBIN="$(command -v python3 || command -v python || true)"
+# `command -v` answers "is this name on PATH", which is a weaker claim than
+# "this executes python". On Windows the gap is routine: the app-execution
+# alias for python3 ships enabled by default in
+# %LOCALAPPDATA%\Microsoft\WindowsApps, sits on PATH, satisfies `command -v`,
+# and then exits non-zero printing an ad for the Microsoft Store -- while a real
+# python is on the same PATH one candidate later. So the guard below passes and
+# the script dies at the first real call with a third-party message instead of
+# the one written here. Probe each candidate, same rule session-close-runner.sh
+# uses.
+PYBIN=""
+for _abs_c in python3 python py; do
+  _abs_p="$(command -v "$_abs_c" 2>/dev/null)" || continue
+  [ -n "$_abs_p" ] || continue
+  if "$_abs_p" -c 'import sys; sys.exit(0)' >/dev/null 2>&1; then
+    PYBIN="$_abs_p"
+    break
+  fi
+done
+unset _abs_c _abs_p
 [ -n "$PYBIN" ] || { err "python3 required for the move record"; exit 4; }
 
 # absolutize (portable realpath: cd + pwd -P)
