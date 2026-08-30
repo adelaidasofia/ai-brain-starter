@@ -538,12 +538,27 @@ def _rm_target_verdict(target: str):
     return None
 
 
-def _rm_verdicts(segs_text, bases):
+def _rm_verdicts(segs_text, bases, variables=None):
     """Every (target, verdict) a destructive rm in these segments would hit.
 
     A RELATIVE operand is resolved against EVERY candidate cwd, for the same
     fail-closed reason _cwd_candidates returns a set: if any cwd the command
     could run in puts `rm -rf Meta` on a vault, that is the one that matters.
+
+    An operand carrying `$VAR` is EXPANDED from assignments seen earlier in the
+    same command, and SKIPPED when it still cannot be named. Without that, a
+    literal `$N` was joined onto the cwd and the result -- `<cwd>/$N`, a path
+    that exists nowhere -- landed one level under a vault root and was reported
+    as a top-level folder. This guard hard-blocked its own author that way, on
+    `N=/some/path; rm -rf "$N"` where the assignment is right there in the same
+    command. A block naming a path that does not exist is the exact shape that
+    reads as broken and teaches VAULT_VALIDATOR_BYPASS=1.
+
+    Skipping an operand that is STILL unresolved after expansion (a var set in
+    an earlier shell, a command substitution) is a deliberate narrow fail-open:
+    the alternative is asserting a concrete verdict about a path we cannot name,
+    which is how the false block above happened. The cwd walk already makes the
+    same call for `cd` targets.
     """
     found = []
     probed = 0
@@ -556,6 +571,10 @@ def _rm_verdicts(segs_text, bases):
         if not _is_destructive_rm(flag_blob, operand_text):
             continue
         for word in _rm_operands(operand_text):
+            if _LIB_OK:
+                word = expand_vars(word, variables or {})
+            if "$" in word:
+                continue          # unresolvable target -- do not invent one
             for base in (sorted(bases) or [""]):
                 probed += 1
                 if probed > _MAX_PATH_TOKENS:  # same stat-storm bound as above
@@ -845,7 +864,7 @@ def main():
             # The regex only says "a destructive rm is in here somewhere".
             # Naming the resolved targets is what makes the block actionable --
             # and, when it is wrong, obviously wrong to the reader.
-            verdicts = _rm_verdicts(live, bases)
+            verdicts = _rm_verdicts(live, bases, variables)
             fired = bool(verdicts)
             if fired:
                 detail = "\n  Target(s): " + "; ".join(

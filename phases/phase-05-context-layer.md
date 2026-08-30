@@ -177,7 +177,7 @@ cp ~/.claude/skills/ai-brain-starter/hooks/block-vault-git-fullwalk.py ~/.claude
 cp ~/.claude/skills/ai-brain-starter/hooks/permission-denied.py ~/.claude/hooks/
 ```
 
-The two git-guard hooks read their vault path from the `VAULT_ROOT` environment variable; if unset, they no-op safely. Set it in `~/.zshrc` or `~/.claude/settings.json` pointing at your vault root. Emergency bypass for blocked git commands: `GIT_VAULT_BYPASS=1 git ...`.
+The two git-guard hooks DETECT the vault from the path each command targets — any ancestor directory holding a `Meta`-suffixed folder counts — so they protect every vault on the machine, not one. `VAULT_ROOT` is only a fallback for when detection finds nothing; setting it is optional and it does NOT scope them to a single vault. **Leaving it unset does not disable them**: if you keep notes in a folder with a `Meta` subfolder, these hooks will fire there. Emergency bypass for blocked git commands: `GIT_VAULT_BYPASS=1 git ...` — that prefix applies to the command it prefixes, not to the whole line, and `export GIT_VAULT_BYPASS=1` disarms them for the session.
 
 Tell them: "Done. From now on, the first thing I do every session is read your files — automatically, before I say anything. And whenever you ask something strategic, I'll pull your current priorities and open items into context before I respond. If there's an update to the skill, I'll pull it and apply it automatically — you'll just see a quick note about what changed."
 

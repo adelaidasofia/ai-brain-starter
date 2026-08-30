@@ -4,7 +4,6 @@
 # Fix by adding: encoding="utf-8", errors="replace"
 e2f343536da6ef508c45d335a9d2fbe9977f40aaa152f5c86913ddeb82f9c531 hooks/_lib/git_locks.py
 987aca2ae82229a42d29a8c89fed690e9de7e6fad4182dea564bc92557a81922 hooks/auto-capture-public-ships.py
-851421a1c5ac1daa0fae7effa71f06e08330cd4ec9edd9909b6fea8626ad0140 hooks/block-vault-git-fullwalk.py
 9cbf3bb52c04fd00a41852d12baf7640f9212db9b5a34aaac2247ee6abb4312f hooks/check-py-import-precommit.py
 25d963d25e1e2e6844a35133bbad1d0aad8d03de424e29d4a406a67cb1d4c1cb hooks/check-rule-conflicts-on-write.py
 85006d7e25f42ba787b2ce616bd1c71590c3990f89f3153a6f958156c93029ed hooks/coach-auto-prescribe-on-journal.py
