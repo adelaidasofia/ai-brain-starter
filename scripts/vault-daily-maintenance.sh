@@ -167,7 +167,39 @@ log "acquired close-cascade mutex ($$)"
 # aggregators keep running when one leg dies. The change is that failures are
 # remembered, named in the log, written to a state file a SessionStart reader
 # can pick up, and reflected in the final exit code.
+# CRITICAL_STEPS -- the ONLY labels whose non-zero exit is a real failure.
+#
+# A blanket "any non-zero step" rule is WRONG here, and was briefly shipped as
+# one (b27fd6e, corrected in this change). Most legs of this pass are SURFACERS
+# that use the exit code as a findings count, so they exit non-zero while
+# perfectly healthy: aggregate-sessions and aggregate-decisions report pending
+# outcomes, relocate-watch reports residuals, close-phase-contract and
+# check-rule-conflicts report findings -- the last only since it was fixed to
+# carry a verdict at all. Alarming on those is several false reds a day, and a
+# daily red is background inside a week, which is the exact bug class this
+# accounting exists to fix.
+#
+# So the alarm is an explicit must-be-green ALLOWLIST, never a blanket rule.
+# Empty here on purpose: no leg in the substrate's own pass is unambiguously
+# must-be-green today. Add a label only when its non-zero means BROKEN rather
+# than FOUND-SOMETHING -- a security control's negative control is the
+# archetype (MYC-4116 seeds the personal vault's copy with pii-scrub-control
+# and pii-scrub-hugeline).
+CRITICAL_STEPS=()
+
+# Every failure, critical or not, for the state file and the log. Advisory by
+# design: this list does NOT gate the exit code.
 FAILED_STEPS=()
+# The subset that must be green. This one DOES gate the exit code.
+FAILED_CRITICAL=()
+
+_is_critical() {
+  local needle="$1" c
+  for c in ${CRITICAL_STEPS+"${CRITICAL_STEPS[@]}"}; do
+    [ "$c" = "$needle" ] && return 0
+  done
+  return 1
+}
 
 run() {
   # run <label> <command...> - runs at low priority, logs a tail, never aborts,
@@ -177,7 +209,10 @@ run() {
   out=$(nice -n 10 "$@" 2>&1); rc=$?
   printf '%s\n' "$out" | tail -3
   log "[$label] rc=$rc :: $(printf '%s\n' "$out" | tail -1)"
-  [ "$rc" -ne 0 ] && FAILED_STEPS+=("$label(rc=$rc)")
+  if [ "$rc" -ne 0 ]; then
+    FAILED_STEPS+=("$label(rc=$rc)")
+    _is_critical "$label" && FAILED_CRITICAL+=("$label(rc=$rc)")
+  fi
   return 0
 }
 
@@ -370,15 +405,25 @@ mkdir -p "$MAINT_STATE_DIR" 2>/dev/null || true
 {
   printf '{"finished_at":"%s","failed_count":%d,"failed_steps":[' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${#FAILED_STEPS[@]}"
-  for i in "${!FAILED_STEPS[@]}"; do
+  for i in ${FAILED_STEPS+"${!FAILED_STEPS[@]}"}; do
     [ "$i" -gt 0 ] && printf ','
     printf '"%s"' "${FAILED_STEPS[$i]}"
+  done
+  printf '],"failed_critical":['
+  for i in ${FAILED_CRITICAL+"${!FAILED_CRITICAL[@]}"}; do
+    [ "$i" -gt 0 ] && printf ','
+    printf '"%s"' "${FAILED_CRITICAL[$i]}"
   done
   printf ']}\n'
 } > "$MAINT_STATE" 2>/dev/null || true
 
+# Advisory failures are LOGGED but never gate the exit -- see CRITICAL_STEPS.
 if [ "${#FAILED_STEPS[@]}" -gt 0 ]; then
-  log "=== vault-daily-maintenance COMPLETED WITH ${#FAILED_STEPS[@]} FAILED STEP(S): ${FAILED_STEPS[*]} @ $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+  log "=== vault-daily-maintenance: ${#FAILED_STEPS[@]} non-zero step(s) (advisory; most are findings counts): ${FAILED_STEPS[*]} ==="
+fi
+
+if [ "${#FAILED_CRITICAL[@]}" -gt 0 ]; then
+  log "=== vault-daily-maintenance FAILED ${#FAILED_CRITICAL[@]} CRITICAL STEP(S): ${FAILED_CRITICAL[*]} @ $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
   exit 1
 fi
 
