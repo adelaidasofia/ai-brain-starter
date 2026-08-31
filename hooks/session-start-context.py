@@ -106,8 +106,66 @@ def _umbrella_map() -> str:
         return ""
 
 
+
+def _resolve_vault_paths(text: str) -> str:
+    """Rewrite the relative `Meta/...` references into absolute vault paths.
+
+    The CONTEXT block above names its files as `Meta/Last Session.md` etc.
+    That path is only correct for a session whose cwd IS the vault AND whose
+    Meta folder is literally named "Meta". Neither holds on a real install:
+    Claude Code is commonly launched from $HOME, and the shipped vault
+    template names the folder with an emoji prefix ("\u2699\ufe0f Meta"). The
+    model was told to read two files that do not exist at the path given,
+    got nothing, and started every session without its own priorities --
+    silently, because a missing file reads as "nothing to report".
+
+    Resolution order mirrors _lib/vault_root.py: cwd walk-up first (the
+    session's own vault wins), $VAULT_ROOT as the fallback. Fail-open --
+    any error leaves the text exactly as it was.
+    """
+    import os
+
+    def _meta_dir(root):
+        try:
+            for name in sorted(os.listdir(root)):
+                if not name.endswith("Meta"):
+                    continue
+                cand = os.path.join(root, name)
+                if os.path.isfile(os.path.join(cand, "Current Priorities.md")):
+                    return cand
+        except OSError:
+            pass
+        return None
+
+    try:
+        meta = None
+        cur = os.path.realpath(os.getcwd())
+        for _ in range(25):
+            meta = _meta_dir(cur)
+            if meta:
+                break
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                break
+            cur = parent
+        if meta is None:
+            root = os.environ.get("VAULT_ROOT", "").strip()
+            if root:
+                meta = _meta_dir(os.path.realpath(os.path.expanduser(root)))
+        if meta is None:
+            return text
+        for rel in ("Last Session.md", "Current Priorities.md",
+                    "rules/efficiency.md"):
+            target = os.path.join(meta, *rel.split("/"))
+            if os.path.isfile(target):
+                text = text.replace("Meta/" + rel, target)
+        return text
+    except Exception:
+        return text
+
+
 def main() -> int:
-    context = CONTEXT
+    context = _resolve_vault_paths(CONTEXT)
     try:
         warning = _memory_index_warning()
     except Exception:
