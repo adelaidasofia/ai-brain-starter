@@ -193,6 +193,16 @@ If they opt in, set the toggles in the file in-session AND continue with those s
 
 Synthesize these into ONE dense paragraph that lands at the top of the saved entry as the `## Today` section (see Step 7 entry format). Concrete: PR numbers, test count deltas, file counts, hour totals, named events, named people. Inventory shape, not narrative.
 
+**0d-PRIMARY. Voice notes the user sent to their own self-chat (gated on `data_sources.self_chat_voice_notes: on`).** Some people dictate short voice notes to their own number during the day *specifically* as journal fuel. For them these are not background colour — they are the raw material of the entry, and they have to be pulled BEFORE the opener, not after. When the toggle is on, go through the live WhatsApp MCP directly rather than the on-demand reader in 0d: that reader digests text threads, and a self-chat's whole value is in the transcripts.
+
+1. `mcp__*whatsapp*__healthcheck` — confirm `auth_state: paired` and that `transcription` is present.
+2. `mcp__*whatsapp*__list_messages` on the self-chat JID (the user's own number, e.g. `<phone>@s.whatsapp.net`; the bridge may report it merged with a `@lid` JID — either works), `limit: 40`.
+3. Read every `type: "voice"` message since the last journal entry. Each carries a `voice_note_transcript` field — use it verbatim. If a note has no transcript yet, call `download_media` and note the gap.
+4. Extract mood, what happened, self-reported habits, people named, gratitudes the user already stated, and the floor language they used themselves. Build the interview and the `## Today` / `## Journal` sections on top of that.
+5. **Ask only about what the voice notes did NOT cover.** Open by reflecting back what you heard, then ask your follow-ups. Do not make the user re-narrate a day they already narrated into their phone.
+
+If the self-chat has no voice notes since the last entry, say so plainly and run the normal opener. Never skip this pull silently: with the toggle on, a `/journal` that didn't check the self-chat is broken.
+
 **0d. WhatsApp + iMessage since your last journal (gated on `data_sources.whatsapp_24h` / `imessage_24h`).** Prefer an MCP-INDEPENDENT on-demand reader over the live MCPs — a per-session stdio MCP for every channel adds memory pressure, and the journal should still get message context when those MCPs are not loaded. If a reader script exists in the vault (e.g. `Meta/scripts/journal-messages-fetch.py`), run it for the WHOLE gap since the last entry, not just 24h:
 
 ```
