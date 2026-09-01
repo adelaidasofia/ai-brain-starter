@@ -28,12 +28,15 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-LINT = REPO / ".github" / "workflows" / "lint.yml"
+WORKFLOWS = REPO / ".github" / "workflows"
 CI = REPO / "scripts" / "ci.sh"
 
 # name -> why it cannot run in the local gate. Keep this SHORT; every entry is
 # coverage the local gate does not have.
 EXCLUSIONS = {
+    "install-hooks-user-level.py":
+        "not a check — it is the INSTALLER, exercised on a Windows runner. "
+        "Running it in the local gate would mutate the developer's own ~/.claude",
     "check-shipped-version-drift.py":
         "compares the repo against the DEPLOYED install, so it is a property of "
         "the developer's machine, not of the commit; it fails locally by design",
@@ -43,8 +46,25 @@ EXCLUSIONS = {
 }
 
 
-def lint_invocations(text: str) -> set[str]:
-    """scripts/*.py files lint.yml references outside a comment.
+def workflow_invocations(paths) -> set[str]:
+    """scripts/*.py referenced by ANY workflow, outside a comment.
+
+    EVERY workflow, not just lint.yml. The first version read lint.yml alone
+    while being named for the whole local gate — a check whose SCOPE is narrower
+    than its NAME reports clean over the gap and is worse than no check, because
+    the name is what the next person reads instead of the body. It missed
+    check-template-purity.py, a required check living in its own workflow that
+    the local gate did not run. Same class as the gap this file exists to close,
+    one layer up.
+    """
+    found: set[str] = set()
+    for path in sorted(paths):
+        found |= _mentions(path.read_text(encoding="utf-8"))
+    return found
+
+
+def _mentions(text: str) -> set[str]:
+    """scripts/*.py a workflow references outside a comment.
 
     Deliberately NOT a `run:`-prefix scan. lint.yml uses 11 block scalars
     (`run: |`), and two checks appear ONLY inside one, so a line-prefix parser
@@ -90,13 +110,22 @@ def _self_test() -> int:
     ok = 'set -e\n"$PY" scripts/check-alpha.py\n'
     commented = 'set -e\n# see scripts/check-alpha.py for why\n'
     problems = []
-    if lint_invocations(inline) != {"check-alpha.py"}:
+    if _mentions(inline) != {"check-alpha.py"}:
         problems.append("missed an INLINE `- run:` invocation")
-    if lint_invocations(block) != {"check-beta.py"}:
+    if _mentions(block) != {"check-beta.py"}:
         problems.append("missed an invocation inside a `run: |` BLOCK SCALAR — "
                         "lint.yml has 11 of these and two checks live only there")
-    if lint_invocations(lint_comment):
+    if _mentions(lint_comment):
         problems.append("counted a YAML comment as an invocation")
+    # A second workflow's checks must be picked up too: scanning only lint.yml
+    # is the blind spot that let check-template-purity.py go unrun locally.
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        a = Path(td) / "lint.yml"; a.write_text(inline, encoding="utf-8")
+        b = Path(td) / "other.yml"; b.write_text(block, encoding="utf-8")
+        if workflow_invocations([a, b]) != {"check-alpha.py", "check-beta.py"}:
+            problems.append("a check living in a SECOND workflow was missed — "
+                            "the exact blind spot this scan was widened to close")
     if ci_invocations(ok) != {"check-alpha.py"}:
         problems.append("ci_invocations missed a real invocation")
     if ci_invocations(commented):
@@ -115,7 +144,12 @@ def main() -> int:
     if "--self-test" in sys.argv:
         return _self_test()
     try:
-        required = lint_invocations(LINT.read_text(encoding="utf-8"))
+        wf = sorted(WORKFLOWS.glob("*.yml")) + sorted(WORKFLOWS.glob("*.yaml"))
+        if not wf:
+            print("check-local-gate-parity: no workflow files found — a parity "
+                  "check with nothing to compare against is not a pass")
+            return 2
+        required = workflow_invocations(wf)
         local = ci_invocations(CI.read_text(encoding="utf-8"))
     except OSError as exc:
         print(f"check-local-gate-parity: cannot read a gate file: {exc}")
@@ -126,23 +160,23 @@ def main() -> int:
 
     if missing:
         print(f"local gate parity FAILED — {len(missing)} check(s) run in CI's "
-              f"lint job but NOT in scripts/ci.sh:")
+              f"CI workflow but NOT in scripts/ci.sh:")
         for n in missing:
             print(f"  - scripts/{n}")
         print("\nci-test would report GREEN on a commit CI then rejects. Add each "
-              "to scripts/ci.sh with the SAME invocation lint.yml uses (read it — "
+              "to scripts/ci.sh with the SAME invocation that workflow uses (read it — "
               "the flags differ per check), or add an EXCLUSIONS entry stating why "
               "it cannot run locally.")
         return 1
 
     if stale:
         print(f"local gate parity FAILED — {len(stale)} EXCLUSIONS entr(ies) name "
-              f"a check lint.yml no longer runs:")
+              f"a check no workflow runs any more:")
         for n in stale:
             print(f"  - {n}  (remove it; a stale exclusion hides a real gap)")
         return 1
 
-    print(f"local gate parity OK — {len(required)} lint check(s); "
+    print(f"local gate parity OK — {len(required)} workflow check(s); "
           f"{len(required) - len(EXCLUSIONS)} run locally, "
           f"{len(EXCLUSIONS)} documented exclusion(s).")
     return 0
