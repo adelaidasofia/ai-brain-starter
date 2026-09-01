@@ -74,7 +74,15 @@ except Exception as _exc:  # a lib older than this script -> fail LOUD, never si
           file=sys.stderr)
     sys.exit(2)
 
-STATE_PATH = Path.home() / ".claude" / ".drift-surfacer-state.json"
+# Env-overridable for the same reason as CLAIM_BRANCH_CACHE_PATH below and
+# DRIFT_STATE_PATH further down: these are the 24h trend SAMPLES, so an
+# unpinned caller scoped to a different dev root (a test, a client install)
+# both reads the operator's real history and APPENDS fixture samples to it,
+# skewing the "Δ over 24h" figure on a surface a human acts on.
+STATE_PATH = Path(
+    os.environ.get("DEV_DRIFT_TREND_STATE")
+    or (Path.home() / ".claude" / ".drift-surfacer-state.json")
+)
 STATE_RETENTION_S = 7 * 24 * 3600
 
 # Rendered claim section + the unpushed-claim count, cached with a TTL. The scan
@@ -83,14 +91,25 @@ STATE_RETENTION_S = 7 * 24 * 3600
 # nothing, which reads identically to a clean fleet. Branch state moves on the
 # order of hours, so re-deriving it per session buys nothing — the existing
 # fetch in this same hook is capped at 4h on the same reasoning.
-CLAIM_CACHE_PATH = Path.home() / ".claude" / ".claim-branch-cache.json"
+# Overridable for the same reason DEV_DRIFT_STATE below is: this cache decides
+# what the surfacer RENDERS. Unpinned, a test that drives this script reads the
+# operator's real fleet scan (a 30-minute TTL means it is usually warm) and
+# splices it into the fixture render — and on a cold cache WRITES the fixture
+# scan back into the operator's real cache, silently replacing a live
+# stranded-work verdict for the next half hour. Both directions were live:
+# measured 2026-09-01, a 24-minute-old real cache put 35 memory-runtime-pro
+# claim branches into a run whose ABS_DEV_ROOT was a 6-repo temp dir.
+CLAIM_CACHE_PATH = Path(
+    os.environ.get("CLAIM_BRANCH_CACHE_PATH")
+    or (Path.home() / ".claude" / ".claim-branch-cache.json")
+)
 CLAIM_CACHE_TTL_S = 30 * 60
 
 
 def _claim_cached() -> tuple[str | None, int] | None:
     """(section, n_unpushed_claims) from a fresh cache, or None when stale."""
     try:
-        raw = json.loads(CLAIM_CACHE_PATH.read_text())
+        raw = json.loads(CLAIM_CACHE_PATH.read_text(encoding="utf-8"))
         if time.time() - float(raw["ts"]) < CLAIM_CACHE_TTL_S:
             return raw.get("section") or None, int(raw.get("n_unpushed", 0))
     except Exception:
@@ -102,7 +121,8 @@ def _claim_cache_write(section: str | None, n_unpushed: int) -> None:
     try:
         CLAIM_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         CLAIM_CACHE_PATH.write_text(
-            json.dumps({"ts": time.time(), "section": section, "n_unpushed": n_unpushed})
+            json.dumps({"ts": time.time(), "section": section, "n_unpushed": n_unpushed}),
+            encoding="utf-8",
         )
     except Exception:
         pass  # cache is an optimization, never a correctness dependency
@@ -133,7 +153,7 @@ def _delta_24h(genuine_now: int) -> int | None:
     samples = []
     try:
         if STATE_PATH.exists():
-            samples = json.loads(STATE_PATH.read_text())
+            samples = json.loads(STATE_PATH.read_text(encoding="utf-8"))
             if not isinstance(samples, list):
                 samples = []
     except Exception:

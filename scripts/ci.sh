@@ -1311,6 +1311,15 @@ PY_DIRECT=(
   hooks/test_footprint_aggregate_bloat.py
   hooks/test_footprint_disk_floor.py
   hooks/test_unpushed_drift_surface.py
+  # Was hooks/_lib/standing_report.test.py and ran in NO job for its whole
+  # life: both collectors and the dormant-suite invariant above glob
+  # hooks/test_*.py + tests/test_*.py, so a suite under _lib/ named
+  # *.test.py was invisible to the very check that catches this (the same
+  # gap as warn-recreate-deleted-file.test.py, noted below). Renamed and
+  # registered; it also now carries the condense() controls, which had no
+  # coverage at all while the condenser silently dropped every render
+  # section after the first.
+  hooks/test_standing_report.py
   hooks/test_claim_surface_honesty.py
   hooks/test_narrow_refspec_falsealarm.py
   # session-lock resolves the repo identity its whole mechanism keys off with
