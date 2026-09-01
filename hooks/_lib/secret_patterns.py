@@ -121,10 +121,58 @@ _PROVIDER = [
         description="GitHub fine-grained personal access token.",
     ),
     SecretPattern(
+        # `gh[ps]_` covered ghp_ and ghs_ only, while the description one line
+        # below advertised gho_. The OAuth shape was never in the class, so
+        # scan() and redact() passed every gho_ token through intact -- and
+        # ghu_ (user-to-server) and ghr_ (refresh) were absent from BOTH
+        # halves. Same GUARD-BLIND-TO-THE-CREDENTIAL-ITS-OWN-DOCS-TELL-YOU-TO-
+        # USE class as the nvidia-api-key and npm-access-token entries: the
+        # shape existed only in prose, and prose does not execute.
+        #
+        # Matched by PROPERTY -- `gh` + one LOWERCASE letter + `_` -- not by an
+        # enumerated `[pousr]` class, for the reason spelled out on the
+        # anthropic-api-key entry above: GitHub's prefix set is OPEN, and a
+        # closed list against an open set re-opens this exact gap on the next
+        # prefix minted.
+        #
+        # Superset, with one measured exception -- stated precisely because an
+        # unqualified claim here is the same defect this entry exists to fix.
+        # PER MATCH POSITION the new class matches everything the old one did
+        # (200k-string fuzz: zero old matches the new regex does not match).
+        # At SCAN level there is one contrived residual: `{36,}` cannot cross
+        # `_`, so a benign `gh<letter>_` run ABUTTING a real token with no
+        # separator can end on the token's `gh?` and orphan its body. Needs
+        # two tokens concatenated with no delimiter; zero incidence in either
+        # corpus below. Pinned by `github-greedy-adjacency-residual` in the
+        # self-test so it stays known rather than rediscovered.
+        #
+        # FP cost measured, not assumed: across 1037 tracked repo files and
+        # 1.2 GB of real session transcripts, `gh[a-z]_` returns the identical
+        # hit set to `gh[ps]_`. The 36-char alphanumeric run does most of the
+        # discriminating -- but the carrier surface did widen from 2 prefix
+        # letters to 26, so `<identifier>_<hash>` shapes (`light_<40hex>`,
+        # `weight_<36alnum>`) are constructible false positives even though
+        # neither corpus contains one.
+        #
+        # Deliberately NO boundary guard (unlike npm_/B2 below, which chose the
+        # opposite trade at birth): retrofitting one would REMOVE existing
+        # coverage of a token embedded mid-blob. That is the trade chosen here,
+        # not a claim that over-redaction is always safe -- over-redacting a
+        # fragment CAN damage a neighbouring pattern's whole-credential match.
+        # Measured for the realistic case: over 300 real base64url JWTs this
+        # pattern fired on ZERO, and the engineered collision behaves identically
+        # under the old `gh[ps]_`, so the interaction is pre-existing and not
+        # introduced here.
         name="github-pat-classic",
-        regex=re.compile(r"gh[ps]_[A-Za-z0-9]{36,}", re.ASCII),
+        regex=re.compile(r"gh[a-z]_[A-Za-z0-9]{36,}", re.ASCII),
         redaction="[REDACTED-github-pat-classic]",
-        description="GitHub classic PAT (ghp_ / ghs_) or OAuth (gho_).",
+        description=(
+            "GitHub token family: ghp_ (classic PAT), gho_ (OAuth), ghu_ "
+            "(user-to-server), ghs_ (server-to-server), ghr_ (refresh). "
+            "Structural match on gh + one lowercase letter + _, so a newly "
+            "minted prefix of THAT shape is covered on arrival; an uppercase, "
+            "digit, or multi-letter prefix would not be."
+        ),
     ),
     SecretPattern(
         name="heroku-api-key",
@@ -577,6 +625,27 @@ if __name__ == "__main__":
         # Longer-than-36 token — MUST still match. Pins the `,` in {36,}:
         # a bare {36} would silently miss any future longer npm shape.
         "real-npm-token-long": "NPM_TOKEN=npm_" + "C" * 44,
+        # GitHub token family. The old `gh[ps]_` class covered ghp_/ghs_ only
+        # while the description advertised gho_, so gho_/ghu_/ghr_ tokens were
+        # redacted by NOTHING. Each of these survived redaction entirely before
+        # the class was opened to `gh[a-z]_`.
+        "real-github-oauth-token": "GH_TOKEN=gho_" + "A" * 36,
+        "real-github-user-to-server": "GH_TOKEN=ghu_" + "C" * 36,
+        "real-github-refresh-token": "GH_TOKEN=ghr_" + "E" * 36,
+        # Shapes the old class already caught — regression guard on the widening.
+        "real-github-classic-pat": "GH_TOKEN=ghp_" + "B" * 36,
+        "real-github-server-to-server": "GH_TOKEN=ghs_" + "D" * 36,
+        # A prefix letter outside the documented set. The set is OPEN, so a
+        # structural match is the point: this MUST match, and would not under
+        # any enumerated `[pousr]` class.
+        "real-github-future-prefix": "GH_TOKEN=ghz_" + "F" * 36,
+        # Negative controls: the match is STRUCTURED, not a blanket `gh*`.
+        "github-prose-mention": "OAuth tokens are shaped gho_ plus 36 chars.",
+        "github-token-too-short": "gho_abc123",
+        "github-placeholder": "GH_TOKEN=gho_YOUR_TOKEN_HERE",
+        # The fine-grained shape owns its own pattern. The structural classic
+        # match must NOT also fire on it (double-redaction / wrong label).
+        "github-fine-grained-not-classic": "github_pat_" + "A" * 22 + "_" + "b" * 60,
     }
     expected_hits = {
         "github-asset-digest": [],   # sha256: prefix → skipped
@@ -608,6 +677,17 @@ if __name__ == "__main__":
         "real-npm-token": ["npm-access-token"],
         "npm-in-base64": [],          # no boundary before npm_ → skipped
         "real-npm-token-long": ["npm-access-token"],
+        "real-github-oauth-token": ["github-pat-classic"],
+        "real-github-user-to-server": ["github-pat-classic"],
+        "real-github-refresh-token": ["github-pat-classic"],
+        "real-github-classic-pat": ["github-pat-classic"],
+        "real-github-server-to-server": ["github-pat-classic"],
+        "real-github-future-prefix": ["github-pat-classic"],
+        "github-prose-mention": [],       # bare shape, no token
+        "github-token-too-short": [],     # <36 chars after prefix
+        "github-placeholder": [],         # underscores break the alnum run
+        # Fine-grained pattern claims it; the classic one must stay silent.
+        "github-fine-grained-not-classic": ["github-pat-fine-grained"],
     }
     failures = 0
     for label, sample in FP_SAMPLES.items():
