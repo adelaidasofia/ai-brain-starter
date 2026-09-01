@@ -1455,7 +1455,17 @@ def repo_has_any_remote_ref(repo: Path) -> bool:
 # Frequency-capped fetch state — so session-start does NOT fetch the whole fleet
 # every launch (only once per cap window). The local coverage scan still runs
 # every session; only NETWORK freshness is throttled.
-FETCH_STATE_PATH = Path.home() / ".claude" / ".drift-fetch-state.json"
+# Env-overridable like its siblings CLAIM_BRANCH_CACHE_PATH / DEV_DRIFT_TREND_STATE
+# / DEV_DRIFT_STATE. This one bites HARDEST when it leaks: the timestamp is read
+# under a 4-hour cap, so a caller scoped to a different dev root (a test, a
+# client install) stamps `now` into the operator's real file and the next REAL
+# drift scan then SKIPS its fetch and reasons on stale refs for up to 4h — a
+# pushed branch keeps reading "backed up nowhere", which is a FALSE LOST-WORK
+# verdict on the exact surface this module exists to make trustworthy.
+FETCH_STATE_PATH = Path(
+    os.environ.get("DEV_DRIFT_FETCH_STATE")
+    or (Path.home() / ".claude" / ".drift-fetch-state.json")
+)
 
 
 def fetch_repos_capped(

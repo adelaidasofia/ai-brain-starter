@@ -179,9 +179,31 @@ def main() -> int:
         # per-repo enumeration below is gone. Pinning it here is what makes both
         # the full-render and digest assertions deterministic everywhere.
         sr_state = tmp / "standing-reports"
+        # The claim-branch scan is CACHED at ~/.claude/.claim-branch-cache.json
+        # with a 30-minute TTL, and that cache is read BEFORE ABS_DEV_ROOT is
+        # ever consulted. Unpinned, a warm cache splices the operator's real
+        # fleet into this fixture's render — measured 2026-09-01: 35 claim
+        # branches from `memory-runtime-pro` appeared in a run whose dev root
+        # was a 6-repo temp dir, which is what made the digest assertion below
+        # fail here and pass on a clean runner. The write leg matters just as
+        # much: on a cold cache this test would otherwise persist the FIXTURE's
+        # scan into the real cache and blank the operator's live stranded-work
+        # verdict for the next half hour.
+        claim_cache = tmp / "claim-cache.json"
+        # Same hazard, WRITE side: the 24h trend samples. Unpinned, this
+        # suite appends fixture counts to the operator's real history and
+        # skews the "Δ over 24h" line on a surface a human acts on.
+        trend_state = tmp / "drift-trend.json"
+        # Third of three, and the one that does real DAMAGE when it leaks: the
+        # fetch timestamp is read under a 4h cap, so an unpinned run makes the
+        # operator's next real scan skip its fetch and call a PUSHED branch
+        # "backed up nowhere" for up to four hours.
+        fetch_state = tmp / "drift-fetch.json"
         env = dict(os.environ, ABS_DEV_ROOT=str(dev), DEV_DRIFT_STATE=str(state),
                    DEV_HUB_REFRESH_STATE=str(tmp / "no-such-hub-state.json"),
-                   DEV_REPO_SCAN_DIR=str(HOOKS),
+                   DEV_REPO_SCAN_DIR=str(HOOKS), CLAIM_BRANCH_CACHE_PATH=str(claim_cache),
+                   DEV_DRIFT_TREND_STATE=str(trend_state),
+                   DEV_DRIFT_FETCH_STATE=str(fetch_state),
                    STANDING_REPORT_STATE_DIR=str(sr_state))
         rep = subprocess.run(
             [sys.executable, str(HOOKS.parent / "scripts" / "dev-drift-report.py"),
@@ -212,6 +234,21 @@ def main() -> int:
         check((sr_state / "dev-hub-refresh.json").is_file(),
               "the condenser did not write the PINNED state dir — the override "
               "is not binding, so this block is reading live machine state")
+        # POSITIVE CONTROL for the claim-cache pin, same reasoning. A miss
+        # always writes, so an absent file here means CLAIM_BRANCH_CACHE_PATH was
+        # ignored and the real cache was the one consulted.
+        check(claim_cache.is_file(),
+              "the claim scan did not write the PINNED cache — CLAIM_BRANCH_CACHE_PATH "
+              "is not binding, so the render is the operator's real fleet")
+        check(trend_state.is_file(),
+              "the trend samples did not land in the PINNED file — DEV_DRIFT_TREND_STATE "
+              "is not binding, so this run mutated the operator's real history")
+        check(fetch_state.is_file(),
+              "the fetch cap did not land in the PINNED file — DEV_DRIFT_FETCH_STATE is "
+              "not binding, so this run just suppressed the operator's next real fetch")
+        check("[claimed-work-stranded]" not in (doc.get("section") or ""),
+              "a claim section appeared for a fixture whose branches carry no "
+              "ticket ID — the operator's real cached scan leaked into this run")
 
         # The same finding-set a second time must CONDENSE, not vanish and not
         # repeat in full. This is the behaviour that used to reach the assertion
@@ -230,6 +267,57 @@ def main() -> int:
         check(len(ctx_d) < len(ctx),
               f"the second render did not condense (full {len(ctx)} chars vs "
               f"{len(ctx_d)}) — the digest path is not being exercised")
+
+        # REGRESSION: a render carrying SEVERAL independent sections must keep
+        # every one of them in the digest. The hook joins the claim-branch,
+        # unpushed-drift and backup-state verdicts into one string, and the
+        # condenser summarised only the opener — so on a real machine the
+        # LOST-WORK verdict this whole surface exists to deliver went silent on
+        # every session after the first, while the digest still looked healthy
+        # because the FIRST section was intact. Driven through the hook rather
+        # than the condenser directly, because the join happens in the hook.
+        # Each section carries a realistic ENUMERATION. A toy fixture is shorter
+        # than any 3-line digest, so the never-grow guard hands it back whole
+        # and every assertion below passes against the FULL text — vacuous, and
+        # indistinguishable from a real pass. The `len(m_dig) < len(m_full)`
+        # check on the next lines is what keeps that honest.
+        def _rows(label, n):
+            return "\n".join(
+                f"- `repo-{i}` :: `claude/{label}-{i}` (3 commits, idle 41.2d)"
+                for i in range(n))
+        multi = ("[claimed-work-stranded]\n\n"
+                 "at least 4 branches carry CLAIMED work no other session can act on.\n\n"
+                 + _rows("claim", 8) + "\n\n"
+                 "[unpushed-commits-surface]\n\n"
+                 "2 item(s) at real LOST-WORK risk — push/back-up now.\n\n"
+                 + _rows("drift", 8) + "\n\n"
+                 "[unverifiable-backup-state]\n\n"
+                 "1 replica has not been restore-drilled in 63 days.\n\n"
+                 + _rows("backup", 8) + "\n")
+        state.write_text(json.dumps({"section": multi, "ts": time.time()}),
+                         encoding="utf-8")
+        multi_env = dict(env, STANDING_REPORT_STATE_DIR=str(tmp / "sr-multi"))
+
+        def render(e):
+            h = subprocess.run(
+                [sys.executable, str(HOOKS / "dev-hub-refresh-on-session-start.py")],
+                input="{}", capture_output=True, text=True, encoding="utf-8", env=e)
+            return (json.loads(h.stdout or "{}").get(
+                "hookSpecificOutput") or {}).get("additionalContext", "")
+
+        m_full = render(multi_env)
+        m_dig = render(multi_env)
+        check(len(m_dig) < len(m_full),
+              f"the multi-section render did not condense ({len(m_full)} vs "
+              f"{len(m_dig)}) — the digest path is not being exercised")
+        for tag in ("[claimed-work-stranded]", "[unpushed-commits-surface]",
+                    "[unverifiable-backup-state]"):
+            check(tag in m_dig,
+                  f"condensing dropped the whole {tag} section — a digest may "
+                  f"drop the ENUMERATION, never a verdict")
+        check("LOST-WORK" in m_dig,
+              f"the LOST-WORK verdict did not survive condensing (got "
+              f"{m_dig[:300]!r}) — coverage was traded for silence")
 
         # An ABSENT state file must be SILENT, never reported as a clean fleet.
         state.unlink()
