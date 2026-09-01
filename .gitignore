@@ -64,3 +64,12 @@ hooks/.secret-scan.lock
 # receiving substrate updates. Measured on the deployed checkout at
 # ~/.claude/skills/ai-brain-starter: untracked logs/ present, update blocked.
 /logs/
+
+# Same class as /logs/ above: a SHIPPED hook writing runtime state into whatever
+# directory it happens to run from, which on a real install is this repo's own
+# deployed checkout. scrub-session-jsonl-secrets.py now writes to
+# ~/.claude/hooks/ instead, but installs that already ran the old build carry the
+# stray file, and an untracked artifact here is reported as a hand-edit by the
+# deployed-hook-drift surfacer on every single session.
+hooks/scrub-log.jsonl
+hooks/secret-detection-log.jsonl
