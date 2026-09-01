@@ -115,6 +115,7 @@ def _git(args, cwd):
         r = subprocess.run(
             ["git", "-C", cwd] + args,
             capture_output=True, text=True, timeout=GIT_TIMEOUT_SEC,
+            encoding="utf-8", errors="replace",
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return ""
@@ -130,7 +131,7 @@ def _nudge_ruff_missing_once():
         ) < RUFF_NUDGE_INTERVAL_SEC:
             return
         os.makedirs(os.path.dirname(RUFF_NUDGE_MARKER), exist_ok=True)
-        with open(RUFF_NUDGE_MARKER, "w") as f:
+        with open(RUFF_NUDGE_MARKER, "w", encoding="utf-8") as f:
             f.write(str(now))
     except OSError:
         # If we can't write the marker, still nudge this once rather than crash.
@@ -181,6 +182,7 @@ def main() -> int:
             [ruff, "check", "--select", "F821", "--output-format=concise",
              "--no-cache", "--"] + existing,
             cwd=cwd, capture_output=True, text=True, timeout=RUFF_TIMEOUT_SEC,
+            encoding="utf-8", errors="replace",
         )
     except (subprocess.TimeoutExpired, OSError):
         return 0  # fail-open

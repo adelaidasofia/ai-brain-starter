@@ -86,6 +86,7 @@ def _run(hook_path, payload, env_extra=None, cwd=None):
     return subprocess.run(
         [sys.executable, hook_path], input=json.dumps(payload),
         capture_output=True, text=True, env=env, cwd=cwd, timeout=30,
+        encoding="utf-8", errors="replace",
     )
 
 
@@ -200,13 +201,13 @@ def main():
 
 def test_scan_hooks_fixture_dir():
     with tempfile.TemporaryDirectory() as tmp:
-        (Path(tmp) / "violator-literal.py").write_text(_VIOLATOR_LITERAL)
-        (Path(tmp) / "violator-const.py").write_text(_VIOLATOR_CONST)
-        (Path(tmp) / "clean-hook.py").write_text(_CLEAN_HOOK)
-        (Path(tmp) / "not-a-gate.py").write_text(_NOT_A_GATE)
+        (Path(tmp) / "violator-literal.py").write_text(_VIOLATOR_LITERAL, encoding="utf-8")
+        (Path(tmp) / "violator-const.py").write_text(_VIOLATOR_CONST, encoding="utf-8")
+        (Path(tmp) / "clean-hook.py").write_text(_CLEAN_HOOK, encoding="utf-8")
+        (Path(tmp) / "not-a-gate.py").write_text(_NOT_A_GATE, encoding="utf-8")
         # Same content as the literal violator, but a test_ prefix: must be
         # skipped by scan_hooks regardless of what it contains.
-        (Path(tmp) / "test_violator-literal.py").write_text(_VIOLATOR_LITERAL)
+        (Path(tmp) / "test_violator-literal.py").write_text(_VIOLATOR_LITERAL, encoding="utf-8")
 
         enforce, violators = scan_hooks(tmp)
 
@@ -356,7 +357,7 @@ def test_branch_switch_end_to_end_with_real_repo():
         voice = repo / "src" / "voice"
         voice.mkdir(parents=True)
         for name in ("a.py", "b.py", "c.py"):
-            (voice / name).write_text("# untracked\n")
+            (voice / name).write_text("# untracked\n", encoding="utf-8")
 
         hook = os.path.join(_HERE, "block-branch-switch-with-untracked-build.py")
         cmd = f"git -C {repo} checkout main"
@@ -380,8 +381,8 @@ def test_branch_switch_end_to_end_with_real_repo():
 def test_surfacer_reports_violator_and_stays_quiet_when_clean():
     surfacer = os.path.join(_HERE, "surface-bypass-unreachable.py")
     with tempfile.TemporaryDirectory() as tmp:
-        (Path(tmp) / "violator-literal.py").write_text(_VIOLATOR_LITERAL)
-        (Path(tmp) / "clean-hook.py").write_text(_CLEAN_HOOK)
+        (Path(tmp) / "violator-literal.py").write_text(_VIOLATOR_LITERAL, encoding="utf-8")
+        (Path(tmp) / "clean-hook.py").write_text(_CLEAN_HOOK, encoding="utf-8")
 
         r = _run(surfacer, {}, env_extra={"ABS_DEPLOYED_HOOKS_DIR": tmp})
         out = json.loads(r.stdout or "{}")
@@ -414,7 +415,7 @@ def test_wired_via_surface_deployed_hooks_behind():
     # nothing in a real session ever calls them.
     mod = _load("surface-deployed-hooks-behind.py", "sdb_under_test")
     with tempfile.TemporaryDirectory() as tmp:
-        (Path(tmp) / "violator-literal.py").write_text(_VIOLATOR_LITERAL)
+        (Path(tmp) / "violator-literal.py").write_text(_VIOLATOR_LITERAL, encoding="utf-8")
         saved = os.environ.get("ABS_DEPLOYED_HOOKS_DIR")
         os.environ["ABS_DEPLOYED_HOOKS_DIR"] = tmp
         try:

@@ -23,10 +23,9 @@
 #
 # <sha256-of-normalized-content> <tag> <repo-relative-path>
 
-# ---- SEV-A-write  (30 file(s)) ----
+# ---- SEV-A-write  (29 file(s)) ----
 b87ac14c241be51fb2427ac9a86ab8de4a5b161549f2ee0d445b6e9ca4f65550 SEV-A-write hooks/_lib/session_echo.test.py
 987aca2ae82229a42d29a8c89fed690e9de7e6fad4182dea564bc92557a81922 SEV-A-write hooks/auto-capture-public-ships.py
-9cbf3bb52c04fd00a41852d12baf7640f9212db9b5a34aaac2247ee6abb4312f SEV-A-write hooks/check-py-import-precommit.py
 a04ec6c84be6756813f4cde517ff379338b57ec9bf4c9c4172172951e62f91c3 SEV-A-write hooks/imessage-mcp-auto-export.py
 d293427274a02ef33d15ec50b17860aa305405adc9f372fde46a46454267becd SEV-A-write hooks/relocate-watch-surface.py
 95e98712d44f2ee71cdfb8ba3aa7a1fe21967160cd5b2bdaab20bd3d6869c10d SEV-A-write hooks/retry-budget.py
