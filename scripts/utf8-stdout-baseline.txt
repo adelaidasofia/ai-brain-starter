@@ -103,7 +103,7 @@
 # ---- SEV-3-doc-only  (1 file(s)) ----
 ed1d68dba02ab76c99907e8efc27ac0aac8c98a14dad261da73fa5d8e1610369 SEV-3-doc-only hooks/_lib/template_purity.py
 
-# ---- SEV-4-json-encoded  (21 file(s)) ----
+# ---- SEV-4-json-encoded  (20 file(s)) ----
 e943857ef9482c097b4357ee8abf2e4ede3ffcab3b9bae3a1a0687b0ae371e2b SEV-4-json-encoded hooks/block-populated-public-skill.py
 73ec7598cd563971fcafc2542818e297df5ed045714d7b66263de949f4619093 SEV-4-json-encoded hooks/block-secret-in-note.py
 b647243fdf0a358d46a6a79b0bf7f817ee121f68d5d685fabe4b0ee2a93af94d SEV-4-json-encoded hooks/check-fabricated-hook-attribution.py
