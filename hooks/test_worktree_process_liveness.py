@@ -160,7 +160,10 @@ class Base(unittest.TestCase):
             out = subprocess.run(
                 ["lsof", "-d", "cwd", "-F", "n", "-p", str(proc.pid)],
                 capture_output=True,
-                text=True,
+                # encoding pinned: bare text=True decodes with the locale
+                # encoding, which raises UnicodeDecodeError the moment a path
+                # carries a non-ASCII byte on a non-UTF-8 console.
+                text=True, encoding="utf-8", errors="replace",
             ).stdout
             if any(ln[1:] == target for ln in out.splitlines() if ln[:1] == "n"):
                 return proc
