@@ -9,6 +9,17 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-08-30: floors written as links now count as floors
+
+**Who this affects:** anyone who connects journal entries to their Floors in Obsidian's graph by writing the floor as a link — `floor: "[[Acceptance]]"` instead of plain text. Plain-text floors are unaffected.
+
+Obsidian's graph draws exactly one thing: links. An entry that records its floor as plain text is joined to nothing, so writing floors as links is the way the 34-floor system actually appears connected in the graph. Doing that broke two things here, quietly:
+
+- **A link was being read as a list.** `[[Acceptance|Aceptación]]` opens and closes with a bracket, exactly like an inline YAML list, so it was split as one — handing back a name one bracket short that matched nothing in the floor scale. On a vault that had just switched to links, every single entry was reported as off the scale. A link is one value, never a list.
+- **Floor names now compare through link syntax.** `[[Acceptance|Aceptación]]`, `Aceptación` and `Acceptance` all resolve to the same floor. The journal index still stores the plain name, so `/weekly` and `/patterns` read exactly what they read before.
+
+This builds on the 2026-08-25 fix below, which taught the checker to find your floor notes folder in the first place — that fix found the notes, this one lets linked entries match them.
+
 ## 2026-08-25: the check on your journal's floor labels was never running
 
 **Who this affects:** anyone whose vault folders have emoji in their names and are in English — which is the default this project sets up.

@@ -64,11 +64,30 @@ def strip_accents(s):
                    if unicodedata.category(c) != "Mn")
 
 
+_WIKILINK = re.compile(r"^\[\[([^\]|#]+)(?:\|([^\]]+))?\]\]$")
+
+
+def strip_wikilink(s):
+    """`[[Acceptance|Aceptación]]` -> `Aceptación`; `[[Joy]]` -> `Joy`.
+
+    Floor values are wikilinks in frontmatter on purpose: a plain string
+    draws no graph edge, so writing the floor as text silently disconnects
+    the entire floor system from the vault. Every consumer that compares or
+    indexes a floor name has to see through the link syntax first.
+    Non-links pass through unchanged.
+    """
+    if not isinstance(s, str):
+        return s
+    m = _WIKILINK.match(s.strip().strip('"').strip("'"))
+    return (m.group(2) or m.group(1)).strip() if m else s
+
+
 def normalise_name(s):
-    """Floor names compare accent-insensitively and case-insensitively."""
+    """Floor names compare accent-insensitively, case-insensitively, and
+    through wikilink syntax."""
     if s is None:
         return ""
-    return strip_accents(str(s).strip().lower())
+    return strip_accents(strip_wikilink(str(s)).strip().lower())
 
 
 def folder_key(name):
@@ -149,6 +168,13 @@ def parse_inline_list(v):
     s = str(v).strip()
     if not s or s.lower() in ("null", "none", '""', "[]"):
         return []
+    # A wikilink opens and closes with a bracket too, and splitting one as a
+    # flow list drops a bracket and hands back a name that matches nothing:
+    # `[[Willingness|Voluntad]]` came back as `[Willingness|Voluntad]` and every
+    # entry was reported as off the floor scale. It is one value, never a list.
+    unquoted = s.strip("'\"").strip()
+    if unquoted.startswith("[[") and unquoted.endswith("]]"):
+        return [unquoted]
     if s.startswith("[") and s.endswith("]"):
         inner = s[1:-1].strip()
         if not inner:
