@@ -1191,6 +1191,12 @@ echo "==> (e2b) hook activation: $PY scripts/check-hook-activation.py"
 "$PY" scripts/ci-cost-audit.py --self-test >/dev/null
 "$PY" scripts/ci-cost-audit.py --fail-on high
 "$PY" -S scripts/check-hookify-template-capabilities.py
+# Lives in its OWN workflow (template-purity.yml), which is why the first
+# version of the parity ratchet below could not see it: that scan read lint.yml
+# alone while being named for the whole local gate. A check whose SCOPE is
+# narrower than its NAME reports clean over the gap. The scan now reads EVERY
+# workflow; this is the check it found.
+"$PY" scripts/check-template-purity.py --skills
 # The ratchet that keeps the above from silently reopening: adding a check to
 # lint.yml and not here now fails at review time, not as a mystery CI red on
 # someone else's PR.
