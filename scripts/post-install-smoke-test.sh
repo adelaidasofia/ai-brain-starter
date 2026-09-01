@@ -110,13 +110,13 @@ DETECTOR="$SKILL_DIR/hooks/detect-closing-signal.py"
 if [[ -f "$DETECTOR" ]]; then
   FIXTURE_VAULT=$(mktemp -d)
   mkdir -p "$FIXTURE_VAULT/Meta/Sessions"
-  resp=$(echo '{"prompt":"hello world","session_id":"smoke","cwd":"'"$FIXTURE_VAULT"'"}' | env -u CLOSING_SIGNAL_DETECTION VAULT_ROOT="$FIXTURE_VAULT" python3 "$DETECTOR" 2>/dev/null)
+  resp=$(echo '{"prompt":"hello world","session_id":"smoke","cwd":"'"$FIXTURE_VAULT"'"}' | env -u CLOSING_SIGNAL_DETECTION -u CLOSING_SIGNAL_LANGS VAULT_ROOT="$FIXTURE_VAULT" python3 "$DETECTOR" 2>/dev/null)
   if echo "$resp" | python3 -c "import json,sys; json.loads(sys.stdin.read())" 2>/dev/null; then
     ok "detect-closing-signal.py returns valid JSON for non-close input"
   else
     fail "detect-closing-signal.py returned invalid JSON"
   fi
-  resp=$(echo '{"prompt":"bye","session_id":"smoke","cwd":"'"$FIXTURE_VAULT"'"}' | env -u CLOSING_SIGNAL_DETECTION VAULT_ROOT="$FIXTURE_VAULT" python3 "$DETECTOR" 2>/dev/null)
+  resp=$(echo '{"prompt":"bye","session_id":"smoke","cwd":"'"$FIXTURE_VAULT"'"}' | env -u CLOSING_SIGNAL_DETECTION -u CLOSING_SIGNAL_LANGS VAULT_ROOT="$FIXTURE_VAULT" python3 "$DETECTOR" 2>/dev/null)
   if echo "$resp" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); assert 'hookSpecificOutput' in d" 2>/dev/null; then
     ok "detect-closing-signal.py injects context on 'bye' (hermetic shared-pack fixture)"
   else
@@ -139,12 +139,19 @@ fi
 hdr "dev-hub-refresh (bare ~/dev hub-rot guard)"
 WARN_STALE="$SKILL_DIR/hooks/warn-stale-dev-checkout.py"
 if [[ -f "$WARN_STALE" ]]; then
-  resp=$(echo '{"tool_name":"Read","session_id":"smoke","tool_input":{"file_path":"/tmp/not-a-dev-repo"}}' | python3 "$WARN_STALE" 2>/dev/null)
+  # Pin the scanned root. Unpinned it resolves the operator's real ~/dev, so
+  # this check's verdict depends on a tree no fixture controls -- today the
+  # probe path falls outside it and the hook short-circuits, which is exactly
+  # the kind of accident that stops being true after any later edit.
+  FAKE_DEV=$(mktemp -d); FIRES_F=$(mktemp)
+  [[ -n "$FAKE_DEV" && -n "$FIRES_F" ]] || fail "mktemp failed; the pins below would silently fall back to the real HOME"
+  resp=$(echo '{"tool_name":"Read","session_id":"smoke","tool_input":{"file_path":"/tmp/not-a-dev-repo"}}' | STALE_CHECKOUT_DEV_ROOT="$FAKE_DEV" GUARD_FIRES_LOG="$FIRES_F" python3 "$WARN_STALE" 2>/dev/null)
   if echo "$resp" | python3 -c "import json,sys; s=sys.stdin.read(); json.loads(s) if s.strip() else None" 2>/dev/null; then
     ok "warn-stale-dev-checkout.py runs + emits valid JSON (silent on a non-~/dev path)"
   else
     fail "warn-stale-dev-checkout.py produced invalid output"
   fi
+  rm -rf "$FAKE_DEV"; rm -f "$FIRES_F"
 else
   warn "warn-stale-dev-checkout.py not present"
 fi
@@ -153,13 +160,77 @@ SURFACER="$SKILL_DIR/hooks/dev-hub-refresh-on-session-start.py"
 if [[ -f "$SURFACER" ]]; then
   STATE_F=$(mktemp)
   printf '%s' '{"summary":{"ff":0,"surfaced":1,"skipped":0,"max_behind":360,"offenders":[["studio","surface:off-default",360]]}}' > "$STATE_F"
-  resp=$(echo '{}' | DEV_HUB_REFRESH_STATE="$STATE_F" python3 "$SURFACER" 2>/dev/null)
-  if echo "$resp" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); assert 'studio' in d.get('hookSpecificOutput',{}).get('additionalContext','')" 2>/dev/null; then
-    ok "dev-hub-refresh surfacer emits a surface line from its state file"
+  # PIN EVERY state path this surfacer reads, not only the one the fixture feeds.
+  # It reads four, and three of them defaulted to the operator's real ~/.claude:
+  #   DEV_HUB_REFRESH_STATE      the fixture above (already pinned)
+  #   DEV_DRIFT_STATE            prepends the un-backed-up-drift section
+  #   STANDING_REPORT_STATE_DIR  the anti-wallpaper condenser (_lib/standing_report)
+  #   DEV_DRIFT_FETCH_STATE      _lib/dev_repo_scan binds it at MODULE level, so
+  #                              importing the module is enough; its own comment
+  #                              names "a test" as the caller that poisons the
+  #                              operator's real 4-hour fetch cap
+  #
+  # Unpinned, this check flipped its own verdict on the NEXT run with zero code
+  # change. Run 1 found no prior hash, so condense() returned the FULL render and
+  # the per-offender line naming `studio` was present -- and it WROTE that hash.
+  # Run 2 matched it, the digest fired, and the enumeration this assertion looks
+  # for was gone. Measured 2026-09-01: PASS, FAIL, FAIL over three identical runs.
+  # It also clobbered the operator's real
+  # ~/.claude/.standing-reports/dev-hub-refresh.json with a synthetic
+  # single-offender hash, resetting the age counter on their live surfacer.
+  # Same shape as #539; the standing_report docstring already prescribes this
+  # remedy. Sandboxing HOME is NOT a substitute -- on Windows expanduser reads
+  # USERPROFILE and walks straight back out (MYC-3536).
+  #
+  # DRIFT_F is deliberately an EMPTY file: unparseable JSON and an absent file
+  # both yield an empty drift section, so the render is hub-only on a developer
+  # box and on a clean CI runner alike.
+  SR_A=$(mktemp -d); SR_B=$(mktemp -d)
+  DRIFT_F=$(mktemp); FETCH_F=$(mktemp); SWEEP_F=$(mktemp)
+  [[ -n "$SR_A" && -n "$SR_B" && -n "$DRIFT_F" && -n "$FETCH_F" && -n "$SWEEP_F" ]] \
+    || fail "mktemp failed; an empty pin is falsy and silently resolves the real HOME"
+  # env -u STANDING_REPORT_BYPASS: with it set, standing_report.report() returns
+  # BEFORE writing, so the bind probe below reported "pin did not bind" on a pin
+  # that bound perfectly -- a spurious failure naming the wrong cause, and the
+  # check's exit code depending on the operator's ambient environment again.
+  run_surfacer() {   # $1 = condenser state dir
+    echo '{}' | env -u STANDING_REPORT_BYPASS \
+      DEV_HUB_REFRESH_STATE="$STATE_F" DEV_DRIFT_STATE="$DRIFT_F" \
+      DEV_DRIFT_FETCH_STATE="$FETCH_F" STANDING_REPORT_STATE_DIR="$1" \
+      LS_SWEEP_TOOL="$SWEEP_F" python3 "$SURFACER" 2>/dev/null
+  }
+  names_studio() {
+    python3 -c "import json,sys; d=json.loads(sys.stdin.read()); assert 'studio' in d.get('hookSpecificOutput',{}).get('additionalContext','')" 2>/dev/null
+  }
+  # TWICE, each from its OWN fresh condenser dir. One invocation cannot tell a
+  # hermetic check from a self-poisoning one -- the incident shape IS "passes
+  # once, fails after". Reusing ONE dir would instead assert against the
+  # condenser's own contract (an unchanged finding-set is SUPPOSED to condense on
+  # the second render; that is test_standing_report.py's subject, not this
+  # check's).
+  #
+  # SCOPE OF THIS CONTROL, measured rather than assumed: dropping each pin in turn
+  # and running the section twice, only STANDING_REPORT_STATE_DIR makes the two
+  # runs disagree. DEV_DRIFT_STATE and DEV_DRIFT_FETCH_STATE are read-only on this
+  # path, so the two-run control catches 1 of the 3 pins, not all of them. An
+  # earlier draft of this comment claimed "if ANY state path is still unpinned ...
+  # invocation 2 diverges", which is false by a factor of three -- exactly the kind
+  # of confident sentence about correct code that reads as evidence and is not.
+  # hooks/test_smoke_hook_hermeticity.py is what actually covers the other two.
+  if run_surfacer "$SR_A" | names_studio && run_surfacer "$SR_B" | names_studio; then
+    ok "dev-hub-refresh surfacer emits a surface line from its state file (agrees across independent runs)"
   else
     fail "dev-hub-refresh surfacer did not surface the off-default hub"
   fi
-  rm -f "$STATE_F"
+  # The pin BINDS: every assertion above is vacuous if the surfacer still reached
+  # the real state dir. Mirrors the bind-probe control in test_standing_report.py.
+  if [[ -n "$(ls -A "$SR_A" 2>/dev/null)" ]]; then
+    ok "surfacer condenser state landed in the pinned dir, not the operator's ~/.claude"
+  else
+    fail "STANDING_REPORT_STATE_DIR pin did not bind (surfacer wrote its state elsewhere)"
+  fi
+  rm -f "$STATE_F" "$DRIFT_F" "$FETCH_F" "$SWEEP_F"; rm -rf "$SR_A" "$SR_B"
+  unset -f run_surfacer names_studio
 else
   warn "dev-hub-refresh-on-session-start.py not present"
 fi
@@ -204,7 +275,7 @@ done
 
 # === 6. Bundled skills have SKILL.md ===
 hdr "Bundled skills"
-for s in daily-journal deconstruct diagnose for-my-team graphify humanizer insights meeting-todos nano-banana patterns repurpose-talk second-brain-mapping setup-vault-types; do
+for s in daily-journal deconstruct diagnose for-my-team graphify insights meeting-todos nano-banana patterns repurpose-talk second-brain-mapping setup-vault-types; do
   if [[ -f "$SKILL_DIR/skills/$s/SKILL.md" ]]; then
     ok "skills/$s/SKILL.md"
   else
@@ -225,7 +296,11 @@ fi
 # === 7b. Context-budget measurer self-test (MYC-619) ===
 hdr "Context-budget measurer"
 if [[ -f "$SKILL_DIR/hooks/context-budget-measure.py" ]]; then
-  if python3 "$SKILL_DIR/hooks/context-budget-measure.py" --self-test >/dev/null 2>&1; then
+  CBM_FIRES=$(mktemp)
+  # The self-test sizes its fixture against the DEFAULT ceiling, so an operator
+  # who has tuned either knob fails a check about code that is behaving.
+  if env -u CONTEXT_BUDGET_GLOBAL_CEILING -u CONTEXT_BUDGET_TOL_FRAC \
+       GUARD_FIRES_LOG="$CBM_FIRES" python3 "$SKILL_DIR/hooks/context-budget-measure.py" --self-test >/dev/null 2>&1; then
     ok "context-budget-measure.py self-test"
   else
     fail "context-budget-measure.py self-test failed"
@@ -235,7 +310,10 @@ fi
 # === 8. Closing-signal fixture harness ===
 hdr "Closing-signal fixtures"
 if [[ -f "$SKILL_DIR/scripts/test-closing-signals.py" ]]; then
-  if python3 "$SKILL_DIR/scripts/test-closing-signals.py" >/dev/null 2>&1; then
+  # The harness spawns the detector with {**os.environ}, overriding only
+  # CLOSING_SIGNAL_DETECTION / VAULT_ROOT / ANTHROPIC_API_KEY -- so an ambient
+  # CLOSING_SIGNAL_LANGS reaches the child and fails a check about working code.
+  if env -u CLOSING_SIGNAL_LANGS python3 "$SKILL_DIR/scripts/test-closing-signals.py" >/dev/null 2>&1; then
     ok "test-closing-signals.py 74/74"
   else
     fail "test-closing-signals.py had failures"
