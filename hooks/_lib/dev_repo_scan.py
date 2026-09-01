@@ -46,6 +46,29 @@ except ImportError:  # loaded as a plain module (not a package), the common case
         def reclaim_stale_git_locks(_repo):
             return []
 
+# Fail-CLOSED process-liveness gate for the destructive tier (execute_reap).
+# Distinct from live_process_cwds() below, deliberately: that one is an ADVISORY
+# probe scoped to agent processes which reports "could not measure" and lets its
+# caller fall through to lock files. This one sees EVERY process (a detached
+# build or test runner holds no agent-shaped command line) and refuses when it
+# cannot answer. Resolved defensively so an older deployed sibling makes the
+# reaper refuse rather than fail to import and revert to the unguarded path.
+try:
+    from .worktree_safety import process_busy_reason as _process_busy_reason
+except Exception:  # pragma: no cover - depends on the deployed layout
+    try:
+        from _lib.worktree_safety import process_busy_reason as _process_busy_reason
+    except Exception:
+        _process_busy_reason = None  # type: ignore[assignment]
+
+
+def process_busy_reason_or_refuse(path: Path, cache: Optional[dict] = None):
+    """Why `path` must not be deleted, or None. An absent probe REFUSES."""
+    if _process_busy_reason is None:
+        return ("process-liveness helper unavailable in this deploy; "
+                "refusing every removal")
+    return _process_busy_reason(path, cache=cache)
+
 
 # ── client-safe configuration (MYC-2070) ─────────────────────────────────────
 # This module shipped assuming ONE operator's layout: a hardcoded ~/dev holding
@@ -1231,6 +1254,12 @@ def execute_reap(plan: ReapPlan, apply: bool = False) -> dict:
     remove is WITHOUT `--force` (git refuses if it somehow turned dirty between
     plan and apply — fail safe). The manifest is ALWAYS returned (even dry-run)
     so a caller can persist it before destruction.
+
+    A worktree with a LIVE PROCESS in it is skipped and recorded as `skipped`.
+    Merge-state says the CONTENT is safe; it says nothing about whether someone
+    is standing in the directory right now, and the plan may be minutes old by
+    the time this runs — so the probe is taken HERE, immediately before the
+    removals, and never reused from planning time.
     """
     manifest: dict = {
         "repo": str(plan.repo),
@@ -1239,11 +1268,17 @@ def execute_reap(plan: ReapPlan, apply: bool = False) -> dict:
         "worktrees": [],
         "stashes": [],
     }
+    probe_cache: dict = {}
     for wt in plan.reap_worktrees:
-        manifest["worktrees"].append(
-            {"path": str(wt.path), "branch": wt.branch, "sha": wt.sha}
-        )
+        entry = {"path": str(wt.path), "branch": wt.branch, "sha": wt.sha}
+        manifest["worktrees"].append(entry)
         if apply:
+            busy = process_busy_reason_or_refuse(wt.path, cache=probe_cache)
+            if busy:
+                entry["skipped"] = busy
+                print(f"dev_repo_scan: keeping {Path(wt.path).name} — {busy}",
+                      file=sys.stderr)
+                continue
             _ls_unregister_stale_bundles(wt.path)  # MYC-2626: before removal, not after
             _git(plan.repo, "worktree", "remove", str(wt.path))  # no --force
     for t in plan.reap_branches:

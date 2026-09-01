@@ -121,7 +121,6 @@ NO_TEST_BASELINE: Set[str] = {
     "check-rule-conflicts-on-write",
     "session-turn-counter",
     "snapshot-pending-work-on-stop",
-    "remove-ended-worktree",
     "list-wip-stashes-on-session-start",
     "retry-budget",
     "permission-denied",
@@ -154,7 +153,12 @@ NO_TEST_BASELINE: Set[str] = {
 # 0. Same appendable-suppression-list hole as scripts/check-hook-activation.py
 # (fixed there in the same change). Amnesty ratchets DOWN, never up; raising
 # this number is a deliberate, reviewable act.
-NO_TEST_MAX = 28
+#
+# 28 -> 26: `remove-ended-worktree` gained a real test surface, so its amnesty
+# was withdrawn. The cap follows the list down to the new length rather than
+# keeping the freed slot as slack -- slack is silently re-appendable, which is
+# the exact hole the ratchet closed.
+NO_TEST_MAX = 26
 
 
 def is_test_surface(path: Path) -> bool:
