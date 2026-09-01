@@ -110,6 +110,9 @@ RECOVERY_SCAN_DEADLINE_S = 30.0
 # letting "could not look" be mistaken for "nobody is here".
 PROCESS_PROBE_TIMEOUT = 15
 
+# Where the probe's own subprocesses stand. See _live_cwds for why this matters.
+PROBE_CWD = os.path.abspath(os.sep)
+
 # One probe per process by default. These callers are short-lived (a session
 # hook, a one-shot reclaim), and they ask once per worktree with dozens on disk.
 # A long-running caller that mutates in phases should pass its OWN dict and
@@ -136,6 +139,7 @@ def _own_process_chain() -> set:
                 ["ps", "-o", "ppid=", "-p", str(pid)],
                 capture_output=True,
                 timeout=5,
+                cwd=PROBE_CWD,  # same reason as _live_cwds: never stand in a worktree
             )
             pid = int(result.stdout.decode("utf-8", "replace").strip() or 0)
         except (OSError, ValueError, subprocess.SubprocessError):
@@ -150,10 +154,18 @@ def _live_cwds() -> list:
     empty list: "no process found" and "could not look" must not collapse into
     the same answer for a caller that deletes directories.
     """
+    # `cwd=PROBE_CWD` is LOAD-BEARING, not tidiness. A spawned child inherits
+    # our cwd, and lsof lists ITSELF -- so a sweep launched from inside the very
+    # tree it is retiring would observe its own probe standing in that tree and
+    # refuse to remove it, forever. That is the exact case the ancestor-chain
+    # exclusion exists to permit, defeated by a DESCENDANT we created one line
+    # earlier. Anchoring the probe at the filesystem root fixes it for lsof and
+    # for any helper lsof itself forks; no worktree is ever the root.
     result = subprocess.run(
         ["lsof", "-d", "cwd", "-F", "pn"],
         capture_output=True,
         timeout=PROCESS_PROBE_TIMEOUT,
+        cwd=PROBE_CWD,
     )
     text = result.stdout.decode("utf-8", "replace")
     if not text.strip():
@@ -200,14 +212,44 @@ def process_cwd_inside(worktree: Path, *, _cache: dict | None = None) -> bool:
     return any(c == root or c.startswith(prefix) for c in cwds)
 
 
+def probe_supported() -> bool:
+    """False only where no process-cwd probe EXISTS for the platform.
+
+    Fail-closed is the right answer for a probe that BROKE. It is the wrong
+    answer for a platform that never had one: refusing every reap forever would
+    not protect a Windows install, it would disable worktree cleanup there and
+    hand that user back the unbounded pileup these hooks exist to prevent.
+    Windows has no `lsof` and no stdlib route to another process's cwd, so the
+    gate reports UNSUPPORTED and the remaining (proxy) gates decide, exactly as
+    they did before this guard existed.
+
+    On POSIX a missing `lsof` is an ANOMALY, not a platform fact, so it stays
+    fail-closed and the operator sees the refusal and can install it.
+    """
+    return os.name != "nt" or shutil.which("lsof") is not None
+
+
+_UNSUPPORTED_NOTED = [False]
+
+
 def process_busy_reason(path: Path, *, cache: dict | None = None) -> str | None:
     """A reason to REFUSE deleting ``path``, or None when nothing is running in it.
 
     FAIL CLOSED. An unusable probe returns a refusal, never a green light. The
     reason string exists so the refusal is VISIBLE in whatever log the caller
     keeps: a permanently-broken probe must surface as a stated refusal, not as a
-    fleet that quietly stops being cleaned.
+    fleet that quietly stops being cleaned. The one exception is a platform with
+    no probe at all -- see probe_supported() -- which says so once and defers.
     """
+    if not probe_supported():
+        if not _UNSUPPORTED_NOTED[0]:
+            _UNSUPPORTED_NOTED[0] = True
+            _stderr_note(
+                "no process-cwd probe on this platform; worktree removals fall "
+                "back to session-lock and mtime gates, which cannot see a busy "
+                "session inside one long call"
+            )
+        return None
     if cache is None:
         cache = _PROBE_CACHE
     try:
