@@ -299,6 +299,17 @@ jobs:
       - name: no shipped hook lacks a test surface
         run: python3 scripts/check-hook-negative-control.py
 
+      # Enforced on BOTH sides on purpose. Measured 2026-09-01: this job ran 20
+      # scripts/*.py checks and scripts/ci.sh ran 9, so `ci-test` reported GREEN
+      # on a commit this job then rejected. Running the ratchet here too means
+      # adding a step above without adding it to ci.sh fails in CI as well as
+      # locally, instead of quietly widening the gap again.
+      - name: local gate parity self-test (must catch its own blind spots)
+        run: python3 scripts/check-local-gate-parity.py --self-test
+
+      - name: the local gate runs every check this job requires
+        run: python3 scripts/check-local-gate-parity.py
+
       # The check above asks whether a hook is wired AT ALL. This asks whether it
       # is wired on BOTH PLATFORMS - a question nothing in this repo used to ask.
       #

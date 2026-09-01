@@ -1162,6 +1162,41 @@ echo "==> (e2b) hook activation: $PY scripts/check-hook-activation.py"
 "$PY" scripts/check-hook-negative-control.py --selftest >/dev/null
 "$PY" scripts/check-hook-negative-control.py
 
+# --- local gate parity (MEASURED 2026-09-01) --------------------------------
+# lint.yml invoked 20 scripts/*.py checks and this file ran 9, so `ci-test` could
+# report GREEN on a commit CI then rejected -- a local gate silently NARROWER
+# than the required check it stands in for, which is how a gate teaches
+# push-and-see. The nine below are the ones that were missing; each runs with
+# the SAME invocation lint.yml uses, because the flags genuinely differ per
+# check (check-split-meta is self-test ONLY, ci-cost-audit takes --fail-on high,
+# check-hookify-template-capabilities runs under `python3 -S`). Measured cost of
+# all nine: ~1.6s.
+#
+# Two of the twenty stay OUT, for stated reasons, in check-local-gate-parity.py's
+# EXCLUSIONS: check-shipped-version-drift.py compares against the DEPLOYED
+# install (a property of the machine, not the commit) and stale-rule-check.py
+# returns exit 3 = DECLINED, which a gate must not read as a verdict.
+"$PY" scripts/check-sessionstart-emit-shape.py --self-test >/dev/null
+"$PY" scripts/check-sessionstart-emit-shape.py
+"$PY" scripts/check-frozen-before-state.py --self-test >/dev/null
+"$PY" scripts/check-frozen-before-state.py
+"$PY" scripts/check-split-meta.py --self-test
+"$PY" scripts/check-hook-parity.py --self-test >/dev/null
+"$PY" scripts/check-hook-parity.py
+"$PY" scripts/check-paired-implementations.py --self-test >/dev/null
+"$PY" scripts/check-paired-implementations.py
+"$PY" scripts/check-doc-promises.py
+"$PY" scripts/check-hook-emission-channel.py --self-test >/dev/null
+"$PY" scripts/check-hook-emission-channel.py
+"$PY" scripts/ci-cost-audit.py --self-test >/dev/null
+"$PY" scripts/ci-cost-audit.py --fail-on high
+"$PY" -S scripts/check-hookify-template-capabilities.py
+# The ratchet that keeps the above from silently reopening: adding a check to
+# lint.yml and not here now fails at review time, not as a mystery CI red on
+# someone else's PR.
+"$PY" scripts/check-local-gate-parity.py --self-test >/dev/null
+"$PY" scripts/check-local-gate-parity.py
+
 # ---- (e3) Naive VAULT_ROOT reads -------------------------------------------
 # scripts/check-vault-root-reads.py fails code that reads the VAULT_ROOT env var
 # outside a sanctioned resolver. A globally-exported VAULT_ROOT names ONE vault,
