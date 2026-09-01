@@ -68,8 +68,28 @@ _COMMAND_KEY_RE = re.compile(r'\.get\(\s*["\']command["\']|\[\s*["\']command["\'
 # `_inline_bypass` copy instead of the shared one -- `inline_bypass` matches
 # as a substring of `_inline_bypass` too, so a local copy is not penalized for
 # being local, only for not consulting the command at all.
+#
+# Requires an actual CALL (`name(`), not a bare mention, and not the `def
+# name(` that DEFINES it -- every real caller in this repo ships a `def
+# inline_bypass(...): return False` fallback for when _lib is unreachable, so
+# a call-only match without the `(?<!def )` exclusion still matched that
+# definition's own signature. Proven live in two steps: reverting a fixed
+# hook's `or inline_bypass(cmd, VAR)` back to os.environ-only, while leaving
+# the now-dead `from cmd_env import inline_bypass` line in place, first left
+# the scanner reporting the file clean (a bare mention read as "consults");
+# requiring a call closed that but the file's OWN fallback `def
+# inline_bypass(...)` line then satisfied the call-shaped regex too. The
+# fleet behavioral test (test_bypass_reachability_watchdog.py) caught the
+# regression correctly at every step, which is why that layer exists
+# alongside this one -- this is a text scanner, not control-flow analysis,
+# and cannot see whether a matched call is on a path that actually runs (e.g.
+# `if False: inline_bypass(...)` would still pass). That residual gap is
+# accepted, same as every other lightweight scanner in this repo
+# (check-hook-negative-control.py's own docstring names the identical limit
+# for its check).
 CONSULTS_CMD_RE = re.compile(
-    r'inline_bypass|leading_env_assigns|cmd_env|segment_bypass_flags')
+    r'(?<!def )inline_bypass\s*\(|(?<!def )leading_env_assigns\s*\('
+    r'|(?<!def )segment_bypass_flags\s*\(|cmd_env\.\w+\s*\(')
 
 
 def is_bash_gate(src):

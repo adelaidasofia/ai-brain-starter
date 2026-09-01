@@ -136,12 +136,30 @@ def test_consults_command_shapes():
           consults_command('x = _inline_bypass(cmd, "V")') is True)
     check("leading_env_assigns( call -> consults",
           consults_command('x = leading_env_assigns(cmd)') is True)
-    check("cmd_env import -> consults",
-          consults_command('from cmd_env import inline_bypass') is True)
+    check("cmd_env.inline_bypass( attribute-call -> consults",
+          consults_command('x = cmd_env.inline_bypass(cmd, "V")') is True)
     check("segment_bypass_flags( call -> consults",
           consults_command('x = segment_bypass_flags(segs, "V")') is True)
     check("no consult marker -> does not consult",
           consults_command('x = os.environ.get("V")') is False)
+    # REQUIRED CONTROL 3: a bare import with no call site does NOT consult.
+    # Proven live, not merely reasoned about: a fixed hook's `or
+    # inline_bypass(cmd, VAR)` call was reverted to os.environ-only while its
+    # `from cmd_env import inline_bypass` line stayed in place, and the
+    # pre-tightening scanner read the bare mention as "consults" -- reporting
+    # a live regression as clean.
+    check("bare 'from cmd_env import inline_bypass' with no call -> does NOT "
+          "consult (the shape a real regression left behind)",
+          consults_command('from cmd_env import inline_bypass') is False)
+    # REQUIRED CONTROL 4: the fallback DEFINITION every real caller in this
+    # repo ships (`def inline_bypass(...): return False`, used when _lib is
+    # unreachable) must not itself read as a call. Also proven live: the
+    # same regression's still-present fallback `def inline_bypass(...)` line
+    # satisfied a call-shaped regex that did not exclude `def `.
+    check("'def inline_bypass(...)' fallback definition -> does NOT consult",
+          consults_command(
+              'def inline_bypass(command, var, value="1"):\n'
+              '    return False') is False)
 
 
 # ---------------------------------------------------------------------------
