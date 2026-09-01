@@ -52,6 +52,7 @@ for _cand in (_HERE.parent / "hooks", _HERE):
         sys.path.insert(0, str(_cand))
         break
 
+from _lib import worktree_safety as _ws  # noqa: E402
 from _lib.worktree_safety import (  # noqa: E402
     current_worktree,
     find_main_repo,
@@ -64,6 +65,29 @@ from _lib.worktree_safety import (  # noqa: E402
     remove_worktree,
     snapshot_unrecoverable,
 )
+
+# Process-table liveness. The idle gate below is a PROXY: "nothing written in
+# --idle-min minutes" is also exactly what a long build or test run whose output
+# goes elsewhere looks like, so the busier a worktree is, the more reclaimable it
+# looks. Resolved by getattr so an older deployed _lib makes this tool REFUSE
+# removals rather than fail to load and quietly revert to the unguarded path.
+process_busy_reason = getattr(_ws, "process_busy_reason", None)
+
+# One probe for the whole apply pass. Built lazily at the first removal, never at
+# classify time — on a shared machine a plan-time reading has a shelf life.
+_PROBE_CACHE: dict = {}
+
+
+def _busy(path: Path) -> str | None:
+    """Why `path` must not be deleted, or None. Fail-closed and LOUD.
+
+    A missing or broken probe refuses AND prints, so a permanently-dead probe
+    surfaces as a stated refusal instead of a fleet that quietly stops shrinking.
+    """
+    if process_busy_reason is None:
+        return ("process-liveness helper unavailable in this _lib deploy; "
+                "refusing every removal")
+    return process_busy_reason(path, cache=_PROBE_CACHE)
 
 
 def _branch(wt: Path) -> str:
@@ -124,6 +148,11 @@ def main() -> int:
         if not is_idle(wt, args.idle_min):
             report["registered_kept"].append(f"{wt.name}: active")
             continue
+        busy = _busy(wt)
+        if busy:
+            report["registered_kept"].append(f"{wt.name}: {busy}")
+            print(f"worktree-reclaim: keeping {wt.name} — {busy}", file=sys.stderr)
+            continue
         if args.dry_run:
             report["registered_removed"].append(f"{wt.name}: would-remove")
             removed += 1
@@ -144,6 +173,12 @@ def main() -> int:
     for od in orphans:
         if cur_path and od.resolve() == cur_path:
             report["orphans"][od.name] = "kept-current"
+            continue
+        busy = _busy(od)
+        if busy:
+            report["orphans"][od.name] = f"kept-busy ({busy})"
+            print(f"worktree-reclaim: keeping orphan {od.name} — {busy}",
+                  file=sys.stderr)
             continue
         if args.dry_run:
             if not is_idle(od, args.idle_min):

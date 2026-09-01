@@ -1191,6 +1191,12 @@ echo "==> (e2b) hook activation: $PY scripts/check-hook-activation.py"
 "$PY" scripts/ci-cost-audit.py --self-test >/dev/null
 "$PY" scripts/ci-cost-audit.py --fail-on high
 "$PY" -S scripts/check-hookify-template-capabilities.py
+# Lives in its OWN workflow (template-purity.yml), which is why the first
+# version of the parity ratchet below could not see it: that scan read lint.yml
+# alone while being named for the whole local gate. A check whose SCOPE is
+# narrower than its NAME reports clean over the gap. The scan now reads EVERY
+# workflow; this is the check it found.
+"$PY" scripts/check-template-purity.py --skills
 # The ratchet that keeps the above from silently reopening: adding a check to
 # lint.yml and not here now fails at review time, not as a mystery CI red on
 # someone else's PR.
@@ -1345,6 +1351,17 @@ PY_DIRECT=(
   hooks/test_live_session_reap.py
   hooks/test_relocation_orphan_reclaim.py
   hooks/test_worktree_remove_verifies_side_effect.py
+  # Every liveness gate the reapers had was a PROXY that reads a BUSY session as
+  # a dead one: the session lock is refreshed when a tool call STARTS, so one
+  # long call emits nothing for its whole duration, and mtime cannot tell a long
+  # build from an abandoned tree. So the harder a worktree is worked in, the
+  # deader it looks -- and one was removed mid-test-run, several commits deep.
+  # Call-site controls for the process-table gate on every remover: a real child
+  # process in a SUBDIRECTORY must veto the delete, an unusable probe must fail
+  # CLOSED, and a positive control proves the same fixture is still deleted when
+  # nothing runs (without which a tool broken into never deleting looks perfect).
+  # 21 of its legs fail against the pre-fix revision.
+  hooks/test_worktree_process_liveness.py
   hooks/test_secret_patterns_fp_filter.py
   hooks/test_secret_patterns_nvidia.py
   hooks/test_secret_patterns_anthropic.py

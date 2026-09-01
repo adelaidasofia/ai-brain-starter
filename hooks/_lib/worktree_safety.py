@@ -44,6 +44,7 @@ from datetime import datetime
 import shutil
 import sqlite3
 import subprocess
+import sys
 import time
 import uuid
 from dataclasses import dataclass
@@ -75,6 +76,195 @@ RECOVERY_MAX_FILE_BYTES = 64 * 1024 * 1024
 RECOVERY_MAX_TOTAL_BYTES = 128 * 1024 * 1024
 RECOVERY_MAX_CANDIDATES = 5_000
 RECOVERY_SCAN_DEADLINE_S = 30.0
+
+# ---------------------------------------------------------------------------
+# Process-table liveness — the only liveness signal here that cannot go stale.
+#
+# THE BUG CLASS: every other gate in this module is a PROXY for "is anyone
+# using this worktree", and every one of them reads a BUSY session as a dead
+# one.
+#
+#   * The session lock records `last_activity_at`, and the hook that refreshes
+#     it fires when a tool call STARTS. A session sitting inside ONE long call —
+#     a test suite, a build, a migration — emits no heartbeat for the whole run.
+#     Past the liveness window its entry is byte-identical to that of a session
+#     that exited, and past the lock's idle-expiry the entry is deleted outright.
+#     The lock's recorded pid cannot rescue this: it is the ephemeral hook
+#     process's pid, already dead when it is written.
+#   * `is_idle()` reads mtime, and "nothing written here for an hour" is also
+#     exactly what a long build whose output goes somewhere else looks like.
+#
+# So both proxies answer "gone" for a session that is merely BUSY: the harder a
+# worktree is being worked in, the deader it looks. Observed in the field: a
+# worktree was removed mid-test-run, several commits deep, by a sibling
+# session's start-up sweep; the commits survived only because they were already
+# in the shared object store.
+#
+# The process table knows nothing about heartbeats and cannot go stale, so it is
+# consulted before every deletion path in this package.
+#
+# Related but NOT the same primitive: `_lib/dev_repo_scan.live_process_cwds()`
+# is an ADVISORY liveness probe scoped to agent processes, which reports
+# "could not measure" and lets its caller fall through to lock files. This one
+# is a DELETION GATE: it sees every process, and it RAISES rather than ever
+# letting "could not look" be mistaken for "nobody is here".
+PROCESS_PROBE_TIMEOUT = 15
+
+# Where the probe's own subprocesses stand. See _live_cwds for why this matters.
+PROBE_CWD = os.path.abspath(os.sep)
+
+# One probe per process by default. These callers are short-lived (a session
+# hook, a one-shot reclaim), and they ask once per worktree with dozens on disk.
+# A long-running caller that mutates in phases should pass its OWN dict and
+# refresh it immediately before deleting, never reuse a plan-time reading.
+_PROBE_CACHE: dict = {}
+
+
+def _own_process_chain() -> set:
+    """This process and its ancestors.
+
+    A session-end sweep is spawned BY the ending session, whose cwd is very
+    often the exact worktree being retired, so our own chain must never veto its
+    own cleanup. Descendants are deliberately NOT excluded: a detached gate
+    still running in the tree is precisely the thing worth protecting.
+    """
+    chain: set = set()
+    pid = os.getpid()
+    for _ in range(64):  # bounded: never trust a parent chain to terminate
+        if pid <= 1 or pid in chain:
+            break
+        chain.add(pid)
+        try:
+            result = subprocess.run(
+                ["ps", "-o", "ppid=", "-p", str(pid)],
+                capture_output=True,
+                timeout=5,
+                cwd=PROBE_CWD,  # same reason as _live_cwds: never stand in a worktree
+            )
+            pid = int(result.stdout.decode("utf-8", "replace").strip() or 0)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            break
+    return chain
+
+
+def _live_cwds() -> list:
+    """Resolved cwd of every live process, excluding our own ancestor chain.
+
+    Raises on any failure. A probe that cannot run reports UNKNOWN, never an
+    empty list: "no process found" and "could not look" must not collapse into
+    the same answer for a caller that deletes directories.
+    """
+    # `cwd=PROBE_CWD` is LOAD-BEARING, not tidiness. A spawned child inherits
+    # our cwd, and lsof lists ITSELF -- so a sweep launched from inside the very
+    # tree it is retiring would observe its own probe standing in that tree and
+    # refuse to remove it, forever. That is the exact case the ancestor-chain
+    # exclusion exists to permit, defeated by a DESCENDANT we created one line
+    # earlier. Anchoring the probe at the filesystem root fixes it for lsof and
+    # for any helper lsof itself forks; no worktree is ever the root.
+    result = subprocess.run(
+        ["lsof", "-d", "cwd", "-F", "pn"],
+        capture_output=True,
+        timeout=PROCESS_PROBE_TIMEOUT,
+        cwd=PROBE_CWD,
+    )
+    text = result.stdout.decode("utf-8", "replace")
+    if not text.strip():
+        # lsof exits non-zero on a partially-unreadable process table, which is
+        # normal and still yields output. NO output at all means it did not run.
+        raise OSError("process probe returned no output")
+    mine = _own_process_chain()
+    cwds: list = []
+    current_pid = None
+    for line in text.splitlines():
+        if not line:
+            continue
+        tag, value = line[0], line[1:]
+        if tag == "p":
+            try:
+                current_pid = int(value)
+            except ValueError:
+                current_pid = None
+        elif tag == "n" and current_pid is not None and current_pid not in mine:
+            cwds.append(value)
+    return cwds
+
+
+def process_cwd_inside(worktree: Path, *, _cache: dict | None = None) -> bool:
+    """True if a live foreign process has its cwd at or under ``worktree``.
+
+    A subdirectory counts — a test runner sits in one. The trailing separator is
+    load-bearing: without it a sibling checkout named `<repo>-<slug>` would match
+    `<repo>` and one live session would lock the whole fleet.
+
+    Raises when the probe is unusable, so a destructive caller can fail closed.
+    """
+    if _cache is not None and "cwds" in _cache:
+        cwds = _cache["cwds"]
+    else:
+        cwds = _live_cwds()
+        if _cache is not None:
+            _cache["cwds"] = cwds
+    try:
+        root = str(worktree.resolve())
+    except OSError:
+        root = str(worktree)
+    prefix = root.rstrip("/") + "/"
+    return any(c == root or c.startswith(prefix) for c in cwds)
+
+
+def probe_supported() -> bool:
+    """False only where no process-cwd probe EXISTS for the platform.
+
+    Fail-closed is the right answer for a probe that BROKE. It is the wrong
+    answer for a platform that never had one: refusing every reap forever would
+    not protect a Windows install, it would disable worktree cleanup there and
+    hand that user back the unbounded pileup these hooks exist to prevent.
+    Windows has no `lsof` and no stdlib route to another process's cwd, so the
+    gate reports UNSUPPORTED and the remaining (proxy) gates decide, exactly as
+    they did before this guard existed.
+
+    On POSIX a missing `lsof` is an ANOMALY, not a platform fact, so it stays
+    fail-closed and the operator sees the refusal and can install it.
+    """
+    return os.name != "nt" or shutil.which("lsof") is not None
+
+
+_UNSUPPORTED_NOTED = [False]
+
+
+def process_busy_reason(path: Path, *, cache: dict | None = None) -> str | None:
+    """A reason to REFUSE deleting ``path``, or None when nothing is running in it.
+
+    FAIL CLOSED. An unusable probe returns a refusal, never a green light. The
+    reason string exists so the refusal is VISIBLE in whatever log the caller
+    keeps: a permanently-broken probe must surface as a stated refusal, not as a
+    fleet that quietly stops being cleaned. The one exception is a platform with
+    no probe at all -- see probe_supported() -- which says so once and defers.
+    """
+    if not probe_supported():
+        if not _UNSUPPORTED_NOTED[0]:
+            _UNSUPPORTED_NOTED[0] = True
+            _stderr_note(
+                "no process-cwd probe on this platform; worktree removals fall "
+                "back to session-lock and mtime gates, which cannot see a busy "
+                "session inside one long call"
+            )
+        return None
+    if cache is None:
+        cache = _PROBE_CACHE
+    try:
+        if process_cwd_inside(path, _cache=cache):
+            return "a live process has its cwd in it"
+    except Exception as exc:  # unusable probe -> UNKNOWN, never "empty"
+        return f"process probe unavailable ({exc})"
+    return None
+
+
+def _stderr_note(msg: str) -> None:
+    try:
+        print(f"worktree-safety: {msg}", file=sys.stderr)
+    except (OSError, ValueError, UnicodeEncodeError):
+        pass
 
 
 def find_main_repo(cwd: Path | None = None) -> Path | None:
@@ -528,7 +718,18 @@ def remove_worktree(main_repo: Path, worktree: Path, force: bool = True) -> bool
     at the worktree path a clean removal.
 
     Negative control: hooks/test_worktree_remove_verifies_side_effect.py
+    hooks/test_worktree_process_liveness.py pins the process gate below.
     """
+    # Process-table liveness, ahead of everything: a worktree someone is running
+    # code in is not ours to delete for any reason. Fail closed — an unusable
+    # probe refuses and SAYS SO in the shared cleanup log, so a broken probe
+    # surfaces as a refusal instead of silently paralysing cleanup.
+    reason = process_busy_reason(worktree)
+    if reason:
+        append_cleanup_log(
+            main_repo, f"REFUSE remove {worktree.name}: {reason}"
+        )
+        return False
     args = ["worktree", "remove"] + (["--force"] if force else []) + [str(worktree)]
     try:
         if git(main_repo, args, timeout=None).returncode != 0:
@@ -652,6 +853,13 @@ def _reclaim_disconnected_orphan(main_repo: Path, orphan: Path, slug: str) -> tu
     preserve the existing lifecycle behavior. This content boundary fails closed
     on read/Git uncertainty; it does not provide concurrent-writer exclusion.
     """
+    # Redundant with the gate in reclaim_orphan_dir (its only caller today) and
+    # kept deliberately: this function owns an `rmtree`, and a deletion path is
+    # guarded at the point it deletes, not at the point someone remembered to.
+    reason = process_busy_reason(orphan)
+    if reason:
+        append_cleanup_log(main_repo, f"REFUSE reclaim {orphan.name}: {reason}")
+        return ("kept-busy", 0)
     files = _bounded_recovery_files(orphan)
     if files is None:
         return ("kept-unsafe", 0)
@@ -681,10 +889,15 @@ def _reclaim_disconnected_orphan(main_repo: Path, orphan: Path, slug: str) -> tu
 def reclaim_orphan_dir(main_repo: Path, orphan: Path, idle_min: int = 60) -> tuple[str, int]:
     """Safely reclaim one orphan worktree dir. Returns (action, snapshotted).
 
-    action ∈ {removed, snapshot+removed, kept-active, kept-unsafe, kept-dangling,
-              relocation-orphan-removed, relocation-orphan+removed}.
+    action ∈ {removed, snapshot+removed, kept-active, kept-busy, kept-unsafe,
+              kept-dangling, relocation-orphan-removed, relocation-orphan+removed}.
+    Callers detect a removal with `"removed" in action`, so every keep verdict
+    must avoid that substring.
 
     Fast + fail-safe — never `rm -rf` a dir we can't reason about:
+      * process gate: a dir a live process has as its cwd (or an unusable probe)
+        is left. This runs FIRST because it is the only gate here that cannot go
+        stale, and the idle gate below reads a busy-but-quiet dir as abandoned.
       * idle gate: a dir touched < idle_min ago is left (a live/paused session).
       * `git -C <orphan> status` decides recoverability cheaply (uses the index):
           - clean       → rm (every file is committed/recoverable from a branch)
@@ -702,6 +915,10 @@ def reclaim_orphan_dir(main_repo: Path, orphan: Path, idle_min: int = 60) -> tup
     lease. Strong exclusion remains a runtime/upstream lifecycle dependency.
     """
     slug = orphan.name
+    reason = process_busy_reason(orphan)
+    if reason:
+        append_cleanup_log(main_repo, f"REFUSE reclaim {slug}: {reason}")
+        return ("kept-busy", 0)
     if not is_idle(orphan, idle_min):
         return ("kept-active", 0)
     try:

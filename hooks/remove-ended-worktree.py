@@ -45,6 +45,7 @@ from pathlib import Path
 HOOK_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOK_DIR))
 
+from _lib import worktree_safety as _ws  # noqa: E402
 from _lib.worktree_safety import (  # noqa: E402
     append_cleanup_log,
     current_worktree,
@@ -53,6 +54,19 @@ from _lib.worktree_safety import (  # noqa: E402
     remove_worktree,
     snapshot_unrecoverable,
 )
+
+# Fail-closed process-liveness gate. Resolved by getattr, not by a hard import,
+# so an older deployed _lib copy makes this hook REFUSE removals rather than
+# fail to load and silently revert to the unguarded behaviour.
+process_busy_reason = getattr(_ws, "process_busy_reason", None)
+
+
+def _busy_reason(path: Path) -> str | None:
+    """Why `path` must not be deleted, or None. A missing helper refuses."""
+    if process_busy_reason is None:
+        return ("process-liveness helper unavailable in this _lib deploy; "
+                "refusing every removal")
+    return process_busy_reason(path)
 
 
 def _log(main_repo: Path, msg: str) -> None:
@@ -93,6 +107,17 @@ def main() -> int:
         return _done()
     if not branch.startswith("claude/"):
         _log(main_repo, f"keep {slug}: branch {branch!r} is not claude/* scratch")
+        return _done()
+
+    # The session is over by definition at SessionEnd — a DETACHED CHILD of it
+    # is not. This hook targets whatever worktree the hook PROCESS's cwd is in,
+    # so a background gate the session launched (a test suite, a build) is still
+    # standing in the tree we are about to unlink. Our own ancestor chain is
+    # excluded by the probe, so anything it still reports here is foreign.
+    # Checked BEFORE the recovery scan: no point walking a tree we will keep.
+    busy = _busy_reason(worktree)
+    if busy:
+        _log(main_repo, f"REFUSE remove {slug}: {busy}. Worktree kept.")
         return _done()
 
     snapped, recoverable, all_safe = snapshot_unrecoverable(main_repo, worktree, slug)
