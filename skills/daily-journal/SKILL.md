@@ -157,10 +157,10 @@ One calendar day = ONE journal entry that grows across sessions (an afternoon ch
 **0-RUN. Run the preflight FIRST — this is the literal first tool call of every `/journal`, before the opener. Non-negotiable.**
 
 ```
-python3 "⚙️ Meta/scripts/journal-preflight.py"
+uv run python3 "⚙️ Meta/scripts/journal-preflight.py"
 ```
 
-(or `Meta/scripts/journal-preflight.py` if the vault doesn't use emoji-prefixed Meta.) It auto-spans since the last entry, pulls every SCRIPT source into ONE digest — messages (WhatsApp direct + groups + iMessage, whole gap, FAMILY/PARTNER threads surfaced first with ⭐), RescueTime (per day), close-cascade journal seeds (Session Captures), today's activity, the email triage digest, and the on-disk Slack export — and writes a marker at `⚙️ Meta/.journal-context/<date>.json`. It cannot call MCP, so it prints the exact MCP pulls you MUST make yourself right after — make EVERY one it lists:
+(or `Meta/scripts/journal-preflight.py` if the vault doesn't use emoji-prefixed Meta. Use a bare `python3` only where that is a REAL interpreter: a Claude Code plugin can put a shim named `python3` ahead of it on PATH, and the bare call then errors out instead of running — which is how this preflight went unrun. `uv run python3` is immune to that. If the save-time guard blocks you, it prints the exact working command for this vault.) It auto-spans since the last entry, pulls every SCRIPT source into ONE digest — messages (WhatsApp direct + groups + iMessage, whole gap, FAMILY/PARTNER threads surfaced first with ⭐), RescueTime (per day), close-cascade journal seeds (Session Captures), today's activity, the email triage digest, and the on-disk Slack export — and writes a marker at `⚙️ Meta/.journal-context/<date>.json`. It cannot call MCP, so it prints the exact MCP pulls you MUST make yourself right after — make EVERY one it lists:
 
 1. **Calendar** — `cal_list_events(time_min, time_max)` for the window; fold meetings + attendees into `## Today`.
 2. **Email (fresh, relational)** — `gmail_search` each account since the last entry; surface FAMILY / friends / commitments, not just the (often stale) triage digest the preflight already read.

@@ -31,6 +31,7 @@ edits to an already-contextualized entry.
 import json
 import os
 import re
+import shutil
 import sys
 import datetime
 from pathlib import Path
@@ -73,19 +74,64 @@ def _norm(text):
 
 
 def _vault_root(text):
-    """Absolute dir before the '<optional emoji >Journals/<Month YYYY>/' segment.
+    """Absolute dir before the '<optional emoji >Journals/<Month YYYY>/' segment,
+    or None when the text carries no absolute journal path (see _resolve_vault).
     Anchored on the absolute path (starts at a real '/', or a `C:/` drive root),
     so a leading shell prefix like `cat > '/vault/.../x.md'` is NOT captured into
     the root (that was the 2026-07-07 Bash-path fail-open bug). Quotes bound the
     segment on the Bash path.
 
     The drive-letter alternative is guarded by `(?<![A-Za-z])` so a URL like
-    `http://host/Journals/May 2026/` cannot have its `p:` read as a drive."""
+    `http://host/Journals/May 2026/` cannot have its `p:` read as a drive.
+
+    The optional folder-prefix segment excludes quotes and shell metacharacters,
+    not just '/'. With the looser `[^/\n]*` it spanned shell syntax: the
+    cwd-relative save idiom
+        cd "/Users/x/Brain" && cat > "<emoji> Journals/Aug 2026/e.md"
+    let the segment swallow `Brain" && cat > "<emoji> `, collapsing the root to
+    the vault's PARENT. That parent is a real directory, so the guard did not
+    fail open — it blocked while naming a marker path no preflight can ever
+    create, making the guard unsatisfiable and the bypass routine (2026-08-30)."""
     m = re.search(
-        r"((?:(?<![A-Za-z])[A-Za-z]:)?/[^\n\"']*?)/(?:[^/\n]*\s)?"
+        r"((?:(?<![A-Za-z])[A-Za-z]:)?/[^\n\"']*?)/(?:[^/\n\"'|&;<>]*\s)?"
         r"Journals/[A-Z][a-zA-Z]+\s+\d{4}/",
         text)
     return m.group(1) if m else None
+
+
+# Leading `cd <dir>` of a command segment; quoted or bare. Used only to resolve a
+# RELATIVE journal path, which is how daily-journal actually saves.
+# The leading class accepts a quote and `(` as well as the shell separators, so a
+# wrapped form (`bash -c 'cd "<vault>" && cat > ...'`, a subshell) still yields the
+# cd target. Without them such a command fell through to the cwd fallback, which
+# in a worktree session is NOT the vault — reproducing the same unsatisfiable
+# block this hook was just fixed to stop emitting.
+CD_TARGET_RE = re.compile(
+    r"""(?:^|[;&|(\n"']|\bthen\b|\bdo\b)\s*cd\s+(?:-{1,2}\S+\s+)*"""
+    r"""(?:"([^"\n]+)"|'([^'\n]+)'|([^\s;&|<>()]+))""")
+
+
+def _cd_target(text, cwd=None):
+    """Destination of the command's first `cd`, expanded and made absolute."""
+    m = CD_TARGET_RE.search(text)
+    if not m:
+        return None
+    d = os.path.expanduser(next(g for g in m.groups() if g is not None))
+    if not os.path.isabs(d) and not re.match(r"^[A-Za-z]:/", d):
+        if not cwd:
+            return None
+        d = os.path.normpath(os.path.join(cwd, d))
+    return d.rstrip("/") or "/"
+
+
+def _resolve_vault(text, cwd):
+    """Vault root for this save. An absolute journal path wins; otherwise the
+    path is relative to the shell's cwd, so fall back to the command's own `cd`
+    target and then to the session cwd from the hook payload. Without these
+    fallbacks the tightened regex above would return None for the relative
+    idiom and the guard would silently stop protecting the primary save path —
+    trading a wrong block for a quiet hole."""
+    return _vault_root(text) or _cd_target(text, cwd) or cwd
 
 
 def _marker_exists(vault, date_iso):
@@ -126,7 +172,7 @@ elif tool_name == "Bash":
 if not blob:
     sys.exit(0)  # not a journal save
 
-vault = _vault_root(blob)
+vault = _resolve_vault(blob, payload.get("cwd") or None)
 if not vault or not os.path.isdir(vault):
     sys.exit(0)  # can't locate vault -> fail open
 
@@ -136,15 +182,29 @@ date_iso = dm.group(1) if dm else _target_today()
 if _marker_exists(vault, date_iso):
     sys.exit(0)  # preflight ran for this date -> allow
 
+# Name the meta dir this vault actually uses, and an interpreter that actually
+# runs here: a remediation the operator cannot execute is why the bypass became
+# routine. `uv run python3` where uv is installed (a bare `python3` is shimmed
+# and errors out on such boxes), else the very interpreter running this hook.
+_meta = next((m for m in ("⚙️ Meta", "Meta")
+              if os.path.isdir(os.path.join(vault, m))), "⚙️ Meta")
+_py = "uv run python3" if shutil.which("uv") else (sys.executable or "python3")
+_preflight = os.path.join(vault, _meta, "scripts", "journal-preflight.py")
+_missing = "" if os.path.exists(_preflight) else (
+    "\n!! That script is MISSING from this vault. Install it with:\n"
+    f'   VAULT_ROOT="{vault}" bash '
+    '~/.claude/skills/ai-brain-starter/scripts/sync-vault-scripts.sh\n')
+
 err = (
     "BLOCKED by warn-journal-saved-without-context hook.\n\n"
     f"No preflight marker for {date_iso} at\n"
-    f"  {vault}/⚙️ Meta/.journal-context/{date_iso}.json\n"
+    f"  {os.path.join(vault, _meta, '.journal-context', date_iso + '.json')}\n"
     "-> Step 0's context pull never ran, so this journal would ship with no\n"
     "calendar / messages / RescueTime / activity context. That is the exact\n"
     "2026-07-07 failure this guard exists to stop.\n\n"
     "Fix (do this, then re-issue the save):\n"
-    '  1. python3 "⚙️ Meta/scripts/journal-preflight.py"\n'
+    f'  1. {_py} "{_preflight}"\n'
+    f"{_missing}"
     "  2. Make the calendar + email + Slack + health MCP pulls it prints.\n"
     "  3. Fold the context into ## Today + a context_sources: frontmatter block.\n\n"
     "Bypass (addendum / pre-contextualized entry): JOURNAL_CONTEXT_BYPASS=1"

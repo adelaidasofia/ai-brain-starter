@@ -140,19 +140,32 @@ fi
 # pops the Store, so the resolver call came back EMPTY and this script misread
 # it as "no Meta folder" and silently no-opped (issue #375). Trust only a
 # candidate that actually reports major version 3.
+#
+# The same failure has a second cause on macOS/Linux: a Claude Code plugin can
+# put a WRAPPER named `python3` (and `python`) ahead of the real interpreter on
+# PATH — the trailofbits modern-python shim refuses a bare call outright
+# ("Use `uv run python3 ...` instead"). Both candidates then satisfy
+# `command -v`, both fail the probe, `py` does not exist off Windows, and
+# PY_CMD ends up EMPTY -> "no Meta folder" -> a silent no-op that kept
+# journal-preflight.py out of the vault entirely (found 2026-08-30: the
+# /journal Step-0 guard was left unsatisfiable because its script never
+# shipped). So the list continues past a shimmed PATH: an explicit $PYTHON
+# first, then `uv run python3`, then absolute interpreter paths a PATH shim
+# cannot shadow. The probe stays the sole arbiter — a candidate is used only if
+# it actually reports major version 3.
 PY_CMD=""
 _probe_python() {
   [ "$("$@" -c 'import sys; print(sys.version_info[0])' 2>/dev/null \
         | head -n1 | tr -d '\r')" = "3" ]
 }
-for _cand in python3 python py; do
-  command -v "$_cand" >/dev/null 2>&1 || continue
-  if [ "$_cand" = "py" ]; then
-    # The Windows launcher needs -3 to guarantee a Python 3 interpreter.
-    _probe_python py -3 && { PY_CMD="py -3"; break; }
-  else
-    _probe_python "$_cand" && { PY_CMD="$_cand"; break; }
-  fi
+_probe_cmd() {  # candidate may be multi-word ("py -3", "uv run python3")
+  # shellcheck disable=SC2086  # word-splitting the candidate is the point
+  _probe_python $1
+}
+for _cand in ${PYTHON:+"$PYTHON"} python3 python "py -3" "uv run python3" \
+             /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+  command -v "${_cand%% *}" >/dev/null 2>&1 || continue
+  _probe_cmd "$_cand" && { PY_CMD="$_cand"; break; }
 done
 unset _cand
 
