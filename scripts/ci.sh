@@ -1379,6 +1379,16 @@ PY_DIRECT=(
   # coverage at all while the condenser silently dropped every render
   # section after the first.
   hooks/test_standing_report.py
+  # The sibling hole #539 did not close. It fixed the LIBRARY's own suite; the
+  # shell smoke test kept driving the same condenser with STANDING_REPORT_STATE_DIR
+  # unpinned, so scripts/post-install-smoke-test.sh flipped its own verdict on the
+  # next run with zero code change (PASS / FAIL / FAIL, measured 2026-09-01) and
+  # wrote a synthetic hash into the operator's live ~/.claude. Carries the CLASS
+  # check: every hook the smoke test invokes must pin every HOME-rooted state
+  # override it binds. That check found the second unpinned invocation
+  # (warn-stale-dev-checkout resolving the operator's real ~/dev); only the first
+  # was known.
+  hooks/test_smoke_hook_hermeticity.py
   # Two SECURITY hooks resolved their append-only audit logs as `HOOK_DIR /
   # "...jsonl"`. HOOK_DIR is where the running COPY lives, and the wired copy on
   # a real install is this repo's own deployed checkout — so the logs accumulated
