@@ -35,10 +35,16 @@ Dead-idle gate: WORKTREE_DEAD_IDLE_MIN env (default 60, matching the cap reaper)
                 session must be absent from the lock's recency window before reclaim.
 Bypass:         WORKTREE_CAP_BYPASS=1.
 
-LIVENESS NOTE: per session-lock.py, the only trustworthy liveness signal is
+LIVENESS NOTE: per session-lock.py, the only trustworthy signal IN THE LOCK is
 `last_activity_at` recency (the recorded pid is the ephemeral hook pid, dead on
 arrival). live_session_cwds() therefore uses recency; this hook never reaps a cwd
 that is active in that window, nor the current session's worktree.
+
+That lock is a PROXY, and so is the mtime idle gate — both read a merely BUSY
+session as a dead one (the lock is refreshed when a tool call STARTS, so one long
+call emits nothing for its whole duration; mtime cannot tell a long build from an
+abandoned tree). So every removal path here is additionally gated on the PROCESS
+TABLE, which cannot go stale, and which fails CLOSED when it cannot be read.
 
 WIRING (SessionStart):
   "SessionStart": [
@@ -58,6 +64,7 @@ from pathlib import Path
 HOOK_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(HOOK_DIR))
 
+from _lib import worktree_safety as _ws  # noqa: E402
 from _lib.worktree_safety import (  # noqa: E402
     append_cleanup_log,
     current_worktree,
@@ -73,7 +80,41 @@ from _lib.worktree_safety import (  # noqa: E402
     snapshot_unrecoverable,
 )
 
+# Process-table liveness. EVERY liveness gate this hook had was a proxy that
+# reads a BUSY session as a dead one: `live_session_cwds()` is refreshed when a
+# tool call STARTS, so a session inside one long call stops emitting; `is_idle()`
+# reads mtime, and "nothing written for an hour" is also what a long gate whose
+# output goes elsewhere looks like. The cap loop below then force-removes on the
+# mtime gate ALONE. The process table cannot go stale, so it is consulted before
+# every removal path in this file. Resolved by getattr so an older deployed _lib
+# makes this hook REFUSE removals rather than fail to load and quietly revert to
+# the unguarded behaviour.
+process_busy_reason = getattr(_ws, "process_busy_reason", None)
+
+# One probe for the whole sweep, not one per worktree. This hook runs to
+# completion in seconds, so a single reading stays current for all of it.
+_PROBE_CACHE: dict = {}
+
 DEFAULT_CAP = 12
+
+
+def _process_busy(main_repo: Path, path: Path) -> bool:
+    """True if a live process is in `path` OR we could not find out.
+
+    Fail-closed. "No process found" and "could not look" must never be the same
+    answer to a caller that runs `git worktree remove --force`. A missing or
+    broken probe is LOGGED rather than silently disabling cleanup, so paralysis
+    surfaces instead of masquerading as a quiet fleet.
+    """
+    if process_busy_reason is None:
+        _log(main_repo, "process-liveness helper unavailable in this _lib "
+                        "deploy; refusing every removal this run")
+        return True
+    reason = process_busy_reason(path, cache=_PROBE_CACHE)
+    if reason:
+        _log(main_repo, f"keep {path.name}: {reason}")
+        return True
+    return False
 
 
 def _log(main_repo: Path, msg: str) -> None:
@@ -148,6 +189,8 @@ def _per_session_backstop(main_repo: Path, cur_path: Path | None) -> tuple[list[
                     continue  # deliberate feature-branch worktree
                 if not is_idle(wt, idle_min=dead_idle):
                     continue  # touched recently — let it settle / SessionEnd handle it
+                if _process_busy(main_repo, wt):
+                    continue  # a live process is running in it, or we could not tell
                 slug = wt.name
                 snapped, _r, all_safe = snapshot_unrecoverable(main_repo, wt, slug)
                 if not all_safe:
@@ -167,6 +210,8 @@ def _per_session_backstop(main_repo: Path, cur_path: Path | None) -> tuple[list[
                     continue
             except OSError:
                 continue
+            if _process_busy(main_repo, od):
+                continue  # a live process is running in it, or we could not tell
             action, snapped = reclaim_orphan_dir(main_repo, od, idle_min=dead_idle)
             swept[od.name] = action
             if "removed" in action:
@@ -241,6 +286,8 @@ def main() -> int:
             continue  # never auto-remove a deliberate worktree
         if not is_idle(wt, idle_min=60):
             continue
+        if _process_busy(main_repo, wt):
+            continue  # a live process is running in it, or we could not tell
         slug = wt.name
         snapped, _recoverable, all_safe = snapshot_unrecoverable(main_repo, wt, slug)
         if not all_safe:

@@ -83,6 +83,22 @@ except ImportError as exc:
           file=sys.stderr)
     sys.exit(2)
 
+# Fail-CLOSED process-liveness gate, resolved defensively so an older deployed
+# _lib makes this tool REFUSE removals rather than fail to import and quietly
+# revert to the unguarded path.
+try:
+    from _lib.worktree_safety import process_busy_reason as _process_busy_reason
+except Exception:  # pragma: no cover - depends on the deployed layout
+    _process_busy_reason = None  # type: ignore[assignment]
+
+
+def _busy(path: Path, cache: dict | None = None) -> str | None:
+    """Why `path` must not be removed, or None. An absent probe REFUSES."""
+    if _process_busy_reason is None:
+        return ("process-liveness helper unavailable in this _lib deploy; "
+                "refusing every removal")
+    return _process_busy_reason(path, cache=cache)
+
 DEFAULT_IDLE_DAYS = 7.0
 # Overridable so a test never writes into the operator's real snapshot store —
 # a test fixture sitting in the recovery directory is indistinguishable from a
@@ -300,11 +316,22 @@ def snapshot(worktree: Path, paths: list, apply: bool):
     return dest, failed
 
 
-def remove(worktree: Path, apply: bool) -> tuple:
+def remove(worktree: Path, apply: bool, probe_cache: dict | None = None) -> tuple:
     """`git worktree remove` via the OWNING checkout, never `rm -rf`, so git's
-    own bookkeeping stays consistent. --force only after a snapshot exists."""
+    own bookkeeping stays consistent. --force only after a snapshot exists.
+
+    Last gate before the unlink: the PROCESS TABLE. Every other input to the
+    classify/remove decision is a proxy that reads a busy tree as an abandoned
+    one — the idle-days threshold is mtime, and the session-lock probe depends
+    on a writer that stops emitting during one long call. This one observes,
+    fails closed, and is taken HERE rather than at classify time, because on a
+    shared machine a classification is minutes stale by the time it is acted on.
+    """
     if not apply:
         return True, "dry-run"
+    busy = _busy(worktree, probe_cache)
+    if busy:
+        return False, busy
     main = main_checkout_of(worktree)
     if main is None:
         return False, "no main checkout"
@@ -339,10 +366,21 @@ def main() -> int:
     verdicts = [classify(w, args.idle_days, now_ts) for w in find_candidates(dev_root)]
 
     reaped, snapped, failed = [], [], []
+    # One process-table reading for the whole apply pass, built at the first
+    # removal — deliberately NOT at classify time, which can be minutes earlier.
+    probe_cache: dict = {}
     for v in verdicts:
         if v["verdict"] not in (REAP, SNAPSHOT_REAP):
             continue
         wt = Path(v["path"])
+        # Ahead of the snapshot: no point walking a tree we are going to keep,
+        # and a dry run must report the same refusal an apply would hit.
+        busy = _busy(wt, probe_cache)
+        if busy:
+            v["removed"] = False
+            v["note"] = busy
+            failed.append(v)
+            continue
         if v["verdict"] == SNAPSHOT_REAP:
             paths, known = dirty_paths(wt)
             if not known:
@@ -360,7 +398,7 @@ def main() -> int:
                 failed.append(v)
                 continue
             snapped.append(v)
-        ok, note = remove(wt, args.apply)
+        ok, note = remove(wt, args.apply, probe_cache)
         v["removed"] = ok
         v["note"] = note
         (reaped if ok else failed).append(v)
