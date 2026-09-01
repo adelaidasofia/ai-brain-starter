@@ -53,6 +53,16 @@ except Exception:  # pragma: no cover - telemetry is never load-bearing
     def log_fire(*_a, **_k):
         return
 
+# Inline-bypass consult: os.environ can't see a `CHAINED_STATE_CMD_BYPASS=1
+# <cmd>` prefix that lives only in the command string, never the hook's own
+# env (HOOK-READS-SESSION-ENV-NOT-COMMAND-ENV). Fail-open to env-only if the
+# shared helper is unavailable.
+try:
+    from cmd_env import inline_bypass
+except Exception:
+    def inline_bypass(command, var, value="1"):  # type: ignore
+        return False
+
 # State-changing commands whose success cannot be inferred from a truncated tail.
 STATE_CMD = re.compile(
     r"\bgit\s+commit\b|\bgit\s+push\b|\bgh\s+pr\s+create\b|\bgh\s+pr\s+merge\b"
@@ -87,9 +97,6 @@ STATUS_READ_OK = re.compile(r"\$\{pipestatus\[1\]\}|pipefail")
 
 
 def main() -> None:
-    if os.environ.get("CHAINED_STATE_CMD_BYPASS") == "1":
-        log_fire("warn-chained-state-command-truncated", status="bypassed")
-        sys.exit(0)
     try:
         data = json.load(sys.stdin)
     except Exception:
@@ -101,6 +108,12 @@ def main() -> None:
     if isinstance(tin, dict):
         cmd = str(tin.get("command", ""))
     if not cmd:
+        sys.exit(0)
+
+    if os.environ.get("CHAINED_STATE_CMD_BYPASS") == "1" or inline_bypass(
+        cmd, "CHAINED_STATE_CMD_BYPASS"
+    ):
+        log_fire("warn-chained-state-command-truncated", status="bypassed")
         sys.exit(0)
 
     if not TRUNCATE.search(cmd):

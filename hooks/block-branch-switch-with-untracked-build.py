@@ -37,6 +37,18 @@ except Exception:
     print(json.dumps({}))
     sys.exit(0)
 
+# Inline-bypass consult: os.environ can't see a `BRANCH_SWITCH_BYPASS=1 <cmd>`
+# prefix that lives only in the command string, never the hook's own env
+# (HOOK-READS-SESSION-ENV-NOT-COMMAND-ENV). Fail-open to env-only if the
+# shared helper is unavailable -- never let a missing _lib escalate this into
+# a block. This file already fails the whole hook open above when _lib is
+# unreachable, so the import is safe to fold into the same try/except.
+try:
+    from _lib.cmd_env import inline_bypass  # type: ignore
+except Exception:
+    def inline_bypass(command, var, value="1"):  # type: ignore
+        return False
+
 
 DANGEROUS_PATTERNS = [
     # checkout to a branch (NOT `checkout -- <file>` which is revert)
@@ -54,10 +66,10 @@ DEV_REPO_PATH_RE = re.compile(r"/Users/[^/]+/dev/([^/\s'\"]+)")
 HOME_DEV_PATH_RE = re.compile(r"~/dev/([^/\s'\"]+)")
 
 
-def _bypass() -> bool:
+def _bypass(cmd: str) -> bool:
     if os.environ.get("BRANCH_SWITCH_BYPASS") == "1":
         return True
-    return False
+    return inline_bypass(cmd, "BRANCH_SWITCH_BYPASS")
 
 
 def _command_is_dangerous(cmd: str) -> bool:
@@ -114,7 +126,7 @@ def main() -> None:
     if not _command_is_dangerous(cmd):
         _allow()
 
-    if _bypass():
+    if _bypass(cmd):
         _allow()
 
     # Determine which repo to scan. Prefer the repo named on the command line.
@@ -181,4 +193,13 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (ai-brain-starter#313; hooks/ sweep #314).
+    # A hook that print()s non-ASCII raises UnicodeEncodeError on a cp1252
+    # console: the gate then fails silently OPEN, or denies the tool call with
+    # no legible cause. Idempotent; a no-op on an already-UTF-8 console.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     main()

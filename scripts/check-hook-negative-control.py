@@ -117,7 +117,6 @@ NO_TEST_BASELINE: Set[str] = {
     "block-secret-in-note",
     # -- correctness / process guards --
     "agent-briefing-check",
-    "block-branch-switch-with-untracked-build",
     "check-rule-conflicts-on-write",
     "session-turn-counter",
     "snapshot-pending-work-on-stop",
@@ -154,11 +153,14 @@ NO_TEST_BASELINE: Set[str] = {
 # (fixed there in the same change). Amnesty ratchets DOWN, never up; raising
 # this number is a deliberate, reviewable act.
 #
-# 28 -> 26: `remove-ended-worktree` gained a real test surface, so its amnesty
-# was withdrawn. The cap follows the list down to the new length rather than
-# keeping the freed slot as slack -- slack is silently re-appendable, which is
-# the exact hole the ratchet closed.
-NO_TEST_MAX = 26
+# 28 -> 25, two independent paydowns landing together: `remove-ended-worktree`
+# gained a real test surface (#640/#641), and `block-branch-switch-with-
+# untracked-build` gained one here (its `_bypass` predicate, fleet-tested
+# end to end against a real module-in-flight git fixture). The cap follows
+# the list down to the new length rather than keeping either freed slot as
+# slack -- slack is silently re-appendable, which is the exact hole the
+# ratchet closed.
+NO_TEST_MAX = 25
 
 
 def is_test_surface(path: Path) -> bool:
