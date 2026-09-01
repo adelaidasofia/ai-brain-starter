@@ -56,7 +56,7 @@ bf2aa37b1fc14be871ed01920e719d1f71d87052e536d4c435ed2fff227ca8ec SEV-A-write scr
 a29f6c2b98ccf874e4c818e2487ce74f32248ecbbce73a11c91a738561f3aa84 SEV-A-write skills/graphify/scripts/graphify_chunk.py
 8397e371e756c7cff96453d8f8f2c895e1e8ac0762edc8538c573c059e07d19d SEV-A-write skills/graphify/scripts/graphify_prep.py
 
-# ---- SEV-B-read-only  (22 file(s)) ----
+# ---- SEV-B-read-only  (21 file(s)) ----
 b647243fdf0a358d46a6a79b0bf7f817ee121f68d5d685fabe4b0ee2a93af94d SEV-B-read-only hooks/check-fabricated-hook-attribution.py
 3599a56754108272a15a2c879a23a52c0e844edf2991932118ecf16b24706af9 SEV-B-read-only hooks/dev-hub-refresh-on-session-start.py
 383b879b07fd9dce4a66c6a9beb449e2c7ec378b7f94d393b2bf486cf26531fb SEV-B-read-only hooks/observe-tool-calls.py
