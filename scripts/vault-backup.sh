@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# exit-contract: ENFORCING
+
 # vault-backup.sh — one-command, provider-agnostic, off-machine backup for a brain vault.
 #
 # The gap this closes: a brain in active daily use whose only copy is the local
@@ -502,7 +504,17 @@ cmd_status() {
   fi
   # Canonical verdict from the single source of truth.
   local checker; checker="$(cd "$(dirname "$0")" && pwd)/check-vault-backup.py"
-  [ -f "$checker" ] && { say ""; python3 "$checker" "$vault" || true; }
+  # `|| true` here discarded the verdict of the single source of truth, so
+  # `status` exited 0 over an unreachable destination or a never-verified
+  # backup. This file's own cmd_schedule documents the opposite policy --
+  # "Exits non-zero ... so a caller can branch on it instead of parsing prose"
+  # -- and a cron line branching on `status` was silently getting green.
+  local _verdict=0
+  if [ -f "$checker" ]; then
+    say ""
+    python3 "$checker" "$vault" || _verdict=$?
+  fi
+  return "$_verdict"
 }
 
 # ---------- scheduling ----------

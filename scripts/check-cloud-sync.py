@@ -7,9 +7,21 @@ high-churn `.git/` + per-session worktree checkouts generate millions of file
 events the sync client tries to upload, pegging CPU and freezing the machine.
 The vault belongs on a real local disk; the index belongs server-side.
 
-This is the SINGLE source of truth for that check — install (phase-01-welcome),
-diagnose.sh/.ps1, and the SessionStart footprint signal all route through the
-same `detect_cloud_sync()` so there is no drift between surfaces.
+This is the single source of truth for that check IN THIS REPO — install
+(phase-01-welcome), diagnose.sh/.ps1, and the SessionStart footprint signal all
+route through the same `detect_cloud_sync()`, so those surfaces cannot drift from
+each other.
+
+It is NOT the only implementation. `mycelium-studio` carries a native Rust
+`detect_cloud_sync`. That pair has drifted before — MYC-1088 records the incident
+and the port that closed it. Every implementation is declared in
+scripts/paired-implementations.json under `cloud-sync-detection`; change this
+file, check that list.
+
+(An earlier draft of this paragraph described what the Rust twin did at the time.
+scripts/check-paired-implementations.py refused it, correctly: a ticket id is a
+durable reference to a dated event, a sentence about another repo's behaviour is
+not.)
 
 Usage:
   check-cloud-sync.py <vault-path>          # human-readable verdict + remedy
@@ -22,6 +34,8 @@ Exit codes:
 
 Porcelain first token: OK_LOCAL | CLOUD_SYNC_RISK:<service>
 """
+# exit-contract: ENFORCING
+
 from __future__ import annotations
 
 import sys

@@ -42,6 +42,8 @@ Pure stdlib. Usage:
     python3 scripts/check-close-phase-contract.py --strict-meaning   # + meaning pins
     python3 scripts/check-close-phase-contract.py --rule ~/vault/rules/session-close.md
 """
+# exit-contract: ENFORCING
+
 
 from __future__ import annotations
 

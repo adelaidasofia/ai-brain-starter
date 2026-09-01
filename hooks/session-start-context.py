@@ -77,6 +77,35 @@ def _memory_index_warning() -> str:
         return ""
 
 
+def _umbrella_map() -> str:
+    """The routing-umbrella map for THIS install, or "" if there is none.
+
+    Folded in here rather than wired as its own SessionStart hook on purpose:
+    footprint-budgets.json caps SessionStart fan-out at 19, the event measured
+    exactly 19, and that budget's own rationale records the decision that the
+    next addition should optimize fan-out rather than raise again. This hook
+    already emits SessionStart context and already pays for the interpreter,
+    so the map adds ZERO SessionStart fan-out (measured: footprint-sla-check
+    --gate reports 19 / 19, exit 0, with this in the tree). Not free in wall
+    clock, though: two bounded iterdir levels plus one capped read per skill.
+    Fails open -- a missing map must never cost the session its start context.
+    """
+    try:
+        import os
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_lib"))
+        import umbrella_map
+        result = umbrella_map.render_umbrella_map()
+        # isinstance, not truthiness: a non-str return would blow up the
+        # concatenation in main() OUTSIDE this try, and the hook would exit 1
+        # with no JSON at all -- the one outcome this function exists to avoid.
+        return result if isinstance(result, str) else ""
+    except BaseException:
+        # BaseException, not Exception: a stray sys.exit() in an imported module
+        # raises SystemExit, which `except Exception` does not catch. "Must
+        # never cost the session its start context" has to mean every exit path.
+        return ""
+
+
 def main() -> int:
     context = CONTEXT
     try:
@@ -85,6 +114,12 @@ def main() -> int:
         warning = ""
     if warning:
         context = context + "\n\n" + warning
+    try:
+        umbrellas = _umbrella_map()
+    except BaseException:
+        umbrellas = ""
+    if isinstance(umbrellas, str) and umbrellas:
+        context = context + "\n\n" + umbrellas
     payload = {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
@@ -96,4 +131,16 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # UTF-8 console guard (ai-brain-starter#313 cp1252 crash class). This file
+    # previously sat on utf8-stdout-baseline.txt as "SEV-4-json-encoded" -- safe
+    # only because every write goes through json.dumps(), which escapes non-ASCII
+    # by default. That reasoning is true today and is one raw print() away from
+    # being false, and the payload now carries the umbrella map (em dashes and
+    # arrows). Guarding is 5 lines; the baseline row is deleted rather than
+    # re-pinned, which the checker explicitly asks for.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     raise SystemExit(main())

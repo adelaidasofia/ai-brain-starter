@@ -23,6 +23,11 @@
 #     user, so an emoji vault folder reaches stderr from the filesystem), which
 #     staled its row and forced the choice this file already documents below:
 #     guard it and delete the row, never re-pin. Deleted, per that rule.
+#   - hooks/inject-instinct-context.py    guarded + unpinned alongside the
+#     instinct promotion pass. It now writes an injection ledger and renders
+#     instinct NAMES to the console, so non-ASCII reaches stdout from the
+#     memory store itself rather than only from source comments. Guarded and
+#     the row deleted, per the rule above.
 #   - every SEV-1-hard-crash and SEV-2-ascii-pipe row  guarded + unpinned for
 #     ai-brain-starter#314. Those two tags are the population where the guard is
 #     unambiguously the right remedy: each does a RAW console write (not through
@@ -95,11 +100,10 @@
 # to trust a hand-written count; `python3 scripts/check-utf8-stdout.py` prints
 # the live split.)
 
-# ---- SEV-3-doc-only  (2 file(s)) ----
+# ---- SEV-3-doc-only  (1 file(s)) ----
 ed1d68dba02ab76c99907e8efc27ac0aac8c98a14dad261da73fa5d8e1610369 SEV-3-doc-only hooks/_lib/template_purity.py
-8dea18caf79e387a2fbeddca90403ef8af0d0ff1e6395e3b1f00e1b396491a4b SEV-3-doc-only hooks/inject-instinct-context.py
 
-# ---- SEV-4-json-encoded  (22 file(s)) ----
+# ---- SEV-4-json-encoded  (21 file(s)) ----
 02627cdfcde451edc91149f9092154b2b846cb1a19d30f1f5ca01d66258791b2 SEV-4-json-encoded hooks/block-branch-switch-with-untracked-build.py
 e943857ef9482c097b4357ee8abf2e4ede3ffcab3b9bae3a1a0687b0ae371e2b SEV-4-json-encoded hooks/block-populated-public-skill.py
 73ec7598cd563971fcafc2542818e297df5ed045714d7b66263de949f4619093 SEV-4-json-encoded hooks/block-secret-in-note.py
@@ -114,7 +118,6 @@ adad427e89295283853dd1dfb9963e698eb45fe5c4ca3c302adce4a3d47b5b35 SEV-4-json-enco
 056a2f7966b8c4f75a62e80be906bd899956f9871a92eb98738e262988bc8dc5 SEV-4-json-encoded hooks/reconcile-worktree-shared.py
 d293427274a02ef33d15ec50b17860aa305405adc9f372fde46a46454267becd SEV-4-json-encoded hooks/relocate-watch-surface.py
 8ed780b62186a0142813b71fb610ce0a1d2650ff900766fb08c4236ea1132f41 SEV-4-json-encoded hooks/route-suggest.py
-f8528465aef417373bf26591b9fcc7d0b76814d19b39142b4908ddaa1d003347 SEV-4-json-encoded hooks/session-start-context.py
 58eaf3668330264cdb9095dda2c7a425e3f69009c5ecbb1d764a6f40340f7ca8 SEV-4-json-encoded hooks/surface-connector-liveness.py
 64eae7b79237dab8b0b8b666b5a7d8b0a26b7c38bafd18313556c790ddf622bc SEV-4-json-encoded hooks/surface-dependabot-backlog.py
 6a55aed5c658a5361501e1144b26c501d95fd1f359383af4499e8894be76ff93 SEV-4-json-encoded hooks/surface-orphan-claude-branches.py

@@ -78,10 +78,26 @@ DECAY_GRACE_DAYS = 30       # no decay for the first month after last_seen
 DECAY_HALFLIFE_DAYS = 180   # after grace, confidence halves every ~6 months unseen
 
 # Clustering / evolve thresholds
+# Promotion (ledger -> confidence). Mirrors the shipped runtime learning loop
+# (MYC-818 / MYC-916): an "observation" is that the instinct was actually PUT TO
+# WORK, promotion is GATED on a count of them, and the climb is asymptotic so a
+# feed of positives cannot run away. The runtime's signal is a retrieval
+# CITATION; the substrate's equivalent is an INJECTION -- the SessionStart hook
+# selected this instinct and put it in front of the agent.
+PROMOTE_EVERY = 3           # qualifying exposures per single reinforce step
+PROMOTE_MIN_SESSION_CALLS = 5   # a session must have done this much real work
+PROMOTE_SESSION_MEMORY = 2000   # bounded set of already-credited session ids
+
 EVOLVE_MIN_CONFIDENCE = 0.80   # a cluster must be this confident to propose a skill
 EVOLVE_MIN_CLUSTER = 2         # ...and contain at least this many instincts
 
-MANAGED_KEYS = ("confidence", "observations", "last_seen", "project_id")
+MANAGED_KEYS = ("confidence", "observations", "last_seen", "project_id",
+                "exposures", "last_exercised", "evidence")
+# What `backfill` guarantees on every instinct. NOT the same set: an instinct
+# that has never been exercised has no honest `last_exercised` value, and
+# stamping today's date to fill the column would be inventing the very evidence
+# this field exists to keep honest. Absent is the correct value.
+SEED_KEYS = tuple(k for k in MANAGED_KEYS if k != "last_exercised")
 INSTINCT_GLOBS = ("feedback_*.md", "discovery_*.md")
 
 PROJECT_GLOBAL = "global"
@@ -136,6 +152,43 @@ def decayed_confidence(c: float, last_seen: date, today: date | None = None) -> 
     return clamp(c * (0.5 ** (extra / DECAY_HALFLIFE_DAYS)))
 
 
+def evidence_state(fm: dict) -> str:
+    """Classify what the stored `confidence` on this instinct is actually BASED ON.
+
+    The number alone cannot say. A 0.82 that came from the seed table (the
+    memory's prose happened to contain "never"/"codified") and a 0.82 that
+    climbed there over exposures are indistinguishable once written, and a pack
+    that exports both as "confidence" is claiming evidence it does not have.
+    This is the provenance the number is missing:
+
+      seed        never exercised -- the value is the type/vocabulary prior
+      exercised   has been injected into real sessions, not yet promoted
+      reinforced  crossed the exposure gate at least once
+      corrected   a human/agent marked it wrong (outranks the others)
+    """
+    if parse_int(fm.get("corrections"), 0) > 0:
+        return "corrected"
+    # `backfill` stamps observations: 1 at seed time, so >1 means a real
+    # reinforce (manual or promoted) has landed.
+    if parse_int(fm.get("observations"), 0) > 1:
+        return "reinforced"
+    if parse_int(fm.get("exposures"), 0) > 0:
+        return "exercised"
+    return "seed"
+
+
+def promotion_steps(prev_exposures: int, new_exposures: int,
+                    every: int = PROMOTE_EVERY) -> int:
+    """How many reinforce steps a jump from prev->new exposures has earned.
+
+    Counts gate CROSSINGS, not exposures, so the climb stays asymptotic and a
+    burst of sessions in one day cannot buy more than the burst is worth.
+    """
+    if every <= 0 or new_exposures <= prev_exposures:
+        return 0
+    return (new_exposures // every) - (prev_exposures // every)
+
+
 # ---------------------------------------------------------------------------
 # project scoping
 # ---------------------------------------------------------------------------
@@ -144,6 +197,10 @@ def _git_remote_url(start: Path) -> str | None:
         out = subprocess.run(
             ["git", "-C", str(start), "remote", "get-url", "origin"],
             capture_output=True, text=True, timeout=3,
+            # Explicit, never the locale encoding: vault paths carry non-ASCII
+            # ("⚙️ Meta"), and a cp1252 Windows console raises
+            # UnicodeDecodeError decoding them (ai-brain-starter#313 class).
+            encoding="utf-8", errors="replace",
         )
         if out.returncode == 0:
             url = out.stdout.strip()

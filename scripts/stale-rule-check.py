@@ -21,6 +21,8 @@ The --threshold-days flag overrides every rule's per-entry freshness_days
 field. Use this for a uniform sweep (e.g., a quarterly audit that flags
 anything older than 90 days regardless of declared freshness).
 """
+# exit-contract: ENFORCING
+
 
 from __future__ import annotations
 
@@ -147,13 +149,98 @@ def scan(meta_dir: Path, override: int | None) -> tuple[list[dict], list[dict]]:
     return stale, skipped
 
 
+def self_test() -> int:
+    """Negative controls: an UNEVALUABLE entry must not read as a clean board.
+
+    `skipped` holds entries this checker could not judge -- unparseable
+    frontmatter, no last_verified, no freshness_days. It used to print as a
+    bare count and never touch the exit, so a rule that simply omits
+    last_verified could never go stale. Measured on a live vault: 1414 skipped
+    against 0 stale, reported as "No stale rules." with exit 0.
+
+    Driven through main() with a real fixture vault, so a control cannot pass
+    while the return stays 0.
+    """
+    import tempfile
+
+    failures = []
+    root = Path(tempfile.mkdtemp())
+
+    def vault(name, files):
+        v = root / name
+        d = v / "Meta" / "Decisions"
+        d.mkdir(parents=True, exist_ok=True)
+        for fn, body in files.items():
+            (d / fn).write_text(body, encoding="utf-8")
+        return v
+
+    fresh = ("---\nlast_verified: %s\nfreshness_days: 3650\n---\nbody\n"
+             % dt.date.today().isoformat())
+    undated = "---\nfreshness_days: 30\n---\nbody\n"
+    unparseable = "no frontmatter at all\n"
+
+    def run(v):
+        argv = sys.argv
+        sys.argv = ["stale-rule-check.py", "--vault-root", str(v)]
+        try:
+            return main()
+        finally:
+            sys.argv = argv
+
+    # BITE: an entry with no last_verified cannot be evaluated. Exit 3.
+    rc = run(vault("undated", {"a.md": undated}))
+    if rc != 3:
+        failures.append(
+            "an entry with no last_verified returned {}, expected 3. The "
+            "skipped bucket is not reaching the exit, so a corpus of undated "
+            "rules reads as a clean board.".format(rc))
+
+    # BITE: unparseable frontmatter is the same class.
+    rc = run(vault("unparseable", {"a.md": unparseable}))
+    if rc != 3:
+        failures.append(
+            "an entry with unparseable frontmatter returned {}, expected 3."
+            .format(rc))
+
+    # INVERSE: a fully dated, fresh corpus must exit 0. Without this a main()
+    # returning 3 unconditionally would satisfy both cases above.
+    rc = run(vault("clean", {"a.md": fresh}))
+    if rc != 0:
+        failures.append(
+            "a fully dated fresh corpus returned {}, expected 0. The BITE "
+            "cases above may be passing for the wrong reason.".format(rc))
+
+    # A genuine staleness hit must stay 2, distinct from 3.
+    old_entry = "---\nlast_verified: 2000-01-01\nfreshness_days: 1\n---\nbody\n"
+    rc = run(vault("stale", {"a.md": old_entry}))
+    if rc != 2:
+        failures.append(
+            "a genuinely stale entry returned {}, expected 2 -- staleness and "
+            "unevaluable must stay distinguishable.".format(rc))
+
+    if failures:
+        print("SELF-TEST FAIL:")
+        for f in failures:
+            print("  - {}".format(f))
+        return 1
+    print("OK - self-test: an unevaluable entry exits 3, a real staleness hit "
+          "exits 2, and a fully dated fresh corpus exits 0 (so neither control "
+          "is vacuous).")
+    return 0
+
+
 def main() -> int:
+    if "--self-test" in sys.argv[1:]:
+        return self_test()
     parser = argparse.ArgumentParser(
         description="Flag typed-memory rules past their freshness horizon."
     )
     parser.add_argument(
         "--vault-root",
         type=Path,
+        # vault-root-ok: an argparse DEFAULT for a tool run from inside the vault
+        # whose typed-memory it reads; --vault-root overrides it explicitly and
+        # the script ships in the repo, not in any vault.
         default=Path(os.environ.get("VAULT_ROOT", Path.cwd())),
     )
     parser.add_argument(
@@ -204,7 +291,16 @@ def main() -> int:
         if skipped:
             print(f"Skipped: {len(skipped)} entry/entries")
 
-    return 2 if stale else 0
+    # `skipped` holds entries this checker could NOT evaluate: unparseable
+    # frontmatter, no last_verified, no freshness_days. It used to print as a
+    # bare count and never touch the exit, so a rule that simply omits
+    # last_verified could never go stale and a corpus of undated rules read as
+    # a clean board -- measured at 1414 skipped entries against 0 stale on a
+    # live vault. An entry that cannot be evaluated is not an entry that
+    # passed. Exit 3 keeps it distinguishable from a real staleness hit (2).
+    if stale:
+        return 2
+    return 3 if skipped else 0
 
 
 if __name__ == "__main__":

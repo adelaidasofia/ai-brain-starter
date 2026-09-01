@@ -1,4 +1,7 @@
 #!/bin/bash
+# exit-contract: NOT-A-CHECKER -- renders a markdown dashboard from JSONL
+#   rows
+
 # traffic-digest.sh — render repo-traffic-log.jsonl as a readable markdown dashboard
 #
 # Reads every snapshot in Meta/repo-traffic-log.jsonl and writes

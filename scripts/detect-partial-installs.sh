@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# exit-contract: ENFORCING
+
 # detect-partial-installs.sh — scan for half-installed components.
 #
 # Closes mycelium-hq/ai-brain-starter#4 — bootstrap: detect partially-installed

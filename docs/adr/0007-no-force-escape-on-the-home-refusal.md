@@ -65,6 +65,15 @@ The system-root list is compared **resolved**, not as strings: on macOS `/tmp`
 is a symlink to `/private/tmp`, and a literal match waves it through. Case A4 in
 the test suite pins that.
 
-A second implementation of this feature exists in `mycelium-studio`
-(`apps/desktop/src-tauri/src/commands/vault_safety.rs`) and does not yet carry
-this decision — MYC-4035. Until it does, the guarantee here is partial.
+A second implementation of this decision lives in `mycelium-studio`
+(`apps/desktop/src-tauri/src/commands/vault_safety.rs`). Both are declared under
+`vault-target-refusal` in `scripts/paired-implementations.json`; read the
+counterpart itself for what it enforces today.
+
+This note deliberately does not describe that implementation's state. The
+previous version did — it said the Rust twin had not taken this decision yet —
+and it was written at 04:55:58Z and refuted at 05:25:12Z the same morning when
+MYC-4035 landed the port. It then sat wrong for eight days, through another edit
+to the file it described, because nothing in this repo runs when that one merges.
+Naming a counterpart is durable; describing it is not.
+`scripts/check-paired-implementations.py` (G4) now fails any such sentence.

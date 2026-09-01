@@ -12,6 +12,8 @@ Verdicts (--porcelain):
   SPLIT_META:<n>    plain "Meta/" holds <n> human session/traffic item(s) that
                     belong in "⚙️ Meta/" -- the leak happened
 """
+# exit-contract: ENFORCING
+
 from __future__ import annotations
 
 import sys
@@ -54,13 +56,77 @@ def verdict(vault_root: Path) -> str:
     return "OK_PARTITIONED"
 
 
+def self_test() -> int:
+    """Negative controls: the SPLIT_META verdict must reach a non-zero exit.
+
+    Before the exit change this file had no non-zero exit anywhere in it, so a
+    detected split was separated from a clean vault only by a stdout token that
+    a non-porcelain caller ignores. Each case builds a real vault layout on
+    disk and drives main(), so a control cannot pass while the return stays 0.
+    """
+    import tempfile
+
+    failures = []
+    root = Path(tempfile.mkdtemp())
+
+    def build(name, decorated, plain_children):
+        v = root / name
+        (v / decorated).mkdir(parents=True, exist_ok=True)
+        plain = v / "Meta"
+        plain.mkdir(parents=True, exist_ok=True)
+        for c in plain_children:
+            (plain / c).mkdir(exist_ok=True)
+        return v
+
+    # BITE: a human marker leaked into the bare machine Meta/ is the defect.
+    leaked = build("leaked", "\u2699\ufe0f Meta", ["Sessions"])
+    rc = main([str(leaked)])
+    if rc != 1:
+        failures.append(
+            "a leaked human marker in the bare Meta/ returned {}, expected 1. "
+            "SPLIT_META is not reaching the exit.".format(rc))
+
+    # INVERSE: the same two-Meta layout with NO leak must stay clean. Without
+    # this, a main() that returned 1 unconditionally would satisfy the case
+    # above and the control would prove nothing.
+    clean = build("clean", "\u2699\ufe0f Meta", [])
+    rc = main([str(clean)])
+    if rc != 0:
+        failures.append(
+            "a partitioned vault with no leak returned {}, expected 0. The "
+            "BITE case above may be passing for the wrong reason.".format(rc))
+
+    # A single Meta dir is the ordinary shape and must never fail.
+    single = root / "single"
+    (single / "\u2699\ufe0f Meta").mkdir(parents=True, exist_ok=True)
+    rc = main([str(single)])
+    if rc != 0:
+        failures.append("a single-Meta vault returned {}, expected 0".format(rc))
+
+    if failures:
+        print("SELF-TEST FAIL:")
+        for f in failures:
+            print("  - {}".format(f))
+        return 1
+    print("OK - self-test: a leaked human marker exits 1, while a partitioned "
+          "vault and a single-Meta vault both exit 0 (so the control is not "
+          "vacuous).")
+    return 0
+
+
 def main(argv: list[str]) -> int:
+    if "--self-test" in argv:
+        return self_test()
     porcelain = "--porcelain" in argv
     args = [a for a in argv if a != "--porcelain"]
     vault = Path(args[0]) if args else Path.cwd()
     result = verdict(vault)
     print(result if porcelain else "split-meta check: %s" % result)
-    return 0
+    # SPLIT_META is a concrete detected defect with a one-time reconcile
+    # remedy, not a status line. Before this, the only thing separating it from
+    # OK_PARTITIONED was a stdout token that a non-porcelain caller ignores, and
+    # the file carried no non-zero exit at all.
+    return 1 if result.startswith("SPLIT_META") else 0
 
 
 if __name__ == "__main__":

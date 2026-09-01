@@ -78,6 +78,12 @@ If you never give an email, or you decline the ask, none of these fire. A declin
 
 What is **never** sent, under any path: journal text, note contents, file contents, file names, your contacts, or anything from your vault. Only the opaque token tied to the email you chose to give, an OS label, and (once) a single date. The token is local to your machine; delete `~/.claude/.ai-brain-starter-email-on-file` to stop all of the above.
 
+The rule this section states — every egress is disclosed AND user-stoppable — is
+also implemented in the paid Studio app, which has its own analytics path and its
+own opt-out. Both are declared under `egress-disclosure` in
+`scripts/paired-implementations.json`. Changing the policy here means changing it
+there too; the list names where.
+
 ---
 
 ## 6. Corporate / hardened install profile

@@ -54,6 +54,23 @@ except Exception:  # fail-open: never block a git op on an import error
     def vault_root_for(target: Path):  # type: ignore
         return None
 
+# The quote-aware splitter, the `$VAR` expander and the heredoc/comment
+# strippers are CANONICAL in _lib.shell_parse. This guard hand-rolled its own
+# `cd` walk and inherited every fail-open that copy had.
+try:
+    from _lib.shell_parse import (  # noqa: E402
+        cwd_candidates, expand_vars, segment_bypass_flags,
+        split_segments_with_seps, strip_heredoc_bodies, strip_noncode,
+    )
+    _LIB_OK = True
+except Exception:
+    # FAIL CLOSED. This guard's job is to STOP a raw vault git op, so a degraded
+    # parse keeps the session cwd as the only candidate -- which still blocks the
+    # common case and at worst over-blocks (visible, bypassable) instead of
+    # silently letting a raw vault op through (invisible).
+    _LIB_OK = False
+
+
 
 def _vault_git_dir_for(target: str) -> str | None:
     """realpath of the `.git` of the vault governing `target`, or None.
@@ -86,35 +103,19 @@ def _vault_git_dir_for(target: str) -> str | None:
     return os.path.realpath(os.path.join(str(root), ".git"))
 
 
-def _effective_cwd(command: str, initial: str) -> str:
-    """Resolve cwd after any `cd <path>` in the command string.
-
-    A NEWLINE separates statements exactly like `;` does. Splitting only on
-    `&&`/`||`/`;` left a newline-separated script as ONE chunk, and the
-    `re.match` below anchors at the chunk start -- so a `cd` was seen only
-    when it was the very first token of the whole command. Any statement
-    before it (`set -e`, an echo, a var assignment) made the `cd` invisible
-    and this hook resolved the HARNESS cwd instead. That disabled the guard
-    outright: from an unrelated repo, `set -e` + `cd <vault>` + a raw
-    `git add` reached the vault with no mutex.
-
-    A `cd` whose target is not an existing directory is IGNORED rather than
-    applied. `_targets_vault_repo` fails OPEN when it cannot resolve a repo,
-    so honouring a bogus path (a `cd` quoted inside a heredoc body or an echo)
-    would silently turn a blocked vault op into an allowed one -- the newline
-    split makes such lines reachable, so this clause is load-bearing, not
-    defensive dressing.
-    """
-    cwd = os.path.expanduser(initial) if initial else ""
-    for chunk in re.split(r"\s*(?:&&|\|\||;|\n)\s*", command):
-        chunk = chunk.strip()
-        m = re.match(r"cd\s+(?:\"([^\"]+)\"|'([^']+)'|(\S+))", chunk)
-        if m:
-            new_path = os.path.expanduser(next(g for g in m.groups() if g is not None))
-            cand = new_path if os.path.isabs(new_path) else os.path.normpath(os.path.join(cwd, new_path))
-            if os.path.isdir(cand):
-                cwd = cand
-    return cwd
+# What may sit between a command start and its verb without changing which
+# program runs: transparent wrappers (with their own bounded options, so
+# `sudo -u root git ...` is seen), one-shot `VAR=` assignments in ANY case, an
+# explicit path to the binary, and a brace-group opener. Matching a bare `git`
+# token at a regex boundary instead let `env git commit`, `sudo git commit`,
+# `/usr/bin/git commit`, `command git commit`, lowercase `foo=1 git commit` and
+# `(git commit)` all run completely unguarded -- measured exit 0 against a
+# proven positive control.
+_ASSIGN_TOK = r'[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|\'[^\']*\'|\S*)'
+_WRAPPER_TOK = r'(?:env|command|exec|builtin|nohup|sudo|time)'
+_LEAD = (r'\s*(?:[({]\s+)*'
+         r'(?:' + _ASSIGN_TOK + r'\s+|' + _WRAPPER_TOK + r'\s+(?:\S+\s+){0,3})*'
+         r'(?:\S*/)?')
 
 
 # A git option's value argument:
@@ -153,7 +154,7 @@ _GIT_OPT = '|'.join([
 _GIT_OPTS_CAP = r'((?:' + _GIT_OPT + r')*)'   # capturing group: the whole options blob
 
 
-def _dash_c_target(opts_blob: str, base_cwd: str) -> str:
+def _dash_c_target(opts_blob: str, base_cwd: str, variables=None) -> str:
     """Fold any `git -C <dir>` options from a git options blob onto base_cwd,
     following git's cumulative -C semantics (each -C is relative to the
     previous one). Returns base_cwd unchanged when the blob has no -C."""
@@ -161,6 +162,13 @@ def _dash_c_target(opts_blob: str, base_cwd: str) -> str:
     for m in re.finditer(r'-C\s*(?:"([^"]*)"|\'([^\']*)\'|(\S+))', opts_blob):
         raw = next((g for g in m.groups() if g is not None), None)
         if raw is None:
+            continue
+        if _LIB_OK:
+            raw = expand_vars(raw, variables or {})
+        if "$" in raw:
+            # UNRESOLVED target. Folding it would join a literal `$W` onto the
+            # cwd and produce a path that resolves to no repo -- i.e. "not the
+            # vault", a silent allow. Let the cwd decide instead.
             continue
         path = os.path.expanduser(raw)
         cwd = path if os.path.isabs(path) else os.path.normpath(os.path.join(cwd, path))
@@ -226,12 +234,12 @@ def _git_dir_is_vault(git_dir: str) -> bool:
     return any(os.path.realpath(c) == vault_git_dir for c in cands)
 
 
-def _targets_vault(opts_blob: str, base_cwd: str) -> bool:
+def _targets_vault(opts_blob: str, base_cwd: str, variables=None) -> bool:
     """True iff a git invocation carrying this options blob, run from
     base_cwd, would touch the personal vault repo. An explicit --git-dir
     is authoritative; otherwise targeting follows -C / cwd. Fails open
     (False) when the repo cannot be determined."""
-    eff_cwd = _dash_c_target(opts_blob, base_cwd)
+    eff_cwd = _dash_c_target(opts_blob, base_cwd, variables)
     git_dir = _git_dir_arg(opts_blob)
     if git_dir is not None:
         path = os.path.expanduser(git_dir)
@@ -253,40 +261,75 @@ except Exception:
 
 command = data.get("tool_input", {}).get("command", "")
 
-if "GIT_VAULT_BYPASS=1" in command or "vault-safe-commit.sh" in command:
+# The wrapper allowance stays whole-command: it is the sanctioned path this
+# hook's own message tells people to use, and narrowing it would break the
+# escape hatch rather than the bypass.
+if "vault-safe-commit.sh" in command:
     sys.exit(0)
 
-# Find every `git <subcommand>` invocation at a command-start position
-# (line start, or after &&, ||, ;, |). Ignore mentions inside quoted strings
-# by only matching the first token after separators. Group 1 captures the
-# git options blob (incl. any `-C <dir>`); group 2 the subcommand.
+# A genuinely exported variable is a deliberate standing choice by the operator.
+if os.environ.get("GIT_VAULT_BYPASS") == "1":
+    sys.exit(0)
+
+# Match PER SEGMENT against a quote-aware split, so "is this a command start?"
+# is answered structurally instead of by a regex alternation over operators.
+# That removes the phantom matches the old boundary could not tell apart -- a
+# `git add -A` inside `echo "..."` or a heredoc BODY used to match and hard-block
+# -- and it makes a subshell `(git commit)` visible, which the old pattern
+# missed entirely. Group 1 is the git options blob, group 2 the subcommand.
 pattern = re.compile(
-    r'(?:^|&&|\|\|?|;(?!;))\s*'        # command boundary
-    r'(?:[A-Z_][A-Z0-9_]*=\S+\s+)*'    # optional env assignments
-    r'git\s+'                          # git
-    + _GIT_OPTS_CAP +                  # group 1: git options (-C dir, --git-dir=..., ...)
-    r'([a-z][a-z-]*)',                 # group 2: subcommand
-    re.MULTILINE,
+    _LEAD
+    + r'git\s+'
+    + _GIT_OPTS_CAP
+    + r'([a-z][a-z-]*)'
 )
 
-hits = [(m.group(1) or "", m.group(2)) for m in pattern.finditer(command)]
-mutating = [(opts, sub) for opts, sub in hits if sub in MUTATING]
+cwd = os.environ.get("CLAUDE_CWD", data.get("cwd", "")) or os.getcwd()
+
+# Heredoc bodies and comment tails are text the shell never runs, yet both carry
+# operators that forge segment boundaries. Strip before splitting.
+if _LIB_OK:
+    sanitized = strip_noncode(strip_heredoc_bodies(command))
+    segs = split_segments_with_seps(sanitized)
+else:
+    segs = [("", command)]
+seg_texts = [t for _, t in segs]
+
+# A SET of possible cwds, not one guess. Block if ANY member is the vault.
+if _LIB_OK:
+    bases, variables = cwd_candidates(segs, cwd)
+else:
+    bases, variables = set(), {}
+if not bases:
+    bases = {os.path.expanduser(cwd)}
+
+# THE BYPASS IS SCOPED TO THE COMMAND IT PREFIXES. Checking `"GIT_VAULT_BYPASS=1"
+# in command` meant a real assignment ANYWHERE disarmed the guard, so
+# `git add -A ; GIT_VAULT_BYPASS=1` allowed a raw vault op that had already run.
+if _LIB_OK:
+    seg_bypass = segment_bypass_flags(seg_texts, "GIT_VAULT_BYPASS")
+else:
+    seg_bypass = ["GIT_VAULT_BYPASS=1" in t for t in seg_texts]
+live = [t for i, t in enumerate(seg_texts) if not seg_bypass[i]]
+
+mutating = []
+for seg in live:
+    m = pattern.match(seg.lstrip())
+    if m and m.group(2) in MUTATING:
+        mutating.append((m.group(1) or "", m.group(2)))
 if not mutating:
     sys.exit(0)
 
 # A mutating git subcommand is present. Resolve which repo each invocation
 # targets -- only the vault repo (or a worktree of it) gets funneled through
-# the wrapper. `git -C <dir>` retargets the op, so fold it onto the cwd.
-cwd = os.environ.get("CLAUDE_CWD", data.get("cwd", ""))
-base_cwd = _effective_cwd(command, cwd) or os.getcwd()
-
+# the wrapper. `git -C <dir>` retargets the op, so fold it onto each candidate.
 blocked = []
 seen = {}
-for opts, sub in mutating:
+for opts, sub_name in mutating:
     if opts not in seen:
-        seen[opts] = _targets_vault(opts, base_cwd)
+        seen[opts] = any(_targets_vault(opts, b, variables) for b in sorted(bases))
     if seen[opts]:
-        blocked.append(sub)
+        blocked.append(sub_name)
 if not blocked:
     sys.exit(0)
 

@@ -51,8 +51,9 @@ Modes:
   --self-test                  positive + negative control; exit 0 iff all pass
 
 Bug class: ALWAYS-LOADED-TEXT-UNMEASURED (sibling of ARTIFACT-WITHOUT-MEASUREMENT).
-MEMORY.md remediation is owned by check-memory-md-cap.py — this hook measures
-MEMORY.md for the total but does NOT duplicate its cliff warning.
+MEMORY.md's cliff warning is owned by session-start-context.py (it reports and
+advises; it does not auto-fix) — this hook measures MEMORY.md for the total but
+does NOT duplicate that warning. Coverage is not total: see MYC-4239.
 """
 from __future__ import annotations
 
@@ -65,6 +66,20 @@ import sys
 import tempfile
 from datetime import date
 from pathlib import Path
+
+# Single source of truth for the ~/.claude/projects key. Six call sites used to
+# hand-roll this and no two agreed; two matched nothing at all. See
+# hooks/_lib/claude_project_key.py.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from _lib.claude_project_key import claude_project_key  # noqa: E402
+except Exception:  # fail-open: a deployed hook must never crash the prompt if
+    # _lib was not copied (an install that updates hooks but not _lib/). Inline
+    # the SAME rule rather than degrading to a wrong key -- a wrong key here is
+    # silent, and silence is the bug this file is fixing.
+    def claude_project_key(cwd) -> str:  # type: ignore[misc]
+        return re.sub(r"[^a-zA-Z0-9]", "-", str(cwd))
+
 
 # --- tunables (env-overridable) ------------------------------------------------
 GLOBAL_CEILING = int(os.environ.get("CONTEXT_BUDGET_GLOBAL_CEILING", 40000))
@@ -106,14 +121,24 @@ def noop():
 
 # --- file discovery (generic, name-free) --------------------------------------
 def _memory_md(cwd: str) -> Path | None:
-    """Locate MEMORY.md the way Claude Code loads it (sanitized-cwd projects dir),
-    falling back to the in-vault canonical path. Mirrors check-memory-md-cap.py."""
+    """Locate MEMORY.md: CLAUDE_PROJECT_DIR's in-vault path, then the
+    sanitized-cwd projects dir, then a walk-up for the in-vault canonical path.
+
+    This is NOT the resolver _lib/memory_index.memory_dirs() uses, and NEITHER
+    COVERS THE OTHER. memory_index globs only ~/.claude/projects/*/memory (a
+    superset of candidate 2, blind to the in-vault candidates 1 and 3), and an
+    AGENT_MEMORY_DIR override narrows it to a single dir this function never
+    reads. So the defer_to below holds only when MEMORY.md is reached via the
+    projects dir; an in-vault MEMORY.md is measured here and warned about by
+    nobody. Measured, not assumed -- see MYC-4239. Do not restate this as a
+    superset: that sentence was here, it was false, and an adversarial review
+    reproduced two configurations that refute it."""
     cands: list[Path] = []
     env = os.environ.get("CLAUDE_PROJECT_DIR")
     if env:
         cands.append(Path(env) / "⚙️ Meta/Agent Memory/MEMORY.md")
     try:
-        san = "-" + str(Path(cwd)).replace("/", "-")
+        san = claude_project_key(cwd)
         cands.append(HOME / ".claude/projects" / san / "memory/MEMORY.md")
         m = re.match(r"(.*)--claude-worktrees-[^/]+$", san)
         if m:
@@ -168,7 +193,7 @@ def discover(cwd: str) -> list[dict]:
 
     `kind` drives reporting; `ceiling` is the hard per-file warn threshold (None =
     baseline-drift only); `defer_to` names a guard that owns this file's hard
-    warning so we don't double-nag (MEMORY.md -> check-memory-md-cap.py)."""
+    warning so we don't double-nag (MEMORY.md -> session-start-context.py)."""
     items: list[dict] = []
 
     def add(path: Path | None, kind: str, ceiling: int | None, defer_to: str | None = None):
@@ -183,7 +208,7 @@ def discover(cwd: str) -> list[dict]:
 
     add(HOME / ".claude" / "CLAUDE.md", GLOBAL_KIND, GLOBAL_CEILING)
     add(_project_file(cwd, "CLAUDE.md"), "project CLAUDE.md", None)
-    add(_memory_md(cwd), "MEMORY.md", None, defer_to="check-memory-md-cap.py")
+    add(_memory_md(cwd), "MEMORY.md", None, defer_to="session-start-context.py")
     add(_project_file(cwd, "CONTEXT.md"), "project CONTEXT.md", None)
     # de-dup by resolved path (global and project CLAUDE.md can coincide)
     seen: set[str] = set()

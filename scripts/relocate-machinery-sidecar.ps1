@@ -4,6 +4,10 @@
   cloud-sync folder by moving every churning machinery dir OUT of the synced
   tree into a local sidecar, leaving only tiny static pointers/links behind.
 
+  Paired implementation - every implementation of this contract is listed in
+  scripts/paired-implementations.json under `machinery-sidecar/1`. Check it
+  before changing behaviour here.
+
   Windows parity of relocate-machinery-sidecar.sh (MYC-2383). Same contract,
   same manifest schema (machinery-sidecar/1), same --separate-git-dir + worktree
   repair sequencing. Two platform differences: (1) the link is a JUNCTION on

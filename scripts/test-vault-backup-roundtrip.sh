@@ -50,6 +50,27 @@ fi
 verdict="$(python3 "$CHECK" --porcelain "$V" 2>/dev/null)"; rc=$?
 case "$verdict" in BACKED_UP:vault-backup*) pass "detector -> $verdict (rc=$rc)";; *) fail "detector wrong: $verdict (rc=$rc)";; esac
 
+# ---- 4b. `status` PROPAGATES the detector's verdict ----
+# Negative control for the `|| true` that used to discard it. `status` ran the
+# canonical detector and threw its exit code away, so a cron line branching on
+# `vault-backup.sh status` saw green over an unreachable destination or a vault
+# with no backup at all -- while cmd_schedule in the same file documents the
+# opposite policy ("Exits non-zero ... so a caller can branch on it instead of
+# parsing prose"). Both directions are asserted: a configured vault must exit
+# 0, an unconfigured one must not, or the pair proves nothing.
+rc=0; bash "$BACKUP" status --vault "$V" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] && pass "status exits 0 for a backed-up vault" \
+  || fail "status exited $rc for a vault that IS backed up"
+
+UNBACKED="$ROOT/unbacked"; mkdir -p "$UNBACKED"
+printf '# no backup here\n' > "$UNBACKED/CLAUDE.md"
+rc=0; bash "$BACKUP" status --vault "$UNBACKED" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -ne 0 ]; then
+  pass "status propagates the detector's non-zero verdict (rc=$rc)"
+else
+  fail "status exited 0 for a vault with NO backup -- the detector's verdict is being discarded again"
+fi
+
 # ---- 5. a REAL restore extracts the notes back ----
 out="$(bash "$BACKUP" verify --vault "$V" 2>&1)"
 echo "$out" | grep -q "Restore verified" && pass "verify reports a successful restore" || fail "verify did not confirm: $out"

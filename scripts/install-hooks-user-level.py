@@ -41,6 +41,10 @@ fires on every session regardless of cwd.
 We ship hooks.json as the canonical source. This script is the install
 mechanism; the source-of-truth content lives in hooks.json.
 """
+# exit-contract: ADVISORY -- the installer path is consumed by bootstrap,
+#   which branches on --fail-on-missing explicitly rather than on the default
+#   exit
+
 
 from __future__ import annotations
 
@@ -394,6 +398,7 @@ HOME_HOOKS_LIB_DEPS = {
     "vault_root.py",   # vault-context.py -> vault_root_for()
     "standing_report.py",  # dev-hub-refresh + orphan-claude-branches -> condense()
     "session_echo.py",     # available to any per-prompt injector -> should_emit()
+    "claude_project_key.py",  # context-budget-measure.py -> claude_project_key()
 }
 
 # Hooks ai-brain-starter USED TO ship and has deliberately RETIRED. The

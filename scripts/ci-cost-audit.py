@@ -41,6 +41,8 @@ Operating rule this enforces: "A Cost Gate Is Unproven Until the Burn Rate
 Moves" — CI is billed per job, at a one-minute floor, times the runner
 multiplier.
 """
+# exit-contract: ENFORCING
+
 from __future__ import annotations
 
 import argparse
@@ -61,7 +63,7 @@ from _lib.safe_read import safe_read_text  # noqa: E402
 RATE = {"linux": 0.008, "windows": 0.016, "macos": 0.08}
 MULTIPLIER = {"linux": 1, "windows": 2, "macos": 10}
 
-SEVERITY_ORDER = {"advisory": 0, "warn": 1, "high": 2}
+SEVERITY_ORDER = {"advisory": 0, "warn": 1, "high": 2, "unevaluated": 3}
 
 
 def runner_os(label: str) -> str:
@@ -148,8 +150,19 @@ def analyze_workflow(path: Path, text: str, repo_root: Path | None = None) -> li
     name = path.name
     doc = _load_yaml(text)
     if doc is None:
-        return [Finding("advisory", name, "unparsed",
-                        "PyYAML unavailable or file did not parse; static checks skipped for it.",
+        # "unparsed" is a FAILURE TO MEASURE, not a low-severity finding, and
+        # filing it as advisory made this auditor report success having checked
+        # nothing. Measured on origin/main 8b9038b: PyYAML is absent on the CI
+        # runner, so all 11 workflows landed here, every static rule was
+        # skipped, and `--fail-on high` -- the step literally named "runs clean
+        # against this repo's own workflows" -- passed green while a HIGH
+        # finding (a 10x macOS runner ungated on every PR push) sat unreported.
+        # The same command on the same commit exits 1 locally, where PyYAML is
+        # installed. Severity "unevaluated" is ordered above "high" so no
+        # --fail-on threshold can filter it away.
+        return [Finding("unevaluated", name, "unparsed",
+                        "PyYAML unavailable or file did not parse; static checks "
+                        "were SKIPPED for it. A skipped check is not a passed check.",
                         "pip install pyyaml, or fix the YAML.")]
 
     trig = _triggers(doc)
@@ -224,11 +237,26 @@ def analyze_workflow(path: Path, text: str, repo_root: Path | None = None) -> li
                 sev = "high"
             else:
                 sev = "warn"
+            # The remedy text below has always offered "leave it ungated
+            # deliberately and say so in a comment" -- but nothing could read a
+            # comment, so the only way to satisfy this rule was to change the
+            # CI topology. A job may now declare the exemption in YAML, where a
+            # diff can see it and a reviewer can argue with it. The reason is
+            # required and must be a real sentence: an exemption nobody has to
+            # justify is an allowlist.
+            deliberate = ""
+            job_env = job.get("env")
+            if isinstance(job_env, dict):
+                deliberate = str(job_env.get("CI_COST_DELIBERATE") or "").strip()
+            if len(deliberate) >= 40:
+                sev = "advisory"
             findings.append(Finding(
                 sev, name,
-                f"{osname} runner on a PR trigger (job `{key}`)",
+                f"{osname} runner on a PR trigger (job `{key}`)"
+                + (" [declared deliberate]" if len(deliberate) >= 40 else ""),
                 f"{osname} bills {MULTIPLIER[osname]}x Linux. This job boots on every PR "
-                f"push{'' if gated else ' with no needs+if relevance gate'}.",
+                f"push{'' if gated else ' with no needs+if relevance gate'}."
+                + (f" Declared deliberate: {deliberate}" if len(deliberate) >= 40 else ""),
                 "Gate it behind a cheap Linux relevance job, and prefer running the "
                 "expensive matrix on `merge_group` (the predicted merge) rather than "
                 "every intermediate push. If the job proves a cross-platform "
@@ -316,7 +344,10 @@ def _gh_run(args: list[str]) -> str | None:
     what let this gate look healthy while dead - see _decode_stream.
     """
     try:
-        out = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=120)
+        # encoding pinned: text=True alone decodes with the locale encoding,
+        # which is cp1252 on a stock Windows box -- gh emits UTF-8 job names.
+        out = subprocess.run(["gh", *args], capture_output=True, text=True,
+                             encoding="utf-8", timeout=120)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if out.returncode != 0:
@@ -523,6 +554,33 @@ jobs:
 """
 
 
+# An ungated macOS job that DECLARES why, and one that offers a token reason.
+# The pair is the point: if only the first existed, a marker that downgraded on
+# any non-empty string would pass it and the reason requirement would be
+# decorative.
+BAD_MACOS_DECLARED = """
+on: [pull_request]
+jobs:
+  mac:
+    runs-on: macos-15
+    env:
+      CI_COST_DELIBERATE: >-
+        Only surface proving bash 3.2 parsing; the guarantee must hold on every
+        change and a real bug shipped through this gap.
+    steps: [{run: "echo mac"}]
+"""
+
+BAD_MACOS_TOKEN_REASON = """
+on: [pull_request]
+jobs:
+  mac:
+    runs-on: macos-15
+    env:
+      CI_COST_DELIBERATE: "needed"
+    steps: [{run: "echo mac"}]
+"""
+
+
 def self_test() -> int:
     rc = 0
 
@@ -530,8 +588,40 @@ def self_test() -> int:
         return {f.title for f in analyze_workflow(Path("t.yml"), text)}
 
     if _load_yaml(GOOD) is None:
-        print("  SKIP: PyYAML unavailable; static self-test cannot run.")
-        return 0
+        # Returning 0 here made the negative-control step ("the auditor must
+        # still bite") report the same green whether the controls bit or never
+        # ran at all. A control that cannot run has proven nothing.
+        print("  UNEVALUATED: PyYAML unavailable; the static negative controls "
+              "could NOT run. This is not a pass.")
+        return 2
+
+    def sev_of(text: str, needle: str) -> str:
+        for f in analyze_workflow(Path("t.yml"), text):
+            if needle in f.title:
+                return f.severity
+        return "<absent>"
+
+    # --- the new acceptance marker, both directions --------------------------
+    got = sev_of(BAD_MACOS_DECLARED, "macos runner")
+    if got != "advisory":
+        print(f"  FAIL: a DECLARED deliberate macOS job should downgrade to "
+              f"advisory, got {got}")
+        rc = 1
+    got = sev_of(BAD_MACOS_TOKEN_REASON, "macos runner")
+    if got != "high":
+        print(f"  FAIL: a token one-word reason must NOT buy the exemption; "
+              f"expected high, got {got}. An exemption nobody has to justify "
+              f"is an allowlist.")
+        rc = 1
+
+    # --- an unparsed workflow is UNEVALUATED, never advisory -----------------
+    broken = analyze_workflow(Path("t.yml"), "this: [is: not: valid: yaml")
+    if not broken or broken[0].severity != "unevaluated":
+        print(f"  FAIL: an unparseable workflow must be severity 'unevaluated', "
+              f"got {[f.severity for f in broken]}. Filing a failure-to-measure "
+              f"as advisory is what let --fail-on high pass on a repo where "
+              f"nothing parsed.")
+        rc = 1
 
     checks = [
         ("missing concurrency is caught", BAD_NO_CONCURRENCY,
@@ -603,8 +693,12 @@ def main() -> int:
     ap.add_argument("--path", default=".", help="repo root to audit statically")
     ap.add_argument("--repo", help="owner/name — also pull real billed-job data via gh")
     ap.add_argument("--hours", type=int, default=24, help="measurement window (default 24)")
+    # Default is "high", not "never". CI already passes --fail-on high
+    # explicitly (lint.yml), so this changes only the hand-run path -- which
+    # was the one printing HIGH findings in full and exiting 0. "never" stays
+    # available for a survey run that deliberately wants no verdict.
     ap.add_argument("--fail-on", choices=["advisory", "warn", "high", "never"],
-                    default="never", help="exit 1 at or above this severity")
+                    default="high", help="exit 1 at or above this severity")
     ap.add_argument("--self-test", action="store_true", help="run negative controls")
     args = ap.parse_args()
 
@@ -623,7 +717,7 @@ def main() -> int:
     if not findings:
         print("  no static findings.")
     else:
-        for sev in ("high", "warn", "advisory"):
+        for sev in ("unevaluated", "high", "warn", "advisory"):
             group = [f for f in findings if f.severity == sev]
             if not group:
                 continue
@@ -642,6 +736,14 @@ def main() -> int:
 
     print("Reminder: a cost gate is unproven until the burn rate moves. "
           "Re-run with --repo after shipping a gate and compare weighted min/hour.")
+
+    unevaluated = [f for f in findings if f.severity == "unevaluated"]
+    if unevaluated:
+        print(f"\nUNEVALUATED: {len(unevaluated)} workflow(s) could not be parsed, "
+              f"so their static checks never ran. This is not a clean audit -- it "
+              f"is an absent one. Install PyYAML (pip install pyyaml) or fix the "
+              f"YAML, then re-run.")
+        return 2
 
     if args.fail_on != "never":
         threshold = SEVERITY_ORDER[args.fail_on]

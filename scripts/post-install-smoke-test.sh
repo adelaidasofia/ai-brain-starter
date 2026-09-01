@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# exit-contract: ENFORCING
+
 # post-install-smoke-test.sh — end-to-end verification after bootstrap.
 #
 # Verifies that every component the bootstrap claimed to install is actually

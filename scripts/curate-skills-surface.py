@@ -19,6 +19,9 @@ Usage:
   python3 scripts/curate-skills-surface.py --apply --readme PATH
   python3 scripts/curate-skills-surface.py --top 5 --days 30
 """
+# exit-contract: NOT-A-CHECKER -- ranks skill usage and patches the README
+#   managed region
+
 
 from __future__ import annotations
 

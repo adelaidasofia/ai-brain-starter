@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# exit-contract: ENFORCING
+
 #
 # scripts/ci.sh - the canonical, locally-runnable unit/type gate for
 # ai-brain-starter. ONE command, shared by two callers so they can never drift:
@@ -20,6 +22,16 @@
 #                           when running inside GitHub Actions (the dedicated job
 #                           already covers it); locally it is warn-and-skipped
 #                           when the shellcheck binary is absent (CI enforces it).
+#   (c2) PowerShell       - scripts/psscriptanalyzer.sh runs PSScriptAnalyzer over
+#                           every tracked *.ps1 with a curated security + real-bug
+#                           rule list. The .ps1 sibling of (c): until it landed,
+#                           .ps1 had an ENCODING check (BOM / em dash) and a PARSE
+#                           check and nothing semantic, on the Windows install path.
+#                           A severity floor was measured and rejected: -Severity
+#                           Warning is 318 findings on this tree, 251 of them
+#                           PSAvoidUsingWriteHost, which is correct in an installer.
+#                           Parse errors still fail it -- an -IncludeRule list does
+#                           not suppress ParseError findings.
 #   (d) Phase-doc Python  - scripts/check-phase-python.py extracts every Python
 #                           block from phases/*.md and runs the undefined-name
 #                           check (ruff F821). Catches a bare-identifier typo in
@@ -28,6 +40,14 @@
 #                           py_compile does not catch undefined names). A dedicated
 #                           lint.yml job enforces this in CI (as the shellcheck job
 #                           does); here it is best-effort, skipped without a linter.
+#   (d2) Repo Python      - scripts/ruff-gate.sh runs the SAME undefined-name check
+#                           over every tracked *.py (not just the phase docs).
+#                           Gate (a) py_compiles them, but py_compile parses and
+#                           cannot see a name that does not exist: env=_GIT_CLEAN_ENV
+#                           shipped undefined in hooks/session-lock.py and sat on
+#                           main for 13 days (2026-08-12 4a2bf7c -> 2026-08-25
+#                           5952dac) because no CI check linted hooks/*.py at all.
+#                           lint.yml runs the same script; local + CI cannot drift.
 #   (e) UTF-8 console guard - scripts/check-utf8-stdout.py fails a runnable
 #                           scripts/*.py or hooks/*.py CLI that print()s non-ASCII
 #                           (the "gear Meta" emoji, an em dash, an accented name)
@@ -85,6 +105,28 @@
 #                           so the class was caught one full CI round-trip AFTER
 #                           the push. Both callers now run the same script and
 #                           scripts/test_ps1_encoding_gate.py pins that.
+#   (e8) file I/O encoding - scripts/check-utf8-file-io.py fails a file read or
+#                           write in text mode with no encoding=, which uses the
+#                           LOCALE encoding: identical source then produces UTF-8
+#                           artifacts on macOS and cp1252 artifacts on Windows.
+#                           The read half is the quiet one -- it usually does not
+#                           raise, it decodes into mojibake. (Summary bullet was
+#                           missing while the step itself has always run, so a
+#                           top-to-bottom reader saw e7 jump straight to e9.)
+#   (e9) defer targets    - scripts/check-defer-targets.py fails a hook/script
+#                           under hooks/ or scripts/ that names a sibling as the
+#                           owner of a responsibility (`defer_to="<owner>.py"`, or
+#                           prose "owned by <owner>.py" / "handled by <owner>.py" / "delegates
+#                           to <owner>.py" / "deferred to <owner>.py") when no tracked file in
+#                           the repo has that basename. A dangling deferral is
+#                           worse than a dormant guard: a dormant guard is absent
+#                           and looks absent, a dangling deferral is absent and
+#                           reads as covered. Caught live: context-budget-measure.py
+#                           deferred MEMORY.md's cliff warning to a file that only
+#                           ever existed in a private, remote-less, machine-local
+#                           repo - every install of THIS repo read "handled
+#                           elsewhere" and got nothing. Self-test first, then the
+#                           fleet. Pure stdlib.
 #   (f) Python unit tests - the scripts/test_*.py stdlib suites (the claude-router
 #                           structured-envelope gate, the graph-liveness
 #                           STAMP-GREEN-WHILE-GONE guard). Gate (a) py_compiles them,
@@ -263,6 +305,7 @@ INTEGRATION_TESTS=(
   test_resource_aware_session_close
   test_vault_lock_separated_gitdir
   test_cloud_sync_guard
+  test_daily_maintenance_exit_code
   test_cloud_safe_file_walkers
   test_delegated_task_needs_source
   test_cloud_sync_offer
@@ -452,6 +495,22 @@ INTEGRATION_TESTS=(
   # — silently, on a whole platform. Two layers must hold (the path gate AND the
   # vault-root resolve); fixing only the first looks right and still fails open.
   test_journal_guard_windows_paths
+  # Journal-context guard vs the RELATIVE write form (2026-08-28). Entries are
+  # written as `cd "<vault>" && cat > "<emoji> Journals/<Month>/e.md"`, and the
+  # optional emoji-prefix segment in _vault_root was bounded only on '/' and
+  # newline, so it swallowed `vault" && cat > "<emoji> ` and resolved the root to
+  # the vault's PARENT. Loud direction: a correct save blocked. Quiet direction,
+  # which is worse: a marker in the parent satisfies the check and a journal with
+  # NO context ships silently. 7 assertions fail on the pre-fix hook.
+  test_journal_guard_relative_path_root
+  # Same guard, driven over real stdin against a real temp vault, so both
+  # directions are proven on the artifact people actually run: marker absent must
+  # still DENY (a fix that only removes blocks is indistinguishable from a fix
+  # that removes the guard), and the heredoc-BODY gate must not open on a write
+  # that merely quotes a journal path. Every heredoc control embeds an ABSOLUTE
+  # path, because with a relative one the old code fails open before the gate is
+  # reached and the assertion would pass without varying with the defect.
+  test_journal_guard_end_to_end
   # Close detector, whole-message anchoring + length gate (2026-08-16): the
   # shared pack tiers ran under re.MULTILINE, so every `$`-anchored sign-off
   # matched the end of ANY line and a 60-line handoff whose third line read
@@ -952,6 +1011,23 @@ else
   echo "    install: brew install shellcheck  (macOS)  /  sudo apt-get install -y shellcheck  (Debian/Ubuntu)"
 fi
 
+# ---- (c2) PowerShell static analysis ---------------------------------------
+# Runs the SAME canonical gate as the lint job's 'repo PowerShell' step, so the
+# local pre-push gate and CI cannot drift on .ps1 quality. Warn-skipped locally
+# when pwsh or the module is absent (CI enforces it), matching (c) and (d).
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+  pssa_note="skipped in CI (the lint job's 'repo PowerShell' step runs scripts/psscriptanalyzer.sh)"
+  echo "==> (c2) powershell: $pssa_note"
+elif command -v pwsh >/dev/null 2>&1; then
+  echo "==> (c2) powershell: bash scripts/psscriptanalyzer.sh"
+  bash scripts/psscriptanalyzer.sh
+  pssa_note="passed"
+else
+  pssa_note="skipped (pwsh not installed locally; CI enforces it)"
+  echo "==> (c2) powershell: $pssa_note"
+  echo "    install: brew install --cask powershell  (macOS)"
+fi
+
 # ---- (d) Phase-doc Python undefined-name gate ------------------------------
 # The Phase 2 plugin installer and Phase 10a graph-config block are python3
 # heredocs / ```python fences inside Markdown, so gate (a) py_compile never sees
@@ -970,6 +1046,24 @@ elif command -v ruff >/dev/null 2>&1 || "$PY" -c 'import pyflakes' >/dev/null 2>
 else
   phasepy_note="skipped (no ruff/pyflakes locally; CI enforces it)"
   echo "==> (d) phase-doc python: $phasepy_note"
+  echo "    install: pip install ruff"
+fi
+
+# ---- (d2) Repo-wide Python undefined-name gate -----------------------------
+# Same linter as (d), different corpus: every tracked *.py rather than the Python
+# embedded in phases/*.md. Runs the canonical scripts/ruff-gate.sh, which lint.yml
+# also runs, so the local pre-push gate and CI cannot drift. Warn-skipped locally
+# without ruff (CI enforces it), matching (c) and (d).
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+  ruffgate_note="skipped in CI (the lint job's 'repo Python' step runs scripts/ruff-gate.sh)"
+  echo "==> (d2) repo python: $ruffgate_note"
+elif command -v ruff >/dev/null 2>&1; then
+  echo "==> (d2) repo python: bash scripts/ruff-gate.sh"
+  bash scripts/ruff-gate.sh
+  ruffgate_note="passed"
+else
+  ruffgate_note="skipped (no ruff locally; CI enforces it)"
+  echo "==> (d2) repo python: $ruffgate_note"
   echo "    install: pip install ruff"
 fi
 
@@ -1047,6 +1141,16 @@ echo "==> (e2) hook block-protocol: $PY scripts/check-hook-block-protocol.py"
 # before this existed: MYC-1017, MYC-1031, and MYC-782 / #371.
 # The ARTIFACT-WITHOUT-ACTIVATION half of the family whose WIRED-BUT-NEUTERED half
 # is (e2) and whose wired-but-never-deployed half is (e4). Pure stdlib.
+# scripts/check-exit-contract.py fails a tracked non-test CLI under scripts/
+# that carries no exit-contract marker, an ENFORCING file with no non-zero exit
+# token, or an ADVISORY/NOT-A-CHECKER file whose reason is too short to be a
+# reason. Ships with a capped baseline of the not-yet-declared tail, which may
+# only shrink. Self-test first: a gate whose controls stopped biting would pass
+# this repo silently.
+echo "==> (e10) exit contract: $PY scripts/check-exit-contract.py"
+"$PY" scripts/check-exit-contract.py --self-test >/dev/null
+"$PY" scripts/check-exit-contract.py
+
 echo "==> (e2b) hook activation: $PY scripts/check-hook-activation.py"
 "$PY" scripts/check-hook-activation.py --selftest >/dev/null
 "$PY" scripts/check-hook-activation.py
@@ -1140,6 +1244,25 @@ echo "==> (e8) file I/O encoding: $PY scripts/check-utf8-file-io.py"
 "$PY" scripts/check-utf8-file-io.py --self-test >/dev/null
 "$PY" scripts/check-utf8-file-io.py
 
+# ---- (e9) Dangling defer targets --------------------------------------------
+# scripts/check-defer-targets.py fails a hook/script under hooks/ or scripts/
+# that names a sibling guard as the owner of a responsibility -- structurally
+# (`defer_to="<owner>.py"`) or in prose ("owned by <owner>.py" / "handled by <owner>.py" /
+# "delegates to <owner>.py" / "deferred to <owner>.py") -- when no tracked file in the repo
+# has that basename. Bug class: DEFERRAL-TO-AN-UNSHIPPED-OWNER, and it is worse
+# than plain dormancy: a dormant guard is absent and looks absent, a dangling
+# deferral is absent and looks COVERED. Caught live: context-budget-measure.py
+# deferred MEMORY.md's cliff warning to a guard that shipped only on one
+# contributor's private, remote-less machine-local repo -- never in this one --
+# so every install read "handled elsewhere" and got nothing, silently. Fixed by
+# re-pointing the deferral at the real owner (session-start-context.py), which
+# already existed under a different name. Self-test first (positive + negative,
+# both driven off injected sets so no real file is touched), then the fleet.
+# Pure stdlib.
+echo "==> (e9) defer targets: $PY scripts/check-defer-targets.py"
+"$PY" scripts/check-defer-targets.py --self-test >/dev/null
+"$PY" scripts/check-defer-targets.py
+
 # ---- (f) Python unit tests (scripts/ + hooks/ + tests/) --------------------
 # Every Python unit suite in the repo, run under the SAME interpreter as the rest
 # of the gate. Gate (a) py_compiles them (proves they parse); this proves their
@@ -1170,13 +1293,16 @@ echo "    OK - $unit_count scripts/ unit suite(s) passed"
 # fails the gate LOUD (the false-green class MYC-2922 closed for scripts/, MYC-2959
 # for hooks/+tests/). PY_DIRECT then runs the non-wrapped suites exactly once.
 PY_DIRECT=(
+  hooks/test_umbrella_map.py
   hooks/test_surface_stalled_git_operation.py
   hooks/test_memory_index.py
   tests/test_instinct.py
   tests/test_entity_disambiguator_clustering.py
   tests/test_graphify_stage_select_cache_key.py
+  tests/test_claude_project_key.py
   hooks/test_live_session_reap.py
   hooks/test_relocation_orphan_reclaim.py
+  hooks/test_worktree_remove_verifies_side_effect.py
   hooks/test_secret_patterns_fp_filter.py
   hooks/test_secret_patterns_nvidia.py
   hooks/test_secret_patterns_anthropic.py
@@ -1187,6 +1313,15 @@ PY_DIRECT=(
   hooks/test_unpushed_drift_surface.py
   hooks/test_claim_surface_honesty.py
   hooks/test_narrow_refspec_falsealarm.py
+  # session-lock resolves the repo identity its whole mechanism keys off with
+  # `git -C <cwd>`, and git honors GIT_DIR/GIT_COMMON_DIR OVER `-C`. `_git_common_dir`
+  # shipped with no env= at all (a second, dead _GIT_CLEAN_ENV definition shadowed
+  # the real one, so the file's own comment claimed a protection only one of three
+  # call sites had). Measured: a leaked GIT_DIR made _main_root AND _current_branch
+  # resolve a different repo entirely -- the SessionStart warning and the PreToolUse
+  # DENY then decide against the wrong worktree. Every leg carries a harness control
+  # asserting the leak still bites raw git, so a leg cannot pass by being inert.
+  hooks/test_session_lock_git_env.py
   # The frontmatter gate's own delimiter pattern stayed LF-only after #409/#431
   # fixed the validator behind it, so CRLF content was still denied one layer
   # out. The hook is fail-open, so an allow-only suite would pass against a
@@ -1231,6 +1366,24 @@ PY_DIRECT=(
   hooks/test_block_raw_vault_git_cd.py
   # Where _floors.py looks for a vault's floor notes (emoji-prefixed folder names).
   tests/test_floors_folder_discovery.py
+  # vault-command-nudges recognised its verbs as BARE tokens at a regex
+  # alternation boundary, so `env git push`, `sudo git push`, `/usr/bin/git
+  # push`, `FOO=bar git push`, `(git push)` and `FOO=bar rm -rf <vault root>`
+  # all matched NO rule and exited 0 -- a destructive-command guard, silently
+  # unguarded on the spellings an agent actually writes. Its cwd walk was also
+  # quote-blind, so a `cd` inside a quoted string moved the guard off the vault.
+  # 18 of these 39 legs fail against the pre-fix revision; the ALLOW legs are
+  # half the suite, because the fail-closed cwd SET that fixes the walk is
+  # exactly the change that would otherwise start over-blocking.
+  hooks/test_vault_command_nudges_lead.py
+  # The same recognition-layer defect in the two guards a user actually RUNS.
+  # vault-command-nudges is documented-dormant (0 matches in hooks.json);
+  # block-raw-vault-git and block-vault-git-fullwalk activate through the
+  # phase-doc channel and are wired, so this is the suite covering the deployed
+  # surface. 23 of its 43 legs fail against the pre-fix revision. Half are ALLOW
+  # legs -- these guards sit in front of commands people run constantly, and the
+  # fail-closed cwd SET is exactly the change that would start over-blocking.
+  hooks/test_live_vault_git_guards_lead.py
 )
 dormant_py=()
 while IFS= read -r -d '' f; do
@@ -1258,4 +1411,4 @@ done
 echo "    OK - ${#PY_DIRECT[@]} hooks/+tests/ direct suite(s) passed; dormancy invariant clean"
 
 echo
-echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + phase-doc python [$phasepy_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed] + home-hook deploy [passed] + subprocess decode [passed] + py3.9 annotation parity [passed] + ps1 encoding [passed]."
+echo "All gates passed: py_compile ($count file(s)) + ${#INTEGRATION_TESTS[@]} integration tests + $unit_count scripts/ + ${#PY_DIRECT[@]} hooks/tests unit suite(s) + shellcheck [$shellcheck_note] + powershell [$pssa_note] + phase-doc python [$phasepy_note] + repo python [$ruffgate_note] + utf8 console guard [$utf8_note] + hook block-protocol [passed] + vault-root reads [passed] + home-hook deploy [passed] + subprocess decode [passed] + py3.9 annotation parity [passed] + ps1 encoding [passed]."

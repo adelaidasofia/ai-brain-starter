@@ -78,6 +78,8 @@ USAGE
     check-utf8-file-io.py --report           # full inventory, always exit 0
     check-utf8-file-io.py --emit-baseline    # regenerate the baseline rows
 """
+# exit-contract: ENFORCING
+
 import ast
 import hashlib
 import os
@@ -161,6 +163,17 @@ def violations_in(path):
         if not isinstance(node, ast.Call):
             continue
         name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        # `os.open` is NOT the builtin: it returns a raw file DESCRIPTOR, has no
+        # text mode, and rejects encoding= with a TypeError. Flagging it tells
+        # the author to "pass encoding=utf-8" -- advice that breaks their code
+        # and pushes a correct call into the baseline as if it were debt. That
+        # pin then went STALE on the next edit and re-surfaced the same false
+        # positive as a fresh FAIL. The qualifier is the whole difference;
+        # `p.open()` on a Path still counts.
+        if (name == "open"
+                and isinstance(node.func, ast.Attribute)
+                and getattr(node.func.value, "id", None) == "os"):
+            continue
         if name not in ("open", "write_text", "read_text"):
             continue
         if any(kw.arg == "encoding" for kw in node.keywords):
@@ -252,6 +265,11 @@ def d(p, raw):
         f.write(raw)
 def e(p, obj):
     Path(p).write_text(json.dumps(obj))  # provably ASCII (ensure_ascii defaults True)
+def f(p, raw):
+    import os
+    fd = os.open(p, os.O_WRONLY | os.O_CREAT, 0o600)   # fd, not text I/O
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(raw)
 '''
     tmp = Path(tempfile.mkdtemp())
     failures = []
@@ -287,14 +305,87 @@ def e(p, obj):
         failures.append("CRLF and LF content hash differently - the ratchet would "
                         "fire spuriously on a Windows checkout")
 
+    # os.open is a raw file descriptor, not text I/O: no mode, no encoding=
+    # (it raises TypeError on one). It must NOT be flagged -- and the BUILTIN
+    # open two lines below it MUST still be, so the exemption is proven narrow
+    # rather than a blanket mute of the word "open".
+    osopen = tmp / "osopen.py"
+    osopen.write_text("import os\nfd = os.open('/tmp/x', os.O_CREAT)\n",
+                      encoding="utf-8")
+    if violations_in(osopen):
+        failures.append("os.open flagged as locale-encoded I/O: {}"
+                        .format(violations_in(osopen)))
+
+    mixed = tmp / "mixed.py"
+    mixed.write_text("import os\nfd = os.open('/tmp/x', os.O_CREAT)\n"
+                     "fh = open('/tmp/y')\n", encoding="utf-8")
+    got = violations_in(mixed)
+    if len(got) != 1 or got[0][0] != 3:
+        failures.append("a builtin open beside an os.open must still be caught, "
+                        "expected one hit on line 3, got {}".format(got))
+
+    # --- negative control: a STALE baseline row must go RED ----------------
+    # The condition this guard shipped blind to. A row whose file is now clean
+    # (or gone) yields no violation, so before the `or stale` fix control
+    # reached the OK branch, printed the count under `NOTE:`, and returned 0 --
+    # while the sibling check-utf8-stdout.py:378 failed on the same input.
+    #
+    # Driven end-to-end through main() rather than against a re-implementation
+    # of the guard expression, so the control cannot pass while the real
+    # branch stays wrong.
+    #
+    # The fixture is THE REAL BASELINE PLUS ONE BOGUS ROW, and the "plus one"
+    # is the whole design. An earlier version of this control planted a
+    # standalone one-row baseline instead; that also returned 1, but for the
+    # wrong reason -- dropping the 54 genuine rows turned every pinned file
+    # into a fresh violation, so the run failed on `violations` and would have
+    # kept passing with `or stale` reverted. Adding a row to the real baseline
+    # keeps violations empty and leaves the stale row as the ONLY thing that
+    # can fail. The clean-baseline inverse below is what exposed that, and is
+    # why it stays.
+    global DEFAULT_BASELINE
+    saved_baseline = DEFAULT_BASELINE
+    try:
+        real_rows = saved_baseline.read_text(encoding="utf-8")
+        planted = tmp / "stale-baseline.txt"
+        # A path that is tracked but is data, not code: it can never appear in
+        # `offenders`, so its row can only ever be stale.
+        planted.write_text(
+            real_rows
+            + "\n# ---- SEV-B-read-only  (1 file(s)) ----\n"
+            + "{}  SEV-B-read-only  scripts/utf8-file-io-baseline.txt\n".format(
+                "0" * 64),
+            encoding="utf-8")
+        DEFAULT_BASELINE = planted
+        rc = main([])
+        if rc != 1:
+            failures.append(
+                "stale baseline row did not go RED: main() returned {}, "
+                "expected 1. The `or stale` guard is not doing its job."
+                .format(rc))
+
+        # Inverse half: the unmodified real baseline must PASS. Without this, a
+        # main() that returned 1 for any reason at all would satisfy the case
+        # above and the control would be theatre.
+        DEFAULT_BASELINE = saved_baseline
+        rc = main([])
+        if rc != 0:
+            failures.append(
+                "the real baseline should be clean, main() returned {}. The "
+                "stale control above is passing for the wrong reason."
+                .format(rc))
+    finally:
+        DEFAULT_BASELINE = saved_baseline
+
     if failures:
         print("SELF-TEST FAIL:")
         for f in failures:
             print("  - {}".format(f))
         return 1
     print("OK - self-test: detector flags all 4 unsafe forms, clears all 5 safe "
-          "forms, revokes the json exemption on ensure_ascii=False, and hashes "
-          "CRLF == LF.")
+          "forms, revokes the json exemption on ensure_ascii=False, hashes "
+          "CRLF == LF, and a stale baseline row goes RED (the unmodified real "
+          "baseline passes, so the control is not vacuous).")
     return 0
 
 
@@ -375,19 +466,29 @@ def main(argv):
 
     stale = sorted(set(baseline) - set(pardoned))
 
-    if violations:
-        print("FAIL - locale-encoded file I/O ({} file(s)):".format(len(violations)))
-        for rel, vs, why in violations:
-            print("  {}  [{}]".format(rel, why))
-            for lineno, kind, detail in vs:
-                print("      :{}  {} without encoding= ({})".format(lineno, kind, detail))
-        print("\nFix: pass encoding=\"utf-8\" explicitly. Text-mode I/O with no")
-        print("encoding uses the locale - cp1252 on a stock Windows box - which")
-        print("corrupts or mis-reads non-ASCII WITHOUT RAISING. See this file's")
-        print("header for the three measured failure modes.")
+    # `or stale` is load-bearing, and its absence was a measured defect: a
+    # baseline row whose file has since been FIXED or DELETED produces no
+    # violation, so control used to reach the OK branch below, print the count
+    # under `NOTE:`, and return 0. The sibling guard check-utf8-stdout.py:378
+    # has always guarded the identical condition on `if violations or stale:`
+    # and returns 1; this file diverged from it while its own header (see "The
+    # baseline is a BACKLOG, NOT A SET OF PARDONS") described the stricter
+    # behavior. A ratchet whose paid-off rows never fail is exactly how a
+    # backlog decays into an allowlist.
+    if violations or stale:
+        if violations:
+            print("FAIL - locale-encoded file I/O ({} file(s)):".format(len(violations)))
+            for rel, vs, why in violations:
+                print("  {}  [{}]".format(rel, why))
+                for lineno, kind, detail in vs:
+                    print("      :{}  {} without encoding= ({})".format(lineno, kind, detail))
+            print("\nFix: pass encoding=\"utf-8\" explicitly. Text-mode I/O with no")
+            print("encoding uses the locale - cp1252 on a stock Windows box - which")
+            print("corrupts or mis-reads non-ASCII WITHOUT RAISING. See this file's")
+            print("header for the three measured failure modes.")
         if stale:
-            print("\n{} stale baseline row(s) (fixed or deleted - drop them):"
-                  .format(len(stale)))
+            print("\n{} stale baseline row(s) (fixed or deleted - drop them from {}):"
+                  .format(len(stale), DEFAULT_BASELINE.name))
             for rel in stale:
                 print("  {}".format(rel))
         return 1
@@ -396,9 +497,6 @@ def main(argv):
            "{} content-pinned legacy file(s) remain - see {}.")
     print(msg.format(len(rels), " + ".join(_SCAN_PATHSPECS), len(pardoned),
                      DEFAULT_BASELINE.name))
-    if stale:
-        print("NOTE: {} stale baseline row(s) - now clean, drop them from the "
-              "baseline: {}".format(len(stale), ", ".join(stale)))
     return 0
 
 

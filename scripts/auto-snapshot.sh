@@ -1,4 +1,7 @@
 #!/bin/bash
+# exit-contract: NOT-A-CHECKER -- takes an hourly git snapshot commit of the
+#   vault
+
 # auto-snapshot.sh — hourly snapshot of the personal vault to local git.
 #
 # What it does:

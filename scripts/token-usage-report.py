@@ -48,9 +48,42 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+# Single source of truth for the ~/.claude/projects key (see #627).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+from _lib.claude_project_key import claude_project_key  # noqa: E402
+
 # Auto-detect VAULT_ROOT from script location (scripts/ at vault root) or env var
 _SCRIPT_DIR = Path(__file__).resolve().parent
-VAULT_ROOT = Path(os.environ.get("VAULT_ROOT", str(_SCRIPT_DIR.parent)))
+def _resolve_vault_root() -> Path:
+    """Prefer this script's OWN vault; honour VAULT_ROOT only when it agrees.
+
+    Mirrors scripts/aggregate-sessions.py. A machine-wide VAULT_ROOT (set once in
+    a settings env block, so every subprocess sees it) otherwise wins forever and
+    a copy installed in a DIFFERENT vault silently operates on the wrong one.
+    """
+    auto_root = _SCRIPT_DIR.parent.parent
+    env_raw = os.environ.get("VAULT_ROOT")
+    if not env_raw:
+        return auto_root
+    env_root = Path(os.path.expanduser(env_raw)).resolve()
+    if env_root == auto_root:
+        return env_root
+    if os.environ.get("VAULT_ROOT_FORCE", "").strip().lower() in ("1", "true", "yes"):
+        return env_root
+    print(
+        f"WARNING: VAULT_ROOT env points at {env_root}, but this script lives in "
+        f"{auto_root}. Operating on the script's own vault ({auto_root}). "
+        f"Set VAULT_ROOT_FORCE=1 to override.",
+        file=sys.stderr,
+    )
+    return auto_root
+
+
+# NOTE: auto_root is _SCRIPT_DIR.parent.parent. The previous default was
+# _SCRIPT_DIR.parent, i.e. <vault>/"⚙️ Meta" -- off by one level. Every usage
+# example in this file sets VAULT_ROOT, which is why the broken default never
+# surfaced.
+VAULT_ROOT = _resolve_vault_root()
 
 
 def derive_sessions_dir(vault_root: Path) -> Path:
@@ -62,7 +95,7 @@ def derive_sessions_dir(vault_root: Path) -> Path:
     override = os.environ.get("CLAUDE_SESSIONS_DIR")
     if override:
         return Path(override)
-    sanitized = "-" + str(vault_root.resolve()).lstrip("/").replace("/", "-")
+    sanitized = claude_project_key(vault_root.resolve())
     return Path.home() / ".claude" / "projects" / sanitized
 
 
@@ -170,7 +203,7 @@ def walk_sessions(cutoff: datetime | None, cutoff_end: datetime | None = None) -
             if mtime < cutoff:
                 continue
         try:
-            with jsonl_path.open() as f:
+            with jsonl_path.open(encoding="utf-8", errors="replace") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -520,7 +553,7 @@ def render_session_drilldown(session_id: str) -> str:
     cumulative = 0.0
     turn_n = 0
     try:
-        with jsonl.open() as f:
+        with jsonl.open(encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:

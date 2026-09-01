@@ -35,6 +35,8 @@ Usage:
   check-sessionstart-emit-shape.py [--repo <path>]
   check-sessionstart-emit-shape.py --self-test    # negative control
 """
+# exit-contract: ENFORCING
+
 from __future__ import annotations
 
 import argparse

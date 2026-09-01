@@ -29,6 +29,8 @@ Exit codes:
 
 Stdlib only, Python 3.10+. No third-party deps (substrate portability).
 """
+# exit-contract: ENFORCING
+
 from __future__ import annotations
 
 import argparse

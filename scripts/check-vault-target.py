@@ -10,10 +10,18 @@ tree — with `~/.ssh`, `~/.aws`, `~/.netrc` and `~/.config/gh` sitting untracke
 inside it and one `git add -A` away from being written into git objects
 permanently. Observed on a real machine, not theoretical (MYC-4028).
 
-This is the SINGLE source of truth for that check — relocate-vault.sh/.ps1,
-relocate-machinery-sidecar.sh/.ps1 and the SessionStart footprint signal all
-route through it, so there is no drift between surfaces. Same porcelain shape
-as check-cloud-sync.py, which the same callers already use.
+This is the single source of truth for that check IN THIS REPO —
+relocate-vault.sh/.ps1, relocate-machinery-sidecar.sh/.ps1 and the SessionStart
+footprint signal all route through it, so those surfaces cannot drift from each
+other. Same porcelain shape as check-cloud-sync.py, which the same callers
+already use.
+
+It is NOT the only implementation of the contract. `mycelium-studio` reimplements
+these rules natively in Rust, because a desktop app cannot assume python is on
+PATH. Read scripts/paired-implementations.json (contract `vault-target-refusal`)
+before changing the rules here: an earlier version of this paragraph claimed
+there was "no drift between surfaces" full stop, and that sentence is how the
+Studio twin shipped without this guard at all (MYC-4035).
 
 Usage:
   check-vault-target.py <path>                # human-readable verdict + remedy
@@ -39,6 +47,8 @@ absolute: no legitimate setup makes a home directory an AI-brain vault, and a
 --force on it is the one an agent reaches for at 2am. The other two are
 heuristics and callers may honour --force on them, loudly.
 """
+# exit-contract: ENFORCING
+
 from __future__ import annotations
 
 import os

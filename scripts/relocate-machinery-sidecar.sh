@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
+# exit-contract: NOT-A-CHECKER -- relocates machinery out of a sync folder;
+#   its guards are preconditions
+
 # relocate-machinery-sidecar.sh — make a vault SAFE to keep inside iCloud / a
 # cloud-sync folder by moving every churning machinery dir OUT of the synced
 # tree into a local sidecar, leaving only tiny static pointers/symlinks behind.
+#
+# PAIRED IMPLEMENTATION. This behaviour is implemented more than once by hand.
+# Every implementation is listed in scripts/paired-implementations.json under
+# `machinery-sidecar/1`. Check that list before changing behaviour here: this
+# contract has drifted three times (MYC-1088, MYC-4035, and the python
+# interpreter probe), and every time it was this file — the original — that got
+# edited by someone with no idea a twin existed.
 #
 # WHY
 # ---
@@ -134,7 +144,25 @@ _maybe_die() {
   return 0
 }
 
-PYBIN="$(command -v python3 || command -v python || true)"
+# `command -v` answers "is this name on PATH", which is a weaker claim than
+# "this executes python". On Windows the gap is routine: the app-execution
+# alias for python3 ships enabled by default in
+# %LOCALAPPDATA%\Microsoft\WindowsApps, sits on PATH, satisfies `command -v`,
+# and then exits non-zero printing an ad for the Microsoft Store -- while a real
+# python is on the same PATH one candidate later. So the guard below passes and
+# the script dies at the first real call with a third-party message instead of
+# the one written here. Probe each candidate, same rule session-close-runner.sh
+# uses.
+PYBIN=""
+for _abs_c in python3 python py; do
+  _abs_p="$(command -v "$_abs_c" 2>/dev/null)" || continue
+  [ -n "$_abs_p" ] || continue
+  if "$_abs_p" -c 'import sys; sys.exit(0)' >/dev/null 2>&1; then
+    PYBIN="$_abs_p"
+    break
+  fi
+done
+unset _abs_c _abs_p
 [ -n "$PYBIN" ] || { err "python3 required for the move record"; exit 4; }
 
 # absolutize (portable realpath: cd + pwd -P)

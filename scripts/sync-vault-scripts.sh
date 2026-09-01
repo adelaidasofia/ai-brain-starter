@@ -1,4 +1,7 @@
 #!/bin/bash
+# exit-contract: NOT-A-CHECKER -- copies repo scripts into a vault; a
+#   deployer
+
 # sync-vault-scripts.sh — propagate updated vault-side scripts from the
 # ai-brain-starter repo into the user's vault  <meta>/scripts/  directory.
 #

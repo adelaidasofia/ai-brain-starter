@@ -192,6 +192,35 @@ _PROVIDER = [
         redaction="[REDACTED-neon-password]",
         description="Neon-issued database password (npg_ prefix, >=12 chars).",
     ),
+    SecretPattern(
+        # Backblaze B2 applicationKey. The B2 *keyID* is non-secret (it is a
+        # username); the *applicationKey* is the secret. Shape: `K` + 3-digit
+        # cluster + 27 alphanumerics = 31 chars. Boundaried BOTH sides so it
+        # matches at clean delimiters but skips a mid-base64 run -- same
+        # discipline as the google-api-key carve-out above, because a 31-char
+        # alphanumeric run is common inside encoded blobs.
+        name="backblaze-b2-app-key",
+        regex=re.compile(r"\bK[0-9]{3}[A-Za-z0-9]{27}\b", re.ASCII),
+        redaction="[REDACTED-b2-app-key]",
+        description=(
+            "Backblaze B2 application key (K + 3-digit cluster + 27 chars = 31). "
+            "The keyID is non-secret; this is the applicationKey."
+        ),
+    ),
+    SecretPattern(
+        # npm automation/access token. This shape is named in the operator
+        # pre-push scrub checklist a human reads, and was in NO executable
+        # detector on either the deployed or the substrate copy -- the same
+        # GUARD-BLIND-TO-THE-CREDENTIAL-ITS-OWN-DOCS-TELL-YOU-TO-USE class the
+        # nvidia-api-key entry above was added for. It is not hypothetical for
+        # this repo: ci.sh, the release workflow and bootstrap.sh all reach the
+        # npm registry, and an npm_ automation token is the standard credential
+        # for a publish path. Boundaried both sides, same reason as B2.
+        name="npm-access-token",
+        regex=re.compile(r"\bnpm_[A-Za-z0-9]{36,}\b", re.ASCII),
+        redaction="[REDACTED-npm-access-token]",
+        description="npm automation/access token, format npm_{36+ alphanumerics}.",
+    ),
 ]
 
 
@@ -537,6 +566,17 @@ if __name__ == "__main__":
         "anthropic-prose-mention": "The OAuth token is shaped sk-ant-oat01- plus a long token.",
         # No digit pair after the 3 letters → not the documented shape → no match.
         "anthropic-no-digit-infix": "sk-ant-oauth-" + "z" * 50,
+        # Backblaze B2 applicationKey — MUST match. K + 3-digit cluster + 27.
+        "real-b2-app-key": "B2_KEY=K005" + "A" * 27,
+        # Same shape mid-base64 (no boundary either side) — MUST be skipped.
+        "b2-in-base64": "x" + "K005" + "A" * 27 + "z",
+        # npm automation token — MUST match. npm_ + 36.
+        "real-npm-token": "NPM_TOKEN=npm_" + "B" * 36,
+        # Same shape mid-base64 (no boundary either side) — MUST be skipped.
+        "npm-in-base64": "x" + "npm_" + "B" * 36 + "z",
+        # Longer-than-36 token — MUST still match. Pins the `,` in {36,}:
+        # a bare {36} would silently miss any future longer npm shape.
+        "real-npm-token-long": "NPM_TOKEN=npm_" + "C" * 44,
     }
     expected_hits = {
         "github-asset-digest": [],   # sha256: prefix → skipped
@@ -563,6 +603,11 @@ if __name__ == "__main__":
         # legitimate boundary: it separates a credential from a word, and unlike
         # the letter-count boundary it does not hide a real token shape.
         "anthropic-no-digit-infix": [],
+        "real-b2-app-key": ["backblaze-b2-app-key"],
+        "b2-in-base64": [],           # no boundary before K → skipped
+        "real-npm-token": ["npm-access-token"],
+        "npm-in-base64": [],          # no boundary before npm_ → skipped
+        "real-npm-token-long": ["npm-access-token"],
     }
     failures = 0
     for label, sample in FP_SAMPLES.items():

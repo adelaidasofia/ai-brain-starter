@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  com.abs.instinct-promote.plist.template
+
+  macOS launchd template for the Instinct Engine's daily promotion pass.
+
+  WHY THIS EXISTS. The engine ships a bidirectional confidence update
+  (`reinforce` / `correct`), but both are MANUAL, invoked by a human running
+  /patterns. In practice neither fires, so every stored confidence stays the
+  seed it was born with -- a number derived from whether the memory's prose
+  happened to contain "never" or "codified" -- while the observation ledger
+  fills up with evidence nothing reads. This job is the missing scheduled
+  half: it turns injection records into exposures, promotes across a gate,
+  applies staleness decay, and stamps provenance on every instinct.
+
+  Placeholders:
+    {{REPO_ROOT}}    absolute path to the ai-brain-starter clone
+    {{MEMORY_DIR}}   absolute path to the vault's "Agent Memory" directory
+    {{LOG_DIR}}      absolute directory for stdout/stderr logs
+
+  After the file lands at ~/Library/LaunchAgents/, run:
+    launchctl load ~/Library/LaunchAgents/com.abs.instinct-promote.plist
+  Stop with:
+    launchctl unload ~/Library/LaunchAgents/com.abs.instinct-promote.plist
+
+  Liveness: every run stamps `last_run` in ~/.claude/instinct/promote-state.json.
+  If that timestamp is more than two days old the job has silently stopped --
+  a scheduled maintenance pass that dies is indistinguishable from one with
+  nothing to do, and both print nothing.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.abs.instinct-promote</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>{{REPO_ROOT}}/scripts/instinct.py</string>
+        <string>promote</string>
+        <!-- Explicit, never auto-detected: launchd runs with cwd=/ , so the
+             upward walk for "*Meta/Agent Memory" finds nothing and the engine
+             would silently fall back to the first ~/.claude/projects/*/memory
+             it globs -- possibly a different store than the operator meant. -->
+        <string>--memory-dir</string>
+        <string>{{MEMORY_DIR}}</string>
+    </array>
+
+    <!-- launchd hands a job a minimal PATH with no Homebrew prefix. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <!-- Daily. Deliberately NOT RunAtLoad: this walks the whole memory corpus,
+         and a per-boot/per-install trigger is the concurrency-multiplier shape
+         that pegs a machine when several things start at once. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>4</integer>
+        <key>Minute</key>
+        <integer>20</integer>
+    </dict>
+
+    <key>LowPriorityIO</key>
+    <true/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>{{LOG_DIR}}/instinct-promote.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>{{LOG_DIR}}/instinct-promote.err.log</string>
+</dict>
+</plist>

@@ -70,6 +70,22 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Installed HERE, before any step that parses YAML or frontmatter -- not
+      # further down next to the one consumer that prompted it. Placed lower,
+      # it ran AFTER stale-rule-check.py --self-test and that step died on
+      # "ERROR: PyYAML required" (PR #619, run 33237272846).
+      #
+      # Load-bearing, not cosmetic: without PyYAML ci-cost-audit.py parses
+      # NOTHING -- every workflow lands in its "unparsed" branch and every
+      # static rule is skipped. Until 2026-08-29 that skip was filed as an
+      # advisory finding, so the step named "runs clean against this repo's own
+      # workflows" passed green having checked nothing (measured on 8b9038b,
+      # where the same --fail-on high command exits 1 on a box that has
+      # PyYAML). The auditor now exits 2 when it cannot parse, so this install
+      # is what keeps those steps meaningful rather than merely quiet.
+      - name: install PyYAML (guards that parse YAML or frontmatter need it)
+        run: python3 -m pip install --user pyyaml
+
       # ---- instant checks first (byte / JSON scans, no tooling) -------------
 
       - name: JSON validity (hooks.json, *.mcp.json)
@@ -241,6 +257,33 @@ jobs:
       # active - MYC-1017, MYC-1031, and MYC-782 / #371 all shipped that way.
       # Also asserts every hook we wire is installer-OWNED, without which a
       # re-install duplicates a hand-wired copy instead of replacing it.
+      # A checker that prints a finding and exits 0 is, to every caller, a
+      # checker that found nothing -- and a deliberate advisory is
+      # indistinguishable from a gate that forgot to fail. This requires each
+      # one to SAY which it is, in the file. The baseline is capped and may
+      # only shrink, so a new script cannot join the undeclared tail.
+      - name: exit-contract negative controls (the gate must still bite)
+        run: python3 scripts/check-exit-contract.py --self-test
+
+      # The per-checker controls for the exit codes changed alongside the gate.
+      # Each constructs the finding its checker names and asserts it goes RED;
+      # each was mutation-tested (revert the fix, the control must fail AT ITS
+      # OWN SITE). Unwired, they would be files nobody runs.
+      - name: split-meta negative controls (a detected split must go RED)
+        run: python3 scripts/check-split-meta.py --self-test
+
+      - name: stale-rule negative controls (an unevaluable entry must go RED)
+        run: python3 scripts/stale-rule-check.py --self-test
+
+      - name: vault-repo drift negative controls (drift must reach the exit)
+        run: bash scripts/vault-repo-drift-check.sh --self-test
+
+      - name: drift-check negative controls (STATUS must carry the finding)
+        run: bash scripts/drift-check.sh --self-test
+
+      - name: every checker declares whether its findings can fail
+        run: python3 scripts/check-exit-contract.py
+
       - name: hook-activation negative controls (a dormant guard must go RED)
         run: python3 scripts/check-hook-activation.py --selftest
 
@@ -282,6 +325,50 @@ jobs:
 
       - name: every hook is wired on both POSIX and Windows, or reviewed as not
         run: python3 scripts/check-hook-parity.py
+
+      # The cross-REPO sibling of the gate above. That one asks whether one
+      # behaviour reaches both PLATFORMS; this asks whether one contract's several
+      # hand-written IMPLEMENTATIONS know about each other.
+      #
+      # machinery-sidecar/1 drifted three times: Google Drive Mirror roots taught
+      # here and not in the Rust twin (MYC-1088), the vault-target guard that let
+      # Studio git-init a repo over a founder's $HOME (MYC-4035), and the python
+      # interpreter probe the Windows leg had already solved correctly while the
+      # POSIX leg kept the weaker check. Every check on both sides stayed green
+      # each time, because each implementation is internally consistent and no
+      # gate had ever seen another.
+      #
+      # G4 is the load-bearing one: a sentence in THIS repo asserting the current
+      # state of code in ANOTHER repo cannot stay true, because nothing here runs
+      # when that repo merges. ADR-0007 carried exactly such a sentence; it was
+      # accurate for 29 minutes and wrong for the following eight days.
+      # Self-test first (cheap, and proves the gate bites a synthetic mismatch).
+      - name: paired-implementation negative controls (the gate must bite)
+        run: python3 scripts/check-paired-implementations.py --self-test
+
+      - name: paired implementations are declared, present, and claim-free
+        run: python3 scripts/check-paired-implementations.py
+
+      # The advisory half. A PR touching one side of a paired contract gets the
+      # other side named inline on its Files tab. ADVISORY, never blocking: the
+      # repos have different release cadences and a hard cross-repo gate would
+      # only get bypassed. This is the step that would have said "the Rust twin
+      # also implements this" on the PR that shipped the vault-target guard here
+      # and not there (MYC-4028 -> MYC-4035).
+      #
+      # Security note: github.base_ref is bound to an env var per the SAFE pattern
+      # documented at the top of this file, never interpolated into the shell.
+      # Paths go through a FILE, not word-splitting, so a path with a space
+      # cannot silently become two arguments.
+      - name: name the counterparts of any paired file this PR touches (advisory)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --quiet origin "$BASE_REF"
+          git diff --name-only "origin/$BASE_REF...HEAD" > "$RUNNER_TEMP/changed.txt"
+          python3 scripts/check-paired-implementations.py \
+            --changed-from "$RUNNER_TEMP/changed.txt"
 
       # The READ half of the UTF-8 console guard below. That one fails a CLI that
       # PRINTS non-ASCII without reconfiguring stdout; this fails one that READS a
@@ -461,6 +548,13 @@ jobs:
       - name: ensure shellcheck present
         run: command -v shellcheck >/dev/null || { sudo apt-get update && sudo apt-get install -y shellcheck; }
 
+      # A signal death and a lint finding used to be the same exit here, so a
+      # shellcheck the kernel killed reported "found issues" and a reader went
+      # hunting for a defect that did not exist (MYC-4259). These controls shim
+      # a fake shellcheck to drive each documented status.
+      - name: shellcheck exit-code negative controls (a killed linter is not a finding)
+        run: bash scripts/shellcheck.sh --self-test
+
       - name: shellcheck (.sh, -S warning)
         run: bash scripts/shellcheck.sh
 
@@ -522,9 +616,57 @@ jobs:
       - name: phase-doc Python (no undefined names / F821)
         run: python3 scripts/check-phase-python.py
 
+      # The step above lints Python embedded in phases/*.md. THIS one lints the
+      # repo's own tracked *.py -- which nothing in CI did until it landed. The
+      # `ci` job py_compiles every tracked *.py, but py_compile parses: it cannot
+      # see a name that does not exist. `env=_GIT_CLEAN_ENV` shipped in
+      # hooks/session-lock.py on 2026-08-12 (4a2bf7c) with the constant never
+      # defined and sat on main for thirteen days (fixed 2026-08-25, 5952dac).
+      # session-lock.py is the concurrency gate and settings.json registers it
+      # behind an allow-fallback wrapper, so that NameError did not fail loudly --
+      # the hook crashed, the wrapper answered "allow", and the gate was open.
+      # Reuses the ruff installed two steps above (fail-closed), so this costs no
+      # extra install and no extra billed job.
+      - name: repo Python (no undefined names / E9,F63,F7,F82)
+        run: bash scripts/ruff-gate.sh
+
+      - name: ruff-gate negative controls (a dead linter must not read as clean)
+        run: bash scripts/ruff-gate.sh --self-test
+
+      # The .ps1 half of the same gap. `.ps1 encoding` above checks BOM + em
+      # dashes, and the pwsh parse step checks syntax -- neither looks at
+      # semantics, on the platform (Windows install) with the fewest local eyes.
+      # Deliberately a curated RULE list, not a severity floor: `-Severity
+      # Warning` would land 318 findings red on day one, 251 of them
+      # PSAvoidUsingWriteHost, which is the CORRECT call in an installer that
+      # talks to a human. See scripts/psscriptanalyzer.sh for the measurement.
+      # The module install has no `|| true`: a gate that cannot run must not
+      # report clean, same reasoning as the ruff install above.
+      - name: install PSScriptAnalyzer (the .ps1 analyzer this gate needs)
+        shell: pwsh
+        run: Install-Module -Name PSScriptAnalyzer -Repository PSGallery -Scope CurrentUser -Force -AcceptLicense
+
+      - name: repo PowerShell (security + real-bug rules over tracked *.ps1)
+        run: bash scripts/psscriptanalyzer.sh
+
+      - name: psscriptanalyzer negative controls (a dead analyzer must not read as clean)
+        run: bash scripts/psscriptanalyzer.sh --self-test
+
   bash32-syntax:
     name: bash 3.2 syntax (macOS /bin/bash)
     runs-on: macos-latest
+    env:
+      # Read by scripts/ci-cost-audit.py. macOS bills 10x Linux, and this job
+      # is ungated on purpose, so the auditor would otherwise flag it HIGH --
+      # correctly, on its own terms. The exemption is declared here rather than
+      # suppressed silently: the rationale is the comment block below, and the
+      # short version is that this is the ONLY surface on which bash 3.2
+      # parsing is proven, the guarantee has to hold on every change, and a
+      # real bug shipped through the gap it closes.
+      CI_COST_DELIBERATE: >-
+        Only surface proving bash 3.2 parsing; the guarantee must hold on every
+        change and a real unrunnable-test bug shipped through this gap before
+        the job existed. Syntax-only, so it is the cheapest form of the check.
     # macOS ships bash 3.2.57 at /bin/bash -- the last GPLv2 release -- and that
     # is the ONLY bash on an unmodified Mac. This repo's install path is a
     # supported dev environment there, so every .sh here has to PARSE under it.

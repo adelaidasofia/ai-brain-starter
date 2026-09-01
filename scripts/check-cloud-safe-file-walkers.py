@@ -15,6 +15,8 @@ This is intentionally not an ``os.walk`` plus ``read_text`` regex.  Those tokens
 may live in unrelated functions, examples, or write-only setup code.  Treating
 those as violations would train maintainers to ignore the warning.
 """
+# exit-contract: ENFORCING
+
 from __future__ import annotations
 
 import argparse

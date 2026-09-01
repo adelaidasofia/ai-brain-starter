@@ -53,6 +53,8 @@ Exit codes:
 Porcelain first token: OK_ALL_FRESH | SKIP_NO_CONNECTORS | CONNECTOR_GAP:<source>:<scope>:<days_silent>
   (one CONNECTOR_GAP line per overdue connector)
 """
+# exit-contract: ENFORCING
+
 from __future__ import annotations
 
 import json

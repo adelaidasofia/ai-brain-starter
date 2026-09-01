@@ -64,6 +64,8 @@ Usage:
   check-frozen-before-state.py [--root DIR]   scan (exit 1 on any finding)
   check-frozen-before-state.py --self-test    prove the guard fires and abstains
 """
+# exit-contract: ENFORCING
+
 
 from __future__ import annotations
 

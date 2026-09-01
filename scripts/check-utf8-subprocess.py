@@ -63,6 +63,8 @@ USAGE
 Stdlib only (ast/hashlib/json/subprocess). No network, no writes except
 --write-baseline.
 """
+# exit-contract: ENFORCING
+
 
 from __future__ import annotations
 

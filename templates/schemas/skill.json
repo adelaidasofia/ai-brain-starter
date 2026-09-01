@@ -3,7 +3,10 @@
   "title": "Skill frontmatter",
   "type": "object",
   "_comment": "Schema for skill primitives. A skill is a STRUCTURED executable object, not just SKILL.md prose. Declares tool_access (allowed tools), policy_constraints (rules + exception handling), required_inputs (what callers must pass), and output_shape (what callers receive). Validator: hooks/validate-skill-frontmatter.py blocks malformed Write/Edit at skills/**/SKILL.md. Bypass: SKILL_VALIDATION_BYPASS=1. Includes the cross-type frontmatter contract (provenance, confidence, freshness_days, last_verified, source_count) shared across all 6 typed memory primitives.",
-  "required": ["type", "name"],
+  "required": [
+    "type",
+    "name"
+  ],
   "properties": {
     "type": {
       "type": "string",
@@ -27,14 +30,18 @@
     },
     "tool_access": {
       "type": "array",
-      "items": {"type": "string"},
+      "items": {
+        "type": "string"
+      },
       "description": "Whitelist of tool names this skill is permitted to call. Empty array means the skill takes no tool actions (pure prose/analysis). Names match the canonical tool ids (Read, Write, Edit, Bash, Grep, Glob, etc.) or MCP tool ids (mcp__server__tool)."
     },
     "policy_constraints": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["rule"],
+        "required": [
+          "rule"
+        ],
         "properties": {
           "rule": {
             "type": "string",
@@ -52,7 +59,10 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "type"],
+        "required": [
+          "name",
+          "type"
+        ],
         "properties": {
           "name": {
             "type": "string",
@@ -85,11 +95,26 @@
         "properties": {
           "source_type": {
             "type": "string",
-            "enum": ["slack", "email", "notion", "gdoc", "whatsapp", "calendar", "claude-session", "manual"]
+            "enum": [
+              "slack",
+              "email",
+              "notion",
+              "gdoc",
+              "whatsapp",
+              "calendar",
+              "claude-session",
+              "manual"
+            ]
           },
-          "source_id": {"type": "string"},
-          "source_url": {"type": "string"},
-          "captured_at": {"type": "string"}
+          "source_id": {
+            "type": "string"
+          },
+          "source_url": {
+            "type": "string"
+          },
+          "captured_at": {
+            "type": "string"
+          }
         }
       },
       "description": "List of independent sources that back this skill definition."
@@ -113,7 +138,34 @@
       "type": "integer",
       "minimum": 0,
       "description": "How many independent sources back this skill definition."
+    },
+    "umbrella": {
+      "type": "boolean",
+      "description": "True when this skill is a ROUTING UMBRELLA \u2014 a top-level lane the session map offers. This frontmatter field is the single source of truth for umbrella-ness: hooks/_lib/umbrella_map.py RENDERS the session map from it and enumerates no skill names, which is what keeps the map correct on an install whose skill set we have never seen. Anything else that lists umbrellas describes this field; it does not define it."
+    },
+    "umbrella_group": {
+      "type": "string",
+      "description": "Heading this umbrella renders under in the session map (e.g. 'Operating layer'). Groups are ordered by their earliest member's umbrella_order, so group order is declared by the skills themselves. Defaults to 'Skills'."
+    },
+    "umbrella_order": {
+      "type": "integer",
+      "description": "Sort key within the session map, lower first. Defaults to 50. Must be an integer: a non-integer silently falls back to the default and the map's ordering is quietly wrong."
+    },
+    "umbrella_domain": {
+      "type": "string",
+      "description": "One-line 'what this umbrella covers', shown beside the name. Defaults to the first sentence of `description`."
     }
   },
-  "additionalProperties": true
+  "additionalProperties": true,
+  "dependencies": {
+    "umbrella_group": [
+      "umbrella"
+    ],
+    "umbrella_order": [
+      "umbrella"
+    ],
+    "umbrella_domain": [
+      "umbrella"
+    ]
+  }
 }

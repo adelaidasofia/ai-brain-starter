@@ -39,6 +39,8 @@ This script is the write-boundary defense. The companion PreToolUse hook
 (hooks/lint-vault-frontmatter.py) runs this on every Write/Edit to catch
 violations before they land.
 """
+# exit-contract: ENFORCING
+
 
 from __future__ import annotations
 

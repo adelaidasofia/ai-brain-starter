@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# exit-contract: ENFORCING
+
 #
 # scripts/check-meta-resolution.sh - ban the naive "*Meta" glob in shell scripts.
 #

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# exit-contract: NOT-A-CHECKER -- installs a launchd or cron agent; a
+#   one-shot installer
+
 # install-vault-daily-maintenance.sh
 #
 # One-shot installer for the daily vault-maintenance launchd agent on macOS.
