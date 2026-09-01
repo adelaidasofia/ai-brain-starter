@@ -23,9 +23,8 @@
 #
 # <sha256-of-normalized-content> <tag> <repo-relative-path>
 
-# ---- SEV-A-write  (31 file(s)) ----
+# ---- SEV-A-write  (30 file(s)) ----
 b87ac14c241be51fb2427ac9a86ab8de4a5b161549f2ee0d445b6e9ca4f65550 SEV-A-write hooks/_lib/session_echo.test.py
-62adfe6bbcfecc12d8e6bbad292ab40215e9f15c8812ec91f53dfe42156e7886 SEV-A-write hooks/_lib/standing_report.test.py
 987aca2ae82229a42d29a8c89fed690e9de7e6fad4182dea564bc92557a81922 SEV-A-write hooks/auto-capture-public-ships.py
 9cbf3bb52c04fd00a41852d12baf7640f9212db9b5a34aaac2247ee6abb4312f SEV-A-write hooks/check-py-import-precommit.py
 a04ec6c84be6756813f4cde517ff379338b57ec9bf4c9c4172172951e62f91c3 SEV-A-write hooks/imessage-mcp-auto-export.py
@@ -56,7 +55,7 @@ bf2aa37b1fc14be871ed01920e719d1f71d87052e536d4c435ed2fff227ca8ec SEV-A-write scr
 a29f6c2b98ccf874e4c818e2487ce74f32248ecbbce73a11c91a738561f3aa84 SEV-A-write skills/graphify/scripts/graphify_chunk.py
 8397e371e756c7cff96453d8f8f2c895e1e8ac0762edc8538c573c059e07d19d SEV-A-write skills/graphify/scripts/graphify_prep.py
 
-# ---- SEV-B-read-only  (22 file(s)) ----
+# ---- SEV-B-read-only  (21 file(s)) ----
 b647243fdf0a358d46a6a79b0bf7f817ee121f68d5d685fabe4b0ee2a93af94d SEV-B-read-only hooks/check-fabricated-hook-attribution.py
 3599a56754108272a15a2c879a23a52c0e844edf2991932118ecf16b24706af9 SEV-B-read-only hooks/dev-hub-refresh-on-session-start.py
 383b879b07fd9dce4a66c6a9beb449e2c7ec378b7f94d393b2bf486cf26531fb SEV-B-read-only hooks/observe-tool-calls.py
@@ -67,7 +66,6 @@ dd255910d36390ba30e369d9bc406fcc5325dd1687f18f9bdf5d888b6a0b8340 SEV-B-read-only
 79bdb1ef10e6728f8263db6eacd0b19a614e71517509d6f6bf88012fca7f84a7 SEV-B-read-only scripts/audit-guard-activation-roots.py
 a1129452c2c68c67d4e4d81074625b198cb02a5a32e30eaa588f3a3fd5606b7f SEV-B-read-only scripts/caveman_lint.py
 98724e0626e0e16a77d82756dc9187d3ab57a06748a305a95e5fad09427f4c59 SEV-B-read-only scripts/check-renderer-crashes.py
-6528e02b526efba8cb4939aa0426b14754a1f32ff4a85cb369f5b94568451942 SEV-B-read-only scripts/dev-drift-report.py
 9ceedddb923461f4c803b48b1d8349c9e54f9f6ff73e40969aeb3332206c8824 SEV-B-read-only scripts/granola_core.py
 5b2a426f96ba2f79637975888633c7de53cdc3028baaccd33ed24c83db3f32eb SEV-B-read-only scripts/graphify_canonicalize.py
 4a5f57798e6752eccdbdad8e3d367c5313efcdc93e06ebebb5060a240b39de8f SEV-B-read-only scripts/graphify_dedupe_by_adjacency.py
