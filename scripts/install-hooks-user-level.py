@@ -179,6 +179,13 @@ ABS_FINGERPRINTS = [
     # operation is paused but never says one exists, so a stalled rebase freezes
     # every session silently (5 measured: MYC-3777/3451/3982/3781 + 2026-08-24).
     "ai-brain-starter/hooks/surface-stalled-git-operation.py",
+    # Inline-bypass-REACHABILITY report builder (build_message), called by
+    # surface-deployed-hooks-behind.py's _bypass_unreachable_message() at
+    # its existing SessionStart emission point -- not its own hooks.json
+    # entry (see scripts/check-hook-activation.py TEMPLATE_ONLY). Owned for
+    # the same reason as the "not a hook" builders above: uninstall/retire
+    # tracking, even though it is not independently wired.
+    "ai-brain-starter/hooks/surface-bypass-unreachable.py",
     # MCP secret-leak guards (MYC-3560). Written after three real GitHub PAT
     # leaks, shipped as working files, and never once registered -- the
     # protection everyone believed was in place did not exist. Same
@@ -289,6 +296,8 @@ ABS_OWNED_BASENAMES = {
     # skill-path copy, or the block fires twice on every git command.
     "block-git-mutation-mid-operation.py",
     "surface-stalled-git-operation.py",
+    # Inline-bypass-REACHABILITY report builder; see ABS_FINGERPRINTS above.
+    "surface-bypass-unreachable.py",
     # MCP secret-leak guards (MYC-3560): same basename-dedup reasoning as the
     # two gates above.
     "block-claude-mcp-inline-secret.py", "block-mcp-config-inline-secret.py",

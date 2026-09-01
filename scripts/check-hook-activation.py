@@ -95,6 +95,17 @@ TEMPLATE_ONLY: Dict[str, str] = {
     "check_fab_shim.py":
         "not a hook: an import shim so tests can load the hyphenated guard "
         "module (hyphens are not importable identifiers).",
+    "surface-bypass-unreachable.py":
+        "not a hook: a report BUILDER (build_message) called by "
+        "surface-deployed-hooks-behind.py's _bypass_unreachable_message(), "
+        "plus a standalone main()/CLI carrying its own end-to-end test "
+        "(hooks/test_bypass_reachability_watchdog.py). Deliberately "
+        "unwired for the same reason as surface-stalled-git-operation.py "
+        "above -- SessionStart is at its 19/19 footprint-SLA cap "
+        "(scripts/footprint-sla-check.py --gate), and buying budget for "
+        "one more cold start would hide the cost that gate exists to "
+        "surface. Checkable: grep _bypass_unreachable_message "
+        "hooks/surface-deployed-hooks-behind.py",
     "surface-sync-guard-findings.py":
         "not a hook: a report BUILDER (build_report) called by "
         "worktree-footprint-signal.py at its single emission point, plus a "

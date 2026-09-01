@@ -20,6 +20,18 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
+
+# Inline-bypass consult: os.environ can't see a `MCP_INLINE_SECRET_BYPASS=1
+# <cmd>` prefix that lives only in the command string, never the hook's own
+# env (HOOK-READS-SESSION-ENV-NOT-COMMAND-ENV). Fail-open to env-only if the
+# shared helper is unavailable.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "_lib"))
+try:
+    from cmd_env import inline_bypass
+except Exception:
+    def inline_bypass(command, var, value="1"):  # type: ignore
+        return False
 
 SECRET_PATTERNS = [
     r"sk-ant-[A-Za-z0-9_\-]+",
@@ -40,9 +52,6 @@ SECRET_RE = re.compile("|".join(SECRET_PATTERNS))
 
 
 def main() -> int:
-    if os.environ.get("MCP_INLINE_SECRET_BYPASS") == "1":
-        return 0
-
     try:
         payload = json.load(sys.stdin)
     except json.JSONDecodeError:
@@ -54,6 +63,11 @@ def main() -> int:
 
     cmd = (payload.get("tool_input") or {}).get("command", "")
     if not cmd:
+        return 0
+
+    if os.environ.get("MCP_INLINE_SECRET_BYPASS") == "1" or inline_bypass(
+        cmd, "MCP_INLINE_SECRET_BYPASS"
+    ):
         return 0
 
     # Only flag `claude mcp add ...` commands

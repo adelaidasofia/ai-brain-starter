@@ -117,7 +117,6 @@ NO_TEST_BASELINE: Set[str] = {
     "block-secret-in-note",
     # -- correctness / process guards --
     "agent-briefing-check",
-    "block-branch-switch-with-untracked-build",
     "check-rule-conflicts-on-write",
     "session-turn-counter",
     "snapshot-pending-work-on-stop",
@@ -154,7 +153,7 @@ NO_TEST_BASELINE: Set[str] = {
 # 0. Same appendable-suppression-list hole as scripts/check-hook-activation.py
 # (fixed there in the same change). Amnesty ratchets DOWN, never up; raising
 # this number is a deliberate, reviewable act.
-NO_TEST_MAX = 28
+NO_TEST_MAX = 26
 
 
 def is_test_surface(path: Path) -> bool:

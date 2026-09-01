@@ -56,6 +56,15 @@ call sync-skills.classify_drift() (its own source of truth, reusing its symlink
 check message — no new SessionStart hook, so the footprint SLA (MYC-2348) is
 untouched. Directional: a copy that LEADS upstream is never nagged as behind.
 
+ALSO SURFACES INLINE-BYPASS-UNREACHABLE HOOKS: a third artifact, same
+"append to this message, buy no new SessionStart slot" reasoning. Scans the
+DEPLOYED ~/.claude/hooks union for a PreToolUse(Bash) gate that reads a
+`*_BYPASS` env var but never consults the COMMAND for it, so the inline
+`VAR=1 <cmd>` prefix it advertises can never fire (only an exported session
+var does). Real logic lives in the sibling surface-bypass-unreachable.py
+(kept standalone so its own test can drive it directly against a fixture
+directory); see _bypass_unreachable_message() below.
+
 LIMITATION (honest): a detector can only fire once it is itself deployed, so it
 cannot report its own first-time non-deployment. After the first successful
 deploy it self-perpetuates and catches every subsequent stale deploy. Checkout-
@@ -155,6 +164,35 @@ def _skill_drift_message() -> str | None:
             or (Path.home() / ".claude" / "skills")
         )
         return ss.drift_message(ss.classify_drift(clone_skills, install_root))
+    except Exception:
+        return None
+
+
+def _bypass_unreachable_message() -> "str | None":
+    """A third artifact, same reasoning as the two above: append to this
+    hook's SAME SessionStart message instead of buying a new hooks.json
+    entry, so the footprint SLA (MYC-2348) stays flat.
+
+    Scans the DEPLOYED ~/.claude/hooks union for the inline-bypass-
+    REACHABILITY class (surface-bypass-unreachable.py's own job, kept
+    standalone so its own test can exercise it directly against a fixture
+    directory with ABS_DEPLOYED_HOOKS_DIR) -- a PreToolUse(Bash) gate that
+    reads a `*_BYPASS` env var but never consults the COMMAND for it, so
+    the inline `VAR=1 <cmd>` prefix it advertises can never fire. Loaded
+    from THIS file's own directory: surface-bypass-unreachable.py ships
+    alongside it as ordinary skill content (not through the ABS_OWNED_
+    BASENAMES ~/.claude/hooks/ copy path), so it is always a sibling here.
+    Any error -> None (fail open; a SessionStart surfacer must never crash
+    session start)."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_abs_surface_bypass_unreachable",
+            Path(__file__).resolve().parent / "surface-bypass-unreachable.py")
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.build_message(mod._deployed_hooks_dir())
     except Exception:
         return None
 
@@ -418,7 +456,7 @@ def main() -> None:
     # clone itself no longer pulling (MYC-3175). Emit whichever fired, separated;
     # silent if none. Same hook, so SessionStart fan-out stays flat (MYC-2348).
     parts = [m for m in (_drift_message(), _skill_drift_message(),
-                         _stale_pull_message()) if m]
+                         _stale_pull_message(), _bypass_unreachable_message()) if m]
     _emit("\n\n".join(parts) if parts else None)
 
 

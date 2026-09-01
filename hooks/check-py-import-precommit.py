@@ -37,6 +37,18 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+# Inline-bypass consult: os.environ can't see a `PRECOMMIT_F821_BYPASS=1
+# <cmd>` prefix that lives only in the command string, never the hook's own
+# env (HOOK-READS-SESSION-ENV-NOT-COMMAND-ENV). Fail-open to env-only if the
+# shared helper is unavailable.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "_lib"))
+try:
+    from cmd_env import inline_bypass
+except Exception:
+    def inline_bypass(command, var, value="1"):  # type: ignore
+        return False
 
 BYPASS_ENV = "PRECOMMIT_F821_BYPASS"
 GIT_TIMEOUT_SEC = 8
@@ -132,8 +144,6 @@ def _nudge_ruff_missing_once():
 
 
 def main() -> int:
-    if os.environ.get(BYPASS_ENV) == "1":
-        return 0
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
@@ -141,6 +151,8 @@ def main() -> int:
     if payload.get("tool_name") != "Bash":
         return 0
     command = (payload.get("tool_input") or {}).get("command") or ""
+    if os.environ.get(BYPASS_ENV) == "1" or inline_bypass(command, BYPASS_ENV):
+        return 0
     if "commit" not in command or not _invokes_git_commit(command):
         return 0
 

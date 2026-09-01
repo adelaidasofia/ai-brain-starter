@@ -1443,6 +1443,12 @@ PY_DIRECT=(
   # legs -- these guards sit in front of commands people run constantly, and the
   # fail-closed cwd SET is exactly the change that would start over-blocking.
   hooks/test_live_vault_git_guards_lead.py
+  # Class watchdog for the inline-bypass-REACHABILITY bug: a Bash-command
+  # gate that honors a `*_BYPASS` env var must also consult the COMMAND
+  # STRING for it (an inline `VAR=1 <cmd>` prefix lives only there, never in
+  # the hook's own os.environ). Scans this repo's own hooks/ for real and
+  # fleet-tests every hook the fix touched -- see the file's own docstring.
+  hooks/test_bypass_reachability_watchdog.py
 )
 dormant_py=()
 while IFS= read -r -d '' f; do

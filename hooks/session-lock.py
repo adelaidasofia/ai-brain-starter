@@ -90,11 +90,25 @@ import shlex
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 try:
     import fcntl  # POSIX only; absent on Windows.
 except ImportError:  # pragma: no cover
     fcntl = None
+
+# Inline-bypass consult: os.environ can't see a `SIBLING_SESSION_LOCK_BYPASS=1
+# <cmd>` prefix that lives only in the command string, never the hook's own
+# env (HOOK-READS-SESSION-ENV-NOT-COMMAND-ENV). Fail-open to env-only if the
+# shared helper is unavailable -- never let a missing _lib turn a warn/block
+# hook that already fails open on internal errors into one that can't be
+# reasoned about.
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "_lib"))
+    from cmd_env import inline_bypass
+except Exception:
+    def inline_bypass(command, var, value="1"):  # type: ignore
+        return False
 
 BYPASS_ENV = "SIBLING_SESSION_LOCK_BYPASS"
 WARN_WINDOW_SEC = 300       # a sibling is "live" if active within 5 min
@@ -1186,6 +1200,13 @@ def _pretooluse(payload):
     now = time.time()
     captured = {}
     command = (payload.get("tool_input", {}) or {}).get("command", "") or ""
+
+    # The top-level main() bypass check only sees SESSION env; an inline
+    # `SIBLING_SESSION_LOCK_BYPASS=1 <cmd>` prefix lives only in `command`,
+    # which is not resolved until here. Consult it before any lock/warn logic
+    # runs, same fail-open shape as the env-var path this mirrors.
+    if inline_bypass(command, BYPASS_ENV):
+        return 0
 
     # Resolve the branch ONLY for commands that touch a shared ref, so an
     # ordinary `ls` never pays for a git subprocess.

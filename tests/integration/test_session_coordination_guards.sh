@@ -79,6 +79,15 @@ run_hook "$PY_HOOK" "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git s
 assert_rc "PY ignores non-commit command" 0
 run_hook "$PY_HOOK" "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git commit -m x\"},\"cwd\":\"$REPO\"}" PRECOMMIT_F821_BYPASS=1
 assert_rc "PY bypass env disables block" 0
+# Inline `VAR=1 <cmd>` prefix: os.environ can't see this, only the command
+# string can (HOOK-READS-SESSION-ENV-NOT-COMMAND-ENV). The prefix lives in
+# tool_input.command, not in the session env passed to run_hook.
+run_hook "$PY_HOOK" "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"PRECOMMIT_F821_BYPASS=1 git commit -m x\"},\"cwd\":\"$REPO\"}"
+if command -v ruff >/dev/null 2>&1; then
+  assert_rc "PY inline-prefix bypass disables block (ruff present)" 0
+else
+  assert_rc "PY inline-prefix bypass (ruff absent, already fail-open)" 0
+fi
 
 echo "=== session-lock.py (SessionStart + heartbeat) ==="
 # Isolate the per-session cache pointer (CACHE_DIR resolves under $HOME) so this
@@ -136,6 +145,11 @@ case "$ERR" in *BLOCKED*) ok "LOCK block message is BLOCKED" ;; *) bad "LOCK blo
 # 2. same commit + bypass -> allow.
 pt "git commit -m x" SIBLING_SESSION_LOCK_BYPASS=1
 assert_rc "LOCK PreToolUse bypass lets commit through" 0
+# 2b. same commit, inline `VAR=1 <cmd>` prefix instead of session env -> allow.
+# os.environ can't see this prefix (HOOK-READS-SESSION-ENV-NOT-COMMAND-ENV);
+# it only lives in tool_input.command, which `pt`'s $1 becomes verbatim.
+pt "SIBLING_SESSION_LOCK_BYPASS=1 git commit -m x"
+assert_rc "LOCK PreToolUse inline-prefix bypass lets commit through" 0
 # 3. non-git command -> one-time HEADS-UP (exit 2), sets the warned marker.
 pt "ls -la"
 assert_rc "LOCK PreToolUse heads-up once on read-only (exit 2)" 2
