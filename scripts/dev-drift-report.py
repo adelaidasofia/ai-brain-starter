@@ -118,7 +118,7 @@ CLAIM_CACHE_TTL_S = 30 * 60
 def _claim_cached() -> tuple[str | None, int] | None:
     """(section, n_unpushed_claims) from a fresh cache, or None when stale."""
     try:
-        raw = json.loads(CLAIM_CACHE_PATH.read_text())
+        raw = json.loads(CLAIM_CACHE_PATH.read_text(encoding="utf-8"))
         if time.time() - float(raw["ts"]) < CLAIM_CACHE_TTL_S:
             return raw.get("section") or None, int(raw.get("n_unpushed", 0))
     except Exception:
@@ -161,7 +161,7 @@ def _delta_24h(genuine_now: int) -> int | None:
     samples = []
     try:
         if STATE_PATH.exists():
-            samples = json.loads(STATE_PATH.read_text())
+            samples = json.loads(STATE_PATH.read_text(encoding="utf-8"))
             if not isinstance(samples, list):
                 samples = []
     except Exception:
