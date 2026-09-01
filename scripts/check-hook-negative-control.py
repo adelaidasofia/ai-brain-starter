@@ -115,7 +115,6 @@ SKIP_PARTS = {".git", "node_modules", "__pycache__", ".venv"}
 NO_TEST_BASELINE: Set[str] = {
     # -- secret / data-exposure guards (highest stakes) --
     "block-secret-in-note",
-    "scrub-session-jsonl-secrets",
     # -- correctness / process guards --
     "agent-briefing-check",
     "block-branch-switch-with-untracked-build",

@@ -1154,6 +1154,13 @@ echo "==> (e10) exit contract: $PY scripts/check-exit-contract.py"
 echo "==> (e2b) hook activation: $PY scripts/check-hook-activation.py"
 "$PY" scripts/check-hook-activation.py --selftest >/dev/null
 "$PY" scripts/check-hook-activation.py
+# lint.yml runs this and scripts/ci.sh did not, so `ci-test` reported GREEN on a
+# commit CI then rejected — the local gate was silently narrower than the
+# required check it stands in for. It is a 0.2s pure-Python scan with a
+# self-test, so there was no cost reason to leave it out; the omission was the
+# bug. Caught the honest way: a push of this very commit went red on it.
+"$PY" scripts/check-hook-negative-control.py --selftest >/dev/null
+"$PY" scripts/check-hook-negative-control.py
 
 # ---- (e3) Naive VAULT_ROOT reads -------------------------------------------
 # scripts/check-vault-root-reads.py fails code that reads the VAULT_ROOT env var
@@ -1319,6 +1326,14 @@ PY_DIRECT=(
   # coverage at all while the condenser silently dropped every render
   # section after the first.
   hooks/test_standing_report.py
+  # Two SECURITY hooks resolved their append-only audit logs as `HOOK_DIR /
+  # "...jsonl"`. HOOK_DIR is where the running COPY lives, and the wired copy on
+  # a real install is this repo's own deployed checkout — so the logs accumulated
+  # as untracked files inside it (108 drift-surfacer false fires in one day) AND
+  # the audit trail split per copy. Carries the CLASS check: no hook may root
+  # runtime state at its own __file__. That check found the second hook; only the
+  # first was known.
+  hooks/test_scrub_log_location.py
   hooks/test_claim_surface_honesty.py
   hooks/test_narrow_refspec_falsealarm.py
   # session-lock resolves the repo identity its whole mechanism keys off with

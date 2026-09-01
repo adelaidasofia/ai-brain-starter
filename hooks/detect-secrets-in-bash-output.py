@@ -43,7 +43,20 @@ sys.path.insert(0, str(HOOK_DIR))
 
 from _lib.secret_patterns import filter_tool_output_false_positives, scan  # noqa: E402
 
-LOG_PATH = HOOK_DIR / "secret-detection-log.jsonl"
+# NOT HOOK_DIR — same reason as scrub-session-jsonl-secrets.py, and the same
+# contradiction with this module's own docstring above, which places this log
+# at ~/.claude/hooks/. HOOK_DIR is where THIS COPY runs from, and the wired
+# copy on a real install is a GIT CHECKOUT of this repo, so an append-only
+# audit log accumulated inside it as an untracked file and was reported as a
+# hand-edit by the deployed-hook-drift surfacer on every session.
+#
+# It also SPLIT the audit trail: each deployed copy kept its own log, so the
+# record of what this detector caught depended on which copy happened to run.
+# One log per machine is the only version of an audit trail worth having.
+LOG_PATH = Path(
+    os.environ.get("SECRET_DETECTION_LOG_PATH")
+    or (Path.home() / ".claude" / "hooks" / "secret-detection-log.jsonl")
+)
 
 # Per the user's stated preference (2026-05-23): grep'ing her own .env.local /
 # admin.env / .zsh_secrets to verify what's stored is intentional, not a leak.
@@ -147,6 +160,7 @@ def main() -> int:
             {"pattern": n, "count": c, "reason": r} for n, c, r in fp_suppressed
         ]
     try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with LOG_PATH.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, separators=(",", ":")) + "\n")
     except OSError:
