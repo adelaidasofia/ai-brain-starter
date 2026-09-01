@@ -74,7 +74,14 @@ except Exception as _exc:  # a lib older than this script -> fail LOUD, never si
           file=sys.stderr)
     sys.exit(2)
 
-STATE_PATH = Path.home() / ".claude" / ".drift-surfacer-state.json"
+# Env-overridable exactly like DRIFT_STATE_PATH below it: this file is real
+# machine state (the 24h trend samples this script's own fixture/CI runs would
+# otherwise write into the operator's actual ~/.claude/), so a caller scoped to
+# a different dev root (a test, a client install) must not read or pollute it.
+STATE_PATH = Path(
+    os.environ.get("DEV_DRIFT_TREND_STATE")
+    or (Path.home() / ".claude" / ".drift-surfacer-state.json")
+)
 STATE_RETENTION_S = 7 * 24 * 3600
 
 # Rendered claim section + the unpushed-claim count, cached with a TTL. The scan
@@ -83,7 +90,28 @@ STATE_RETENTION_S = 7 * 24 * 3600
 # nothing, which reads identically to a clean fleet. Branch state moves on the
 # order of hours, so re-deriving it per session buys nothing — the existing
 # fetch in this same hook is capped at 4h on the same reasoning.
-CLAIM_CACHE_PATH = Path.home() / ".claude" / ".claim-branch-cache.json"
+#
+# MUST be env-overridable exactly like DRIFT_STATE_PATH below it: this is real
+# machine state read with NO regard for $ABS_DEV_ROOT, so a caller scoped to a
+# different dev root (a test, a client install) silently inherits whatever the
+# operator's actual fleet last cached here instead of its own fixture. Proven
+# live 2026-09-01: pointing ABS_DEV_ROOT at an empty fixture containing one
+# clean, fully-pushed repo still returned this machine's real 35+ claim-bearing
+# branches (real ticket IDs, real repo names, none in the fixture) — because
+# _claim_cached() never consulted ABS_DEV_ROOT or discover_primary_repos() at
+# all, only this hardcoded path and its 30-minute TTL. That polluted section
+# then became the FIRST line of the combined render, so
+# _lib/standing_report.condense()'s digest-summary extraction (which reads the
+# first few lines of the render for a line carrying a number) picked its
+# summary from the polluted claim section instead of the fixture's own
+# [unpushed-commits-surface] body — which is why the condensed second render
+# dropped "LOST-WORK" even though the underlying condense() logic never
+# silences a changed-then-unchanged finding-set once its input is hermetic.
+# Bug class: HERMETICITY-GAP-FROM-UNSCOPED-CACHE-PATH.
+CLAIM_CACHE_PATH = Path(
+    os.environ.get("CLAIM_BRANCH_CACHE_PATH")
+    or (Path.home() / ".claude" / ".claim-branch-cache.json")
+)
 CLAIM_CACHE_TTL_S = 30 * 60
 
 

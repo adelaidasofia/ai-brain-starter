@@ -179,10 +179,25 @@ def main() -> int:
         # per-repo enumeration below is gone. Pinning it here is what makes both
         # the full-render and digest assertions deterministic everywhere.
         sr_state = tmp / "standing-reports"
+        # CLAIM_BRANCH_CACHE_PATH + DEV_DRIFT_TREND_STATE point at paths that do
+        # NOT exist yet, same reasoning as DEV_HUB_REFRESH_STATE above: without
+        # pinning these, dev-drift-report.py falls back to the operator's real
+        # ~/.claude/.claim-branch-cache.json (TTL 30min) and
+        # ~/.claude/.drift-surfacer-state.json — real machine state with no
+        # regard for ABS_DEV_ROOT. On a box where that cache is fresh, the
+        # un-fixtured claim section (this machine's actual stranded branches)
+        # becomes the FIRST line of the render and hijacks
+        # standing_report.condense()'s digest-summary extraction, so the
+        # second-render assertions below fail while asserting something about
+        # the WRONG machine's data. Green on a clean CI runner (no such cache
+        # exists there) and red on any dev box with recent automation activity
+        # — same code, opposite verdicts, decided by unpinned machine state.
         env = dict(os.environ, ABS_DEV_ROOT=str(dev), DEV_DRIFT_STATE=str(state),
                    DEV_HUB_REFRESH_STATE=str(tmp / "no-such-hub-state.json"),
                    DEV_REPO_SCAN_DIR=str(HOOKS),
-                   STANDING_REPORT_STATE_DIR=str(sr_state))
+                   STANDING_REPORT_STATE_DIR=str(sr_state),
+                   CLAIM_BRANCH_CACHE_PATH=str(tmp / "no-such-claim-cache.json"),
+                   DEV_DRIFT_TREND_STATE=str(tmp / "no-such-drift-trend.json"))
         rep = subprocess.run(
             [sys.executable, str(HOOKS.parent / "scripts" / "dev-drift-report.py"),
              "--write-state"], capture_output=True, text=True, encoding="utf-8", env=env)
