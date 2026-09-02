@@ -13,6 +13,7 @@ data_sources:
   calendar: off               # today's calendar events (Google Workspace MCP) — opt-in
   imessage_24h: off           # iMessage threads with traffic in last 24h — opt-in (sees private conversations)
   whatsapp_24h: off           # WhatsApp threads with traffic in last 24h — opt-in (sees private conversations)
+  self_chat_voice_notes: off  # voice notes you send to your OWN number, read FIRST as the entry's raw material — opt-in (needs the WhatsApp MCP + transcription)
   body_health: off            # Step 0h: sleep/HRV/RHR/steps/workouts/recovery/cycle from health-mcp DuckDB — opt-in (most sensitive; local-only, never leaves your machine)
   email: off                  # email triage digest (Email Needs You.md) + a fresh gmail_search — opt-in (sees private mail)
   slack: off                  # on-disk Slack export + a fresh slack search — opt-in (sees private messages)
