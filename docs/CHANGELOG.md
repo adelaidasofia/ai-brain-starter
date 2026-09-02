@@ -9,6 +9,16 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-09-01: the journal names your floor for you
+
+**Who this affects:** everyone who journals. This changes what the skill asks you at the end of an entry.
+
+The skill used to hand the naming back to you about once a week: before tagging your floor it would ask *"you call it tonight — what floor?"*, on the theory that this trains the muscle. In practice it asks you to do the one piece of work the assistant is actually best set up to do. By the time you get that question it has already pulled your whole day, read your entry history, and has the 34 floor definitions and the shadow-twin tests in front of it. You have a tired brain at midnight.
+
+So it doesn't ask any more. It names the floor, tells you the one thing that made it pick that floor over the one next door, and asks only whether that's right. Correcting it is the point — that's the check working, not you failing a quiz. Same for the shadow-twin question: it now tells you which twin it read and why, instead of testing you on the difference.
+
+---
+
 ## 2026-08-30: floors written as links now count as floors
 
 **Who this affects:** anyone who connects journal entries to their Floors in Obsidian's graph by writing the floor as a link — `floor: "[[Acceptance]]"` instead of plain text. Plain-text floors are unaffected.
