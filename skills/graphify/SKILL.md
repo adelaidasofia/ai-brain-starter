@@ -234,6 +234,8 @@ Pattern source: [garrytan/gbrain](https://github.com/garrytan/gbrain) — zero-L
 
 If `graphify-out/.graphify_typed_edges.jsonl` exists after this step, Part B's dispatch must pass the path to each subagent so they honor the skip list. Cost savings only materialize if the skip list is honored — otherwise this pass just duplicates work.
 
+This JSONL is a skip list for Part B, nothing merges it into the graph automatically. After Step 4 builds `graph.json`, run Step 4b to generate a human-reviewable report of which of these edges can be safely merged.
+
 #### Part B - Semantic extraction (parallel subagents)
 
 **Fast path:** If detection found zero docs, papers, and images (code-only corpus), skip Part B entirely and go straight to Part C. AST handles code - there is nothing for semantic subagents to do.
@@ -563,6 +565,21 @@ python3 "{SKILL_DIR}/scripts/graphify_report_sanitize.py" graphify-out/GRAPH_REP
 If this step prints `ERROR: Graph is empty`, stop and tell the user what happened - do not proceed to labeling or visualization.
 
 Replace INPUT_PATH with the actual path.
+
+#### Step 4b - Review Part A.5's typed edges (if Part A.5 ran)
+
+Part A.5's typed edges are NOT auto-merged into `graph.json` — see the "Part A.5" section above for why: node IDs from Part B are LLM-improvised per entity (not a deterministic function of the source file), so a wikilink target can match zero, one, or several nodes, and the wikilink-derived edge types (`mentions`, `journaled_about`, `attended`, `investor_for`) already appear in `graph.json` via Part B with an entity-points-at-document direction that Part A.5's raw file-points-at-wikilink reading contradicts unless flipped. Blind-merging risks corrupting a graph the user relies on.
+
+If `graphify-out/.graphify_typed_edges.jsonl` exists, run the review script instead:
+
+```bash
+$(cat graphify-out/.graphify_python) "{SKILL_DIR}/scripts/review_typed_edges.py" \
+    --graph graphify-out/graph.json \
+    --edges graphify-out/.graphify_typed_edges.jsonl \
+    --output graphify-out/TYPED_EDGES_REVIEW.md
+```
+
+This resolves what it safely can (unique src/dst match, not already present, direction corrected for the wikilink types) into a "ready to merge" table, and buckets the rest as ambiguous / dst-not-found / src-not-found — mirroring the review-then-apply shape of `WIKILINK_GAPS.md`. Tell the user the report is ready and summarize the bucket counts; do not write anything into `graph.json` without the user reviewing `TYPED_EDGES_REVIEW.md` and saying which rows to apply.
 
 ### Step 5 - Label communities
 
