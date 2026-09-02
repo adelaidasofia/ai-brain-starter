@@ -534,6 +534,10 @@ INTEGRATION_TESTS=(
   # it); says SKIP and exits 0 when no interpreter has it, and the CI-only
   # bootstrap near the top of this script installs it so CI never takes that path.
   test_extractors_localized_vault
+  # MYC-4285: a brew-less, non-interactive, non-corporate Mac hit the same
+  # exit-0 the corporate profile was already built to route around, and never
+  # reached the user-space Python/Node installers a few sections down.
+  test_bootstrap_brewless_reaches_userspace
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new
