@@ -78,6 +78,69 @@ else
 fi
 rm -rf "$T"
 
+# --- 3b. NOT a dep: `__future__` is stdlib, not a sibling --------------------
+# Every Python file in the repo opens with `from __future__ import annotations`.
+# It fits the leading-underscore convention by accident, so an unfiltered detector
+# reported a phantom missing `__future__.py` against EVERY script — 65 findings on
+# a real vault, which is how an operator learns to ignore the output. The second
+# leg proves the file is still being scanned, not merely skipped.
+T=$(make_vault)
+printf 'from __future__ import annotations\n' > "$T/vault/⚙️ Meta/scripts/w.py"
+commit_all "$T"
+out=$(run_check "$T"); rc=$?
+[ $rc -eq 0 ] && pass "silent on \`from __future__ import\` (stdlib, never a file)" \
+              || fail "phantom dep on __future__: $out"
+printf 'from __future__ import annotations\nimport _helper\n' > "$T/vault/⚙️ Meta/scripts/w.py"
+out=$(run_check "$T"); rc=$?
+if [ $rc -eq 1 ] && printf '%s' "$out" | grep -q "_helper"; then
+    pass "still catches a real absent sibling in a __future__-importing file"
+else
+    fail "dunder filter went too far and blinded the file (rc=$rc): $out"
+fi
+rm -rf "$T"
+
+# --- 3c. NOT a dep: a sibling PACKAGE dir satisfies the import ---------------
+# `from _lib.safe_read import x` needs `_lib/__init__.py`, not `_lib.py`. Checking
+# only for the module form reported a package that is present and in daily use.
+T=$(make_vault)
+mkdir -p "$T/vault/⚙️ Meta/scripts/_lib"
+printf '' > "$T/vault/⚙️ Meta/scripts/_lib/__init__.py"
+printf 'from _lib.safe_read import x\n' > "$T/vault/⚙️ Meta/scripts/w.py"
+commit_all "$T"
+out=$(run_check "$T"); rc=$?
+[ $rc -eq 0 ] && pass "silent when the dep is a package dir (_lib/__init__.py)" \
+              || fail "false positive on a real package dir: $out"
+rm -rf "$T/vault/⚙️ Meta/scripts/_lib"
+out=$(run_check "$T"); rc=$?
+if [ $rc -eq 1 ] && printf '%s' "$out" | grep -q "_lib"; then
+    pass "fires once that package dir is gone"
+else
+    fail "package-dir rule swallowed a genuinely missing _lib (rc=$rc): $out"
+fi
+rm -rf "$T"
+
+# --- 3d. NOT a dep: a subdir spliced onto sys.path at runtime ----------------
+# `sys.path.insert(0, os.path.join(HERE, "extractors"))` then `from _base import x`
+# resolves against extractors/, not the scripts dir. Reading the import without the
+# path splice reported a dependency that Python finds every run.
+T=$(make_vault)
+mkdir -p "$T/vault/⚙️ Meta/scripts/extractors"
+printf '' > "$T/vault/⚙️ Meta/scripts/extractors/_base.py"
+printf 'import os, sys\nsys.path.insert(0, os.path.join(HERE, "extractors"))\nfrom _base import x\n' \
+    > "$T/vault/⚙️ Meta/scripts/w.py"
+commit_all "$T"
+out=$(run_check "$T"); rc=$?
+[ $rc -eq 0 ] && pass "silent when the dep lives in a sys.path-spliced subdir" \
+              || fail "false positive on a sys.path.insert root: $out"
+rm -f "$T/vault/⚙️ Meta/scripts/extractors/_base.py"
+out=$(run_check "$T"); rc=$?
+if [ $rc -eq 1 ] && printf '%s' "$out" | grep -q "_base"; then
+    pass "fires once that spliced-root module is gone"
+else
+    fail "sys.path rule swallowed a genuinely missing _base (rc=$rc): $out"
+fi
+rm -rf "$T"
+
 # --- 4. REVERTED: local patch overwritten by the sync ------------------------
 # HEAD holds the patched version; the working tree holds the shipped version.
 # Closure cannot see this: the file is present and has no dependencies.
