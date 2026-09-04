@@ -9,6 +9,17 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-09-04: a non-English vault stops reporting empty and inverted fields
+
+**Who this affects:** anyone whose vault folders or phone are not in English. English-only setups are unaffected.
+
+Two places assumed English text and, when they did not find it, wrote a wrong value instead of no value — which is worse, because nothing downstream can tell the difference.
+
+- **Concept domains came out empty.** The folder-to-domain map listed only the English folder names, so on a vault where setup created `📝 Notas` or `📚 Libros`, every note returned no domain at all. The Spanish names are now mapped to the same six domains.
+- **WhatsApp reciprocity was inverted.** The exporter labels your own messages in your phone's language, so on a Spanish handset every message you SENT was counted as one you received: your side read as zero and the chat looked one-sided. Common labels are now recognised, and `WHATSAPP_SELF_LABEL` pins one the list misses.
+
+---
+
 ## 2026-09-01: the journal names your floor for you
 
 **Who this affects:** everyone who journals. This changes what the skill asks you at the end of an entry.
