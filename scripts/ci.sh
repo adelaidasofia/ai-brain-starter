@@ -174,8 +174,26 @@ cd "$REPO_ROOT"
 # bytecode cache to a temp dir instead of littering __pycache__/ across the repo.
 PYCACHE_TMP="$(mktemp -d)"
 export PYTHONPYCACHEPREFIX="$PYCACHE_TMP"
-cleanup() { rm -rf "$PYCACHE_TMP"; }
+cleanup() {
+  rm -rf "$PYCACHE_TMP"
+  if [ -n "${REAL_PYTHON_SHIM_DIR:-}" ]; then rm -rf "$REAL_PYTHON_SHIM_DIR"; fi
+}
 trap cleanup EXIT
+
+# A `python3` on PATH that refuses to run would fail every gate below AND all 103
+# python-invoking tests in section (b) — none of which is about the interpreter,
+# and all of which would report the shim's advice as their failure text. The
+# trailofbits/modern-python plugin ships exactly such a shim. Resolve one working
+# interpreter here, once, for the whole run: a no-op on CI and on any machine
+# without a shim. See tests/integration/lib/real_python.sh.
+_REAL_PYTHON_LIB="$SCRIPT_DIR/../tests/integration/lib/real_python.sh"
+if [ ! -f "$_REAL_PYTHON_LIB" ]; then
+  echo "::error::missing $_REAL_PYTHON_LIB — cannot guarantee a runnable python3"
+  exit 1
+fi
+# shellcheck source=tests/integration/lib/real_python.sh
+. "$_REAL_PYTHON_LIB"
+ensure_real_python || exit 1
 
 # Non-invasive git identity fallback - only when nothing is configured. Uses env
 # vars (not `git config --global`) so we never mutate the caller's global config.
@@ -538,6 +556,11 @@ INTEGRATION_TESTS=(
   # exit-0 the corporate profile was already built to route around, and never
   # reached the user-space Python/Node installers a few sections down.
   test_bootstrap_brewless_reaches_userspace
+  # A `python3` shim on PATH failed all 103 python-invoking tests at once, with
+  # the shim's advice standing in for every assertion. lib/real_python.sh defeats
+  # it; this proves the helper still works and still keeps its hands off a PATH
+  # that was already healthy.
+  test_real_python_shim
 )
 # ---- Gate-coverage invariant -------------------------------------------------
 # The list above is an explicit allow-list, and allow-lists rot: a new
