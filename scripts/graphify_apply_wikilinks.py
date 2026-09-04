@@ -66,6 +66,10 @@ from pathlib import Path
 SKIP_PARTS = {
     "⚙️ Meta", "Archive", "🗄 Archive", "_review_alternate_drafts",
     ".claude", ".git", ".obsidian", ".trash", "node_modules", "worktrees",
+    # graphify's own output. Linking into GRAPH_REPORT.md / WIKILINK_GAPS.md
+    # rewrites generated files that the next run overwrites anyway, and makes
+    # the gap report link its own table rows.
+    "graphify-out",
 }
 EXISTING_LINK_RE = re.compile(r'\[\[[^\]]+\]\]')
 
@@ -473,6 +477,10 @@ def apply_wikilink(vault: Path, search_term: str, link_target: str, display: str
     modified = 0
     for md in vault.rglob("*.md"):
         if any(part in SKIP_PARTS for part in md.parts):
+            continue
+        # A note must not link to itself: it renders as a link back to the page
+        # you are already reading, and adds a self-loop to the graph.
+        if md.stem.casefold() == link_target.casefold():
             continue
         try:
             text = md.read_text(encoding="utf-8", errors="ignore")
