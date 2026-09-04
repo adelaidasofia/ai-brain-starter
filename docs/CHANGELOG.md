@@ -9,6 +9,14 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-09-04: the insight report stops misstating its own cutoffs
+
+**Who this affects:** anyone who runs the vault insight engine.
+
+The lucky-charm and drag-people sections tune their floor cutoffs to your own vault — the top and bottom quartile of the floors you actually write. The captions above those lists said "≥12 (Acceptance or above)" and "≤6 (Desire and below)" no matter what, which are only the fallback numbers used when a vault has too few entries to compute a quartile. So the report contradicted the baseline table printed a few lines above it, which was already showing your real p25 and p75. The captions now print the cutoff that was actually used.
+
+---
+
 ## 2026-09-01: the journal names your floor for you
 
 **Who this affects:** everyone who journals. This changes what the skill asks you at the end of an entry.
