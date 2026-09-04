@@ -44,7 +44,8 @@
     "^perfecto[!.\\s]*$",
     "^genial[!.\\s]*$",
     "^suena bien[!.\\s]*$",
-    "^va[!.\\s]*$"
+    "^va[!.\\s]*$",
+    "^creo que ya[!.\\s]*$"
   ],
 
   "emoji_only": [

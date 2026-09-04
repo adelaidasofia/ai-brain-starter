@@ -157,6 +157,16 @@ FIXTURES: list[tuple[str, str, str | None]] = [
     # ...while the bare phrases they relay must STILL close the session.
     ("es-ya-quedo-bare", "ya quedó", "high_confidence"),
     ("es-ya-quedo-gracias", "ya quedó, gracias", "high_confidence"),
+
+    # === "creo que ya" (es) — ambiguous, NOT a miss ===
+    # Observed as a real sign-off that matched nothing at all. It belongs in
+    # the ambiguous tier rather than high_confidence: on its own it closes,
+    # but it is also the opening of a sentence that is not a goodbye, so the
+    # right behaviour is to ask rather than to fire the cascade.
+    ("amb-es-creo-que-ya", "creo que ya", "ambiguous"),
+    ("neg-es-creo-que-ya-entendi", "creo que ya entendí", None),
+    ("neg-es-creo-que-ya-lo-tengo", "creo que ya lo tengo", None),
+    ("neg-es-creo-que-ya-quedo-el-informe", "creo que ya quedó el informe", None),
 ]
 
 
