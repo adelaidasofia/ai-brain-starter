@@ -21,7 +21,7 @@ Each chat file shape:
     # WhatsApp: <contact>
 
     ## YYYY-MM-DD
-    **HH:MM AM/PM** <Sender>: <text>       # outgoing sender == "You"
+    **HH:MM AM/PM** <Sender>: <text>       # outgoing sender == "You" (or its localized label)
     **HH:MM AM/PM** <Sender>: [Voice note] <transcript>
     **HH:MM AM/PM** <Sender>: [Reaction: 😂]
     **HH:MM AM/PM** <Sender>: [Sticker]
@@ -63,6 +63,18 @@ AUTO_FIELDS = (
 MSG_LINE_RE = re.compile(
     r"^\*\*(\d{1,2}:\d{2}(?:\s*[AP]M)?)\*\*\s+([^:]+):\s*(.*)$",
     re.MULTILINE,
+)
+
+# Outgoing-sender label. The exporter writes it in the phone's own language
+# ("Yo" on a Spanish handset, "Eu" on Portuguese), so a hardcoded English
+# "You" counts every message the user SENT as one they received: `msgs_mine`
+# lands on 0 and the reciprocity ratio inverts. That is a wrong field, not a
+# missing one — nothing downstream can tell it apart from a genuinely
+# one-sided chat. Set WHATSAPP_SELF_LABEL to pin a label the list misses.
+_SELF_ENV = os.environ.get("WHATSAPP_SELF_LABEL")
+SELF_LABELS = (
+    {_SELF_ENV.strip()} if _SELF_ENV
+    else {"You", "Yo", "Eu", "Moi", "Ich", "Io"}
 )
 # ## YYYY-MM-DD day header
 DAY_HEADER_RE = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
@@ -226,7 +238,7 @@ def _msg_counts(body):
     for m in MSG_LINE_RE.finditer(body):
         total += 1
         sender = m.group(2).strip()
-        if sender == "You":
+        if sender in SELF_LABELS:
             mine += 1
         else:
             theirs += 1

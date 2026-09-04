@@ -82,6 +82,14 @@ def _domain_from_path(fp):
         "📝 Notes": "notes", "🌱 Curiosities": "curiosities",
         "🏫 School": "school", "📚 Books": "books", "🧠 Psychology": "psychology",
         "💼 Business": "business",
+        # Spanish counterparts of the six folders above. The setup interview
+        # creates LOCALIZED folder names on a non-English install, and an
+        # English-only mapping returns None for every note in them — so
+        # `concept_domain` comes out empty for the whole vault, silently, and
+        # every downstream grouping by domain sees one undifferentiated blob.
+        "📝 Notas": "notes", "🌱 Curiosidades": "curiosities",
+        "🏫 Escuela": "school", "📚 Libros": "books",
+        "🧠 Psicología": "psychology", "💼 Negocios": "business",
     }
     for seg in segments:
         if seg in mapping:
