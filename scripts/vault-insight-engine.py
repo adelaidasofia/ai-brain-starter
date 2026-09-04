@@ -573,15 +573,25 @@ def render_report(index, findings, baseline, scope_label=None, scoped_n=None, to
         lines.append(f"| `{t}` | {n:,} |")
     lines.append("")
 
+    # Same fallbacks as lucky_charm_people() / drag_people(), so the captions
+    # below state the cutoff actually used instead of a hardcoded one.
+    high_floor_cutoff = baseline["journal_floor_p75"] or 12
+    low_floor_cutoff = baseline["journal_floor_p25"] or 6
+
     # Findings sections — skip any with no results.
     sections = [
         ("Lucky-charm people — high-floor associations",
-         "*People who, when they show up in your journals, the floor is usually ≥12 (Acceptance or above).*",
+         # The cutoff is self-tuned from this vault's own floor distribution
+         # (p75), so the caption must read it too. A hardcoded "≥12
+         # (Acceptance)" contradicts the baseline table printed a few lines
+         # above, which already reports the real p75 — a report that misstates
+         # its own criteria.
+         f"*People who, when they show up in your journals, the floor is usually ≥{high_floor_cutoff:g}.*",
          findings["lucky_charm_people"],
          lambda r: f"- **{r['name']}** — {r['mentions']} mentions, {int(r['ratio']*100)}% on high floors (top floors seen: {', '.join(r['top_floors'])})"),
 
         ("Drag people — low-floor associations",
-         "*People who correlate with floor ≤6 (Desire and below). Not necessarily toxic — could be reflecting shared struggles. Worth looking at.*",
+         f"*People who correlate with floor ≤{low_floor_cutoff:g}. Not necessarily toxic — could be reflecting shared struggles. Worth looking at.*",
          findings["drag_people"],
          lambda r: f"- **{r['name']}** — {r['mentions']} mentions, {int(r['ratio']*100)}% on low floors (top floors seen: {', '.join(r['top_floors'])})"),
 
