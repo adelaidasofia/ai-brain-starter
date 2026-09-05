@@ -33,6 +33,7 @@ import coach as coach_mod
 import cycle as cycle_mod
 import db
 import fitbit_client
+import google_health_client
 import labs as labs_mod
 import live_tcp
 import oura_client
@@ -368,22 +369,29 @@ def health_import_oura(start: str, end: str, force: bool = False) -> dict[str, A
 
 
 @mcp.tool()
-def health_import_fitbit(start: str, end: str, force: bool = False) -> dict[str, Any]:
-    """Import Fitbit data via the Fitbit Web API.
+def health_import_google_health(start: str, end: str, force: bool = False) -> dict[str, Any]:
+    """Import wearable data via the Google Health API (successor to the Fitbit
+    Web API + Google Fit REST API, both retired from Sept 2026).
 
-    Requires a Personal app registered at https://dev.fitbit.com/apps and
-    FITBIT_ACCESS_TOKEN in env (plus FITBIT_REFRESH_TOKEN +
-    FITBIT_CLIENT_ID + FITBIT_CLIENT_SECRET for auto-refresh).
+    Requires a Google Cloud project with the Google Health API enabled, an OAuth
+    Web-Server client, and GOOGLE_HEALTH_ACCESS_TOKEN in env (plus
+    GOOGLE_HEALTH_REFRESH_TOKEN + GOOGLE_HEALTH_CLIENT_ID +
+    GOOGLE_HEALTH_CLIENT_SECRET for auto-refresh). See
+    health_vendor_setup_guide('google_health'). NOTE: while the OAuth app is in
+    Testing status Google expires refresh tokens after 7 days — publish to
+    Production for ongoing daily sync.
 
-    Pulls daily activity + heart rate + sleep stages + weight in [start, end]
-    and normalizes into the shared DuckDB schema. HRV is included when
-    available (Fitbit Premium only).
+    Pulls daily activity + heart rate + HRV + SpO2 + respiratory rate + VO2max +
+    body metrics + sleep stages in [start, end] and normalizes into the shared
+    DuckDB schema (same HK type ids as Apple Health), so recovery/sleep scores
+    and all vault-aware tools work unchanged. Workouts / ECG / nutrition are a
+    planned Phase 2.
     """
     t0 = datetime.now()
     sd = _parse_date(start)
     ed = _parse_date(end)
     try:
-        sha = fitbit_client.folder_sha(sd, ed)
+        sha = google_health_client.folder_sha(sd, ed)
     except ValueError as e:
         return {"error": str(e), "skipped": True}
     with db.connect() as con:
@@ -393,7 +401,7 @@ def health_import_fitbit(start: str, end: str, force: bool = False) -> dict[str,
         totals: dict[str, int] = {k: 0 for k in ("records", "workouts", "sleep", "cycle", "symptoms", "ecg", "state_of_mind")}
         BATCH = 1000
         try:
-            for item in fitbit_client.fetch_range(sd, ed):
+            for item in google_health_client.fetch_range(sd, ed):
                 batch.append(item)
                 if len(batch) >= BATCH:
                     for k, v in _bulk_insert(con, batch).items():
@@ -403,15 +411,33 @@ def health_import_fitbit(start: str, end: str, force: bool = False) -> dict[str,
                 for k, v in _bulk_insert(con, batch).items():
                     totals[k] += v
             total = sum(totals.values())
-            db.log_import(con, sha, "fitbit", f"fitbit:{sd.isoformat()}..{ed.isoformat()}", total)
+            db.log_import(con, sha, "google_health", f"google_health:{sd.isoformat()}..{ed.isoformat()}", total)
         except ValueError as e:
             return {"error": str(e), "skipped": True}
     return {
-        "file_sha": sha, "kind": "fitbit", "rows_inserted": total,
+        "file_sha": sha, "kind": "google_health", "rows_inserted": total,
         **{f"{k}_count": v for k, v in totals.items()},
         "skipped": False,
         "elapsed_s": round((datetime.now() - t0).total_seconds(), 2),
     }
+
+
+@mcp.tool()
+def health_import_fitbit(start: str, end: str, force: bool = False) -> dict[str, Any]:
+    """DEPRECATED: the Fitbit Web API is retired by Google from Sept 2026.
+
+    This now delegates to health_import_google_health (the successor API) so
+    existing scheduled syncs keep working. Migrate your setup to the Google
+    Health API — see health_vendor_setup_guide('google_health'). Set
+    GOOGLE_HEALTH_* env vars; your old FITBIT_* vars no longer power this tool.
+    """
+    result = health_import_google_health(start, end, force=force)
+    result["deprecated"] = (
+        "health_import_fitbit is deprecated (Fitbit Web API retired Sept 2026). "
+        "Now served by the Google Health API — use health_import_google_health "
+        "and set GOOGLE_HEALTH_* env vars."
+    )
+    return result
 
 
 @mcp.tool()
@@ -440,14 +466,16 @@ def health_vendor_healthcheck(vendor: str) -> dict[str, Any]:
     Returns {ok: bool, user_id?: str, error?: str}. Use after setting up
     env vars to confirm before running a full import.
     """
-    v = vendor.lower().strip()
+    v = vendor.lower().strip().replace("-", "_").replace(" ", "_")
     if v == "oura":
         return oura_client.healthcheck()
+    if v in {"google_health", "google", "googlehealth"}:
+        return google_health_client.healthcheck()
     if v == "fitbit":
-        return fitbit_client.healthcheck()
+        return {"ok": False, "error": "Fitbit Web API is retired by Google (Sept 2026). Migrate to the Google Health API: health_vendor_healthcheck('google_health').", "deprecated": True}
     if v in {"apple", "apple_health"}:
         return {"ok": True, "note": "Apple Health is offline-only. No healthcheck needed. Run health_status() to see what's imported."}
-    return {"ok": False, "error": f"Unknown vendor '{vendor}'. Supported: oura, fitbit, apple_health."}
+    return {"ok": False, "error": f"Unknown vendor '{vendor}'. Supported: oura, google_health, apple_health."}
 
 
 @mcp.tool()

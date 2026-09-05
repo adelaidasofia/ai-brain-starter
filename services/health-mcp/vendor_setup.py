@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-SUPPORTED_VENDORS = {"apple_health", "oura", "fitbit", "garmin", "whoop"}
+SUPPORTED_VENDORS = {"apple_health", "oura", "fitbit", "google_health", "garmin", "whoop"}
 SUPPORTED_OS = {"macos", "linux", "windows"}
 
 
@@ -144,6 +144,70 @@ _GUIDES: dict[str, dict[str, Any]] = {
             "If you hit 429 errors, wait 1 hour or contact Fitbit dev support for an exception.",
         ],
     },
+    "google_health": {
+        "display_name": "Google Health API",
+        "requires_iphone": False,
+        "free_paths": ["google_health_api_oauth"],
+        "paid_paths": [],
+        "summary": (
+            "The Google Health API is the successor to the Fitbit Web API and "
+            "Google Fit REST API (both retired from September 2026). Cloud REST "
+            "+ OAuth2; unifies Fitbit, Pixel Watch, and third-party device data. "
+            "Free, but setup is the fiddliest of the vendors: a Google Cloud "
+            "project + OAuth client + one-time consent flow."
+        ),
+        "common_steps": [
+            "Open https://console.cloud.google.com and create a new project (or pick one)",
+            "In APIs & Services > Library, search 'Google Health API' and click Enable",
+            "In APIs & Services > OAuth consent screen: set up an External app, add yourself under Audience > Test users",
+            "In the Data Access page, add the Google Health API scopes for the metrics you want (activity, heart rate, sleep, body — add all for full sync), then Update",
+            "In APIs & Services > Credentials > Create credentials > OAuth client ID: choose Web application; set Authorized redirect URI to https://www.google.com; save the Client ID + Client Secret",
+            "Run the OAuth flow once (OAuth Playground at https://developers.google.com/oauthplayground works: gear icon > use your own client ID/secret, authorize the Health scopes, exchange for tokens) to get an access_token + refresh_token",
+            "IMPORTANT: publish the OAuth app to Production (OAuth consent screen > Publish app). In Testing status Google expires refresh tokens after 7 DAYS, which breaks daily auto-sync every week.",
+        ],
+        "transfer_steps_by_os": {
+            "macos": [
+                "Open Terminal",
+                "Run: `echo 'export GOOGLE_HEALTH_ACCESS_TOKEN=<paste-access-token>' >> ~/.zshrc`",
+                "Run: `echo 'export GOOGLE_HEALTH_REFRESH_TOKEN=<paste-refresh-token>' >> ~/.zshrc`",
+                "Run: `echo 'export GOOGLE_HEALTH_CLIENT_ID=<paste-client-id>' >> ~/.zshrc`",
+                "Run: `echo 'export GOOGLE_HEALTH_CLIENT_SECRET=<paste-client-secret>' >> ~/.zshrc`",
+                "Reload: `source ~/.zshrc`",
+                "Restart Claude Code",
+                "Verify: `health_vendor_healthcheck('google_health')`",
+                "Run `health_import_google_health(start=\"2026-01-01\", end=\"2026-06-30\")`",
+            ],
+            "windows": [
+                "Open PowerShell as your user",
+                "Run for each variable: `[System.Environment]::SetEnvironmentVariable('GOOGLE_HEALTH_ACCESS_TOKEN', '<paste-token>', 'User')`",
+                "Same for GOOGLE_HEALTH_REFRESH_TOKEN, GOOGLE_HEALTH_CLIENT_ID, GOOGLE_HEALTH_CLIENT_SECRET",
+                "Restart PowerShell + Claude Code",
+                "Verify: `health_vendor_healthcheck('google_health')`",
+                "Run `health_import_google_health(start=\"2026-01-01\", end=\"2026-06-30\")`",
+            ],
+            "linux": [
+                "Append all four GOOGLE_HEALTH_* env vars to ~/.bashrc or ~/.zshrc",
+                "Reload your shell, restart Claude Code",
+                "Verify: `health_vendor_healthcheck('google_health')`",
+                "Run `health_import_google_health(start=\"2026-01-01\", end=\"2026-06-30\")`",
+            ],
+        },
+        "env_vars": {
+            "GOOGLE_HEALTH_ACCESS_TOKEN": "OAuth2 access token (short-lived; auto-refreshed when the other three vars are set)",
+            "GOOGLE_HEALTH_REFRESH_TOKEN": "OAuth2 refresh token (7-day lifetime in Testing status; long-lived once the app is published to Production)",
+            "GOOGLE_HEALTH_CLIENT_ID": "OAuth Web-application client ID from Google Cloud Credentials",
+            "GOOGLE_HEALTH_CLIENT_SECRET": "OAuth Web-application client secret",
+        },
+        "tool_to_run": "health_import_google_health",
+        "ongoing_cadence": "Set up a scheduled task to call health_import_google_health every morning for yesterday. Access token auto-refreshes ONLY if the app is published to Production (Testing refresh tokens die after 7 days).",
+        "notes": [
+            "Successor to Fitbit Web API + Google Fit REST API, both retired Sept 2026.",
+            "Health Connect (Android on-device) is NOT usable here — it has no cloud API. The Google Health API is the cloud path.",
+            "Publish the OAuth app to Production or daily sync breaks weekly (7-day refresh-token expiry in Testing).",
+            "Phase 1 imports all daily numeric metrics + sleep stages. Workouts, ECG, irregular-rhythm, and structured nutrition are a planned Phase 2.",
+            "If a metric is missing, confirm its scope was added on the Data Access page — one un-granted scope is skipped silently, the rest still import.",
+        ],
+    },
     "garmin": {
         "display_name": "Garmin",
         "requires_iphone": False,
@@ -200,6 +264,8 @@ def vendor_setup_guide(vendor: str, os_kind: str = "macos") -> dict[str, Any]:
     v = vendor.lower().strip().replace("-", "_").replace(" ", "_")
     if v == "apple" or v == "apple_watch" or v == "iphone" or v == "ios":
         v = "apple_health"
+    if v in {"google", "googlehealth", "google_fit", "googlefit", "pixel", "health_connect"}:
+        v = "google_health"
     if v not in SUPPORTED_VENDORS:
         return {
             "vendor": v,

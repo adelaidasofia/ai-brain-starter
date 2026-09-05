@@ -687,6 +687,21 @@ The safety-net hooks that double-check a session actually got saved before letti
 
 ---
 
+## 2026-06-30: Google Health connector replaces the retiring Fitbit sync
+
+Google is shutting down the Fitbit Web API and Google Fit REST API from **September 2026** — the pipes that fed `health_import_fitbit`. The replacement is the **Google Health API**, Google's new unified cloud health surface (Fitbit + Pixel Watch + third-party devices, one OAuth2 REST API).
+
+What changed:
+
+- **New tool `health_import_google_health(start, end)`** pulls all your daily metrics — steps, distance, active + basal energy, active minutes, floors, heart rate, resting HR, HRV, SpO2, respiratory rate, VO2max, weight, body fat, height, blood glucose — plus sleep stages, and files them into the same store as Apple Health so your recovery/sleep scores and `/coach` work unchanged.
+- **`health_import_fitbit` still works but is deprecated** — it now quietly runs through the Google Health API so any scheduled sync you set up keeps flowing past the Sept 2026 cutoff. Migrate when convenient.
+- **Setup guide:** run `health_vendor_setup_guide('google_health')` for the full Google Cloud + OAuth walkthrough.
+- **One thing to watch:** while your Google OAuth app is in "Testing" status, Google expires the login every **7 days**, which would break daily auto-sync weekly. Publish the app to Production (one click on the consent screen) and it stops. The connector's health check tells you plainly when this has happened.
+
+Note: Google *Health Connect* (the on-phone Android store) is a different thing with no cloud API — it can't be synced from here. The Google Health API is the cloud path, and it's what this uses. Workouts, ECG, and nutrition are a planned follow-up.
+
+---
+
 ## 2026-06-30: the "what your setup injects" meter is now honest and safe
 
 The meter from the previous entry got a hardening pass after an adversarial review found three sharp edges. All fixed:

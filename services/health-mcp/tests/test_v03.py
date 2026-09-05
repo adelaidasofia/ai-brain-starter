@@ -115,5 +115,5 @@ def test_whoop_marked_deferred():
 
 
 def test_supported_vendors_set_contains_expected():
-    expected = {"apple_health", "oura", "fitbit", "garmin", "whoop"}
+    expected = {"apple_health", "oura", "fitbit", "google_health", "garmin", "whoop"}
     assert vendor_setup.SUPPORTED_VENDORS == expected
