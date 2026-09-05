@@ -86,6 +86,10 @@ def _run(label: str, cwd: Path, env_extra: dict) -> str:
     proc = subprocess.run(
         [sys.executable, str(LOADER)], input="{}",
         capture_output=True, text=True, env=env, cwd=str(cwd),
+        # Pin the child decode: a vault path is arbitrary Unicode, and on a
+        # non-UTF-8 Windows console the locale decode raises UnicodeDecodeError.
+        # This repo's check-utf8-subprocess.py guard enforces it.
+        encoding="utf-8", errors="replace",
     )
     check("{}: loader exits 0".format(label), proc.returncode == 0, proc.stderr[:300])
     try:
