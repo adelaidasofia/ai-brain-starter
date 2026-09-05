@@ -44,6 +44,24 @@ Obsidian's graph draws exactly one thing: links. An entry that records its floor
 
 This builds on the 2026-08-25 fix below, which taught the checker to find your floor notes folder in the first place — that fix found the notes, this one lets linked entries match them.
 
+---
+
+## 2026-08-25: asking Claude to pass on a message could end your session by mistake
+
+**Who this affects:** anyone working in Spanish who asks Claude to relay something — "dile a Ana que ya quedó", "avísale a Marta que listo", "contéstale que hasta luego".
+
+Spanish ends a session with short phrases: *ya quedó*, *listo*, *chao*, *hasta luego*. The detector looks for them at the end of what you type, which is the right place to look — until the phrase is not yours. When you ask Claude to tell someone *else* that something is done, your sentence still ends on *ya quedó*. You are quoting a message, not saying goodbye.
+
+The detector could not tell the two apart. Typing "dile a Ana que ya quedó" ran the whole close cascade in the middle of a task — session file written, captures filed, commit made, goodbye said — while the user was still working and had asked for none of it. The phrase was message content addressed to a third person, and it read as a farewell.
+
+Spanish now has a guard for relayed speech. When a sentence carries a verb of telling — *dile*, *avísale*, *escríbele*, *cuéntale*, *contéstale*, *mándale… diciendo* — followed by *que* and then a close phrase, the close is suppressed. Saying the same phrase on its own still ends the session: "ya quedó" closes, "dile a Ana que ya quedó" does not.
+
+This had to sit in the strict tier. *ya quedó* and a bare *listo* are strong signals, and the ordinary guards cannot override a strong signal — a weaker guard would have been dead code.
+
+Portuguese very likely has the same gap (*diga a ele que pronto*), but it has not been reported or tested, so nothing was changed there.
+
+---
+
 ## 2026-08-25: the check on your journal's floor labels was never running
 
 **Who this affects:** anyone whose vault folders have emoji in their names and are in English — which is the default this project sets up.
@@ -2889,7 +2907,7 @@ Four optimizations for high-volume, multi-account Claude setups:
 
 Two additions to the advisory panel template:
 
-- **New "Colombia: Life & Business" section** with 8 named, integrity-verified voices covering corporate culture (Carlos Raul Yepes), brand building (Catalina Escobar), cultural identity (Hector Abad Faciolince), business law (Francisco Reyes Villamizar), women in business (Sylvia Escovar), relationships/gender (Florence Thomas), bicultural identity (Patricia Engel), and holistic wellness (Dr. Jorge Carvajal Posada). Every person was researched for integrity before inclusion.
+- **New "Colombia: Life & Business" section** with 8 named, integrity-verified voices covering corporate culture (Pablo Raul Yepes), brand building (Catalina Escobar), cultural identity (Hector Abad Faciolince), business law (Francisco Reyes Villamizar), women in business (Sylvia Escovar), relationships/gender (Florence Thomas), bicultural identity (Patricia Engel), and holistic wellness (Dr. Jorge Carvajal Posada). Every person was researched for integrity before inclusion.
 - **Rule #8: Named panelists only.** Claude must never invent archetypes or unnamed experts. Every panel voice must be a named person from the roster. If none fit, say so and offer to add one. Prevents fabricated "a hospitality GM" or "a marketplace founder" style voices.
 
 ## 2026-04-14 -- Doc compression rule + memory durability enforcement

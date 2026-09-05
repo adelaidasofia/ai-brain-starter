@@ -44,7 +44,8 @@
     "^perfecto[!.\\s]*$",
     "^genial[!.\\s]*$",
     "^suena bien[!.\\s]*$",
-    "^va[!.\\s]*$"
+    "^va[!.\\s]*$",
+    "^creo que ya[!.\\s]*$"
   ],
 
   "emoji_only": [
@@ -118,6 +119,10 @@
     {
       "_comment": "'estoy listo/a' is READINESS ('estoy listo para el día', 'estoy lista, arranquemos'), never a goodbye. Strict because the bare word `listo` is a high_confidence sign-off and the weak-tier 'listo para X' guard cannot override it.",
       "pattern": "\\bestoy\\s+list[oa]\\b"
+    },
+    {
+      "_comment": "RELAYED SPEECH — the user asks Claude to TELL SOMEONE ELSE a phrase that happens to be a close signal ('dile a Ana que ya quedó', 'avísale que listo', 'contéstale que hasta luego'). The close phrase is message CONTENT addressed to a third party, not a sign-off to Claude. Strict because 'ya quedó' and bare 'listo' are high_confidence, so a weak-tier guard cannot override them. Requires a reporting verb BEFORE 'que' AND a close phrase right after it, so a bare 'ya quedó' still fires.",
+      "pattern": "\\b(d[íi]le|d[íi]gale|d[íi]les|dices|digas|diga|av[íi]sale|av[íi]sele|escr[íi]bele|escr[íi]bale|cu[ée]ntale|com[ée]ntale|resp[óo]ndele|cont[ée]stale|recu[ée]rdale|advi[ée]rtele|m[áa]ndale|env[íi]ale|diciendo|dici[ée]ndole)\\b[^\\n]{0,50}\\bque\\b\\s*(ya\\s+qued[óo]|ya\\s+est[áa]|ya\\s+es\\s+todo|es\\s+todo|listo|gracias|chao|chau|nos\\s+vemos|hasta\\s+luego|hasta\\s+ma[ñn]ana|buenas\\s+noches|me\\s+voy)\\b"
     }
   ]
 }
