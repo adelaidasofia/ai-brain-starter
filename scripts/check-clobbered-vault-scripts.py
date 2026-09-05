@@ -58,9 +58,21 @@ SH_ASSIGN = re.compile(
     r'([A-Za-z0-9_.-]+\.sh)"?',
     re.M,
 )
-# Python: `import _foo` / `from _foo import x`. Local-sibling modules only —
-# leading underscore is this repo's convention for a synced shared module.
+# Python: `import _foo` / `from _foo import x` / `from _foo.bar import x`.
+# Local-sibling modules only — leading underscore is this repo's convention for a
+# synced shared module. The capture stops at the first dot, so `_lib.safe_read`
+# yields `_lib`.
 PY_IMPORT = re.compile(r'^\s*(?:from|import)\s+(_[A-Za-z0-9_]+)', re.M)
+
+# Extra import roots a script splices onto sys.path at runtime, e.g.
+#   sys.path.insert(0, os.path.join(HERE, "extractors"))
+#   sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+# The shared module then lives in that subdir, NOT beside the script. Only quoted
+# literals are read: a root built from a runtime variable (`str(_cand)`) cannot be
+# resolved by static reading, contributes no root, and leaves its imports subject
+# to the plain sibling check.
+PY_PATH_LITERAL = re.compile(
+    r'sys\.path\.insert\([^)]*?["\']([A-Za-z0-9_.-]+)["\']', re.M)
 
 
 def _read_bounded(p: Path) -> str | None:
@@ -101,12 +113,41 @@ def git_head_bytes(repo: Path, rel: str) -> bytes | None:
         return None
 
 
+def _is_dunder(mod: str) -> bool:
+    """`__future__` is a stdlib pseudo-module, never a file on disk, and it fits
+    the leading-underscore convention by accident. Left unfiltered it was every
+    Python script's phantom missing dependency — 65 of 73 findings on a real vault,
+    which is how a detector teaches its operator to ignore it."""
+    return mod.startswith("__") and mod.endswith("__")
+
+
 def deps_of(path: Path, text: str) -> set[str]:
     if path.suffix == ".sh":
         return set(SH_DIRECT.findall(text)) | set(SH_ASSIGN.findall(text))
     if path.suffix == ".py":
-        return {m + ".py" for m in PY_IMPORT.findall(text)}
+        return {m for m in PY_IMPORT.findall(text) if not _is_dunder(m)}
     return set()
+
+
+def py_import_roots(dest: Path, text: str) -> list[Path]:
+    """Directories Python would search for this script's sibling imports: the
+    scripts dir itself, plus any subdir spliced onto sys.path as a literal. Each
+    literal is resolved against both the scripts dir and its parent, covering the
+    `HERE / "x"` and `parent.parent / "x"` forms; a root that does not exist
+    simply resolves nothing."""
+    roots = [dest]
+    for lit in PY_PATH_LITERAL.findall(text):
+        roots.append(dest / lit)
+        roots.append(dest.parent / lit)
+    return roots
+
+
+def py_dep_resolves(roots: list[Path], mod: str) -> bool:
+    """A module resolves as either `mod.py` or a package dir `mod/__init__.py`.
+    Checking only for `mod.py` reported the vault's real `_lib/` package — present,
+    importable, in daily use — as missing."""
+    return any((r / f"{mod}.py").is_file() or (r / mod / "__init__.py").is_file()
+               for r in roots)
 
 
 def main() -> int:
@@ -140,8 +181,12 @@ def main() -> int:
         if text is None:
             continue
 
+        py_roots = py_import_roots(dest, text) if f.suffix == ".py" else []
         for dep in sorted(deps_of(f, text)):
-            if not (dest / dep).exists():
+            if f.suffix == ".py":
+                if not py_dep_resolves(py_roots, dep):
+                    broken.append((f.name, f"{dep}.py"))
+            elif not (dest / dep).exists():
                 broken.append((f.name, dep))
 
         twin = src / f.name
