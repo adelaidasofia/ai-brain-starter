@@ -91,7 +91,7 @@ def run_review(tmp: Path):
     proc = subprocess.run(
         [sys.executable, str(REVIEW), "--graph", str(graph_path),
          "--edges", str(edges_path), "--output", str(report_path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     return proc, graph_path, report_path, before
 
@@ -148,7 +148,7 @@ def main() -> int:
             [sys.executable, str(REVIEW), "--graph", str(tmp / "nope.json"),
              "--edges", str(tmp / "graphify-out" / ".graphify_typed_edges.jsonl"),
              "--output", str(tmp / "out.md")],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         check("missing graph exits non-zero", missing.returncode != 0)
         check("missing graph explains itself", "ERROR" in missing.stderr)
@@ -162,4 +162,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Windows cp1252-console safety (#313): force UTF-8 so a non-ASCII print can't crash.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")  # Python 3.7+
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())

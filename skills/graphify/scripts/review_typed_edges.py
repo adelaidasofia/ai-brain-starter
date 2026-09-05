@@ -71,10 +71,15 @@ def _existing_pairs(graph: dict) -> set[tuple[str, str, str]]:
 def _load_jsonl(path: Path) -> list[dict]:
     edges = []
     with path.open(encoding="utf-8") as f:
-        for line in f:
+        for lineno, line in enumerate(f, start=1):
             line = line.strip()
-            if line:
+            if not line:
+                continue
+            try:
                 edges.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                print(f"ERROR: malformed edge at {path}:{lineno}: {exc}", file=sys.stderr)
+                sys.exit(2)
     return edges
 
 
