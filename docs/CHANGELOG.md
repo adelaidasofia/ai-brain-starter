@@ -9,6 +9,20 @@ description: What's new in AI Brain Starter — plain English, no jargon
 
 ---
 
+## 2026-09-02: /graphify can now show you what its typed edges would do, before they do it
+
+**Who this affects:** anyone running `/graphify` on a vault with frontmatter and wikilinks — so, anyone whose graph is built from notes rather than code.
+
+There is a step in the graph build (Part A.5) that reads real relationships straight out of your notes: who attended what, who works where, which journal entry is about which person. It writes them to a file. Then nothing happens to that file. It exists only to stop the model re-deriving the same edges later, and the relationships never reach your graph.
+
+The obvious fix — merge them automatically — is the one thing that isn't safe. Node names in the graph are invented per entity while it builds, so a wikilink like `[[Duplicate]]` can land on no node, one node, or two different notes that happen to share a title. And four of the edge types are already in your graph pointing the other way: the build writes *person → journal entry*, while the raw reading of a wikilink is *journal entry → person*. Merging as-is wouldn't add relationships, it would argue with the ones already there.
+
+So there's a new Step 4b that writes a report instead. It sorts every edge into what it can resolve unambiguously, what's genuinely ambiguous and needs you to pick, and what points at notes that don't exist — the same read-it-then-apply-it shape as the wikilink gaps report you already get. It never writes to your graph. You read it and say which rows to apply.
+
+If a wikilink target shows up over and over under "dst not found", that's usually worth a look on its own: it means you keep linking to a note you never made.
+
+---
+
 ## 2026-09-01: the journal names your floor for you
 
 **Who this affects:** everyone who journals. This changes what the skill asks you at the end of an entry.
