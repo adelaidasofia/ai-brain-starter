@@ -1296,6 +1296,7 @@ PY_DIRECT=(
   hooks/test_umbrella_map.py
   hooks/test_surface_stalled_git_operation.py
   hooks/test_memory_index.py
+  hooks/test_session_start_context.py
   tests/test_instinct.py
   tests/test_entity_disambiguator_clustering.py
   tests/test_graphify_stage_select_cache_key.py

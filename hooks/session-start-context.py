@@ -119,39 +119,40 @@ def _resolve_vault_paths(text: str) -> str:
     got nothing, and started every session without its own priorities --
     silently, because a missing file reads as "nothing to report".
 
-    Resolution order mirrors _lib/vault_root.py: cwd walk-up first (the
-    session's own vault wins), $VAULT_ROOT as the fallback. Fail-open --
-    any error leaves the text exactly as it was.
+    Resolution goes through the SAME sanctioned per-target resolver every
+    other consumer of the Meta-folder signature shares
+    (hooks/_lib/vault_root.py:vault_root_for) instead of a second hand-rolled
+    cwd walk-up plus a raw `os.environ.get("VAULT_ROOT")` read -- exactly the
+    drift scripts/check-vault-root-reads.py exists to catch fleet-wide (a
+    naive read is wrong whether VAULT_ROOT is unset, defaulting to a vault
+    this install does not have, or set machine-wide, silently overriding the
+    vault this session is actually in). vault_root_for already does cwd
+    walk-up for a Meta-suffixed folder first, $VAULT_ROOT as the fallback,
+    and collapses a `.claude/worktrees/<slug>/` checkout back to the real
+    vault root either way, so a session started from inside one still
+    resolves against the vault rather than the throwaway checkout.
+
+    Fail-open -- any error, or no vault found at all, leaves the text exactly
+    as it was. No path is ever fabricated: each of the three references is
+    substituted only when its concrete target file exists on disk, so an
+    absent file's literal `Meta/...` reference is left untouched rather than
+    rewritten into a path that does not exist.
     """
-    import os
-
-    def _meta_dir(root):
-        try:
-            for name in sorted(os.listdir(root)):
-                if not name.endswith("Meta"):
-                    continue
-                cand = os.path.join(root, name)
-                if os.path.isfile(os.path.join(cand, "Current Priorities.md")):
-                    return cand
-        except OSError:
-            pass
-        return None
-
     try:
+        import os
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_lib"))
+        from vault_root import vault_root_for
+        from pathlib import Path
+
+        root = vault_root_for(Path.cwd())
+        if root is None:
+            return text
         meta = None
-        cur = os.path.realpath(os.getcwd())
-        for _ in range(25):
-            meta = _meta_dir(cur)
-            if meta:
+        for name in sorted(os.listdir(root)):
+            candidate = os.path.join(root, name)
+            if name.endswith("Meta") and os.path.isdir(candidate):
+                meta = candidate
                 break
-            parent = os.path.dirname(cur)
-            if parent == cur:
-                break
-            cur = parent
-        if meta is None:
-            root = os.environ.get("VAULT_ROOT", "").strip()
-            if root:
-                meta = _meta_dir(os.path.realpath(os.path.expanduser(root)))
         if meta is None:
             return text
         for rel in ("Last Session.md", "Current Priorities.md",
