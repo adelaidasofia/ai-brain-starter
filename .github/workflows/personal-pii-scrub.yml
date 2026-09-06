@@ -25,13 +25,28 @@ name: personal-pii-scrub
 #   line-by-line in Actions logs. The plaintext roster lives ONLY in the
 #   private generator vault and each managed repo secret store, never in
 #   any public artifact.
-# Adding/removing patterns: edit the private roster next to the generator
-# (in ⚙️ Meta/scripts/gh-harden-repos.sh) AND, for public-tier tokens,
-# this template, in the same commit, then let the harden run propagate.
-# The harden run must sync the SECRET to a repo BEFORE shipping this file
-# there: on a managed repo this gate fails closed when the secret is
-# missing, because a gate that shrugs off a broken secret sync is green
-# and vacuous exactly where it broke (auto-managed-gate-self-dos).
+# Adding/removing patterns TODAY (corrected 2026-09-05, closing a live gap --
+# a private name reached ai-brain-starter PR #281 through this exact hole):
+# the generator's render_personal_pii_scrub_workflow() in
+# ⚙️ Meta/scripts/gh-harden-repos.sh predates this tier split and does not
+# emit it -- it has no PII_PRIVATE_PATTERNS logic at all. DO NOT "let the
+# harden run propagate" a pattern change; on an already-migrated repo (this
+# one) that would silently overwrite this file with the generator's older,
+# pre-split, no-secret template, which is the exact GUARD-DISCLOSES-THE-
+# SECRET-IT-GUARDS regression MYC-3943 exists to prevent. Until the
+# generator is rewritten to own this tier split:
+#   PRIVATE-tier pattern -> update this repo's secret directly:
+#     gh secret set PII_PRIVATE_PATTERNS --repo <owner>/<repo>
+#     (one POSIX extended regex per line; wholesale replace, no append --
+#     read the current count first via a recent run's own "Positive control
+#     OK ... all N patterns" line, never overwrite blind).
+#   PUBLIC-tier pattern (rare -- only tokens already public by deliberate
+#     choice) -> hand-edit the three PUBLIC_PATTERNS arrays below directly,
+#     in this file, in both the source-file step and the archive step.
+# Either way: measure the new pattern against this repo's CURRENT tree
+# first (git grep -P, gate pathspecs) before shipping it -- a pattern that
+# already matches legitimate content turns this gate red on arrival
+# (auto-managed-gate-self-dos).
 # Hashing the roster instead was REJECTED: personal-name tokens have a
 # tiny preimage space, so a public salted-hash denylist is one dictionary
 # pass away from plaintext (operating rule: a hashed identifier is
